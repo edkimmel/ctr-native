@@ -59,6 +59,15 @@ function(ctr_native_add_label_warning_if_supported target warning flag_check)
     endif()
 endfunction()
 
+# Explicit, native-layout-independent binary primitives for canonical state and replay v2.
+add_library(ctr_native_canonical_codec STATIC platform/native_canonical_codec.c)
+set_target_properties(ctr_native_canonical_codec PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_canonical_codec PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # SDL3
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
@@ -138,6 +147,16 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+
+    add_executable(native_canonical_codec_test tests/native_canonical_codec_test.c)
+    set_target_properties(native_canonical_codec_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_canonical_codec_test PRIVATE ctr_native_canonical_codec)
+    add_test(NAME native_canonical_codec_unit COMMAND $<TARGET_FILE:native_canonical_codec_test>)
+
     add_test(NAME ctr_native_version COMMAND $<TARGET_FILE:ctr_native> --version)
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Native ")
 
