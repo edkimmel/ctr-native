@@ -12,6 +12,12 @@
 #define NATIVE_CANONICAL_STATE_SCHEMA_VERSION UINT32_C(1)
 #define NATIVE_CANONICAL_REPLAY_FORMAT_VERSION UINT32_C(2)
 
+/*
+ * Persisted canonical-state and replay-v2 digests use FNV-1a 64.  Changing
+ * this identifier or its algorithm changes the binary compatibility contract.
+ */
+#define NATIVE_CODEC_DIGEST64_ALGORITHM_NAME "FNV-1a 64"
+
 #define NATIVE_CANONICAL_DOMAIN_COUNT 6u
 
 enum NativeCanonicalDomainID
