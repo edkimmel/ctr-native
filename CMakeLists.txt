@@ -108,6 +108,7 @@ if(CTR_NATIVE_MSVC_FRONTEND)
         /wd4310
         /wd5287
     )
+    target_link_options(ctr_native PRIVATE /Brepro)
 else()
     target_compile_options(ctr_native PRIVATE
         -msse
