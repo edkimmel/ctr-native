@@ -14,6 +14,13 @@
 
 #define NATIVE_CANONICAL_STATE_V1_MAGIC UINT32_C(0x3156434e) /* Little-endian "NCV1". */
 #define NATIVE_CANONICAL_INPUT_PAD_COUNT 4u
+#define NATIVE_CANONICAL_IDENTITY_BYTES 32u
+
+struct NativeCanonicalIdentityV1
+{
+	uint8_t build[NATIVE_CANONICAL_IDENTITY_BYTES];
+	uint8_t content[NATIVE_CANONICAL_IDENTITY_BYTES];
+};
 
 struct NativeCanonicalControlV1
 {
@@ -60,6 +67,7 @@ struct NativeCanonicalStateV1
 	uint32_t replayFormatVersion;
 	uint32_t domainCount;
 	uint32_t frameNumber;
+	struct NativeCanonicalIdentityV1 identity;
 	struct NativeCanonicalControlV1 control;
 	struct NativeCanonicalRngV1 rng;
 	struct NativeCanonicalInputV1 input;
@@ -69,7 +77,7 @@ struct NativeCanonicalStateV1
 
 /*
  * Wire order is magic, schema version, replay format version, domain count,
- * frame number, then each ordered domain as (u32 id, u32 payload size,
+ * frame number, 32-byte build identity, 32-byte content identity, then each ordered domain as (u32 id, u32 payload size,
  * payload bytes, u64 payload digest), followed by the combined digest.
  * Future domains use a zero payload size and the FNV-1a-64 offset digest.
  * The combined digest is FNV-1a 64 over ordered (u32 domain id, u64 digest)
@@ -86,6 +94,7 @@ size_t NativeCanonicalStateV1_EncodedSize(void);
  * combined digest failures leave the caller's state and codec offset unchanged.
  */
 int NativeCanonicalStateV1_Encode(struct NativeCodecWriter *writer, const struct NativeCanonicalStateV1 *state);
-int NativeCanonicalStateV1_Decode(struct NativeCodecReader *reader, struct NativeCanonicalStateV1 *state);
+int NativeCanonicalStateV1_Decode(struct NativeCodecReader *reader, const struct NativeCanonicalIdentityV1 *expectedIdentity,
+                                  struct NativeCanonicalStateV1 *state);
 
 #endif

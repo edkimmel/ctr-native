@@ -5,7 +5,7 @@
 #define NATIVE_CANONICAL_CONTROL_BYTES 40u
 #define NATIVE_CANONICAL_RNG_BYTES     24u
 #define NATIVE_CANONICAL_INPUT_BYTES   40u
-#define NATIVE_CANONICAL_HEADER_BYTES  20u
+#define NATIVE_CANONICAL_HEADER_BYTES  84u
 #define NATIVE_CANONICAL_DOMAIN_BYTES  16u
 #define NATIVE_CANONICAL_COMBINED_BYTES 8u
 #define NATIVE_CANONICAL_STATE_BYTES                                                                                                      \
@@ -264,7 +264,9 @@ int NativeCanonicalStateV1_Encode(struct NativeCodecWriter *writer, const struct
 	encoded = *writer;
 	if (!NativeCodecWriter_WriteU32(&encoded, NATIVE_CANONICAL_STATE_V1_MAGIC) ||
 	    !NativeCodecWriter_WriteU32(&encoded, state->schemaVersion) || !NativeCodecWriter_WriteU32(&encoded, state->replayFormatVersion) ||
-	    !NativeCodecWriter_WriteU32(&encoded, state->domainCount) || !NativeCodecWriter_WriteU32(&encoded, state->frameNumber))
+	    !NativeCodecWriter_WriteU32(&encoded, state->domainCount) || !NativeCodecWriter_WriteU32(&encoded, state->frameNumber) ||
+	    !NativeCodecWriter_WriteBytes(&encoded, state->identity.build, sizeof(state->identity.build)) ||
+	    !NativeCodecWriter_WriteBytes(&encoded, state->identity.content, sizeof(state->identity.content)))
 	{
 		return 0;
 	}
@@ -291,7 +293,8 @@ int NativeCanonicalStateV1_Encode(struct NativeCodecWriter *writer, const struct
 	return 1;
 }
 
-int NativeCanonicalStateV1_Decode(struct NativeCodecReader *reader, struct NativeCanonicalStateV1 *state)
+int NativeCanonicalStateV1_Decode(struct NativeCodecReader *reader, const struct NativeCanonicalIdentityV1 *expectedIdentity,
+                                  struct NativeCanonicalStateV1 *state)
 {
 	struct NativeCanonicalStateV1 decoded;
 	struct NativeCanonicalStateV1 calculated;
@@ -299,7 +302,7 @@ int NativeCanonicalStateV1_Decode(struct NativeCodecReader *reader, struct Nativ
 	uint32_t magic;
 	uint8_t bytes[NATIVE_CANONICAL_CONTROL_BYTES];
 
-	if ((reader == NULL) || (state == NULL))
+	if ((reader == NULL) || (expectedIdentity == NULL) || (state == NULL))
 	{
 		return 0;
 	}
@@ -309,7 +312,10 @@ int NativeCanonicalStateV1_Decode(struct NativeCodecReader *reader, struct Nativ
 	if (!NativeCodecReader_ReadU32(&encoded, &magic) || (magic != NATIVE_CANONICAL_STATE_V1_MAGIC) ||
 	    !NativeCodecReader_ReadU32(&encoded, &decoded.schemaVersion) ||
 	    !NativeCodecReader_ReadU32(&encoded, &decoded.replayFormatVersion) || !NativeCodecReader_ReadU32(&encoded, &decoded.domainCount) ||
-	    !NativeCodecReader_ReadU32(&encoded, &decoded.frameNumber) || !NativeCanonicalStateV1_Validate(&decoded))
+	    !NativeCodecReader_ReadU32(&encoded, &decoded.frameNumber) ||
+	    !NativeCodecReader_ReadBytes(&encoded, decoded.identity.build, sizeof(decoded.identity.build)) ||
+	    !NativeCodecReader_ReadBytes(&encoded, decoded.identity.content, sizeof(decoded.identity.content)) ||
+	    (memcmp(&decoded.identity, expectedIdentity, sizeof(decoded.identity)) != 0) || !NativeCanonicalStateV1_Validate(&decoded))
 	{
 		return 0;
 	}
