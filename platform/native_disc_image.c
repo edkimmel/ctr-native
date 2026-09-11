@@ -441,23 +441,31 @@ int NativeDiscImage_Init(const char *assetsDir)
 		s_nativeDiscImageFile = NULL;
 		return 0;
 	}
-	if (!NativeDiscImage_HashRetainedFile(s_nativeDiscImageContentIdentity))
-	{
-		fclose(s_nativeDiscImageFile);
-		s_nativeDiscImageFile = NULL;
-		return 0;
-	}
-
-	s_nativeDiscImageContentIdentityValid = 1;
 	s_nativeDiscImageAvailable = 1;
 	return 1;
 }
 
+int NativeDiscImage_ContentIdentityReady(void)
+{
+	return s_nativeDiscImageContentIdentityValid;
+}
+
 int NativeDiscImage_GetContentIdentity(uint8_t content[NATIVE_IDENTITY_DIGEST_BYTES])
 {
-	if ((content == NULL) || (s_nativeDiscImageContentIdentityValid == 0))
+	uint8_t candidate[NATIVE_IDENTITY_DIGEST_BYTES];
+
+	if (content == NULL)
 	{
 		return 0;
+	}
+	if ((s_nativeDiscImageContentIdentityValid == 0) && !NativeDiscImage_HashRetainedFile(candidate))
+	{
+		return 0;
+	}
+	if (s_nativeDiscImageContentIdentityValid == 0)
+	{
+		memcpy(s_nativeDiscImageContentIdentity, candidate, sizeof(candidate));
+		s_nativeDiscImageContentIdentityValid = 1;
 	}
 
 	memcpy(content, s_nativeDiscImageContentIdentity, sizeof(s_nativeDiscImageContentIdentity));

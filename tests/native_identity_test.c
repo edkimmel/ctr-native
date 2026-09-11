@@ -128,7 +128,9 @@ static int TestIdentityProvider(void)
 	CHECK(PrepareFixtures());
 	CHECK(NativeIdentity_BuildKnown());
 	CHECK(NativeDiscImage_Init(NATIVE_IDENTITY_ASSETS_A));
+	CHECK(!NativeDiscImage_ContentIdentityReady());
 	CHECK(NativeIdentity_Get(&first));
+	CHECK(NativeDiscImage_ContentIdentityReady());
 	CHECK(memcmp(first.build, expectedBuild, sizeof(expectedBuild)) == 0);
 	CHECK(NativeDiscImage_GetContentIdentity(contentFirst));
 
@@ -140,10 +142,13 @@ static int TestIdentityProvider(void)
 	times.modtime = 2;
 	CHECK(NATIVE_IDENTITY_UTIME(NATIVE_IDENTITY_FILE_B, &times) == 0);
 	CHECK(NativeDiscImage_Init(NATIVE_IDENTITY_ASSETS_B));
+	CHECK(!NativeDiscImage_ContentIdentityReady());
 	CHECK(NativeDiscImage_GetContentIdentity(contentSecond));
+	CHECK(NativeDiscImage_ContentIdentityReady());
 	CHECK(memcmp(contentFirst, contentSecond, sizeof(contentFirst)) == 0);
 
 	CHECK(NativeDiscImage_Init(NATIVE_IDENTITY_ASSETS_A));
+	CHECK(!NativeDiscImage_ContentIdentityReady());
 	CHECK(WriteFixture(NATIVE_IDENTITY_FILE_B, 1));
 	CHECK(NativeDiscImage_Init(NATIVE_IDENTITY_ASSETS_B));
 	CHECK(NativeIdentity_Get(&changed));

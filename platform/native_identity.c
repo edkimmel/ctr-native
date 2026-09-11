@@ -5,11 +5,7 @@
 #include <string.h>
 
 #ifndef CTR_NATIVE_BUILD_IDENTITY_KNOWN
-#define CTR_NATIVE_BUILD_IDENTITY_KNOWN 0
-#endif
-
-#ifndef CTR_NATIVE_BUILD_IDENTITY_HEX
-#define CTR_NATIVE_BUILD_IDENTITY_HEX ""
+#include "native_build_identity.h"
 #endif
 
 static int NativeIdentity_HexDigit(char byte, uint8_t *value)
