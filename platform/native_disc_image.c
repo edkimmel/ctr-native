@@ -1,6 +1,7 @@
 #include "platform/native_disc_image.h"
 
 #include <platform/native_path.h>
+#include "platform/native_sha256.h"
 
 #include <limits.h>
 #if !defined(_WIN32)
@@ -38,6 +39,59 @@ global_variable char s_nativeDiscImagePath[NATIVE_DISC_IMAGE_PATH_MAX];
 global_variable FILE *s_nativeDiscImageFile;
 global_variable struct NativeDiscImageFile s_nativeDiscImageRoot;
 global_variable int s_nativeDiscImageAvailable;
+global_variable uint8_t s_nativeDiscImageContentIdentity[NATIVE_IDENTITY_DIGEST_BYTES];
+global_variable int s_nativeDiscImageContentIdentityValid;
+
+internal int NativeDiscImage_HashRetainedFile(uint8_t content[NATIVE_IDENTITY_DIGEST_BYTES])
+{
+	uint8_t buffer[8192];
+	uint8_t candidate[NATIVE_IDENTITY_DIGEST_BYTES];
+	struct NativeSha256 sha;
+	long savedPosition;
+	int success = 0;
+
+	if (s_nativeDiscImageFile == NULL)
+	{
+		return 0;
+	}
+
+	savedPosition = ftell(s_nativeDiscImageFile);
+	if ((savedPosition < 0) || (fseek(s_nativeDiscImageFile, 0, SEEK_SET) != 0))
+	{
+		return 0;
+	}
+
+	NativeSha256_Init(&sha);
+	for (;;)
+	{
+		size_t bytesRead = fread(buffer, 1, sizeof(buffer), s_nativeDiscImageFile);
+
+		if (bytesRead != 0)
+		{
+			NativeSha256_Update(&sha, buffer, bytesRead);
+		}
+		if (bytesRead != sizeof(buffer))
+		{
+			if (ferror(s_nativeDiscImageFile) == 0)
+			{
+				NativeSha256_Final(&sha, candidate);
+				success = 1;
+			}
+			break;
+		}
+	}
+
+	if (fseek(s_nativeDiscImageFile, savedPosition, SEEK_SET) != 0)
+	{
+		success = 0;
+	}
+	if (success != 0)
+	{
+		memcpy(content, candidate, sizeof(candidate));
+	}
+
+	return success;
+}
 
 internal int NativeDiscImage_FindHostImagePath(char *dst, size_t dstSize, NativeStr8 assetsDir)
 {
@@ -354,6 +408,7 @@ int NativeDiscImage_Init(const char *assetsDir)
 	char path[NATIVE_DISC_IMAGE_PATH_MAX];
 
 	s_nativeDiscImageAvailable = 0;
+	s_nativeDiscImageContentIdentityValid = 0;
 	s_nativeDiscImagePath[0] = '\0';
 
 	if (s_nativeDiscImageFile != NULL)
@@ -386,8 +441,26 @@ int NativeDiscImage_Init(const char *assetsDir)
 		s_nativeDiscImageFile = NULL;
 		return 0;
 	}
+	if (!NativeDiscImage_HashRetainedFile(s_nativeDiscImageContentIdentity))
+	{
+		fclose(s_nativeDiscImageFile);
+		s_nativeDiscImageFile = NULL;
+		return 0;
+	}
 
+	s_nativeDiscImageContentIdentityValid = 1;
 	s_nativeDiscImageAvailable = 1;
+	return 1;
+}
+
+int NativeDiscImage_GetContentIdentity(uint8_t content[NATIVE_IDENTITY_DIGEST_BYTES])
+{
+	if ((content == NULL) || (s_nativeDiscImageContentIdentityValid == 0))
+	{
+		return 0;
+	}
+
+	memcpy(content, s_nativeDiscImageContentIdentity, sizeof(s_nativeDiscImageContentIdentity));
 	return 1;
 }
 

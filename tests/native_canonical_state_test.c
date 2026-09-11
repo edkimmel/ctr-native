@@ -35,7 +35,7 @@ static void MakeGoldenState(struct NativeCanonicalStateV1 *state)
 	state->rng.advRng1 = UINT32_C(0x01020304);
 	state->rng.psxRngSeed = UINT32_C(0x89abcdef);
 
-	for (uint32_t i = 0; i < NATIVE_CANONICAL_IDENTITY_BYTES; i++)
+	for (uint32_t i = 0; i < NATIVE_IDENTITY_DIGEST_BYTES; i++)
 	{
 		state->identity.build[i] = (uint8_t)i;
 		state->identity.content[i] = (uint8_t)(0x80u + i);
@@ -63,8 +63,8 @@ static int StatesEqual(const struct NativeCanonicalStateV1 *left, const struct N
 {
 	if ((left->schemaVersion != right->schemaVersion) || (left->replayFormatVersion != right->replayFormatVersion) ||
 	    (left->domainCount != right->domainCount) || (left->frameNumber != right->frameNumber) ||
-	    (memcmp(left->identity.build, right->identity.build, NATIVE_CANONICAL_IDENTITY_BYTES) != 0) ||
-	    (memcmp(left->identity.content, right->identity.content, NATIVE_CANONICAL_IDENTITY_BYTES) != 0) ||
+	    (memcmp(left->identity.build, right->identity.build, NATIVE_IDENTITY_DIGEST_BYTES) != 0) ||
+	    (memcmp(left->identity.content, right->identity.content, NATIVE_IDENTITY_DIGEST_BYTES) != 0) ||
 	    (memcmp(&left->control, &right->control, sizeof(left->control)) != 0) || (memcmp(&left->rng, &right->rng, sizeof(left->rng)) != 0) ||
 	    (left->input.padCount != right->input.padCount) || (memcmp(left->input.pads, right->input.pads, sizeof(left->input.pads)) != 0) ||
 	    (memcmp(left->domainDigests, right->domainDigests, sizeof(left->domainDigests)) != 0) ||
@@ -247,7 +247,7 @@ static int TestIdentityGates(void)
 	uint8_t bytes[292];
 	struct NativeCanonicalStateV1 state;
 	struct NativeCanonicalStateV1 output;
-	struct NativeCanonicalIdentityV1 expectedIdentity;
+	struct NativeIdentityV1 expectedIdentity;
 	struct NativeCodecReader reader;
 
 	CHECK(EncodeGolden(bytes, &state));
@@ -261,7 +261,7 @@ static int TestIdentityGates(void)
 	CHECK(StatesEqual(&output, &state));
 
 	expectedIdentity = state.identity;
-	expectedIdentity.content[NATIVE_CANONICAL_IDENTITY_BYTES - 1u] ^= 1;
+	expectedIdentity.content[NATIVE_IDENTITY_DIGEST_BYTES - 1u] ^= 1;
 	output = state;
 	NativeCodecReader_Init(&reader, bytes, sizeof(bytes));
 	CHECK(!NativeCanonicalStateV1_Decode(&reader, &expectedIdentity, &output));

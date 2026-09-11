@@ -196,10 +196,10 @@ static int NativeCanonicalStateV1_DigestsMatch(const struct NativeCanonicalState
 	       (state->combinedDigest == expected.combinedDigest);
 }
 
-static int NativeCanonicalIdentityV1_Equals(const struct NativeCanonicalIdentityV1 *left, const struct NativeCanonicalIdentityV1 *right)
+static int NativeCanonicalIdentityV1_Equals(const struct NativeIdentityV1 *left, const struct NativeIdentityV1 *right)
 {
-	return (memcmp(left->build, right->build, NATIVE_CANONICAL_IDENTITY_BYTES) == 0) &&
-	       (memcmp(left->content, right->content, NATIVE_CANONICAL_IDENTITY_BYTES) == 0);
+	return (memcmp(left->build, right->build, NATIVE_IDENTITY_DIGEST_BYTES) == 0) &&
+	       (memcmp(left->content, right->content, NATIVE_IDENTITY_DIGEST_BYTES) == 0);
 }
 
 void NativeCanonicalStateV1_Init(struct NativeCanonicalStateV1 *state)
@@ -299,7 +299,7 @@ int NativeCanonicalStateV1_Encode(struct NativeCodecWriter *writer, const struct
 	return 1;
 }
 
-int NativeCanonicalStateV1_Decode(struct NativeCodecReader *reader, const struct NativeCanonicalIdentityV1 *expectedIdentity,
+int NativeCanonicalStateV1_Decode(struct NativeCodecReader *reader, const struct NativeIdentityV1 *expectedIdentity,
                                   struct NativeCanonicalStateV1 *state)
 {
 	struct NativeCanonicalStateV1 decoded;

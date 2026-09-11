@@ -45,6 +45,65 @@ else()
     set(CTR_NATIVE_BUILD_ID "${CTR_NATIVE_GIT_HASH}-dirty")
 endif()
 
+# The build identity is intentionally a normalized, domain-separated manifest.
+# It must never inherit host paths, timestamps, usernames, or machine state.
+set(CTR_NATIVE_IDENTITY_PROFILE "win32-arcade" CACHE STRING "Declared deterministic arcade build profile")
+set(CTR_NATIVE_IDENTITY_TOOLCHAIN "msvc-v143-win32" CACHE STRING "Declared deterministic arcade toolchain")
+execute_process(
+    COMMAND git rev-parse HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE CTR_NATIVE_IDENTITY_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+execute_process(
+    COMMAND git rev-parse HEAD^{tree}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE CTR_NATIVE_IDENTITY_GIT_TREE
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+execute_process(
+    COMMAND git diff --quiet --exit-code
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    RESULT_VARIABLE CTR_NATIVE_IDENTITY_WORKTREE_DIRTY
+    ERROR_QUIET
+)
+execute_process(
+    COMMAND git diff --cached --quiet --exit-code
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    RESULT_VARIABLE CTR_NATIVE_IDENTITY_INDEX_DIRTY
+    ERROR_QUIET
+)
+string(LENGTH "${CTR_NATIVE_IDENTITY_GIT_COMMIT}" CTR_NATIVE_IDENTITY_GIT_COMMIT_LENGTH)
+string(LENGTH "${CTR_NATIVE_IDENTITY_GIT_TREE}" CTR_NATIVE_IDENTITY_GIT_TREE_LENGTH)
+if(CTR_NATIVE_IDENTITY_GIT_COMMIT_LENGTH EQUAL 40 AND
+   CTR_NATIVE_IDENTITY_GIT_TREE_LENGTH EQUAL 40 AND
+   CTR_NATIVE_IDENTITY_GIT_COMMIT MATCHES "^[0-9a-f]+$" AND
+   CTR_NATIVE_IDENTITY_GIT_TREE MATCHES "^[0-9a-f]+$" AND
+   CTR_NATIVE_IDENTITY_PROFILE MATCHES "^[A-Za-z0-9._-]+$" AND
+   CTR_NATIVE_IDENTITY_TOOLCHAIN MATCHES "^[A-Za-z0-9._-]+$" AND
+   CTR_NATIVE_IDENTITY_WORKTREE_DIRTY EQUAL 0 AND CTR_NATIVE_IDENTITY_INDEX_DIRTY EQUAL 0)
+    string(CONCAT CTR_NATIVE_IDENTITY_BUILD_MANIFEST
+        "ctr-native-build-identity-v1\n"
+        "git-commit=${CTR_NATIVE_IDENTITY_GIT_COMMIT}\n"
+        "git-tree=${CTR_NATIVE_IDENTITY_GIT_TREE}\n"
+        "target=win32\n"
+        "profile=${CTR_NATIVE_IDENTITY_PROFILE}\n"
+        "toolchain=${CTR_NATIVE_IDENTITY_TOOLCHAIN}\n"
+    )
+    string(SHA256 CTR_NATIVE_BUILD_IDENTITY_HEX "${CTR_NATIVE_IDENTITY_BUILD_MANIFEST}")
+    set(CTR_NATIVE_BUILD_IDENTITY_KNOWN 1)
+else()
+    # Deterministic modes must reject a dirty, incomplete, or undeclared build.
+    set(CTR_NATIVE_BUILD_IDENTITY_HEX "")
+    set(CTR_NATIVE_BUILD_IDENTITY_KNOWN 0)
+endif()
+set(CTR_NATIVE_IDENTITY_COMPILE_DEFINITIONS
+    CTR_NATIVE_BUILD_IDENTITY_KNOWN=${CTR_NATIVE_BUILD_IDENTITY_KNOWN}
+    CTR_NATIVE_BUILD_IDENTITY_HEX=\"${CTR_NATIVE_BUILD_IDENTITY_HEX}\"
+)
+
 function(ctr_native_add_label_warning_if_supported target warning flag_check)
     set(saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
     if(CMAKE_C_COMPILER_ID MATCHES "Clang")
@@ -67,6 +126,22 @@ set_target_properties(ctr_native_canonical_codec PROPERTIES
     C_EXTENSIONS OFF
 )
 target_include_directories(ctr_native_canonical_codec PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
+add_library(ctr_native_identity STATIC
+    platform/native_sha256.c
+    platform/native_disc_image.c
+    platform/native_identity.c
+)
+set_target_properties(ctr_native_identity PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_identity PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(ctr_native_identity PRIVATE
+    CTR_NATIVE
+    ${CTR_NATIVE_IDENTITY_COMPILE_DEFINITIONS}
+)
 
 add_library(ctr_native_canonical_state STATIC platform/native_canonical_state.c)
 set_target_properties(ctr_native_canonical_state PROPERTIES
@@ -114,6 +189,7 @@ target_compile_definitions(ctr_native PRIVATE
     CTR_INTERNAL
     CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\"
     CTR_NATIVE_BUILD_ID=\"${CTR_NATIVE_BUILD_ID}\"
+    ${CTR_NATIVE_IDENTITY_COMPILE_DEFINITIONS}
 )
 if(CTR_NATIVE_MSVC_FRONTEND)
     target_compile_options(ctr_native PRIVATE
@@ -157,6 +233,15 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
 
+    add_executable(native_sha256_test tests/native_sha256_test.c)
+    set_target_properties(native_sha256_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_sha256_test PRIVATE ctr_native_identity)
+    add_test(NAME native_sha256_unit COMMAND $<TARGET_FILE:native_sha256_test>)
+
     add_executable(native_canonical_codec_test tests/native_canonical_codec_test.c)
     set_target_properties(native_canonical_codec_test PROPERTIES
         C_STANDARD 17
@@ -174,6 +259,26 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_canonical_state_test PRIVATE ctr_native_canonical_state)
     add_test(NAME native_canonical_state_unit COMMAND $<TARGET_FILE:native_canonical_state_test>)
+
+    add_executable(native_identity_test
+        tests/native_identity_test.c
+        platform/native_sha256.c
+        platform/native_disc_image.c
+        platform/native_identity.c
+    )
+    set_target_properties(native_identity_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_include_directories(native_identity_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_definitions(native_identity_test PRIVATE
+        CTR_NATIVE
+        CTR_NATIVE_BUILD_IDENTITY_KNOWN=1
+        CTR_NATIVE_BUILD_IDENTITY_HEX=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"
+    )
+    target_link_libraries(native_identity_test PRIVATE ctr_native_canonical_state)
+    add_test(NAME native_identity_unit COMMAND $<TARGET_FILE:native_identity_test>)
 
     add_test(NAME ctr_native_version COMMAND $<TARGET_FILE:ctr_native> --version)
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Native ")
