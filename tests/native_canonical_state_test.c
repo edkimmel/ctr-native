@@ -63,7 +63,8 @@ static int StatesEqual(const struct NativeCanonicalStateV1 *left, const struct N
 {
 	if ((left->schemaVersion != right->schemaVersion) || (left->replayFormatVersion != right->replayFormatVersion) ||
 	    (left->domainCount != right->domainCount) || (left->frameNumber != right->frameNumber) ||
-	    (memcmp(&left->identity, &right->identity, sizeof(left->identity)) != 0) ||
+	    (memcmp(left->identity.build, right->identity.build, NATIVE_CANONICAL_IDENTITY_BYTES) != 0) ||
+	    (memcmp(left->identity.content, right->identity.content, NATIVE_CANONICAL_IDENTITY_BYTES) != 0) ||
 	    (memcmp(&left->control, &right->control, sizeof(left->control)) != 0) || (memcmp(&left->rng, &right->rng, sizeof(left->rng)) != 0) ||
 	    (left->input.padCount != right->input.padCount) || (memcmp(left->input.pads, right->input.pads, sizeof(left->input.pads)) != 0) ||
 	    (memcmp(left->domainDigests, right->domainDigests, sizeof(left->domainDigests)) != 0) ||
