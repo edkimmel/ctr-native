@@ -111,7 +111,7 @@ u32 main(void)
 	struct NativeCanonicalInputV1 canonicalInput;
 	s32 canonicalInputFrozen;
 	s32 canonicalRequired;
-	u32 canonicalReplayFrame;
+	u32 canonicalReplayFrame = 0;
 #endif
 
 	// NOTE(aalhendi): Retail main calls __main before the state loop. Native has
