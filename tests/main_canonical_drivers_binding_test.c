@@ -27,6 +27,7 @@ static void SourceFixtureInit(struct SourceFixture *f)
 {
 	struct sData *sd=&sdata_static;
 	memset(f,0,sizeof(*f));memset(sd,0,sizeof(*sd));f->tracker.numLaps=3;
+	sd->gGT=&f->tracker;
 	SourceDriver(f,0,0);SourceDriver(f,2,1);SourceDriver(f,5,1);
 	f->tracker.driversInRaceOrder[0]=&f->drivers[0];f->tracker.driversInRaceOrder[1]=&f->drivers[2];f->tracker.driversInRaceOrder[2]=&f->drivers[5];
 	f->tracker.numWinners=2;f->tracker.winnerIndex[0]=5;f->tracker.winnerIndex[1]=0;f->tracker.humanPlayerPositions[0]=7;
@@ -34,12 +35,28 @@ static void SourceFixtureInit(struct SourceFixture *f)
 	sd->navBotList[0].first=&f->drivers[2].botData.item;sd->navBotList[0].last=&f->drivers[2].botData.item;sd->navBotList[0].count=1;
 	sd->navBotList[2].first=&f->drivers[5].botData.item;sd->navBotList[2].last=&f->drivers[5].botData.item;sd->navBotList[2].count=1;
 }
+static void SourceNavTwo(struct SourceFixture *f)
+{
+	struct sData *sd=&sdata_static;
+	f->drivers[5].botData.botPath=0;f->drivers[2].botData.item.next=&f->drivers[5].botData.item;f->drivers[5].botData.item.prev=&f->drivers[2].botData.item;
+	memset(&sd->navBotList[2],0,sizeof(sd->navBotList[2]));
+	sd->navBotList[0].first=&f->drivers[2].botData.item;sd->navBotList[0].last=&f->drivers[5].botData.item;sd->navBotList[0].count=2;
+}
 static int SourcePreludeTest(void)
 {
-	struct SourceFixture f;struct NativeCanonicalDriversRosterCandidate out,before;struct sData *sd=&sdata_static;
+	struct SourceFixture f,other;struct NativeCanonicalDriversRosterCandidate out,before;struct sData *sd=&sdata_static;struct Item foreign={0};
 	SourceFixtureInit(&f);if(!MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&out))return 0;
 	if(out.prelude.numLaps!=3||out.prelude.presenceMask!=0x25||out.prelude.raceOrderCount!=3||out.prelude.winnerSlots[0]!=5||out.prelude.humanPlayerPositions[0]!=7||out.prelude.navListCount[0]!=1||out.prelude.navListOrder[2][0]!=5)return 0;
+	/* Human ranks are compacted by stable slot, never race-order position. */
+	SourceFixtureInit(&f);SourceDriver(&f,3,0);f.tracker.humanPlayerPositions[0]=6;f.tracker.humanPlayerPositions[3]=1;f.tracker.driversInRaceOrder[3]=&f.drivers[3];
+	if(!MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&out)||out.prelude.playerCount!=2||out.prelude.humanPlayerPositions[0]!=6||out.prelude.humanPlayerPositions[1]!=1)return 0;
+	SourceFixtureInit(&f);if(!MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&out))return 0;
 	#define FAIL_SOURCE(change) do { before=out; change; if(MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&out)||memcmp(&out,&before,sizeof(out))!=0)return 0; SourceFixtureInit(&f); } while(0)
+	before=out; if(MainCanonicalDrivers_ExtractRosterPrelude(NULL,sd,&out)||memcmp(&out,&before,sizeof(out))!=0)return 0;
+	before=out; if(MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,NULL,&out)||memcmp(&out,&before,sizeof(out))!=0)return 0;
+	SourceFixtureInit(&other);before=out;if(MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&out)||memcmp(&out,&before,sizeof(out))!=0)return 0;SourceFixtureInit(&f);
+	FAIL_SOURCE(sd->gGT=NULL);
+	FAIL_SOURCE(sd->gGT=&other.tracker);
 	FAIL_SOURCE(f.tracker.drivers[1]=f.tracker.drivers[0]);
 	FAIL_SOURCE(f.drivers[2].driverID=1);
 	FAIL_SOURCE(((struct Instance *)f.instanceBytes[2])->thread=NULL);
@@ -54,13 +71,27 @@ static int SourcePreludeTest(void)
 	FAIL_SOURCE(f.tracker.numWinners=5);
 	FAIL_SOURCE(f.tracker.winnerIndex[0]=1);
 	FAIL_SOURCE(f.tracker.humanPlayerPositions[0]=8);
+	FAIL_SOURCE(sd->navBotList[0].count=-1);
+	FAIL_SOURCE(sd->navBotList[0].count=9);
+	FAIL_SOURCE(sd->navBotList[1].first=&f.drivers[2].botData.item);
+	FAIL_SOURCE(sd->navBotList[1].last=&f.drivers[2].botData.item);
+	FAIL_SOURCE(f.drivers[2].botData.item.prev=&f.drivers[5].botData.item);
 	FAIL_SOURCE(sd->navBotList[0].last=NULL);
 	FAIL_SOURCE(sd->navBotList[0].count=2);
 	FAIL_SOURCE(sd->navBotList[0].first=&f.drivers[0].botData.item);
+	FAIL_SOURCE(sd->navBotList[0].first=&foreign;sd->navBotList[0].last=&foreign);
 	FAIL_SOURCE(f.drivers[2].botData.botPath=1);
 	FAIL_SOURCE(sd->navBotList[2].first=&f.drivers[2].botData.item;sd->navBotList[2].last=&f.drivers[2].botData.item);
 	FAIL_SOURCE(f.drivers[2].botData.item.next=&f.drivers[2].botData.item;sd->navBotList[0].last=&f.drivers[2].botData.item);
 	FAIL_SOURCE(sd->navBotList[0].count=0;sd->navBotList[0].first=NULL;sd->navBotList[0].last=NULL);
+	/* Re-establish a valid two-node list, then independently corrupt its links. */
+	SourceFixtureInit(&f);SourceNavTwo(&f);if(!MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&out))return 0;
+	#define FAIL_TWO(change) do { before=out; change; if(MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&out)||memcmp(&out,&before,sizeof(out))!=0)return 0; SourceFixtureInit(&f);SourceNavTwo(&f); } while(0)
+	FAIL_TWO(f.drivers[5].botData.item.prev=NULL);
+	FAIL_TWO(sd->navBotList[0].last=&f.drivers[2].botData.item);
+	FAIL_TWO(sd->navBotList[0].count=1;sd->navBotList[0].last=&f.drivers[2].botData.item);
+	FAIL_TWO(f.drivers[5].botData.item.next=&f.drivers[2].botData.item);
+	#undef FAIL_TWO
 	#undef FAIL_SOURCE
 	return 1;
 }

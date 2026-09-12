@@ -111,7 +111,7 @@ int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,cons
 	DriverFunc tables[8][13]={{0}};
 	void(*threads[8])(struct Thread *)={0};
 	const struct Driver *drivers[8];
-	if(!gGT||!sourceData||!out||gGT->numLaps<0)return 0;
+	if(!gGT||!sourceData||!out||sourceData->gGT!=gGT||gGT->numLaps<0)return 0;
 	memset(&input,0,sizeof(input));
 	memset(input.raceOrder,0xff,sizeof(input.raceOrder));
 	memset(input.winnerDriverIDs,0xff,sizeof(input.winnerDriverIDs));
