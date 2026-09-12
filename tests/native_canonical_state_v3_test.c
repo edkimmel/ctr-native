@@ -12,7 +12,7 @@ static void Fill(struct NativeCanonicalStateV3 *state)
 	for (uint32_t i=0;i<NATIVE_IDENTITY_DIGEST_BYTES;i++){state->identity.build[i]=(uint8_t)i;state->identity.content[i]=(uint8_t)(0x80u+i);}
 	state->frameNumber=9;state->control.frameCounter=-7;state->rng.advRng1=0x12345678;state->input.pads[0].connected=1;
 	stream[NATIVE_CANONICAL_DRIVERS_ROSTER_BYTES]=1;
-	(void)NativeCanonicalDriversV1_FromNormativeStream(&state->drivers,1,stream);
+	(void)NativeCanonicalDriversV1_FromNormativeStream(&state->drivers,1,stream,sizeof(stream));
 	(void)NativeCanonicalStateV3_ComputeDigests(state);
 }
 

@@ -27,6 +27,13 @@ static void NativeCanonicalDrivers_Absent(struct NativeCanonicalDriversSlotSumma
 	                                                        NATIVE_CANONICAL_DRIVERS_BEHAVIOR_BOT_BYTES);
 }
 
+static int NativeCanonicalDrivers_SlotEqual(const struct NativeCanonicalDriversSlotSummary *left,
+                                            const struct NativeCanonicalDriversSlotSummary *right)
+{
+	return (left->slotDigest == right->slotDigest) && (left->metaRaceDigest == right->metaRaceDigest) &&
+	       (left->physicsDynamicsDigest == right->physicsDynamicsDigest) && (left->behaviorBotDigest == right->behaviorBotDigest);
+}
+
 void NativeCanonicalDriversV1_Init(struct NativeCanonicalDriversV1 *drivers)
 {
 	if (drivers == NULL) return;
@@ -38,10 +45,11 @@ void NativeCanonicalDriversV1_Init(struct NativeCanonicalDriversV1 *drivers)
 }
 
 int NativeCanonicalDriversV1_FromNormativeStream(struct NativeCanonicalDriversV1 *drivers, uint32_t presenceMask,
-                                                 const uint8_t stream[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES])
+                                                 const uint8_t *stream, size_t streamSize)
 {
 	struct NativeCanonicalDriversV1 candidate;
-	if ((drivers == NULL) || (stream == NULL) || ((presenceMask & ~UINT32_C(0xff)) != 0)) return 0;
+	if ((drivers == NULL) || (stream == NULL) || (streamSize != NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES) ||
+	    ((presenceMask & ~UINT32_C(0xff)) != 0)) return 0;
 	NativeCanonicalDriversV1_Init(&candidate);
 	candidate.presenceMask = presenceMask;
 	candidate.rosterMetaDigest = NativeCanonicalDrivers_Digest(stream, NATIVE_CANONICAL_DRIVERS_ROSTER_BYTES);
@@ -51,12 +59,7 @@ int NativeCanonicalDriversV1_FromNormativeStream(struct NativeCanonicalDriversV1
 		const uint8_t *slot = stream + NATIVE_CANONICAL_DRIVERS_ROSTER_BYTES + i * NATIVE_CANONICAL_DRIVERS_SLOT_STREAM_BYTES;
 		if ((presenceMask & (UINT32_C(1) << i)) == 0)
 		{
-			struct NativeCanonicalDriversSlotSummary absent;
-			NativeCanonicalDrivers_Absent(&absent);
-			if (memcmp(slot, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16) != 0 ||
-			    memcmp(&candidate.slots[i], &absent, sizeof(absent)) != 0) return 0;
-			for (uint32_t j = 16; j < NATIVE_CANONICAL_DRIVERS_SLOT_STREAM_BYTES; j++) if (slot[j] != 0) return 0;
-			candidate.slots[i] = absent;
+			for (uint32_t j = 0; j < NATIVE_CANONICAL_DRIVERS_SLOT_STREAM_BYTES; j++) if (slot[j] != 0) return 0;
 		}
 		else
 		{
@@ -81,7 +84,7 @@ int NativeCanonicalDriversV1_Validate(const struct NativeCanonicalDriversV1 *dri
 	    ((drivers->presenceMask & ~UINT32_C(0xff)) != 0)) return 0;
 	NativeCanonicalDrivers_Absent(&absent);
 	for (uint32_t i = 0; i < NATIVE_CANONICAL_DRIVERS_SLOT_COUNT; i++)
-		if (((drivers->presenceMask & (UINT32_C(1) << i)) == 0) && (memcmp(&drivers->slots[i], &absent, sizeof(absent)) != 0)) return 0;
+		if (((drivers->presenceMask & (UINT32_C(1) << i)) == 0) && !NativeCanonicalDrivers_SlotEqual(&drivers->slots[i], &absent)) return 0;
 	return 1;
 }
 

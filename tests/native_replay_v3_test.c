@@ -9,7 +9,7 @@ static int Fill(struct NativeReplayV3Header *h,struct NativeReplayV3Frame *f)
 {
 	uint8_t stream[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES]={0};
 	NativeReplayV3Header_Init(h);h->flags=NATIVE_REPLAY_V3_HEADER_FLAG_FINALIZED;h->frameCount=1;
-	for(uint32_t i=0;i<NATIVE_IDENTITY_DIGEST_BYTES;i++){h->identity.build[i]=(uint8_t)i;h->identity.content[i]=(uint8_t)(0x80u+i);}memset(f,0,sizeof(*f));f->replayFrame=4;f->begin.frameCounter=-2;f->end.elapsedTimeMS=32;f->padCount=4;f->pads[0].connected=1;f->vsyncPacketCount=1;f->vsyncPackets[0]=2;f->vsyncTotal=2;NativeCanonicalStateV3_Init(&f->canonical);f->canonical.identity=h->identity;f->canonical.frameNumber=4;f->canonical.control.frameCounter=-2;stream[64]=1;if(!NativeCanonicalDriversV1_FromNormativeStream(&f->canonical.drivers,1,stream))return 0;return NativeCanonicalStateV3_ComputeDigests(&f->canonical);
+	for(uint32_t i=0;i<NATIVE_IDENTITY_DIGEST_BYTES;i++){h->identity.build[i]=(uint8_t)i;h->identity.content[i]=(uint8_t)(0x80u+i);}memset(f,0,sizeof(*f));f->replayFrame=4;f->begin.frameCounter=-2;f->end.elapsedTimeMS=32;f->padCount=4;f->pads[0].connected=1;f->vsyncPacketCount=1;f->vsyncPackets[0]=2;f->vsyncTotal=2;NativeCanonicalStateV3_Init(&f->canonical);f->canonical.identity=h->identity;f->canonical.frameNumber=4;f->canonical.control.frameCounter=-2;stream[64]=1;if(!NativeCanonicalDriversV1_FromNormativeStream(&f->canonical.drivers,1,stream,sizeof(stream)))return 0;return NativeCanonicalStateV3_ComputeDigests(&f->canonical);
 }
 int main(void)
 {

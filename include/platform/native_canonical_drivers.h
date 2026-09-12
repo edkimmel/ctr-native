@@ -53,7 +53,7 @@ void NativeCanonicalDriversV1_Init(struct NativeCanonicalDriversV1 *drivers);
 /* Derives every summary value from a 64 + eight*520 normative byte stream.
  * Absent slots must contain the canonical all-zero 520-byte slot stream. */
 int NativeCanonicalDriversV1_FromNormativeStream(struct NativeCanonicalDriversV1 *drivers, uint32_t presenceMask,
-                                                 const uint8_t stream[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES]);
+                                                 const uint8_t *stream, size_t streamSize);
 int NativeCanonicalDriversV1_Validate(const struct NativeCanonicalDriversV1 *drivers);
 size_t NativeCanonicalDriversV1_EncodedSize(void);
 int NativeCanonicalDriversV1_Encode(struct NativeCodecWriter *writer, const struct NativeCanonicalDriversV1 *drivers);
