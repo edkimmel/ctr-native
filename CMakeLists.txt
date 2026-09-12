@@ -99,6 +99,15 @@ set_target_properties(ctr_native_canonical_state PROPERTIES
 target_include_directories(ctr_native_canonical_state PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_state PUBLIC ctr_native_canonical_codec)
 
+add_library(ctr_native_canonical_drivers STATIC platform/native_canonical_drivers.c)
+set_target_properties(ctr_native_canonical_drivers PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_canonical_drivers PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_canonical_drivers PUBLIC ctr_native_canonical_codec)
+
 # The game-owned source is also unity-included by the executable.  This small
 # standalone target makes its explicit value projection directly testable.
 add_library(ctr_native_canonical_projector STATIC game/MAIN/MainCanonicalState.c)
@@ -279,6 +288,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_canonical_state_test PRIVATE ctr_native_canonical_state)
     add_test(NAME native_canonical_state_unit COMMAND $<TARGET_FILE:native_canonical_state_test>)
+
+    add_executable(native_canonical_drivers_test tests/native_canonical_drivers_test.c)
+    set_target_properties(native_canonical_drivers_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_canonical_drivers_test PRIVATE ctr_native_canonical_drivers)
+    add_test(NAME native_canonical_drivers_unit COMMAND $<TARGET_FILE:native_canonical_drivers_test>)
 
     add_executable(native_canonical_projector_test tests/native_canonical_projector_test.c)
     set_target_properties(native_canonical_projector_test PROPERTIES
