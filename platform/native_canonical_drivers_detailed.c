@@ -201,12 +201,18 @@ int NativeCanonicalDriversDetailedV1_Encode(struct NativeCodecWriter *writer, co
 	for(uint32_t i=0;i<8;i++)if(!WriteSlot(&encoded,&value->slots[i]))return 0;
 	*writer=encoded;return 1;
 }
-int NativeCanonicalDriversDetailedV1_BuildSummary(const struct NativeCanonicalDriversDetailedV1 *value, struct NativeCanonicalDriversV1 *summary)
+int NativeCanonicalDriversDetailedV1_BuildSummaryWithScratch(const struct NativeCanonicalDriversDetailedV1 *value,
+	uint8_t *bytes,size_t bytesSize,struct NativeCanonicalDriversV1 *summary)
 {
-	uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];struct NativeCodecWriter writer;struct NativeCanonicalDriversV1 candidate;
-	if(summary==NULL||!NativeCanonicalDriversDetailedV1_Validate(value))return 0;
-	NativeCodecWriter_Init(&writer,bytes,sizeof(bytes),NULL);
-	if(!NativeCanonicalDriversDetailedV1_Encode(&writer,value)||!NativeCanonicalDriversV1_FromNormativeStream(&candidate,value->prelude.presenceMask,bytes,sizeof(bytes))||
+	struct NativeCodecWriter writer;struct NativeCanonicalDriversV1 candidate;
+	if(summary==NULL||bytes==NULL||bytesSize!=NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES||!NativeCanonicalDriversDetailedV1_Validate(value))return 0;
+	NativeCodecWriter_Init(&writer,bytes,bytesSize,NULL);
+	if(!NativeCanonicalDriversDetailedV1_Encode(&writer,value)||!NativeCanonicalDriversV1_FromNormativeStream(&candidate,value->prelude.presenceMask,bytes,bytesSize)||
 		candidate.version!=value->prelude.detailedVersion)return 0;
 	*summary=candidate;return 1;
+}
+int NativeCanonicalDriversDetailedV1_BuildSummary(const struct NativeCanonicalDriversDetailedV1 *value, struct NativeCanonicalDriversV1 *summary)
+{
+	uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
+	return NativeCanonicalDriversDetailedV1_BuildSummaryWithScratch(value,bytes,sizeof(bytes),summary);
 }

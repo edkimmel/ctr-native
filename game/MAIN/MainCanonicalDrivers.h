@@ -154,6 +154,12 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMetaPhysics(
 int MainCanonicalDrivers_AssembleDetailed(
 	const struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *candidate,
 	struct MainCanonicalDriversDetailedAssembly *out);
+/* Workspace-oriented in-place variant: no 4KiB normative stream or assembly
+ * is placed on the caller stack.  The caller must treat `out` as staging
+ * until this returns success. */
+int MainCanonicalDrivers_AssembleDetailedWithScratch(
+	const struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *candidate,
+	uint8_t *scratch,size_t scratchSize,struct MainCanonicalDriversDetailedAssembly *out);
 int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,
 	struct MainCanonicalDriversMetaFlags *out);

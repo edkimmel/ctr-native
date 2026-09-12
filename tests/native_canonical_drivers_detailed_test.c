@@ -30,7 +30,7 @@ static int Encode(const struct NativeCanonicalDriversDetailedV1 *value,uint8_t b
 }
 static int TestGoldenAndSummary(void)
 {
-	struct NativeCanonicalDriversDetailedV1 value; struct NativeCanonicalDriversV1 summary,fromStream; uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
+	struct NativeCanonicalDriversDetailedV1 value; struct NativeCanonicalDriversV1 summary,fromStream,before; uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES],scratch[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
 	ValidHuman(&value); CHECK(NativeCanonicalDriversDetailedV1_Validate(&value)); CHECK(NativeCanonicalDriversDetailedV1_EncodedSize()==4224);
 	CHECK(Encode(&value,bytes));
 	/* Independent exact LE layout checks: prelude, META, RACE, PHYSICS, DYNAMICS. */
@@ -41,6 +41,8 @@ static int TestGoldenAndSummary(void)
 	CHECK(bytes[64+100+148+2*NATIVE_CANONICAL_DRIVER_DYN_SPEED]==9&&bytes[64+100+148+2*NATIVE_CANONICAL_DRIVER_DYN_SPEED+1]==0);
 	CHECK(NativeCanonicalDriversDetailedV1_BuildSummary(&value,&summary));
 	CHECK(NativeCanonicalDriversV1_FromNormativeStream(&fromStream,1,bytes,sizeof(bytes))&&EqualSummary(&summary,&fromStream));
+	CHECK(NativeCanonicalDriversDetailedV1_BuildSummaryWithScratch(&value,scratch,sizeof(scratch),&fromStream)&&EqualSummary(&summary,&fromStream));
+	before=fromStream;CHECK(!NativeCanonicalDriversDetailedV1_BuildSummaryWithScratch(&value,scratch,sizeof(scratch)-1u,&fromStream)&&EqualSummary(&fromStream,&before));
 	CHECK(summary.version==NATIVE_CANONICAL_DRIVERS_VERSION&&summary.rosterMetaDigest==UINT64_C(0xdd0ffa2ea7a59e77));
 	CHECK(summary.slots[0].metaRaceDigest==UINT64_C(0x83b20f1aaa2437e4));
 	CHECK(summary.slots[0].physicsDynamicsDigest==UINT64_C(0x1b1387d3a5422bea));

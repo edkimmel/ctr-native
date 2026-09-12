@@ -183,6 +183,14 @@ target_include_directories(ctr_native_canonical_projector PUBLIC ${CMAKE_SOURCE_
 target_compile_definitions(ctr_native_canonical_projector PUBLIC CTR_NATIVE)
 target_link_libraries(ctr_native_canonical_projector PUBLIC ctr_native_canonical_state ctr_native_canonical_state_v3)
 
+# Dormant, static game-owned V3 coordinator.  It is compiled for link
+# coverage but no live game path calls it in this slice.
+add_library(ctr_native_canonical_runtime STATIC game/MAIN/MainCanonicalRuntime.c)
+set_target_properties(ctr_native_canonical_runtime PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_canonical_runtime PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_compile_definitions(ctr_native_canonical_runtime PUBLIC CTR_NATIVE CTR_INTERNAL)
+target_link_libraries(ctr_native_canonical_runtime PUBLIC ctr_native_canonical_projector ctr_native_canonical_drivers_roster ctr_native_canonical_topology ctr_native_replay_scheduler_seam)
+
 add_library(ctr_native_replay_scheduler_seam STATIC platform/native_replay_scheduler_seam.c)
 set_target_properties(ctr_native_replay_scheduler_seam PROPERTIES
     C_STANDARD 17
@@ -297,7 +305,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_canonical_projector ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -396,8 +404,8 @@ if(BUILD_TESTING)
     add_executable(main_canonical_drivers_binding_test tests/main_canonical_drivers_binding_test.c)
     set_target_properties(main_canonical_drivers_binding_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_include_directories(main_canonical_drivers_binding_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
-    target_compile_definitions(main_canonical_drivers_binding_test PRIVATE CTR_NATIVE)
-    target_link_libraries(main_canonical_drivers_binding_test PRIVATE ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array)
+    target_compile_definitions(main_canonical_drivers_binding_test PRIVATE CTR_NATIVE CTR_INTERNAL)
+    target_link_libraries(main_canonical_drivers_binding_test PRIVATE ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_state_v3 ctr_native_replay_scheduler_seam)
     add_test(NAME main_canonical_drivers_binding_unit COMMAND $<TARGET_FILE:main_canonical_drivers_binding_test>)
 
     add_executable(native_canonical_driver_behavior_test tests/native_canonical_driver_behavior_test.c)

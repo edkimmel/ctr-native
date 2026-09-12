@@ -200,7 +200,11 @@ void NativeCanonicalDriversDetailedV1_Init(struct NativeCanonicalDriversDetailed
 int NativeCanonicalDriversDetailedV1_Validate(const struct NativeCanonicalDriversDetailedV1 *value);
 size_t NativeCanonicalDriversDetailedV1_EncodedSize(void);
 int NativeCanonicalDriversDetailedV1_Encode(struct NativeCodecWriter *writer, const struct NativeCanonicalDriversDetailedV1 *value);
+/* In-place summary builder for game-owned static workspaces. `scratch` must
+ * be exactly the 4,224-byte normative stream and is never retained. */
+int NativeCanonicalDriversDetailedV1_BuildSummaryWithScratch(const struct NativeCanonicalDriversDetailedV1 *value,
+	uint8_t *scratch, size_t scratchSize, struct NativeCanonicalDriversV1 *summary);
 int NativeCanonicalDriversDetailedV1_BuildSummary(const struct NativeCanonicalDriversDetailedV1 *value,
-                                                   struct NativeCanonicalDriversV1 *summary);
+	struct NativeCanonicalDriversV1 *summary);
 
 #endif

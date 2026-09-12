@@ -118,6 +118,7 @@
 #include "MAIN/MainCanonicalDrivers.c"
 #include "MAIN/MainCanonicalTopology.c"
 #include "MAIN/MainCanonicalState.c"
+#include "MAIN/MainCanonicalRuntime.c"
 #include "MAIN/MainMain.c"
 #include "MAIN/MainDB.c"
 #include "MAIN/MainDrawCb.c"
