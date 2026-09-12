@@ -11,6 +11,15 @@ static int Zeros(const uint8_t *bytes, size_t count)
 static int ActiveTagValid(uint32_t tag) { return tag <= NATIVE_CANONICAL_DRIVER_ACTIVE_WARP; }
 static int KindValid(uint8_t kind) { return kind == NATIVE_CANONICAL_DRIVER_KIND_HUMAN || kind == NATIVE_CANONICAL_DRIVER_KIND_BOT; }
 
+int NativeCanonicalDriverPhysicsV1_Validate(const struct NativeCanonicalDriverPhysicsV1 *value)
+{
+	if(value==NULL || value->reserved0!=0 || value->terrainMeta1Index>20 || value->terrainMeta2Index>20 ||
+		(value->stepFlagSet&~UINT32_C(0x0000c0ff))!=0)return 0;
+	return (value->currQuadIndex==UINT32_MAX||value->currQuadIndex<(uint32_t)INT32_MAX) &&
+		(value->underDriverQuadIndex==UINT32_MAX||value->underDriverQuadIndex<(uint32_t)INT32_MAX) &&
+		(value->lastValidQuadIndex==UINT32_MAX||value->lastValidQuadIndex<(uint32_t)INT32_MAX);
+}
+
 static int WritePrelude(struct NativeCodecWriter *w, const struct NativeCanonicalDriversPreludeV1 *v)
 {
 	return NativeCodecWriter_WriteU32(w, v->slotCount) && NativeCodecWriter_WriteU32(w, v->presenceMask) &&
@@ -165,7 +174,7 @@ int NativeCanonicalDriversDetailedV1_Validate(const struct NativeCanonicalDriver
 		const struct NativeCanonicalDriverSlotV1 *s=&value->slots[i];
 		uint32_t allowedActiveTagMask;
 		if((p->presenceMask&(UINT32_C(1)<<i))==0) { if(!SlotIsAllZero(s))return 0; continue; }
-		if(s->meta.present!=1 || s->meta.slotIndex!=i || !KindValid(s->meta.driverKind) || s->meta.boolFirstFrameSinceRevEngine>1 || s->physics.reserved0!=0 || !PendingDamageValid(&s->pendingDamage,(uint8_t)i,p->presenceMask) ||
+		if(s->meta.present!=1 || s->meta.slotIndex!=i || !KindValid(s->meta.driverKind) || s->meta.boolFirstFrameSinceRevEngine>1 || !NativeCanonicalDriverPhysicsV1_Validate(&s->physics) || !PendingDamageValid(&s->pendingDamage,(uint8_t)i,p->presenceMask) ||
 			!ActiveTagValid(s->active.unionTag) || (s->active.unionTag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE&&!Zeros(s->active.branchBytes,sizeof(s->active.branchBytes))))return 0;
 		if((s->meta.externalPresenceFlags&~NATIVE_CANONICAL_DRIVER_EXTERNAL_KNOWN_MASK)!=0 ||
 			(s->meta.driverThreadSimFlags&~NATIVE_CANONICAL_DRIVER_THREAD_SIM_KNOWN_MASK)!=0)return 0;

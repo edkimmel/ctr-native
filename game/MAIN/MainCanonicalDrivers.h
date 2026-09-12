@@ -2,6 +2,7 @@
 #define MAIN_CANONICAL_DRIVERS_H
 #include "platform/native_canonical_driver_behavior.h"
 #include "platform/native_canonical_drivers_roster.h"
+#include "MainCanonicalTopology.h"
 #include "namespace_Vehicle.h"
 enum MainCanonicalDriversStatus { MAIN_CANONICAL_DRIVERS_FAILURE=0, MAIN_CANONICAL_DRIVERS_OK=1 };
 
@@ -63,6 +64,20 @@ struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate
 	struct NativeCanonicalDriverBotV1 bot[8];
 	struct NativeCanonicalDriverMetaV1 meta[8];
 };
+/* Local-only extension with the explicit 148-byte Physics group.  The
+ * topology lifetime context is an input guard only; this remains neither a
+ * detailed-stream publisher nor a scheduler payload. */
+struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate
+{
+	struct NativeCanonicalDriversRosterCandidate roster;
+	struct NativeCanonicalDriverRaceV1 race[8];
+	struct NativeCanonicalDriverDynamicsV1 dynamics[8];
+	struct NativeCanonicalDriverActiveV1 active[8];
+	struct NativeCanonicalDriverPendingDamageV1 pendingDamage[8];
+	struct NativeCanonicalDriverBotV1 bot[8];
+	struct NativeCanonicalDriverMetaV1 meta[8];
+	struct NativeCanonicalDriverPhysicsV1 physics[8];
+};
 
 /* Narrow dormant Meta foundation for one Driver whose large-stack root has
  * already passed the roster extractor's ownership gate.  This returns only
@@ -119,6 +134,14 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(const struct 
 int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(const struct GameTracker *gGT,
 	const struct sData *sdata,
 	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate *out);
+/* Every present root requires a current, explicitly supplied topology
+ * snapshot even if all three QuadBlock references are null.  Rootless menus
+ * remain topology-uninspected and yield exact-zero Physics slots. */
+int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMetaPhysics(
+	const struct GameTracker *gGT,const struct sData *sdata,
+	const struct MainCanonicalTopologyContext *topologyContext,
+	const struct MainCanonicalTopologySnapshot *topologySnapshot,
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *out);
 int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,
 	struct MainCanonicalDriversMetaFlags *out);

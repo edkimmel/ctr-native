@@ -192,6 +192,10 @@ struct NativeCanonicalDriverSlotV1
 };
 struct NativeCanonicalDriversDetailedV1 { struct NativeCanonicalDriversPreludeV1 prelude; struct NativeCanonicalDriverSlotV1 slots[8]; };
 
+/* Validates the portable 148-byte Physics group without consulting native
+ * pointers.  Quad references are either UINT32_MAX (null) or a nonnegative
+ * signed-32-bit index; the two terrain values are fixed data[] indices. */
+int NativeCanonicalDriverPhysicsV1_Validate(const struct NativeCanonicalDriverPhysicsV1 *value);
 void NativeCanonicalDriversDetailedV1_Init(struct NativeCanonicalDriversDetailedV1 *value);
 int NativeCanonicalDriversDetailedV1_Validate(const struct NativeCanonicalDriversDetailedV1 *value);
 size_t NativeCanonicalDriversDetailedV1_EncodedSize(void);

@@ -13,6 +13,8 @@ CTR_STATIC_ASSERT(NATIVE_CANONICAL_DRIVERS_DYNAMICS_BYTES == 116u);
 CTR_STATIC_ASSERT(sizeof(struct NativeCanonicalDriverDynamicsV1) == NATIVE_CANONICAL_DRIVERS_DYNAMICS_BYTES);
 CTR_STATIC_ASSERT(NATIVE_CANONICAL_DRIVERS_ACTIVE_BYTES == 24u);
 CTR_STATIC_ASSERT(sizeof(struct NativeCanonicalDriverActiveV1) == NATIVE_CANONICAL_DRIVERS_ACTIVE_BYTES);
+CTR_STATIC_ASSERT(NATIVE_CANONICAL_DRIVERS_PHYSICS_BYTES == 148u);
+CTR_STATIC_ASSERT(sizeof(struct NativeCanonicalDriverPhysicsV1) == NATIVE_CANONICAL_DRIVERS_PHYSICS_BYTES);
 /* Native source fields declared as int are persisted as explicit signed
  * int32_t values.  Do not permit a host where that conversion changes range. */
 CTR_STATIC_ASSERT(sizeof(int) == sizeof(int32_t));
@@ -815,5 +817,75 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(const str
 	candidate.roster=prior.roster;memcpy(candidate.race,prior.race,sizeof(candidate.race));memcpy(candidate.dynamics,prior.dynamics,sizeof(candidate.dynamics));memcpy(candidate.active,prior.active,sizeof(candidate.active));memcpy(candidate.pendingDamage,prior.pendingDamage,sizeof(candidate.pendingDamage));memset(candidate.bot,0,sizeof(candidate.bot));memset(candidate.meta,0,sizeof(candidate.meta));
 	for(uint8_t slot=0;slot<8;slot++)if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))!=0&&
 		(!gGT->drivers[slot]||!MainCanonicalDrivers_ExtractMetaAndBot(gGT,sourceData,gGT->drivers[slot],slot,&candidate.roster,&candidate.meta[slot],&candidate.bot[slot])))return 0;
+	*out=candidate;return 1;
+}
+
+static int MainCanonicalDrivers_TerrainIndex(const struct Terrain *terrain,uint8_t *out)
+{
+	uint8_t candidate;
+	if(!terrain||!out)return 0;
+	for(candidate=0;candidate<=20;candidate++)if(terrain==&data.MetaDataTerrain[candidate]){*out=candidate;return 1;}
+	return 0;
+}
+static void MainCanonicalDrivers_CopyS32Vec(int32_t out[3],const Vec3 *in)
+{
+	out[0]=(int32_t)in->x;out[1]=(int32_t)in->y;out[2]=(int32_t)in->z;
+}
+static void MainCanonicalDrivers_CopyS16Vec(int16_t out[3],const SVec3 *in)
+{
+	out[0]=in->x;out[1]=in->y;out[2]=in->z;
+}
+static void MainCanonicalDrivers_CopyS16Vec4(int16_t out[4],const SVec3Slot *in)
+{
+	out[0]=in->x;out[1]=in->y;out[2]=in->z;out[3]=in->w;
+}
+static int MainCanonicalDrivers_ExtractPhysics(const struct MainCanonicalTopologyContext *context,
+	const struct MainCanonicalTopologySnapshot *snapshot,const struct GameTracker *gGT,const struct sData *sourceData,
+	const struct Driver *driver,struct NativeCanonicalDriverPhysicsV1 *out)
+{
+	struct NativeCanonicalDriverPhysicsV1 candidate;
+	if(!context||!snapshot||!gGT||!sourceData||!driver||!out)return 0;
+	memset(&candidate,0,sizeof(candidate));
+	/* Terrain identity is equality-scanned, never dereferenced. */
+	if(!MainCanonicalDrivers_TerrainIndex(driver->terrainMeta1,&candidate.terrainMeta1Index)||
+		!MainCanonicalDrivers_TerrainIndex(driver->terrainMeta2,&candidate.terrainMeta2Index)||
+		!MainCanonicalTopology_NullableQuadBlockIndex(context,snapshot,gGT,sourceData,driver->currBlockTouching,&candidate.currQuadIndex)||
+		!MainCanonicalTopology_NullableQuadBlockIndex(context,snapshot,gGT,sourceData,driver->underDriver,&candidate.underDriverQuadIndex)||
+		!MainCanonicalTopology_NullableQuadBlockIndex(context,snapshot,gGT,sourceData,driver->lastValid,&candidate.lastValidQuadIndex))return 0;
+	candidate.stepFlagSet=(uint32_t)driver->stepFlagSet;
+	candidate.quadBlockHeight=(int32_t)driver->quadBlockHeight;
+	MainCanonicalDrivers_CopyS32Vec(candidate.velocity,&driver->velocity);
+	MainCanonicalDrivers_CopyS32Vec(candidate.originToCenter,&driver->originToCenter);
+	MainCanonicalDrivers_CopyS32Vec(candidate.posCurr,&driver->posCurr);
+	MainCanonicalDrivers_CopyS32Vec(candidate.posPrev,&driver->posPrev);
+	MainCanonicalDrivers_CopyS16Vec(candidate.normalVecUP,&driver->normalVecUP);
+	MainCanonicalDrivers_CopyS16Vec(candidate.spsHitPos,&driver->spsHitPos);
+	MainCanonicalDrivers_CopyS16Vec(candidate.spsNormalVec,&driver->spsNormalVec);
+	MainCanonicalDrivers_CopyS16Vec(candidate.axisAngle1,&driver->AxisAngle1_normalVec);
+	MainCanonicalDrivers_CopyS16Vec(candidate.axisAngle2,&driver->AxisAngle2_normalVec);
+	MainCanonicalDrivers_CopyS16Vec(candidate.axisAngle3,&driver->AxisAngle3_normalVec);
+	MainCanonicalDrivers_CopyS16Vec(candidate.axisAngle4,&driver->AxisAngle4_normalVec);
+	MainCanonicalDrivers_CopyS16Vec4(candidate.rotCurr,&driver->rotCurr);
+	MainCanonicalDrivers_CopyS16Vec4(candidate.rotPrev,&driver->rotPrev);
+	MainCanonicalDrivers_CopyS16Vec(candidate.posWallColl,&driver->posWallColl);
+	MainCanonicalDrivers_CopyS16Vec(candidate.forwardAccelVector,&driver->forwardAccelVector);
+	MainCanonicalDrivers_CopyS16Vec(candidate.accel,&driver->accel);
+	if(!NativeCanonicalDriverPhysicsV1_Validate(&candidate))return 0;
+	*out=candidate;return 1;
+}
+int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMetaPhysics(const struct GameTracker *gGT,const struct sData *sourceData,
+	const struct MainCanonicalTopologyContext *topologyContext,const struct MainCanonicalTopologySnapshot *topologySnapshot,
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *out)
+{
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate prior;
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate candidate;
+	if(!out||!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(gGT,sourceData,&prior))return 0;
+	memset(&candidate,0,sizeof(candidate));candidate.roster=prior.roster;
+	memcpy(candidate.race,prior.race,sizeof(candidate.race));memcpy(candidate.dynamics,prior.dynamics,sizeof(candidate.dynamics));
+	memcpy(candidate.active,prior.active,sizeof(candidate.active));memcpy(candidate.pendingDamage,prior.pendingDamage,sizeof(candidate.pendingDamage));
+	memcpy(candidate.bot,prior.bot,sizeof(candidate.bot));memcpy(candidate.meta,prior.meta,sizeof(candidate.meta));
+	if(candidate.roster.prelude.presenceMask!=0&&!MainCanonicalTopology_Validate(topologyContext,topologySnapshot,gGT,sourceData))return 0;
+	for(uint8_t slot=0;slot<8;slot++)if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))!=0&&
+		(!gGT->drivers[slot]||!MainCanonicalDrivers_ExtractPhysics(topologyContext,topologySnapshot,gGT,sourceData,gGT->drivers[slot],&candidate.physics[slot])))return 0;
 	*out=candidate;return 1;
 }

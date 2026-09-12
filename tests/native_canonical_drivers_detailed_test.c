@@ -235,8 +235,24 @@ static int TestMetaFlagContract(void)
 	CHECK(!NativeCanonicalDriversDetailedV1_BuildSummary(&value,&summary)&&EqualSummary(&summary,&before));
 	return 0;
 }
+static int TestPhysicsContract(void)
+{
+	struct NativeCanonicalDriverPhysicsV1 value,before;
+	memset(&value,0,sizeof(value));value.currQuadIndex=UINT32_MAX;value.underDriverQuadIndex=0;value.lastValidQuadIndex=(uint32_t)INT32_MAX-1;
+	CHECK(NativeCanonicalDriverPhysicsV1_Validate(&value));
+	value.reserved0=1;CHECK(!NativeCanonicalDriverPhysicsV1_Validate(&value));value.reserved0=0;
+	value.terrainMeta1Index=21;CHECK(!NativeCanonicalDriverPhysicsV1_Validate(&value));value.terrainMeta1Index=20;
+	value.terrainMeta2Index=21;CHECK(!NativeCanonicalDriverPhysicsV1_Validate(&value));value.terrainMeta2Index=20;
+	value.stepFlagSet=UINT32_C(0x0000c0ff);CHECK(NativeCanonicalDriverPhysicsV1_Validate(&value));
+	value.stepFlagSet=UINT32_C(0x00010000);CHECK(!NativeCanonicalDriverPhysicsV1_Validate(&value));value.stepFlagSet=0;
+	before=value;value.currQuadIndex=(uint32_t)INT32_MAX;CHECK(!NativeCanonicalDriverPhysicsV1_Validate(&value));value=before;
+	value.underDriverQuadIndex=(uint32_t)INT32_MAX;CHECK(!NativeCanonicalDriverPhysicsV1_Validate(&value));value=before;
+	value.lastValidQuadIndex=(uint32_t)INT32_MAX;CHECK(!NativeCanonicalDriverPhysicsV1_Validate(&value));value=before;
+	CHECK(!NativeCanonicalDriverPhysicsV1_Validate(NULL));
+	return 0;
+}
 int main(void)
 {
-	if(TestGoldenAndSummary()!=0||TestSemanticMutations()!=0||TestRejectionAndTransaction()!=0||TestPendingDamageTail()!=0||TestTypedBotLayout()!=0||TestBotAndReferences()!=0||TestRanksAndActiveTags()!=0||TestAllowedTagOverlap()!=0||TestMetaFlagContract()!=0)return 1;
+	if(TestGoldenAndSummary()!=0||TestSemanticMutations()!=0||TestRejectionAndTransaction()!=0||TestPendingDamageTail()!=0||TestTypedBotLayout()!=0||TestBotAndReferences()!=0||TestRanksAndActiveTags()!=0||TestAllowedTagOverlap()!=0||TestMetaFlagContract()!=0||TestPhysicsContract()!=0)return 1;
 	puts("native_canonical_drivers_detailed_test: passed");return 0;
 }
