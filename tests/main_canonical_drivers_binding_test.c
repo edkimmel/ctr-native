@@ -92,6 +92,12 @@ static int SourcePreludeTest(void)
 	FAIL_SOURCE(sd->navBotList[0].count=2);
 	FAIL_SOURCE(sd->navBotList[0].first=&f.drivers[0].botData.item);
 	FAIL_SOURCE(sd->navBotList[0].first=&foreign;sd->navBotList[0].last=&foreign);
+	/* Endpoints and cursors are mapped against known embedded Items before
+	 * dereference, so poison and misaligned-like addresses reject safely. */
+	FAIL_SOURCE(sd->navBotList[0].first=(struct Item *)(uintptr_t)1);
+	FAIL_SOURCE(sd->navBotList[0].last=(struct Item *)(uintptr_t)1);
+	FAIL_SOURCE(sd->navBotList[0].first=(struct Item *)((uintptr_t)&f.drivers[2].botData.item+1));
+	FAIL_SOURCE(f.drivers[2].botData.item.next=(struct Item *)(uintptr_t)1;sd->navBotList[0].last=&f.drivers[5].botData.item;sd->navBotList[0].count=2);
 	/* A distinct known endpoint with next == NULL reaches the post-walk
 	 * declared-last check rather than an endpoint guard. */
 	FAIL_SOURCE(sd->navBotList[0].last=&f.drivers[5].botData.item);

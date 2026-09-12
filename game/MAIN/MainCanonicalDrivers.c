@@ -88,6 +88,16 @@ static int DriverSlot(const struct Driver *const drivers[8],const struct Driver 
 	return 0;
 }
 
+/* A nav cursor is untrusted until it exactly matches the embedded Item of an
+ * already validated stable driver root. Never dereference a list pointer
+ * before this equality scan succeeds. */
+static int NavItemSlot(const struct Driver *const drivers[8],const struct Item *item,uint8_t *slot)
+{
+	if(!item||!slot)return 0;
+	for(uint8_t n=0;n<8;n++)if(drivers[n]&&item==&drivers[n]->botData.item){*slot=n;return 1;}
+	return 0;
+}
+
 static int NavLists(const struct Driver *const drivers[8],const struct sData *sourceData,
 	struct NativeCanonicalDriversRosterInput *input)
 {
@@ -97,16 +107,16 @@ static int NavLists(const struct Driver *const drivers[8],const struct sData *so
 	{
 		const struct LinkedList *list=&sourceData->navBotList[path];
 		const struct Item *item,*previous=NULL;
+		uint8_t endpointSlot;
 		if(list->count<0||list->count>8)return 0;
 		if(list->count==0){if(list->first||list->last)return 0;continue;}
-		if(!list->first||!list->last||list->first->prev||list->last->next)return 0;
+		if(!list->first||!list->last||!NavItemSlot(drivers,list->first,&endpointSlot)||!NavItemSlot(drivers,list->last,&endpointSlot))return 0;
 		item=list->first;
 		for(int count=0;count<list->count;count++)
 		{
 			uint8_t slot;
-			if(!item||item->prev!=previous)return 0;
-			for(slot=0;slot<8;slot++)if(drivers[slot]&&item==&drivers[slot]->botData.item)break;
-			if(slot==8||(seen&(1u<<slot))||(drivers[slot]->actionsFlagSet&ACTION_BOT)==0||drivers[slot]->botData.botPath!=path)return 0;
+			if(!NavItemSlot(drivers,item,&slot))return 0;
+			if(item->prev!=previous||(seen&(1u<<slot))||(drivers[slot]->actionsFlagSet&ACTION_BOT)==0||drivers[slot]->botData.botPath!=path)return 0;
 			seen|=1u<<slot;input->navOrder[path][count]=slot;previous=item;item=item->next;
 		}
 		if(item||previous!=list->last)return 0;
