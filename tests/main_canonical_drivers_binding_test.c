@@ -934,9 +934,18 @@ static int PendingDamageTest(void)
 	struct MainCanonicalDriversRosterRaceDynamicsActivePendingCandidate value,before;
 	struct sData *sd=&sdata_static;
 	SourceFixtureInit(&fixture);
+	/* Human victim, bot attacker: accepted type-2/reason-6 tuple. */
 	FD(&fixture,0)->pendingDamageType=2;FD(&fixture,0)->pendingDamageAttacker=FD(&fixture,2);FD(&fixture,0)->pendingDamageReasonByte=6;
 	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||
 		value.pendingDamage[0].type!=2||value.pendingDamage[0].attackerSlotPlusOne!=3||value.pendingDamage[0].reason!=6||value.pendingDamage[0].reservedZero!=0)return 0;
+	/* Bot victim, human attacker: accepted type-2/reason-0 tuple. */
+	FD(&fixture,2)->pendingDamageType=2;FD(&fixture,2)->pendingDamageAttacker=FD(&fixture,0);FD(&fixture,2)->pendingDamageReasonByte=0;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||
+		value.pendingDamage[2].type!=2||value.pendingDamage[2].attackerSlotPlusOne!=1||value.pendingDamage[2].reason!=0)return 0;
+	/* A distinct bot attacker makes the only type-3/reason-5 tuple valid. */
+	FD(&fixture,2)->pendingDamageType=3;FD(&fixture,2)->pendingDamageAttacker=FD(&fixture,5);FD(&fixture,2)->pendingDamageReasonByte=5;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||
+		value.pendingDamage[2].type!=3||value.pendingDamage[2].attackerSlotPlusOne!=6||value.pendingDamage[2].reason!=5)return 0;
 	/* Type zero ignores stale attacker/reason storage exactly. */
 	FD(&fixture,0)->pendingDamageType=0;FD(&fixture,0)->pendingDamageAttacker=(struct Driver *)(uintptr_t)1;FD(&fixture,0)->pendingDamageReasonByte=0xff;
 	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||memcmp(&value.pendingDamage[0],&(struct NativeCanonicalDriverPendingDamageV1){0},4)!=0)return 0;
@@ -944,6 +953,20 @@ static int PendingDamageTest(void)
 	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
 	FD(&fixture,0)->pendingDamageAttacker=(struct Driver *)(uintptr_t)1;
 	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	/* Invalid scalar data fails before it can equality-scan a poison pointer. */
+	FD(&fixture,0)->pendingDamageType=4;FD(&fixture,0)->pendingDamageReasonByte=0xff;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	/* An absent root is not inspected: stale pending fields cannot survive. */
+	SourceFixtureInit(&fixture);FD(&fixture,5)->pendingDamageType=3;FD(&fixture,5)->pendingDamageAttacker=(struct Driver *)(uintptr_t)1;FD(&fixture,5)->pendingDamageReasonByte=0xff;
+	fixture.tracker.drivers[5]=NULL;fixture.tracker.driversInRaceOrder[2]=NULL;fixture.tracker.numWinners=1;fixture.tracker.winnerIndex[0]=0;memset(&sd->navBotList[2],0,sizeof(sd->navBotList[2]));FRefreshPools(&fixture);
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||
+		(value.roster.prelude.presenceMask&(UINT32_C(1)<<5))!=0||memcmp(&value.pendingDamage[5],&(struct NativeCanonicalDriverPendingDamageV1){0},4)!=0)return 0;
+	/* Stable slots remain authoritative when physical pool indices are permuted. */
+	SourceFixtureInit(&fixture);SourceDriverAt(&fixture,0,3,6,1,0);SourceDriverAt(&fixture,2,7,1,4,1);SourceDriverAt(&fixture,5,1,5,7,1);
+	fixture.tracker.driversInRaceOrder[0]=FLD(&fixture,0);fixture.tracker.driversInRaceOrder[1]=FLD(&fixture,2);fixture.tracker.driversInRaceOrder[2]=FLD(&fixture,5);memset(sd->navBotList,0,sizeof(sd->navBotList));
+	FLD(&fixture,2)->botData.botPath=0;FLD(&fixture,5)->botData.botPath=2;sd->navBotList[0].first=&FLD(&fixture,2)->botData.item;sd->navBotList[0].last=&FLD(&fixture,2)->botData.item;sd->navBotList[0].count=1;sd->navBotList[2].first=&FLD(&fixture,5)->botData.item;sd->navBotList[2].last=&FLD(&fixture,5)->botData.item;sd->navBotList[2].count=1;
+	FLD(&fixture,0)->pendingDamageType=2;FLD(&fixture,0)->pendingDamageAttacker=FLD(&fixture,5);FLD(&fixture,0)->pendingDamageReasonByte=6;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||value.pendingDamage[0].attackerSlotPlusOne!=6)return 0;
 	return 1;
 }
 

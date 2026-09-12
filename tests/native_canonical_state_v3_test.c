@@ -28,7 +28,8 @@ int main(void)
 	CHECK(bytes[0]==0x4e&&bytes[1]==0x43&&bytes[2]==0x56&&bytes[3]==0x33&&bytes[4]==4&&bytes[8]==3);
 	NativeCodecReader_Init(&reader,bytes,sizeof(bytes));CHECK(NativeCanonicalStateV3_Decode(&reader,&state.identity,&decoded));CHECK(reader.offset==sizeof(bytes));
 	CHECK(decoded.drivers.presenceMask==1&&decoded.domainDigests[NATIVE_CANONICAL_DOMAIN_DRIVERS-1]==state.domainDigests[NATIVE_CANONICAL_DOMAIN_DRIVERS-1]);
-	memcpy(before,bytes,sizeof(bytes));bytes[240+8]^=1;NativeCodecReader_Init(&reader,bytes,sizeof(bytes));memset(&untouched,0xa5,sizeof(untouched));CHECK(!NativeCanonicalStateV3_Decode(&reader,&state.identity,&untouched));CHECK(reader.offset==0);memcpy(bytes,before,sizeof(bytes));
+	memcpy(before,bytes,sizeof(bytes));bytes[4]=3;NativeCodecReader_Init(&reader,bytes,sizeof(bytes));memset(&untouched,0xa5,sizeof(untouched));decoded=untouched;CHECK(!NativeCanonicalStateV3_Decode(&reader,&state.identity,&untouched));CHECK(reader.offset==0&&memcmp(&untouched,&decoded,sizeof(untouched))==0);memcpy(bytes,before,sizeof(bytes));
+	bytes[240+8]^=1;NativeCodecReader_Init(&reader,bytes,sizeof(bytes));memset(&untouched,0xa5,sizeof(untouched));decoded=untouched;CHECK(!NativeCanonicalStateV3_Decode(&reader,&state.identity,&untouched));CHECK(reader.offset==0&&memcmp(&untouched,&decoded,sizeof(untouched))==0);memcpy(bytes,before,sizeof(bytes));
 	state.drivers.slots[0].slotDigest^=1;NativeCodecWriter_Init(&writer,bytes,sizeof(bytes),NULL);CHECK(!NativeCanonicalStateV3_Encode(&writer,&state));CHECK(writer.offset==0);
 	puts("native_canonical_state_v3_test: passed");return 0;
 }

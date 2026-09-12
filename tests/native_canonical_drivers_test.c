@@ -58,6 +58,10 @@ static int TestEmptyGoldenAndTransactions(void)
 	NativeCodecReader_Init(&reader, bytes, sizeof(bytes));
 	CHECK(NativeCanonicalDriversV1_Decode(&reader, &decoded));
 	CHECK(reader.offset == sizeof(bytes) && DriversEqual(&drivers, &decoded));
+	/* Persisted summary v1 is not silently accepted as v2. */
+	bytes[0]=1;NativeCanonicalDriversV1_Init(&untouched);untouched.fullStreamDigest=UINT64_C(0x4444444444444444);before=untouched;
+	NativeCodecReader_Init(&reader,bytes,sizeof(bytes));CHECK(!NativeCanonicalDriversV1_Decode(&reader,&untouched));
+	CHECK(reader.offset==0&&reader.failed==0&&DriversEqual(&untouched,&before));bytes[0]=2;
 
 	NativeCodecWriter_Init(&shortWriter, bytes, sizeof(bytes) - 1, NULL);
 	CHECK(!NativeCanonicalDriversV1_Encode(&shortWriter, &drivers));

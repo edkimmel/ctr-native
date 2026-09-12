@@ -73,7 +73,7 @@ static int TestRejectionAndTransaction(void)
 	value.prelude.navListCount[0]=1;value.prelude.navListOrder[0][0]=4;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.prelude.navListCount[0]=0;value.prelude.navListOrder[0][0]=NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT;
 	value.slots[0].bot.bytes[0]=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.bytes[0]=0;
 	value.slots[0].meta.boolFirstFrameSinceRevEngine=2;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].meta.boolFirstFrameSinceRevEngine=0;
-	value.prelude.detailedVersion=0;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.prelude.detailedVersion=NATIVE_CANONICAL_DRIVERS_DETAILED_VERSION;
+	value.prelude.detailedVersion=1;NativeCodecWriter_Init(&shortWriter,bytes,sizeof(bytes),NULL);memcpy(beforeBytes,bytes,sizeof(bytes));NativeCanonicalDriversV1_Init(&out);out.fullStreamDigest=UINT64_C(0x1234567812345678);before=out;CHECK(!NativeCanonicalDriversDetailedV1_Encode(&shortWriter,&value)&&shortWriter.offset==0&&memcmp(bytes,beforeBytes,sizeof(bytes))==0);CHECK(!NativeCanonicalDriversDetailedV1_BuildSummary(&value,&out)&&EqualSummary(&out,&before));CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.prelude.detailedVersion=NATIVE_CANONICAL_DRIVERS_DETAILED_VERSION;
 	value.slots[1].meta.present=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[1].meta.present=0;
 	CHECK(Encode(&value,bytes));memcpy(beforeBytes,bytes,sizeof(bytes));NativeCodecWriter_Init(&shortWriter,bytes,sizeof(bytes)-1,NULL);
 	CHECK(!NativeCanonicalDriversDetailedV1_Encode(&shortWriter,&value)&&shortWriter.offset==0&&memcmp(bytes,beforeBytes,sizeof(bytes))==0);
@@ -84,7 +84,8 @@ static int TestRejectionAndTransaction(void)
 static int TestPendingDamageTail(void)
 {
 	struct NativeCanonicalDriversDetailedV1 value;
-	uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
+	struct NativeCanonicalDriversV1 baseSummary,changedSummary;
+	uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES],changed[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
 	ValidHuman(&value);
 	/* A second fully present human makes slot 1 a valid, distinct attacker. */
 	value.slots[1]=value.slots[0];value.slots[1].meta.slotIndex=1;value.slots[1].meta.driverID=6;
@@ -92,9 +93,12 @@ static int TestPendingDamageTail(void)
 	value.prelude.playerCount=2;value.prelude.humanPlayerPositions[1]=1;
 	value.slots[0].pendingDamage.type=2;value.slots[0].pendingDamage.attackerSlotPlusOne=2;
 	value.slots[0].pendingDamage.reason=6;
-	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));CHECK(Encode(&value,bytes));
+	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));CHECK(Encode(&value,bytes));CHECK(NativeCanonicalDriversDetailedV1_BuildSummary(&value,&baseSummary));
 	CHECK(bytes[64+516]==2&&bytes[64+517]==2&&bytes[64+518]==6&&bytes[64+519]==0);
-	value.slots[0].pendingDamage.reason=0;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].pendingDamage.reason=0;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));CHECK(Encode(&value,changed));CHECK(NativeCanonicalDriversDetailedV1_BuildSummary(&value,&changedSummary));
+	CHECK(memcmp(bytes,changed,sizeof(bytes))!=0&&baseSummary.rosterMetaDigest==changedSummary.rosterMetaDigest&&
+		baseSummary.slots[0].metaRaceDigest==changedSummary.slots[0].metaRaceDigest&&baseSummary.slots[0].physicsDynamicsDigest==changedSummary.slots[0].physicsDynamicsDigest&&
+		baseSummary.slots[0].behaviorBotDigest!=changedSummary.slots[0].behaviorBotDigest&&baseSummary.fullStreamDigest!=changedSummary.fullStreamDigest);
 	value.slots[0].pendingDamage.type=3;value.slots[0].pendingDamage.reason=5;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
 	value.slots[0].pendingDamage.reason=6;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
 	value.slots[0].pendingDamage.type=2;value.slots[0].pendingDamage.attackerSlotPlusOne=1;value.slots[0].pendingDamage.reason=0;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));

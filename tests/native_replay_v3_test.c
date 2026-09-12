@@ -13,10 +13,14 @@ static int Fill(struct NativeReplayV3Header *h,struct NativeReplayV3Frame *f)
 }
 int main(void)
 {
-	uint8_t bytes[NATIVE_REPLAY_V3_HEADER_BYTES+NATIVE_REPLAY_V3_FRAME_BYTES];struct NativeReplayV3Header h,d;struct NativeReplayV3Frame f,df,before;struct NativeCodecWriter w;struct NativeCodecReader r;
+	uint8_t bytes[NATIVE_REPLAY_V3_HEADER_BYTES+NATIVE_REPLAY_V3_FRAME_BYTES];struct NativeReplayV3Header h,d,hbefore;struct NativeReplayV3Frame f,df,frameBefore;struct NativeCodecWriter w;struct NativeCodecReader r;
 	CHECK(Fill(&h,&f));CHECK(NativeReplayV3Header_EncodedSize()==140u&&NativeReplayV3Frame_EncodedSize()==904u);NativeCodecWriter_Init(&w,bytes,sizeof(bytes),NULL);CHECK(NativeReplayV3Header_Encode(&w,&h));CHECK(bytes[0]==0x43&&bytes[1]==0x52&&bytes[2]==0x56&&bytes[3]==0x33&&bytes[8]==0x8c&&bytes[16]==1);CHECK(NativeReplayV3Frame_Encode(&w,&h,&f));CHECK(NativeCodecWriter_Size(&w)==sizeof(bytes));CHECK(bytes[140]==0x43&&bytes[141]==0x52&&bytes[142]==0x46&&bytes[143]==0x33);
 	NativeCodecReader_Init(&r,bytes,sizeof(bytes));CHECK(NativeReplayV3Header_Decode(&r,&h.identity,&d));CHECK(NativeReplayV3Frame_Decode(&r,&d,&h.identity,&df));CHECK(r.offset==sizeof(bytes)&&df.canonical.drivers.presenceMask==1);
-	bytes[16]=2;NativeCodecReader_Init(&r,bytes,NATIVE_REPLAY_V3_HEADER_BYTES);memset(&d,0xa5,sizeof(d));before=f;CHECK(!NativeReplayV3Header_Decode(&r,&h.identity,&d));CHECK(r.offset==0);bytes[16]=1;
-	bytes[NATIVE_REPLAY_V3_HEADER_BYTES+460]=2;NativeCodecReader_Init(&r,&bytes[NATIVE_REPLAY_V3_HEADER_BYTES],NATIVE_REPLAY_V3_FRAME_BYTES);memset(&df,0xa5,sizeof(df));CHECK(!NativeReplayV3Frame_Decode(&r,&h,&h.identity,&df));CHECK(r.offset==0);(void)before;
+	bytes[16]=2;NativeCodecReader_Init(&r,bytes,NATIVE_REPLAY_V3_HEADER_BYTES);memset(&d,0xa5,sizeof(d));hbefore=d;CHECK(!NativeReplayV3Header_Decode(&r,&h.identity,&d));CHECK(r.offset==0&&memcmp(&d,&hbefore,sizeof(d))==0);bytes[16]=1;
+	/* Header canonical schema is u32 at byte 24: reject schema-3 transactionally. */
+	bytes[24]=3;NativeCodecReader_Init(&r,bytes,NATIVE_REPLAY_V3_HEADER_BYTES);memset(&d,0xa5,sizeof(d));hbefore=d;CHECK(!NativeReplayV3Header_Decode(&r,&h.identity,&d));CHECK(r.offset==0&&memcmp(&d,&hbefore,sizeof(d))==0);bytes[24]=4;
+	/* NCV3 begins at frame+320; its schema u32 begins at frame+324. */
+	bytes[NATIVE_REPLAY_V3_HEADER_BYTES+324]=3;NativeCodecReader_Init(&r,&bytes[NATIVE_REPLAY_V3_HEADER_BYTES],NATIVE_REPLAY_V3_FRAME_BYTES);memset(&df,0xa5,sizeof(df));frameBefore=df;CHECK(!NativeReplayV3Frame_Decode(&r,&h,&h.identity,&df));CHECK(r.offset==0&&memcmp(&df,&frameBefore,sizeof(df))==0);bytes[NATIVE_REPLAY_V3_HEADER_BYTES+324]=4;
+	bytes[NATIVE_REPLAY_V3_HEADER_BYTES+460]=2;NativeCodecReader_Init(&r,&bytes[NATIVE_REPLAY_V3_HEADER_BYTES],NATIVE_REPLAY_V3_FRAME_BYTES);memset(&df,0xa5,sizeof(df));frameBefore=df;CHECK(!NativeReplayV3Frame_Decode(&r,&h,&h.identity,&df));CHECK(r.offset==0&&memcmp(&df,&frameBefore,sizeof(df))==0);
 	puts("native_replay_v3_test: passed");return 0;
 }
