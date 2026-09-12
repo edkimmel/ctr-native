@@ -259,6 +259,7 @@ static int TestSourceRejectionsAndAtomicity(void)
 	REJECT(MAIN_ARCADE_BOT_SETUP_MISMATCH, bad.facts[5].difficulty++);
 	REJECT(MAIN_ARCADE_BOT_SETUP_RANGE, bad.facts[2].spawnOrder = 8);
 	REJECT(MAIN_ARCADE_BOT_SETUP_RANGE, bad.facts[2].navPathIndex = 3);
+	REJECT(MAIN_ARCADE_BOT_SETUP_NAV_MISMATCH, bad.facts[2].navPathIndex = 0);
 	REJECT(MAIN_ARCADE_BOT_SETUP_RANGE, bad.facts[2].accelerationOrder = 8);
 	REJECT(MAIN_ARCADE_BOT_SETUP_RANGE, bad.facts[2].reserved[0] = 1);
 	REJECT(MAIN_ARCADE_BOT_SETUP_DUPLICATE_SPAWN, bad.facts[3].spawnOrder = bad.facts[2].spawnOrder);
@@ -303,6 +304,26 @@ static int TestContractAndRngRejections(void)
 	badRoster.reserved = 1;
 	CHECK(MainArcadeBotSetup_Plan(&fixture.config, &fixture.rosterPlan, &badRoster,
 		&fixture.setupFacts, &fixture.rng, &output, &rngOutput) == MAIN_ARCADE_BOT_SETUP_INVALID_ROSTER && UNCHANGED());
+	/* Missing and duplicate bot ownership cannot be hidden in nav-list data. */
+	badRoster = fixture.validatedRoster;
+	badRoster.roster.prelude.navListCount[1]--;
+	CHECK(MainArcadeBotSetup_Plan(&fixture.config, &fixture.rosterPlan, &badRoster,
+		&fixture.setupFacts, &fixture.rng, &output, &rngOutput) == MAIN_ARCADE_BOT_SETUP_INVALID_ROSTER && UNCHANGED());
+	badRoster = fixture.validatedRoster;
+	badRoster.roster.prelude.navListOrder[0][0] = 0;
+	CHECK(MainArcadeBotSetup_Plan(&fixture.config, &fixture.rosterPlan, &badRoster,
+		&fixture.setupFacts, &fixture.rng, &output, &rngOutput) == MAIN_ARCADE_BOT_SETUP_INVALID_ROSTER && UNCHANGED());
+	badRoster = fixture.validatedRoster;
+	badRoster.roster.prelude.navListOrder[1][0] = 2;
+	CHECK(MainArcadeBotSetup_Plan(&fixture.config, &fixture.rosterPlan, &badRoster,
+		&fixture.setupFacts, &fixture.rng, &output, &rngOutput) == MAIN_ARCADE_BOT_SETUP_INVALID_ROSTER && UNCHANGED());
+	/* A complete unique cross-path swap is valid structurally, but no longer
+	 * agrees with the per-slot supplied source facts. */
+	badRoster = fixture.validatedRoster;
+	badRoster.roster.prelude.navListOrder[1][0] = 2;
+	badRoster.roster.prelude.navListOrder[2][0] = 1;
+	CHECK(MainArcadeBotSetup_Plan(&fixture.config, &fixture.rosterPlan, &badRoster,
+		&fixture.setupFacts, &fixture.rng, &output, &rngOutput) == MAIN_ARCADE_BOT_SETUP_NAV_MISMATCH && UNCHANGED());
 	badRng = fixture.rng;
 	badRng.masterSeed++;
 	CHECK(Plan(&fixture, &fixture.setupFacts, &badRng, &output, &rngOutput) == MAIN_ARCADE_BOT_SETUP_INVALID_RNG && UNCHANGED());

@@ -12,9 +12,12 @@ static int MainArcadeBotSetup_IsZero(const uint8_t *bytes, size_t size)
 static int MainArcadeBotSetup_RosterMatches(
 	const struct NativeMatchConfigV1 *config,
 	const struct MainArcadeRosterPlan *plan,
-	const struct MainArcadeRosterValidated *validated)
+	const struct MainArcadeRosterValidated *validated,
+	uint8_t navOwnership[MAIN_ARCADE_BOT_SETUP_SLOT_COUNT])
 {
 	struct MainArcadeRosterPlan expected;
+	uint32_t expectedBotMask = 0;
+	uint32_t navSeen = 0;
 
 	if ((plan == NULL) || (validated == NULL) ||
 	    !MainArcadeRoster_BuildPlan(config, &expected) ||
@@ -32,6 +35,8 @@ static int MainArcadeBotSetup_RosterMatches(
 	{
 		return 0;
 	}
+	memset(navOwnership, MAIN_ARCADE_BOT_SETUP_SLOT_NONE,
+	       MAIN_ARCADE_BOT_SETUP_SLOT_COUNT * sizeof(navOwnership[0]));
 	for (uint8_t slot = 0; slot < MAIN_ARCADE_BOT_SETUP_SLOT_COUNT; slot++)
 	{
 		const struct MainArcadeRosterPlanSlot *expectedSlot = &plan->slots[slot];
@@ -55,8 +60,29 @@ static int MainArcadeBotSetup_RosterMatches(
 		    !NativeCanonicalDriverBehavior_ValidateKind(validated->roster.kind[slot],
 		        validated->roster.behaviorID[slot],
 		        validated->roster.threadBehaviorID[slot])) return 0;
+		if (expectedSlot->role == NATIVE_MATCH_SLOT_ROLE_BOT)
+			expectedBotMask |= UINT32_C(1) << slot;
 	}
-	return 1;
+	for (uint8_t path = 0; path < MAIN_ARCADE_BOT_SETUP_NAV_PATH_COUNT; path++)
+	{
+		const uint8_t count = validated->roster.prelude.navListCount[path];
+		if (count > MAIN_ARCADE_BOT_SETUP_SLOT_COUNT) return 0;
+		for (uint8_t index = 0; index < MAIN_ARCADE_BOT_SETUP_SLOT_COUNT; index++)
+		{
+			const uint8_t slot = validated->roster.prelude.navListOrder[path][index];
+			if (index >= count)
+			{
+				if (slot != MAIN_ARCADE_BOT_SETUP_SLOT_NONE) return 0;
+				continue;
+			}
+			if ((slot >= MAIN_ARCADE_BOT_SETUP_SLOT_COUNT) ||
+			    ((expectedBotMask & (UINT32_C(1) << slot)) == 0) ||
+			    ((navSeen & (UINT32_C(1) << slot)) != 0)) return 0;
+			navSeen |= UINT32_C(1) << slot;
+			navOwnership[slot] = path;
+		}
+	}
+	return navSeen == expectedBotMask;
 }
 
 static int MainArcadeBotSetup_InactiveIsValid(const struct MainArcadeBotSetupSourceSlot *fact)
@@ -85,11 +111,12 @@ enum MainArcadeBotSetupResult MainArcadeBotSetup_Plan(
 	uint32_t seenSpawn = 0;
 	uint32_t seenAcceleration = 0;
 	uint8_t setupSequence = 0;
+	uint8_t navOwnership[MAIN_ARCADE_BOT_SETUP_SLOT_COUNT];
 
 	if ((config == NULL) || (sourceFacts == NULL) || (rngBefore == NULL) ||
 	    (out == NULL) || (rngAfter == NULL)) return MAIN_ARCADE_BOT_SETUP_INVALID_ARGUMENT;
 	if (!NativeMatchConfigV1_Validate(config)) return MAIN_ARCADE_BOT_SETUP_INVALID_CONFIG;
-	if (!MainArcadeBotSetup_RosterMatches(config, rosterPlan, validatedRoster))
+	if (!MainArcadeBotSetup_RosterMatches(config, rosterPlan, validatedRoster, navOwnership))
 		return MAIN_ARCADE_BOT_SETUP_INVALID_ROSTER;
 	if (!NativeDeterministicRngBankV1_Validate(rngBefore) ||
 	    (rngBefore->masterSeed != config->masterSeed) ||
@@ -141,6 +168,9 @@ enum MainArcadeBotSetupResult MainArcadeBotSetup_Plan(
 		    (fact->accelerationOrder >= MAIN_ARCADE_BOT_SETUP_SLOT_COUNT) ||
 		    !MainArcadeBotSetup_IsZero(fact->reserved, sizeof(fact->reserved)))
 			return MAIN_ARCADE_BOT_SETUP_RANGE;
+		if ((expected->role == NATIVE_MATCH_SLOT_ROLE_BOT) &&
+		    (fact->navPathIndex != navOwnership[slot]))
+			return MAIN_ARCADE_BOT_SETUP_NAV_MISMATCH;
 		if ((seenSpawn & (UINT32_C(1) << fact->spawnOrder)) != 0)
 			return MAIN_ARCADE_BOT_SETUP_DUPLICATE_SPAWN;
 		if ((seenAcceleration & (UINT32_C(1) << fact->accelerationOrder)) != 0)
