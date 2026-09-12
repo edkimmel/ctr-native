@@ -39,8 +39,13 @@ int NativeReplayScheduler_RequiresCanonicalState(void);
 int NativeReplayScheduler_SuppressesQuickState(void);
 /* Available only for a required canonical frame, after BeginFrame succeeds. */
 int NativeReplayScheduler_GetCanonicalReplayFrame(u32 *replayFrame);
+/* Playback-v2 begin observations are checked after its bootstrap checkpoint
+ * has restored and MainMain has reloaded gGT/gGS. No-op success for v1. */
+int NativeReplayScheduler_ValidateRestoredBeginFrame(const struct NativeReplaySchedulerFrameInfo *info);
 /* v2 caches the gated identity at configuration/start; it never re-hashes in MainMain. */
 int NativeReplayScheduler_GetCanonicalIdentity(struct NativeIdentityV1 *identity);
+/* Marks an active v2 recording unsealable after a caller-side frame failure. */
+void NativeReplayScheduler_AbortActiveV2Record(void);
 int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedVBlanks);
 int NativeReplayScheduler_ConsumeFrameElapsedTimeMS(int *elapsedTimeMS);
 /* The canonical record is value-validated/copied synchronously if required. */

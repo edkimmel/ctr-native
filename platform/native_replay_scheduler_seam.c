@@ -97,3 +97,20 @@ int NativeReplayScheduler_CopyCanonicalEndState(int required, uint32_t expectedR
 	*destination = candidate;
 	return 1;
 }
+
+int NativeReplayScheduler_CopyConsumedV2VSyncPacket(uint16_t *packets, uint32_t capacity, uint32_t index, uint16_t packet)
+{
+	if ((packets == NULL) || (index >= capacity) || (packet == 0)) return 0;
+	packets[index] = packet;
+	return 1;
+}
+
+int NativeReplayScheduler_V2BeginObservationNeedsValidation(int playbackV2, int pending)
+{
+	return (playbackV2 != 0) && (pending != 0);
+}
+
+int NativeReplayScheduler_V2RecordMayFinalize(int poisoned, int checkpointClosed)
+{
+	return (poisoned == 0) && (checkpointClosed != 0);
+}

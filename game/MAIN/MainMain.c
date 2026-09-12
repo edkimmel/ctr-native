@@ -373,11 +373,21 @@ u32 main(void)
 				}
 				gGT = sdata->gGT;
 				gGS = sdata->gGamepads;
+				/* v2's bootstrap checkpoint can replace these values during
+				 * BeginFrame. Compare the recorded begin observation only after
+				 * this reload; v1 is an intentional no-op. */
+				replayFrameInfo = MainReplayScheduler_FrameInfo(gGT);
+				if (!NativeReplayScheduler_ValidateRestoredBeginFrame(&replayFrameInfo))
+				{
+					NativeReplayScheduler_AbortActiveV2Record();
+					return 0;
+				}
 				/* Must be evaluated after BeginFrame: an armed v2 start becomes
 				 * RECORD_V2 here and needs canonical replay frame zero. */
 				canonicalRequired = NativeReplayScheduler_RequiresCanonicalState();
 				if ((canonicalRequired != 0) && !NativeReplayScheduler_GetCanonicalReplayFrame(&canonicalReplayFrame))
 				{
+					NativeReplayScheduler_AbortActiveV2Record();
 					return 0;
 				}
 			}
@@ -399,6 +409,7 @@ u32 main(void)
 				if ((Platform_InputCapturePadSnapshots(snapshots, PLATFORM_INPUT_PAD_COUNT) == 0) ||
 				    !MainCanonicalState_FreezeInputV1(&canonicalInput, snapshots, PLATFORM_INPUT_PAD_COUNT))
 				{
+					NativeReplayScheduler_AbortActiveV2Record();
 					return 0;
 				}
 				canonicalInputFrozen = 1;
@@ -521,6 +532,7 @@ u32 main(void)
 					if ((canonicalInputFrozen == 0) || !NativeReplayScheduler_GetCanonicalIdentity(&identity) ||
 					    !MainCanonicalState_ProjectLive(&canonicalState, &identity, &replayFrameInfo, gGT, &canonicalInput, canonicalReplayFrame))
 					{
+						NativeReplayScheduler_AbortActiveV2Record();
 						return 0;
 					}
 					canonicalStateArg = &canonicalState;

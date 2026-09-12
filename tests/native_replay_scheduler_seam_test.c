@@ -111,9 +111,35 @@ static int TestAtomicCopyGate(void)
 	return 0;
 }
 
+static int TestV2LifecycleGates(void)
+{
+	uint16_t consumed[2] = { 0xa5a5u, 0x5a5au };
+	uint16_t before[2];
+
+	memcpy(before, consumed, sizeof(before));
+	/* Playback's normal nonzero packet is retained for EndFrame comparison. */
+	CHECK(NativeReplayScheduler_CopyConsumedV2VSyncPacket(consumed, 2u, 0u, 30u));
+	CHECK(consumed[0] == 30u && consumed[1] == before[1]);
+	before[0] = consumed[0];
+	CHECK(!NativeReplayScheduler_CopyConsumedV2VSyncPacket(consumed, 2u, 2u, 1u));
+	CHECK(!NativeReplayScheduler_CopyConsumedV2VSyncPacket(consumed, 2u, 1u, 0u));
+	CHECK(memcmp(consumed, before, sizeof(before)) == 0);
+
+	/* Frame zero's begin observation is deferred until checkpoint restore. */
+	CHECK(!NativeReplayScheduler_V2BeginObservationNeedsValidation(0, 1));
+	CHECK(!NativeReplayScheduler_V2BeginObservationNeedsValidation(1, 0));
+	CHECK(NativeReplayScheduler_V2BeginObservationNeedsValidation(1, 1));
+
+	/* Every fatal record path poisons finalization, even after frames exist. */
+	CHECK(NativeReplayScheduler_V2RecordMayFinalize(0, 1));
+	CHECK(!NativeReplayScheduler_V2RecordMayFinalize(1, 1));
+	CHECK(!NativeReplayScheduler_V2RecordMayFinalize(0, 0));
+	return 0;
+}
+
 int main(void)
 {
-	if ((TestRequirementModes() != 0) || (TestCliMatrix() != 0) || (TestAtomicCopyGate() != 0)) return 1;
+	if ((TestRequirementModes() != 0) || (TestCliMatrix() != 0) || (TestAtomicCopyGate() != 0) || (TestV2LifecycleGates() != 0)) return 1;
 	puts("native_replay_scheduler_seam_test: passed");
 	return 0;
 }

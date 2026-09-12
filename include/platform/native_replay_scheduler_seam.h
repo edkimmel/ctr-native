@@ -44,4 +44,11 @@ int NativeReplayScheduler_ModeRequiresCanonicalState(enum NativeReplaySchedulerC
 int NativeReplayScheduler_CopyCanonicalEndState(int required, uint32_t expectedReplayFrame, const struct NativeCanonicalStateV1 *source,
                                                 struct NativeCanonicalStateV1 *destination);
 
+/* Small value-only lifecycle gates used by the live scheduler and exercised
+ * headlessly: playback retains each supplied packet, and a poisoned record
+ * never finalizes its provisional replay header. */
+int NativeReplayScheduler_CopyConsumedV2VSyncPacket(uint16_t *packets, uint32_t capacity, uint32_t index, uint16_t packet);
+int NativeReplayScheduler_V2BeginObservationNeedsValidation(int playbackV2, int pending);
+int NativeReplayScheduler_V2RecordMayFinalize(int poisoned, int checkpointClosed);
+
 #endif
