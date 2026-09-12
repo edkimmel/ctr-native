@@ -25,6 +25,7 @@ struct SourceFixture {
 	union SourceLargeSlot large[SOURCE_POOL_ITEMS];
 	union SourceThreadSlot thread[SOURCE_POOL_ITEMS];
 	union SourceInstanceSlot instance[SOURCE_POOL_ITEMS];
+	uint8_t largeIndex[8],threadIndex[8],instanceIndex[8];
 };
 CTR_STATIC_ASSERT(sizeof(struct Item)==8);
 CTR_STATIC_ASSERT(sizeof(struct Thread)==0x48);
@@ -33,6 +34,9 @@ CTR_STATIC_ASSERT(sizeof(struct InstDrawPerPlayer)==0x88);
 static struct Driver *FD(struct SourceFixture *f,uint8_t slot){return (struct Driver *)(void *)(f->large[slot].bytes+sizeof(struct Item));}
 static struct Instance *FI(struct SourceFixture *f,uint8_t slot){return (struct Instance *)(void *)f->instance[slot].bytes;}
 static struct Thread *FT(struct SourceFixture *f,uint8_t slot){return (struct Thread *)(void *)f->thread[slot].bytes;}
+static struct Driver *FLD(struct SourceFixture *f,uint8_t slot){return FD(f,f->largeIndex[slot]);}
+static struct Instance *FLI(struct SourceFixture *f,uint8_t slot){return FI(f,f->instanceIndex[slot]);}
+static struct Thread *FLT(struct SourceFixture *f,uint8_t slot){return FT(f,f->threadIndex[slot]);}
 static struct Item *FItem(void *base,size_t stride,uint8_t slot){return (struct Item *)((unsigned char *)base+stride*slot);}
 static void FList(struct LinkedList *list,void *base,size_t stride,uint32_t mask)
 {
@@ -47,12 +51,17 @@ static void FList(struct LinkedList *list,void *base,size_t stride,uint32_t mask
 }
 static void FRefreshPools(struct SourceFixture *f)
 {
-	uint32_t allocated=0;
-	for(uint8_t slot=0;slot<SOURCE_POOL_ITEMS;slot++)if(f->tracker.drivers[slot])allocated|=UINT32_C(1)<<slot;
-	FList(&f->tracker.JitPools.largeStack.free,f->large,SOURCE_LARGE_RAW_SIZE,~allocated&0xffu);
-	FList(&f->tracker.JitPools.thread.free,f->thread,sizeof(struct Thread),~allocated&0xffu);
-	FList(&f->tracker.JitPools.instance.free,f->instance,SOURCE_INSTANCE_RAW_SIZE,~allocated&0xffu);
-	FList(&f->tracker.JitPools.instance.taken,f->instance,SOURCE_INSTANCE_RAW_SIZE,allocated);
+	uint32_t largeAllocated=0,threadAllocated=0,instanceAllocated=0;
+	for(uint8_t slot=0;slot<SOURCE_POOL_ITEMS;slot++)if(f->tracker.drivers[slot])
+	{
+		largeAllocated|=UINT32_C(1)<<f->largeIndex[slot];
+		threadAllocated|=UINT32_C(1)<<f->threadIndex[slot];
+		instanceAllocated|=UINT32_C(1)<<f->instanceIndex[slot];
+	}
+	FList(&f->tracker.JitPools.largeStack.free,f->large,SOURCE_LARGE_RAW_SIZE,~largeAllocated&0xffu);
+	FList(&f->tracker.JitPools.thread.free,f->thread,sizeof(struct Thread),~threadAllocated&0xffu);
+	FList(&f->tracker.JitPools.instance.free,f->instance,SOURCE_INSTANCE_RAW_SIZE,~instanceAllocated&0xffu);
+	FList(&f->tracker.JitPools.instance.taken,f->instance,SOURCE_INSTANCE_RAW_SIZE,instanceAllocated);
 }
 static void FInitPool(struct JitPool *pool,void *base,uint32_t rawSize)
 {
@@ -60,19 +69,23 @@ static void FInitPool(struct JitPool *pool,void *base,uint32_t rawSize)
 	pool->poolSize=(s32)(SOURCE_POOL_ITEMS*rawSize);pool->ptrPoolData=base;
 }
 static const DriverFunc drivingTable[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};
-static void SourceDriver(struct SourceFixture *f,uint8_t slot,int bot)
+static void SourceDriverAt(struct SourceFixture *f,uint8_t slot,uint8_t largeIndex,uint8_t threadIndex,uint8_t instanceIndex,int bot)
 {
-	struct Driver *d=FD(f,slot);struct Instance *i=FI(f,slot);struct Thread *t=FT(f,slot);
+	struct Driver *d;struct Instance *i;struct Thread *t;
+	if(largeIndex>=SOURCE_POOL_ITEMS||threadIndex>=SOURCE_POOL_ITEMS||instanceIndex>=SOURCE_POOL_ITEMS)return;
+	f->largeIndex[slot]=largeIndex;f->threadIndex[slot]=threadIndex;f->instanceIndex[slot]=instanceIndex;
+	d=FD(f,largeIndex);i=FI(f,instanceIndex);t=FT(f,threadIndex);
 	d->driverID=slot;d->instSelf=i;memcpy(d->funcPtrs,drivingTable,sizeof(drivingTable));
 	if(bot)d->actionsFlagSet=ACTION_BOT;
 	i->thread=t;t->object=d;t->inst=i;t->funcThTick=bot?BOTS_ThTick_Drive:NULL;
 	f->tracker.drivers[slot]=d;
 	FRefreshPools(f);
 }
+static void SourceDriver(struct SourceFixture *f,uint8_t slot,int bot){SourceDriverAt(f,slot,slot,slot,slot,bot);}
 static void SourceFixtureInit(struct SourceFixture *f)
 {
 	struct sData *sd=&sdata_static;
-	memset(f,0,sizeof(*f));memset(sd,0,sizeof(*sd));f->tracker.numLaps=3;f->tracker.numPlyrCurrGame=1;
+	memset(f,0,sizeof(*f));memset(f->largeIndex,0xff,sizeof(f->largeIndex));memset(f->threadIndex,0xff,sizeof(f->threadIndex));memset(f->instanceIndex,0xff,sizeof(f->instanceIndex));memset(sd,0,sizeof(*sd));f->tracker.numLaps=3;f->tracker.numPlyrCurrGame=1;
 	FInitPool(&f->tracker.JitPools.largeStack,f->large,SOURCE_LARGE_RAW_SIZE);
 	FInitPool(&f->tracker.JitPools.thread,f->thread,sizeof(struct Thread));
 	FInitPool(&f->tracker.JitPools.instance,f->instance,SOURCE_INSTANCE_RAW_SIZE);
@@ -225,9 +238,47 @@ static int PoolOwnershipTest(void)
 	FAIL_POOL(FList(&f.tracker.JitPools.instance.taken,f.instance,SOURCE_INSTANCE_RAW_SIZE,(UINT32_C(1)<<0)|(UINT32_C(1)<<5)));
 	FAIL_POOL(f.tracker.JitPools.instance.taken.first=NULL;f.tracker.JitPools.instance.taken.last=NULL;f.tracker.JitPools.instance.taken.count=1);
 	FAIL_POOL(f.tracker.JitPools.instance.free=f.tracker.JitPools.instance.taken);
-	/* Stable root slots cannot be remapped to another physical allocation. */
-	FAIL_POOL(f.tracker.drivers[0]=FD(&f,2);f.tracker.drivers[2]=NULL;FRefreshPools(&f));
 	#undef FAIL_POOL
+	return 1;
+}
+
+static int PoolPhysicalAllocationTest(void)
+{
+	struct SourceFixture f;
+	struct NativeCanonicalDriversRosterCandidate prelude,preludeBefore;
+	struct MainCanonicalDriversRosterRaceCandidate race,raceBefore;
+	struct sData *sd=&sdata_static;
+	struct Driver *stale;
+	/* Stable slot IDs are logical.  The three native pools deliberately use
+	 * different physical permutations, and their free/taken lists are rebuilt
+	 * from those physical addresses rather than driverID or stable slot. */
+	SourceFixtureInit(&f);
+	SourceDriverAt(&f,0,3,6,1,0);
+	SourceDriverAt(&f,2,7,1,4,1);
+	SourceDriverAt(&f,5,1,5,7,1);
+	f.tracker.driversInRaceOrder[0]=FLD(&f,0);f.tracker.driversInRaceOrder[1]=FLD(&f,2);f.tracker.driversInRaceOrder[2]=FLD(&f,5);
+	memset(sd->navBotList,0,sizeof(sd->navBotList));
+	FLD(&f,2)->botData.botPath=0;FLD(&f,5)->botData.botPath=2;
+	sd->navBotList[0].first=&FLD(&f,2)->botData.item;sd->navBotList[0].last=&FLD(&f,2)->botData.item;sd->navBotList[0].count=1;
+	sd->navBotList[2].first=&FLD(&f,5)->botData.item;sd->navBotList[2].last=&FLD(&f,5)->botData.item;sd->navBotList[2].count=1;
+	if(FLD(&f,0)==FD(&f,0)||FLT(&f,0)==FT(&f,0)||FLI(&f,0)==FI(&f,0)||
+		!MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&prelude)||
+		!MainCanonicalDrivers_ExtractRosterRace(&f.tracker,sd,&race)||prelude.prelude.presenceMask!=0x25)return 0;
+	/* Return slot zero to all free lists, retain its old pointer as stale, and
+	 * prove both public extractors fail without modifying their prior outputs. */
+	SourceFixtureInit(&f);
+	if(!MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&prelude)||
+		!MainCanonicalDrivers_ExtractRosterRace(&f.tracker,sd,&race))return 0;
+	stale=FLD(&f,0);f.tracker.drivers[0]=NULL;FRefreshPools(&f);f.tracker.drivers[0]=stale;
+	preludeBefore=prelude;raceBefore=race;
+	if(MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&prelude)||memcmp(&prelude,&preludeBefore,sizeof(prelude))!=0||
+		MainCanonicalDrivers_ExtractRosterRace(&f.tracker,sd,&race)||memcmp(&race,&raceBefore,sizeof(race))!=0)return 0;
+	/* A fresh allocation at independently selected large/thread/instance
+	 * indices replaces the stale root and produces the same logical values. */
+	SourceDriverAt(&f,0,1,3,4,0);f.tracker.driversInRaceOrder[0]=FLD(&f,0);
+	if(!MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&prelude)||
+		!MainCanonicalDrivers_ExtractRosterRace(&f.tracker,sd,&race)||
+		memcmp(&prelude,&preludeBefore,sizeof(prelude))!=0||memcmp(&race,&raceBefore,sizeof(race))!=0)return 0;
 	return 1;
 }
 static int ExactKnown(const DriverFunc table[13],uint8_t *id)
@@ -438,4 +489,4 @@ static int RaceProjectionTest(void)
 	return 1;
 }
 
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
