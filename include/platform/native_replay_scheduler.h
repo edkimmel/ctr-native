@@ -5,6 +5,7 @@
 
 #if defined(CTR_INTERNAL)
 struct NativeCanonicalStateV1;
+struct NativeIdentityV1;
 
 struct NativeReplaySchedulerFrameInfo
 {
@@ -34,8 +35,12 @@ int NativeReplayScheduler_RequestStop(void);
 int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo *info);
 /* False for all presently selectable normal/v1 replay modes. */
 int NativeReplayScheduler_RequiresCanonicalState(void);
+/* v2 never mixes quickstate restoration with its frame-zero checkpoint. */
+int NativeReplayScheduler_SuppressesQuickState(void);
 /* Available only for a required canonical frame, after BeginFrame succeeds. */
 int NativeReplayScheduler_GetCanonicalReplayFrame(u32 *replayFrame);
+/* v2 caches the gated identity at configuration/start; it never re-hashes in MainMain. */
+int NativeReplayScheduler_GetCanonicalIdentity(struct NativeIdentityV1 *identity);
 int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedVBlanks);
 int NativeReplayScheduler_ConsumeFrameElapsedTimeMS(int *elapsedTimeMS);
 /* The canonical record is value-validated/copied synchronously if required. */

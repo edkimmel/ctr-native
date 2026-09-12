@@ -34,7 +34,49 @@ static int TestRequirementModes(void)
 	CHECK(!NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_ARMED_V1));
 	CHECK(!NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V1));
 	CHECK(!NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V1));
-	CHECK(NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_FUTURE_V2_TEST));
+	CHECK(!NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_ARMED_V2));
+	CHECK(NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V2));
+	CHECK(NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V2));
+	return 0;
+}
+
+static int Parse(int argc, char **argv, struct NativeReplaySchedulerArgs *args)
+{
+	memset(args, 0xa5, sizeof(*args));
+	return NativeReplayScheduler_ParseArgs(argc, argv, args);
+}
+
+static int TestCliMatrix(void)
+{
+	struct NativeReplaySchedulerArgs args;
+	char *normal[] = { "ctr_native" };
+	char *record[] = { "ctr_native", "--record" };
+	char *recordV2[] = { "ctr_native", "--record-v2", "--toggle" };
+	char *replay[] = { "ctr_native", "--replay", "input.ctrreplay", "--replay-bypass-header" };
+	char *replayV2[] = { "ctr_native", "--replay-v2", "input.v2.ctrreplay" };
+	char *conflict[] = { "ctr_native", "--record", "--replay-v2", "x" };
+	char *missing[] = { "ctr_native", "--replay-v2" };
+	char *missingOption[] = { "ctr_native", "--replay", "--toggle" };
+	char *v2Detailed[] = { "ctr_native", "--record-v2", "--detailed" };
+	char *replayToggle[] = { "ctr_native", "--replay-v2", "x", "--toggle" };
+	char *v2Bypass[] = { "ctr_native", "--replay-v2", "x", "--replay-bypass-header" };
+
+	CHECK(Parse(1, normal, &args));
+	CHECK(args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_NONE && args.replayPath == NULL);
+	CHECK(Parse(2, record, &args));
+	CHECK(args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V1 && !args.toggle && !args.detailed);
+	CHECK(Parse(3, recordV2, &args));
+	CHECK(args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V2 && args.toggle);
+	CHECK(Parse(4, replay, &args));
+	CHECK(args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V1 && strcmp(args.replayPath, "input.ctrreplay") == 0 && args.bypassHeaderIdentity);
+	CHECK(Parse(3, replayV2, &args));
+	CHECK(args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V2 && strcmp(args.replayPath, "input.v2.ctrreplay") == 0);
+	CHECK(!Parse(4, conflict, &args));
+	CHECK(!Parse(2, missing, &args));
+	CHECK(!Parse(3, missingOption, &args));
+	CHECK(!Parse(3, v2Detailed, &args));
+	CHECK(!Parse(4, replayToggle, &args));
+	CHECK(!Parse(4, v2Bypass, &args));
 	return 0;
 }
 
@@ -71,7 +113,7 @@ static int TestAtomicCopyGate(void)
 
 int main(void)
 {
-	if ((TestRequirementModes() != 0) || (TestAtomicCopyGate() != 0)) return 1;
+	if ((TestRequirementModes() != 0) || (TestCliMatrix() != 0) || (TestAtomicCopyGate() != 0)) return 1;
 	puts("native_replay_scheduler_seam_test: passed");
 	return 0;
 }

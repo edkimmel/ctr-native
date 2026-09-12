@@ -3,16 +3,39 @@
 
 #include "platform/native_canonical_state.h"
 
-/* Current scheduler modes are all v1/normal.  The test-only future mode
- * documents the required completeness gate without enabling v2 transport. */
+/* The scheduler owns transport; this seam only states which modes must supply
+ * an already-projected, complete canonical value at EndFrame. */
 enum NativeReplaySchedulerCanonicalMode
 {
 	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_NONE = 0,
 	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_ARMED_V1,
 	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V1,
 	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V1,
-	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_FUTURE_V2_TEST
+	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_ARMED_V2,
+	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V2,
+	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V2
 };
+
+enum NativeReplaySchedulerSelector
+{
+	NATIVE_REPLAY_SCHEDULER_SELECTOR_NONE = 0,
+	NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V1,
+	NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V1,
+	NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V2,
+	NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V2
+};
+
+struct NativeReplaySchedulerArgs
+{
+	enum NativeReplaySchedulerSelector selector;
+	const char *replayPath;
+	int toggle;
+	int detailed;
+	int bypassHeaderIdentity;
+};
+
+/* Pure parser: it neither opens files nor requests deterministic identity. */
+int NativeReplayScheduler_ParseArgs(int argc, char **argv, struct NativeReplaySchedulerArgs *args);
 
 int NativeReplayScheduler_ModeRequiresCanonicalState(enum NativeReplaySchedulerCanonicalMode mode);
 

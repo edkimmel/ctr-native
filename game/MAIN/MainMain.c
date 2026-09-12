@@ -359,7 +359,6 @@ u32 main(void)
 			// Process all gamepad input
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 			canonicalInputFrozen = 0;
-			canonicalRequired = NativeReplayScheduler_RequiresCanonicalState();
 			{
 				struct NativeReplaySchedulerFrameInfo replayFrameInfo = MainReplayScheduler_FrameInfo(gGT);
 
@@ -367,9 +366,16 @@ u32 main(void)
 				{
 					return 0;
 				}
-				NativeSaveState_BeginFrame();
+				/* v2 owns a bootstrap checkpoint and cannot mix it with quickstate. */
+				if (NativeReplayScheduler_SuppressesQuickState() == 0)
+				{
+					NativeSaveState_BeginFrame();
+				}
 				gGT = sdata->gGT;
 				gGS = sdata->gGamepads;
+				/* Must be evaluated after BeginFrame: an armed v2 start becomes
+				 * RECORD_V2 here and needs canonical replay frame zero. */
+				canonicalRequired = NativeReplayScheduler_RequiresCanonicalState();
 				if ((canonicalRequired != 0) && !NativeReplayScheduler_GetCanonicalReplayFrame(&canonicalReplayFrame))
 				{
 					return 0;
@@ -508,11 +514,11 @@ u32 main(void)
 				struct NativeIdentityV1 identity;
 				const struct NativeCanonicalStateV1 *canonicalStateArg = NULL;
 
-				/* Identity is requested only by a future canonical scheduler mode;
-				 * ordinary startup and v1 never trigger lazy disc hashing. */
+				/* Scheduler cached the v2 identity after asset initialization.  Never
+				 * trigger lazy content hashing from the per-frame projector. */
 				if (canonicalRequired != 0)
 				{
-					if ((canonicalInputFrozen == 0) || !NativeIdentity_Get(&identity) ||
+					if ((canonicalInputFrozen == 0) || !NativeReplayScheduler_GetCanonicalIdentity(&identity) ||
 					    !MainCanonicalState_ProjectLive(&canonicalState, &identity, &replayFrameInfo, gGT, &canonicalInput, canonicalReplayFrame))
 					{
 						return 0;

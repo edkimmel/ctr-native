@@ -223,6 +223,7 @@ static int TestRecordSequenceAndStickyFailure(void)
 	CHECK(NativeReplayV2Record_Open(&record, path, &identity));
 	CHECK(FillFrame(&record.header, 1, &frame));
 	CHECK(!NativeReplayV2Record_AppendFrame(&record, &frame));
+	CHECK(record.nextFrame == 0 && record.header.frameCount == 0 && record.failed != 0);
 	CHECK(!NativeReplayV2Record_AppendFrame(&record, &frame));
 	CHECK(!NativeReplayV2Record_Finalize(&record));
 	NativeReplayV2Record_Close(&record); NativeReplayV2Record_Close(&record);
@@ -231,6 +232,21 @@ static int TestRecordSequenceAndStickyFailure(void)
 	CHECK(!NativeReplayV2_StreamSize(&overflow, &(size_t){0}));
 	NativeReplayV2Record_Init(&record);
 	CHECK(!NativeReplayV2Record_Open(&record, "", &identity));
+	return 0;
+}
+
+static int TestIdentityGateDoesNotCreateFile(void)
+{
+	char path[NATIVE_REPLAY_V2_TEST_PATH_BYTES];
+	struct NativeReplayV2RecordSession record;
+	FILE *file;
+
+	CHECK(MakePath(path));
+	NativeReplayV2Record_Init(&record);
+	CHECK(!NativeReplayV2Record_Open(&record, path, NULL));
+	file = fopen(path, "rb");
+	CHECK(file == NULL);
+	NativeReplayV2Record_Close(&record);
 	return 0;
 }
 
@@ -279,6 +295,7 @@ static int TestPlaybackPreflightAndFrameGates(void)
 	memset(&frame, 0xa5, sizeof(frame)); before = frame;
 	CHECK(NativeReplayV2Playback_ReadNext(&playback, &frame) == NATIVE_REPLAY_V2_READ_ERROR);
 	CHECK(memcmp(&frame, &before, sizeof(frame)) == 0);
+	CHECK(playback.nextFrame == 0 && playback.failed != 0);
 	CHECK(NativeReplayV2Playback_ReadNext(&playback, &frame) == NATIVE_REPLAY_V2_READ_ERROR);
 	NativeReplayV2Playback_Close(&playback); CHECK(remove(path) == 0);
 
@@ -314,7 +331,8 @@ static int TestLengthBoundaries(void)
 
 int main(void)
 {
-	if ((TestEmptyOneManyRoundTrip() != 0) || (TestRecordSequenceAndStickyFailure() != 0) || (TestPlaybackPreflightAndFrameGates() != 0) ||
+	if ((TestEmptyOneManyRoundTrip() != 0) || (TestRecordSequenceAndStickyFailure() != 0) || (TestIdentityGateDoesNotCreateFile() != 0) ||
+	    (TestPlaybackPreflightAndFrameGates() != 0) ||
 	    (TestLengthBoundaries() != 0)) return 1;
 	puts("native_replay_v2_file_test: passed");
 	return 0;
