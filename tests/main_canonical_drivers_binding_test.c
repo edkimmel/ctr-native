@@ -1192,4 +1192,50 @@ static int PhysicsProjectionTest(void)
 		memcmp(value.physics,(struct NativeCanonicalDriverPhysicsV1[8]){{0}},sizeof(value.physics))!=0)return 0;
 	return 1;
 }
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());C(PhysicsProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
+static int AssemblySummaryEqual(const struct NativeCanonicalDriversV1 *a,const struct NativeCanonicalDriversV1 *b)
+{
+	if(a->version!=b->version||a->slotCount!=b->slotCount||a->presenceMask!=b->presenceMask||a->groupCount!=b->groupCount||a->rosterMetaDigest!=b->rosterMetaDigest||a->fullStreamDigest!=b->fullStreamDigest)return 0;
+	for(uint8_t slot=0;slot<8;slot++)if(a->slots[slot].slotDigest!=b->slots[slot].slotDigest||a->slots[slot].metaRaceDigest!=b->slots[slot].metaRaceDigest||a->slots[slot].physicsDynamicsDigest!=b->slots[slot].physicsDynamicsDigest||a->slots[slot].behaviorBotDigest!=b->slots[slot].behaviorBotDigest)return 0;
+	return 1;
+}
+static int AssemblyCandidateFromDetailed(const struct NativeCanonicalDriversDetailedV1 *detailed,struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *candidate)
+{
+	memset(candidate,0,sizeof(*candidate));candidate->roster.prelude=detailed->prelude;
+	for(uint8_t slot=0;slot<8;slot++)
+	{
+		candidate->meta[slot]=detailed->slots[slot].meta;candidate->race[slot]=detailed->slots[slot].race;candidate->physics[slot]=detailed->slots[slot].physics;
+		candidate->dynamics[slot]=detailed->slots[slot].dynamics;candidate->active[slot]=detailed->slots[slot].active;candidate->bot[slot]=detailed->slots[slot].bot;candidate->pendingDamage[slot]=detailed->slots[slot].pendingDamage;
+		if((detailed->prelude.presenceMask&(UINT32_C(1)<<slot))!=0){candidate->roster.kind[slot]=detailed->slots[slot].meta.driverKind;candidate->roster.behaviorID[slot]=detailed->slots[slot].meta.behaviorID;candidate->roster.threadBehaviorID[slot]=detailed->slots[slot].meta.threadBehaviorID;}
+	}
+	return 1;
+}
+static void AssemblyPresentSlot(struct NativeCanonicalDriversDetailedV1 *detailed,uint8_t slot,uint8_t kind)
+{
+	struct NativeCanonicalDriverSlotV1 *value=&detailed->slots[slot];
+	value->meta.present=1;value->meta.slotIndex=slot;value->meta.driverID=slot;value->meta.driverKind=kind;value->meta.behaviorID=1;
+	value->meta.threadBehaviorID=kind==NATIVE_CANONICAL_DRIVER_KIND_BOT?2:1;value->meta.kartState=0;
+	if(kind==NATIVE_CANONICAL_DRIVER_KIND_BOT)value->bot.botPath=0;
+}
+static int DetailedAssemblyTest(void)
+{
+	struct NativeCanonicalDriversDetailedV1 expected,rootless;struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate candidate,changed;
+	struct MainCanonicalDriversDetailedAssembly value,before,altered;struct NativeCanonicalDriversV1 fromStream;uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
+	NativeCanonicalDriversDetailedV1_Init(&expected);expected.prelude.presenceMask=UINT32_C(0x85);expected.prelude.raceOrderCount=3;expected.prelude.raceOrder[0]=0;expected.prelude.raceOrder[1]=2;expected.prelude.raceOrder[2]=7;expected.prelude.playerCount=2;expected.prelude.activeBotCount=1;expected.prelude.humanPlayerPositions[0]=3;expected.prelude.humanPlayerPositions[1]=6;expected.prelude.numLaps=3;
+	AssemblyPresentSlot(&expected,0,NATIVE_CANONICAL_DRIVER_KIND_HUMAN);AssemblyPresentSlot(&expected,2,NATIVE_CANONICAL_DRIVER_KIND_BOT);AssemblyPresentSlot(&expected,7,NATIVE_CANONICAL_DRIVER_KIND_HUMAN);
+	expected.slots[0].race.clockReceive=INT16_MIN;expected.slots[2].physics.velocity[1]=INT32_MAX;expected.slots[7].dynamics.zSpeed=INT32_MIN;expected.slots[7].pendingDamage.type=2;expected.slots[7].pendingDamage.attackerSlotPlusOne=1;expected.slots[7].pendingDamage.reason=6;
+	if(!NativeCanonicalDriversDetailedV1_Validate(&expected)||!AssemblyCandidateFromDetailed(&expected,&candidate)||!MainCanonicalDrivers_AssembleDetailed(&candidate,&value)||!EncodeDetailed(&value.detailed,bytes)||!NativeCanonicalDriversV1_FromNormativeStream(&fromStream,expected.prelude.presenceMask,bytes,sizeof(bytes))||!AssemblySummaryEqual(&value.summary,&fromStream)||memcmp(bytes+64,&(uint8_t){1},1)!=0||bytes[64+520u*2]!=1||bytes[64+520u*7]!=1)return 0;
+	/* Every detailed group remains localized; pending damage belongs to the
+	 * behavior/Bot group and must not perturb prior group digests. */
+	changed=candidate;changed.pendingDamage[7].reason=0;if(!MainCanonicalDrivers_AssembleDetailed(&changed,&altered)||value.summary.slots[7].metaRaceDigest!=altered.summary.slots[7].metaRaceDigest||value.summary.slots[7].physicsDynamicsDigest!=altered.summary.slots[7].physicsDynamicsDigest||value.summary.slots[7].behaviorBotDigest==altered.summary.slots[7].behaviorBotDigest||value.summary.fullStreamDigest==altered.summary.fullStreamDigest)return 0;
+	changed=candidate;changed.roster.prelude.numLaps=4;if(!MainCanonicalDrivers_AssembleDetailed(&changed,&altered)||value.summary.rosterMetaDigest==altered.summary.rosterMetaDigest||value.summary.slots[0].physicsDynamicsDigest!=altered.summary.slots[0].physicsDynamicsDigest)return 0;
+	before=value;
+	#define FAIL_ASSEMBLY(change) do{changed=candidate;change;if(MainCanonicalDrivers_AssembleDetailed(&changed,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;}while(0)
+	FAIL_ASSEMBLY(changed.meta[1].present=1);FAIL_ASSEMBLY(changed.race[1].clockReceive=1);FAIL_ASSEMBLY(changed.physics[1].velocity[0]=1);FAIL_ASSEMBLY(changed.dynamics[1].field[0]=1);FAIL_ASSEMBLY(changed.active[1].unionTag=1);FAIL_ASSEMBLY(changed.bot[1].botPath=1);FAIL_ASSEMBLY(changed.pendingDamage[1].type=2);FAIL_ASSEMBLY(changed.meta[7].slotIndex=6);FAIL_ASSEMBLY(changed.meta[2].driverKind=NATIVE_CANONICAL_DRIVER_KIND_HUMAN);FAIL_ASSEMBLY(changed.meta[0].behaviorID=2);FAIL_ASSEMBLY(changed.meta[0].threadBehaviorID=2);FAIL_ASSEMBLY(changed.roster.kind[1]=1);FAIL_ASSEMBLY(changed.roster.prelude.slotCount=7);
+	if(MainCanonicalDrivers_AssembleDetailed(NULL,&value)||memcmp(&value,&before,sizeof(value))!=0||MainCanonicalDrivers_AssembleDetailed(&candidate,NULL))return 0;
+	#undef FAIL_ASSEMBLY
+	NativeCanonicalDriversDetailedV1_Init(&rootless);rootless.prelude.numLaps=0;if(!AssemblyCandidateFromDetailed(&rootless,&candidate)||!MainCanonicalDrivers_AssembleDetailed(&candidate,&value)||value.summary.presenceMask!=0||value.summary.fullStreamDigest!=UINT64_C(0x9f69914569690453)||value.summary.slots[0].slotDigest!=UINT64_C(0x7270ce3a3ef261c5)||value.detailed.prelude.slotCount!=8)return 0;
+	/* The exact zero-root output is stable across independently initialized inputs. */
+	if(!AssemblyCandidateFromDetailed(&rootless,&changed)||!MainCanonicalDrivers_AssembleDetailed(&changed,&altered)||!AssemblySummaryEqual(&value.summary,&altered.summary))return 0;
+	return 1;
+}
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());C(PhysicsProjectionTest());C(DetailedAssemblyTest());puts("main_canonical_drivers_binding_test: passed");return 0;}

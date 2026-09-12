@@ -889,3 +889,39 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMetaPhysics(co
 		(!gGT->drivers[slot]||!MainCanonicalDrivers_ExtractPhysics(topologyContext,topologySnapshot,gGT,sourceData,gGT->drivers[slot],&candidate.physics[slot])))return 0;
 	*out=candidate;return 1;
 }
+
+int MainCanonicalDrivers_AssembleDetailed(
+	const struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *candidate,
+	struct MainCanonicalDriversDetailedAssembly *out)
+{
+	struct MainCanonicalDriversDetailedAssembly assembled;
+	if(!candidate||!out)return 0;
+	NativeCanonicalDriversDetailedV1_Init(&assembled.detailed);
+	assembled.detailed.prelude=candidate->roster.prelude;
+	for(uint8_t slot=0;slot<8;slot++)
+	{
+		struct NativeCanonicalDriverSlotV1 *target=&assembled.detailed.slots[slot];
+		uint32_t present=candidate->roster.prelude.presenceMask&(UINT32_C(1)<<slot);
+		/* These are individually named wire groups in their frozen order.  Do
+		 * not clear absent input: detailed validation must reject stale values. */
+		target->meta=candidate->meta[slot];
+		target->race=candidate->race[slot];
+		target->physics=candidate->physics[slot];
+		target->dynamics=candidate->dynamics[slot];
+		target->active=candidate->active[slot];
+		target->bot=candidate->bot[slot];
+		target->pendingDamage=candidate->pendingDamage[slot];
+		if(present!=0)
+		{
+			if(target->meta.present!=1||target->meta.slotIndex!=slot||
+				target->meta.driverKind!=candidate->roster.kind[slot]||
+				target->meta.behaviorID!=candidate->roster.behaviorID[slot]||
+				target->meta.threadBehaviorID!=candidate->roster.threadBehaviorID[slot])return 0;
+		}
+		else if(candidate->roster.kind[slot]!=0||candidate->roster.behaviorID[slot]!=0||candidate->roster.threadBehaviorID[slot]!=0)return 0;
+	}
+	if(!NativeCanonicalDriversDetailedV1_Validate(&assembled.detailed)||
+		!NativeCanonicalDriversDetailedV1_BuildSummary(&assembled.detailed,&assembled.summary))return 0;
+	*out=assembled;
+	return 1;
+}

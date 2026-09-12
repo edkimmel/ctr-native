@@ -78,6 +78,13 @@ struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidat
 	struct NativeCanonicalDriverMetaV1 meta[8];
 	struct NativeCanonicalDriverPhysicsV1 physics[8];
 };
+/* Complete but dormant DRIVERS value.  It is an assembly result only: no
+ * scheduler, replay, native state, or live publisher retains this object. */
+struct MainCanonicalDriversDetailedAssembly
+{
+	struct NativeCanonicalDriversDetailedV1 detailed;
+	struct NativeCanonicalDriversV1 summary;
+};
 
 /* Narrow dormant Meta foundation for one Driver whose large-stack root has
  * already passed the roster extractor's ownership gate.  This returns only
@@ -142,6 +149,11 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMetaPhysics(
 	const struct MainCanonicalTopologyContext *topologyContext,
 	const struct MainCanonicalTopologySnapshot *topologySnapshot,
 	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *out);
+/* Assembles an already successful Meta+Physics candidate into the frozen
+ * detailed stream and its digest summary.  The output is transactional. */
+int MainCanonicalDrivers_AssembleDetailed(
+	const struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *candidate,
+	struct MainCanonicalDriversDetailedAssembly *out);
 int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,
 	struct MainCanonicalDriversMetaFlags *out);
