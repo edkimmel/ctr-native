@@ -115,6 +115,7 @@
 #include "MAIN/MainInit.c"
 #include "MAIN/MainKillGame.c"
 #include "MAIN/MainLoadVLC.c"
+#include "MAIN/MainCanonicalDrivers.c"
 #include "MAIN/MainCanonicalState.c"
 #include "MAIN/MainMain.c"
 #include "MAIN/MainDB.c"
