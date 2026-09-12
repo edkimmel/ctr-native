@@ -13,6 +13,8 @@ static int TestEmptyGoldenAndRoundTrip(void)
 	struct NativeCanonicalDriversV1 drivers, decoded, untouched;
 	struct NativeCodecWriter writer;
 	struct NativeCodecReader reader;
+	struct NativeCodecWriter shortWriter;
+	struct NativeCodecReader shortReader;
 
 	CHECK(NativeCanonicalDriversV1_FromNormativeStream(&drivers, 0, stream));
 	CHECK(drivers.rosterMetaDigest == UINT64_C(0xb9b23f3a46fd0825));
@@ -30,6 +32,13 @@ static int TestEmptyGoldenAndRoundTrip(void)
 	CHECK(NativeCanonicalDriversV1_Decode(&reader, &decoded));
 	CHECK(reader.offset == sizeof(bytes));
 	CHECK(memcmp(&drivers, &decoded, sizeof(drivers)) == 0);
+	NativeCodecWriter_Init(&shortWriter, bytes, sizeof(bytes) - 1, NULL);
+	CHECK(!NativeCanonicalDriversV1_Encode(&shortWriter, &drivers));
+	CHECK(shortWriter.offset == 0 && shortWriter.failed == 0);
+	NativeCodecReader_Init(&shortReader, bytes, sizeof(bytes) - 1);
+	memset(&untouched, 0xa5, sizeof(untouched));
+	CHECK(!NativeCanonicalDriversV1_Decode(&shortReader, &untouched));
+	CHECK(shortReader.offset == 0 && shortReader.failed == 0 && ((const unsigned char *)&untouched)[0] == 0xa5);
 
 	memcpy(before, bytes, sizeof(bytes)); bytes[0] = 2;
 	NativeCodecReader_Init(&reader, bytes, sizeof(bytes)); memset(&untouched, 0xa5, sizeof(untouched));

@@ -212,8 +212,8 @@ void NativeCanonicalStateV1_Init(struct NativeCanonicalStateV1 *state)
 	}
 
 	memset(state, 0, sizeof(*state));
-	state->schemaVersion = NATIVE_CANONICAL_STATE_SCHEMA_VERSION;
-	state->replayFormatVersion = NATIVE_CANONICAL_REPLAY_FORMAT_VERSION;
+	state->schemaVersion = NATIVE_CANONICAL_STATE_SCHEMA_VERSION_V2;
+	state->replayFormatVersion = NATIVE_CANONICAL_REPLAY_FORMAT_VERSION_V2;
 	state->domainCount = NATIVE_CANONICAL_DOMAIN_COUNT;
 	state->input.padCount = NATIVE_CANONICAL_INPUT_PAD_COUNT;
 	(void)NativeCanonicalStateV1_ComputeDigests(state);
@@ -221,8 +221,8 @@ void NativeCanonicalStateV1_Init(struct NativeCanonicalStateV1 *state)
 
 int NativeCanonicalStateV1_Validate(const struct NativeCanonicalStateV1 *state)
 {
-	return (state != NULL) && (state->schemaVersion == NATIVE_CANONICAL_STATE_SCHEMA_VERSION) &&
-	       (state->replayFormatVersion == NATIVE_CANONICAL_REPLAY_FORMAT_VERSION) && (state->domainCount == NATIVE_CANONICAL_DOMAIN_COUNT) &&
+	return (state != NULL) && (state->schemaVersion == NATIVE_CANONICAL_STATE_SCHEMA_VERSION_V2) &&
+	       (state->replayFormatVersion == NATIVE_CANONICAL_REPLAY_FORMAT_VERSION_V2) && (state->domainCount == NATIVE_CANONICAL_DOMAIN_COUNT) &&
 	       (state->input.padCount == NATIVE_CANONICAL_INPUT_PAD_COUNT);
 }
 

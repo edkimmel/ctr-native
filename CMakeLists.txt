@@ -108,6 +108,15 @@ set_target_properties(ctr_native_canonical_drivers PROPERTIES
 target_include_directories(ctr_native_canonical_drivers PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_drivers PUBLIC ctr_native_canonical_codec)
 
+add_library(ctr_native_canonical_state_v3 STATIC platform/native_canonical_state_v3.c)
+set_target_properties(ctr_native_canonical_state_v3 PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_canonical_state_v3 PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_canonical_state_v3 PUBLIC ctr_native_canonical_drivers ctr_native_canonical_state)
+
 # The game-owned source is also unity-included by the executable.  This small
 # standalone target makes its explicit value projection directly testable.
 add_library(ctr_native_canonical_projector STATIC game/MAIN/MainCanonicalState.c)
@@ -138,6 +147,15 @@ set_target_properties(ctr_native_replay_v2 PROPERTIES
 target_include_directories(ctr_native_replay_v2 PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_replay_v2 PUBLIC ctr_native_canonical_state)
 
+add_library(ctr_native_replay_v3 STATIC platform/native_replay_v3.c)
+set_target_properties(ctr_native_replay_v3 PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_replay_v3 PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_replay_v3 PUBLIC ctr_native_canonical_state_v3)
+
 add_library(ctr_native_replay_v2_file STATIC platform/native_replay_v2_file.c)
 set_target_properties(ctr_native_replay_v2_file PROPERTIES
     C_STANDARD 17
@@ -146,6 +164,15 @@ set_target_properties(ctr_native_replay_v2_file PROPERTIES
 )
 target_include_directories(ctr_native_replay_v2_file PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_replay_v2_file PUBLIC ctr_native_replay_v2)
+
+add_library(ctr_native_replay_v3_file STATIC platform/native_replay_v3_file.c)
+set_target_properties(ctr_native_replay_v3_file PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_replay_v3_file PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_replay_v3_file PUBLIC ctr_native_replay_v3)
 
 # SDL3
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
@@ -298,6 +325,15 @@ if(BUILD_TESTING)
     target_link_libraries(native_canonical_drivers_test PRIVATE ctr_native_canonical_drivers)
     add_test(NAME native_canonical_drivers_unit COMMAND $<TARGET_FILE:native_canonical_drivers_test>)
 
+    add_executable(native_canonical_state_v3_test tests/native_canonical_state_v3_test.c)
+    set_target_properties(native_canonical_state_v3_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_canonical_state_v3_test PRIVATE ctr_native_canonical_state_v3)
+    add_test(NAME native_canonical_state_v3_unit COMMAND $<TARGET_FILE:native_canonical_state_v3_test>)
+
     add_executable(native_canonical_projector_test tests/native_canonical_projector_test.c)
     set_target_properties(native_canonical_projector_test PROPERTIES
         C_STANDARD 17
@@ -325,6 +361,15 @@ if(BUILD_TESTING)
     target_link_libraries(native_replay_v2_test PRIVATE ctr_native_replay_v2)
     add_test(NAME native_replay_v2_unit COMMAND $<TARGET_FILE:native_replay_v2_test>)
 
+    add_executable(native_replay_v3_test tests/native_replay_v3_test.c)
+    set_target_properties(native_replay_v3_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_replay_v3_test PRIVATE ctr_native_replay_v3)
+    add_test(NAME native_replay_v3_unit COMMAND $<TARGET_FILE:native_replay_v3_test>)
+
     add_executable(native_replay_v2_file_test tests/native_replay_v2_file_test.c)
     set_target_properties(native_replay_v2_file_test PROPERTIES
         C_STANDARD 17
@@ -333,6 +378,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_replay_v2_file_test PRIVATE ctr_native_replay_v2_file)
     add_test(NAME native_replay_v2_file_unit COMMAND $<TARGET_FILE:native_replay_v2_file_test>)
+
+    add_executable(native_replay_v3_file_test tests/native_replay_v3_file_test.c)
+    set_target_properties(native_replay_v3_file_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_replay_v3_file_test PRIVATE ctr_native_replay_v3_file)
+    add_test(NAME native_replay_v3_file_unit COMMAND $<TARGET_FILE:native_replay_v3_file_test>)
 
     add_executable(native_identity_test
         tests/native_identity_test.c

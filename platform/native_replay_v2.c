@@ -100,8 +100,8 @@ int NativeReplayV2Header_Encode(struct NativeCodecWriter *writer, const struct N
 	if (!NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_FILE_MAGIC) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_FORMAT_VERSION) ||
 	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_HEADER_BYTES) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_FRAME_BYTES) ||
 	    !NativeCodecWriter_WriteU32(&encoded, header->flags) || !NativeCodecWriter_WriteU32(&encoded, header->frameCount) ||
-	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_CANONICAL_STATE_SCHEMA_VERSION) ||
-	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_CANONICAL_REPLAY_FORMAT_VERSION) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_CANONICAL_DOMAIN_COUNT) ||
+	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_CANONICAL_STATE_SCHEMA_VERSION_V2) ||
+	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_CANONICAL_REPLAY_FORMAT_VERSION_V2) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_CANONICAL_DOMAIN_COUNT) ||
 	    !NativeCodecWriter_WriteU32(&encoded, (uint32_t)NativeCanonicalStateV1_EncodedSize()) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_PROFILE_NTSC_U) ||
 	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_TICK_RATE) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_ELAPSED_TICK_MS) ||
 	    !NativeCodecWriter_WriteU64(&encoded, NATIVE_REPLAY_V2_VBLANK_CYCLES) || !NativeCodecWriter_WriteU64(&encoded, NATIVE_REPLAY_V2_GPU_CLOCK_HZ) ||
@@ -131,7 +131,7 @@ int NativeReplayV2Header_Decode(struct NativeCodecReader *reader, const struct N
 	decoded.frameCount = values[5];
 	if ((values[0] != NATIVE_REPLAY_V2_FILE_MAGIC) || (values[1] != NATIVE_REPLAY_V2_FORMAT_VERSION) || (values[2] != NATIVE_REPLAY_V2_HEADER_BYTES) ||
 	    (values[3] != NATIVE_REPLAY_V2_FRAME_BYTES) || ((values[4] & ~NATIVE_REPLAY_V2_HEADER_KNOWN_FLAGS) != 0) ||
-	    (values[6] != NATIVE_CANONICAL_STATE_SCHEMA_VERSION) || (values[7] != NATIVE_CANONICAL_REPLAY_FORMAT_VERSION) ||
+	    (values[6] != NATIVE_CANONICAL_STATE_SCHEMA_VERSION_V2) || (values[7] != NATIVE_CANONICAL_REPLAY_FORMAT_VERSION_V2) ||
 	    (values[8] != NATIVE_CANONICAL_DOMAIN_COUNT) || (values[9] != NativeCanonicalStateV1_EncodedSize()) ||
 	    (values[10] != NATIVE_REPLAY_V2_PROFILE_NTSC_U) || (values[11] != NATIVE_REPLAY_V2_TICK_RATE) ||
 	    (values[12] != NATIVE_REPLAY_V2_ELAPSED_TICK_MS) ||

@@ -9,8 +9,12 @@
  * never serializes native objects: callers write each schema field directly.
  */
 
-#define NATIVE_CANONICAL_STATE_SCHEMA_VERSION UINT32_C(2)
-#define NATIVE_CANONICAL_REPLAY_FORMAT_VERSION UINT32_C(2)
+/* Generic constants name the current canonical transport.  Schema-2/v2 stays
+ * frozen under explicit compatibility names and is never reinterpreted. */
+#define NATIVE_CANONICAL_STATE_SCHEMA_VERSION_V2 UINT32_C(2)
+#define NATIVE_CANONICAL_REPLAY_FORMAT_VERSION_V2 UINT32_C(2)
+#define NATIVE_CANONICAL_STATE_SCHEMA_VERSION UINT32_C(3)
+#define NATIVE_CANONICAL_REPLAY_FORMAT_VERSION UINT32_C(3)
 
 /*
  * Persisted canonical-state and replay-v2 digests use FNV-1a 64.  Changing
