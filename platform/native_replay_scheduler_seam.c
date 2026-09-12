@@ -7,7 +7,7 @@ int NativeReplayScheduler_ModeRequiresCanonicalState(enum NativeReplaySchedulerC
 	return mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_FUTURE_V2_TEST;
 }
 
-int NativeReplayScheduler_CopyCanonicalEndState(int required, const struct NativeCanonicalStateV1 *source,
+int NativeReplayScheduler_CopyCanonicalEndState(int required, uint32_t expectedReplayFrame, const struct NativeCanonicalStateV1 *source,
                                                 struct NativeCanonicalStateV1 *destination)
 {
 	struct NativeCanonicalStateV1 candidate;
@@ -16,7 +16,7 @@ int NativeReplayScheduler_CopyCanonicalEndState(int required, const struct Nativ
 	{
 		return 1;
 	}
-	if ((source == NULL) || (destination == NULL) || !NativeCanonicalStateV1_Validate(source))
+	if ((source == NULL) || (destination == NULL) || (source->frameNumber != expectedReplayFrame) || !NativeCanonicalStateV1_Validate(source))
 	{
 		return 0;
 	}

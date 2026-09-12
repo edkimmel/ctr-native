@@ -46,15 +46,22 @@ static int TestAtomicCopyGate(void)
 
 	MakeState(&source);
 	memset(&destination, 0xa5, sizeof(destination)); before = destination;
-	CHECK(NativeReplayScheduler_CopyCanonicalEndState(0, NULL, NULL));
+	CHECK(NativeReplayScheduler_CopyCanonicalEndState(0, 0u, NULL, NULL));
 	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
-	CHECK(!NativeReplayScheduler_CopyCanonicalEndState(1, NULL, &destination));
-	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
-	source.domainDigests[0] ^= 1;
-	CHECK(!NativeReplayScheduler_CopyCanonicalEndState(1, &source, &destination));
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndState(1, 77u, NULL, &destination));
 	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
 	source.domainDigests[0] ^= 1;
-	CHECK(NativeReplayScheduler_CopyCanonicalEndState(1, &source, &destination));
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndState(1, 77u, &source, &destination));
+	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
+	source.domainDigests[0] ^= 1;
+	source.frameNumber = 76u;
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndState(1, 77u, &source, &destination));
+	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
+	source.frameNumber = 78u;
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndState(1, 77u, &source, &destination));
+	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
+	source.frameNumber = 77u;
+	CHECK(NativeReplayScheduler_CopyCanonicalEndState(1, 77u, &source, &destination));
 	CHECK(destination.frameNumber == source.frameNumber && destination.combinedDigest == source.combinedDigest &&
 	      memcmp(destination.identity.build, source.identity.build, NATIVE_IDENTITY_DIGEST_BYTES) == 0);
 	source.control.gameMode1++;

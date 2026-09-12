@@ -129,6 +129,8 @@ global_variable s32 s_memcardSandboxActive;
 global_variable s32 s_recordStartDeferredLogged;
 global_variable struct NativeCanonicalStateV1 s_pendingCanonicalState;
 global_variable s32 s_pendingCanonicalStateValid;
+global_variable u32 s_canonicalExpectedReplayFrame;
+global_variable s32 s_canonicalExpectedReplayFrameCaptured;
 
 internal void NativeReplayScheduler_ResetVSyncPackets(void)
 {
@@ -147,6 +149,7 @@ internal void NativeReplayScheduler_ResetSessionState(void)
 	s_stopRequested = 0;
 	s_recordStartDeferredLogged = 0;
 	s_pendingCanonicalStateValid = 0;
+	s_canonicalExpectedReplayFrameCaptured = 0;
 	NativeReplayScheduler_ResetVSyncPackets();
 }
 
@@ -1440,6 +1443,8 @@ int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo
 	{
 		return 0;
 	}
+	/* Captured by GetCanonicalReplayFrame after a successful BeginFrame. */
+	s_canonicalExpectedReplayFrameCaptured = 0;
 
 	if (s_mode == NATIVE_REPLAY_MODE_ARMED)
 	{
@@ -1545,6 +1550,21 @@ int NativeReplayScheduler_RequiresCanonicalState(void)
 	}
 }
 
+int NativeReplayScheduler_GetCanonicalReplayFrame(u32 *replayFrame)
+{
+	if ((replayFrame == NULL) || (s_beginOpen == 0) || (NativeReplayScheduler_RequiresCanonicalState() == 0))
+	{
+		return 0;
+	}
+	if (s_canonicalExpectedReplayFrameCaptured == 0)
+	{
+		s_canonicalExpectedReplayFrame = s_replayFrame;
+		s_canonicalExpectedReplayFrameCaptured = 1;
+	}
+	*replayFrame = s_canonicalExpectedReplayFrame;
+	return 1;
+}
+
 int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedVBlanks)
 {
 	if ((s_mode != NATIVE_REPLAY_MODE_PLAYBACK) || (s_beginOpen == 0) || (emittedVBlanks == NULL))
@@ -1629,7 +1649,12 @@ int NativeReplayScheduler_EndFrame(const struct NativeReplaySchedulerFrameInfo *
 	}
 
 	canonicalRequired = NativeReplayScheduler_RequiresCanonicalState();
-	if (!NativeReplayScheduler_CopyCanonicalEndState(canonicalRequired, canonicalState,
+	if ((canonicalRequired != 0) && (s_canonicalExpectedReplayFrameCaptured == 0))
+	{
+		Platform_Log("[CTR Replay] canonical replay frame was not captured\n");
+		return 1;
+	}
+	if (!NativeReplayScheduler_CopyCanonicalEndState(canonicalRequired, s_canonicalExpectedReplayFrame, canonicalState,
 	                                                 canonicalRequired ? &s_pendingCanonicalState : NULL))
 	{
 		Platform_Log("[CTR Replay] canonical state is incomplete at replay frame %u\n", s_replayFrame);
@@ -1673,6 +1698,7 @@ int NativeReplayScheduler_EndFrame(const struct NativeReplaySchedulerFrameInfo *
 		}
 		s_replayFrame++;
 		s_beginOpen = 0;
+		s_canonicalExpectedReplayFrameCaptured = 0;
 		s_frameTimingConsumed = 0;
 		NativeReplayScheduler_ResetVSyncPackets();
 
@@ -1696,6 +1722,7 @@ int NativeReplayScheduler_EndFrame(const struct NativeReplaySchedulerFrameInfo *
 
 		s_replayFrame++;
 		s_beginOpen = 0;
+		s_canonicalExpectedReplayFrameCaptured = 0;
 		s_frameTimingConsumed = 0;
 		NativeReplayScheduler_ResetVSyncPackets();
 	}

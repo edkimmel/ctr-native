@@ -16,9 +16,9 @@ enum NativeReplaySchedulerCanonicalMode
 
 int NativeReplayScheduler_ModeRequiresCanonicalState(enum NativeReplaySchedulerCanonicalMode mode);
 
-/* Validates and value-copies the complete record before EndFrame proceeds.
+/* Validates the exact expected replay frame and value-copies the complete record before EndFrame proceeds.
  * A mode that does not require canonical state accepts NULL and copies nothing. */
-int NativeReplayScheduler_CopyCanonicalEndState(int required, const struct NativeCanonicalStateV1 *source,
+int NativeReplayScheduler_CopyCanonicalEndState(int required, uint32_t expectedReplayFrame, const struct NativeCanonicalStateV1 *source,
                                                 struct NativeCanonicalStateV1 *destination);
 
 #endif

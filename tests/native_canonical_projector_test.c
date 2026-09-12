@@ -77,13 +77,14 @@ static int TestFreezeAndProjection(void)
 	rng.advRng1 = UINT32_C(0x01234567);
 	FillIdentity(&identity);
 
-	CHECK(MainCanonicalState_ProjectV1(&state, &identity, 123u, &control, &rng, &frozen));
+	/* Replay indexing is owned by the scheduler and need not equal game time. */
+	CHECK(MainCanonicalState_ProjectV1(&state, &identity, UINT32_C(0x40000007), &control, &rng, &frozen));
 	CHECK(NativeCanonicalStateV1_Validate(&state));
-	CHECK(state.frameNumber == 123u && state.control.gameMode1 == 0x1020 && state.control.gameMode2 == -0x3040);
+	CHECK(state.frameNumber == UINT32_C(0x40000007) && state.control.gameMode1 == 0x1020 && state.control.gameMode2 == -0x3040);
 	CHECK(state.rng.mixRandomNumber == UINT32_C(0x11223344) && state.rng.deadcoed1 == UINT32_C(0x99aabbcc) &&
 	      state.rng.advRng1 == UINT32_C(0x01234567));
 	CHECK(state.input.pads[3].id == 0x33 && state.input.pads[3].analog[2] == 0x6e);
-	CHECK(MainCanonicalState_ProjectV1(&sameState, &identity, 123u, &control, &rng, &frozenDifferentReserved));
+	CHECK(MainCanonicalState_ProjectV1(&sameState, &identity, UINT32_C(0x40000007), &control, &rng, &frozenDifferentReserved));
 	CHECK(state.domainDigests[NATIVE_CANONICAL_DOMAIN_INPUT - 1u] == sameState.domainDigests[NATIVE_CANONICAL_DOMAIN_INPUT - 1u]);
 	CHECK(state.combinedDigest == sameState.combinedDigest);
 	return 0;

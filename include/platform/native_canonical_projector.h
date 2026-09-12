@@ -17,7 +17,7 @@ int MainCanonicalState_FreezeInputV1(struct NativeCanonicalInputV1 *input,
  * field-by-field so this code never discovers native layout or follows game
  * pointers.  The result is committed only after digest computation succeeds.
  */
-int MainCanonicalState_ProjectV1(struct NativeCanonicalStateV1 *state, const struct NativeIdentityV1 *identity, uint32_t frameNumber,
+int MainCanonicalState_ProjectV1(struct NativeCanonicalStateV1 *state, const struct NativeIdentityV1 *identity, uint32_t replayFrameNumber,
                                  const struct NativeCanonicalControlV1 *control, const struct NativeCanonicalRngV1 *rng,
                                  const struct NativeCanonicalInputV1 *input);
 

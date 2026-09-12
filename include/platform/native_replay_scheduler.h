@@ -34,6 +34,8 @@ int NativeReplayScheduler_RequestStop(void);
 int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo *info);
 /* False for all presently selectable normal/v1 replay modes. */
 int NativeReplayScheduler_RequiresCanonicalState(void);
+/* Available only for a required canonical frame, after BeginFrame succeeds. */
+int NativeReplayScheduler_GetCanonicalReplayFrame(u32 *replayFrame);
 int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedVBlanks);
 int NativeReplayScheduler_ConsumeFrameElapsedTimeMS(int *elapsedTimeMS);
 /* The canonical record is value-validated/copied synchronously if required. */

@@ -31,7 +31,7 @@ int MainCanonicalState_FreezeInputV1(struct NativeCanonicalInputV1 *input,
 	return 1;
 }
 
-int MainCanonicalState_ProjectV1(struct NativeCanonicalStateV1 *state, const struct NativeIdentityV1 *identity, uint32_t frameNumber,
+int MainCanonicalState_ProjectV1(struct NativeCanonicalStateV1 *state, const struct NativeIdentityV1 *identity, uint32_t replayFrameNumber,
                                  const struct NativeCanonicalControlV1 *control, const struct NativeCanonicalRngV1 *rng,
                                  const struct NativeCanonicalInputV1 *input)
 {
@@ -44,7 +44,7 @@ int MainCanonicalState_ProjectV1(struct NativeCanonicalStateV1 *state, const str
 	}
 
 	NativeCanonicalStateV1_Init(&candidate);
-	candidate.frameNumber = frameNumber;
+	candidate.frameNumber = replayFrameNumber;
 	memcpy(candidate.identity.build, identity->build, NATIVE_IDENTITY_DIGEST_BYTES);
 	memcpy(candidate.identity.content, identity->content, NATIVE_IDENTITY_DIGEST_BYTES);
 	candidate.control.frameTimer = control->frameTimer;

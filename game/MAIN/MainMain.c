@@ -55,7 +55,7 @@ static struct NativeReplaySchedulerFrameInfo MainReplayScheduler_FrameInfo(struc
 
 static int MainCanonicalState_ProjectLive(struct NativeCanonicalStateV1 *state, const struct NativeIdentityV1 *identity,
                                           const struct NativeReplaySchedulerFrameInfo *info, struct GameTracker *gGT,
-                                          const struct NativeCanonicalInputV1 *input)
+                                          const struct NativeCanonicalInputV1 *input, u32 replayFrameNumber)
 {
 	struct NativeCanonicalControlV1 control;
 	struct NativeCanonicalRngV1 rng;
@@ -82,7 +82,7 @@ static int MainCanonicalState_ProjectLive(struct NativeCanonicalStateV1 *state, 
 	rng.advRng0 = sdata->advRng.state0;
 	rng.advRng1 = sdata->advRng.state1;
 
-	return MainCanonicalState_ProjectV1(state, identity, (u32)info->frameCounter, &control, &rng, input);
+	return MainCanonicalState_ProjectV1(state, identity, replayFrameNumber, &control, &rng, input);
 }
 #endif
 
@@ -111,6 +111,7 @@ u32 main(void)
 	struct NativeCanonicalInputV1 canonicalInput;
 	s32 canonicalInputFrozen;
 	s32 canonicalRequired;
+	u32 canonicalReplayFrame;
 #endif
 
 	// NOTE(aalhendi): Retail main calls __main before the state loop. Native has
@@ -369,6 +370,10 @@ u32 main(void)
 				NativeSaveState_BeginFrame();
 				gGT = sdata->gGT;
 				gGS = sdata->gGamepads;
+				if ((canonicalRequired != 0) && !NativeReplayScheduler_GetCanonicalReplayFrame(&canonicalReplayFrame))
+				{
+					return 0;
+				}
 			}
 			{
 				struct NativePerfFrameInfo perfFrameInfo = MainPerf_FrameInfo(gGT);
@@ -508,7 +513,7 @@ u32 main(void)
 				if (canonicalRequired != 0)
 				{
 					if ((canonicalInputFrozen == 0) || !NativeIdentity_Get(&identity) ||
-					    !MainCanonicalState_ProjectLive(&canonicalState, &identity, &replayFrameInfo, gGT, &canonicalInput))
+					    !MainCanonicalState_ProjectLive(&canonicalState, &identity, &replayFrameInfo, gGT, &canonicalInput, canonicalReplayFrame))
 					{
 						return 0;
 					}
