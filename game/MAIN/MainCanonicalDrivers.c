@@ -1,8 +1,72 @@
+#include "common.h"
 #include "MainCanonicalDrivers.h"
 #include "functions.h"
-static void MainCanonicalDrivers_VerifiedSymbols(void);
-/* The 17 suffix templates are intentionally not bound until their audit is
- * recorded.  These verified queued-init/thread tokens are dormant only. */
-const struct NativeCanonicalDriverBehaviorRegistry *MainCanonicalDrivers_ProductionRegistry(void){return NULL;}
-int MainCanonicalDrivers_ResolveBehavior(const void *const table[13],uint8_t *out){(void)table;(void)out;return MAIN_CANONICAL_DRIVERS_NOT_CONFIGURED;}
-static void MainCanonicalDrivers_VerifiedSymbols(void){(void)VehPhysProc_Driving_Init;(void)VehStuckProc_RevEngine_Init;(void)VehPhysProc_FreezeEndEvent_Init;(void)VehStuckProc_Warp_Init;(void)VehStuckProc_RIP_Init;(void)VehStuckProc_Tumble_Init;(void)VehStuckProc_PlantEaten_Init;(void)VehPhysProc_SpinFirst_Init;(void)VehPhysProc_PowerSlide_InitSetUpdate;(void)VehPhysProc_SpinFirst_InitSetUpdate;(void)VehBirth_NullThread;(void)BOTS_ThTick_Drive;(void)BOTS_ThTick_RevEngine;}
+
+/* Object tokens are deliberately separate from function pointers. The typed
+ * matcher below is the only bridge from game callbacks to the portable codec. */
+#define TOKENS(X) \
+ X(none) X(driving_init) X(rev_init) X(freeze_init) X(warp_init) X(rip_init) X(tumble_init) X(plant_init) X(spin_init) X(drift_set_init) X(spin_set_init) \
+ X(driving_update) X(driving_linear) X(driving_audio) X(general_angular) X(apply_forces) X(moved_search) X(collide_drivers) X(fixed_search) X(jump_friction) X(translate) X(frame_driving) X(emitter) \
+ X(freeze_linear) X(freeze_update) X(freeze_reverse) X(drift_linear) X(drift_update) X(drift_angular) X(slam_update) X(slam_linear) X(slam_angular) X(slam_animate) X(spin_linear) X(spin_angular) X(frame_spinning) X(spin_update) X(last_update) X(last_linear) X(last_angular) X(frame_last) X(stop_update) X(stop_linear) X(stop_angular) X(stop_animate) X(mask_update) X(mask_linear) X(mask_animate) X(plant_update) X(plant_linear) X(plant_animate) X(rev_update) X(rev_linear) X(rev_animate) X(tumble_update) X(tumble_linear) X(tumble_angular) X(tumble_animate) X(warp_angular)
+#define DECLARE_TOKEN(name) static uint8_t token_##name;
+TOKENS(DECLARE_TOKEN)
+#define T(name) ((const void *)&token_##name)
+#define Z T(none)
+
+static const DriverFunc initFunctions[11]={NULL,VehPhysProc_Driving_Init,VehStuckProc_RevEngine_Init,VehPhysProc_FreezeEndEvent_Init,VehStuckProc_Warp_Init,VehStuckProc_RIP_Init,VehStuckProc_Tumble_Init,VehStuckProc_PlantEaten_Init,VehPhysProc_SpinFirst_Init,VehPhysProc_PowerSlide_InitSetUpdate,VehPhysProc_SpinFirst_InitSetUpdate};
+static const DriverFunc suffixFunctions[17][12]={
+ {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL},
+ {VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain},
+ {NULL,VehPhysProc_FreezeEndEvent_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain},
+ {VehPhysProc_FreezeVShift_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysProc_FreezeVShift_ReverseOneFrame,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain},
+ {NULL,VehPhysProc_PowerSlide_PhysLinear,VehPhysProc_Driving_Audio,VehPhysProc_PowerSlide_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain},
+ {VehPhysProc_PowerSlide_Update,VehPhysProc_PowerSlide_PhysLinear,VehPhysProc_Driving_Audio,VehPhysProc_PowerSlide_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain},
+ {VehPhysProc_SlamWall_Update,VehPhysProc_SlamWall_PhysLinear,VehPhysProc_Driving_Audio,VehPhysProc_SlamWall_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehPhysProc_SlamWall_Animate,VehEmitter_DriverMain},
+ {NULL,VehPhysProc_SpinFirst_PhysLinear,VehPhysProc_Driving_Audio,VehPhysProc_SpinFirst_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Spinning,VehEmitter_DriverMain},
+ {VehPhysProc_SpinFirst_Update,VehPhysProc_SpinFirst_PhysLinear,VehPhysProc_Driving_Audio,VehPhysProc_SpinFirst_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Spinning,VehEmitter_DriverMain},
+ {VehPhysProc_SpinLast_Update,VehPhysProc_SpinLast_PhysLinear,VehPhysProc_Driving_Audio,VehPhysProc_SpinLast_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_LastSpin,VehEmitter_DriverMain},
+ {VehPhysProc_SpinStop_Update,VehPhysProc_SpinStop_PhysLinear,VehPhysProc_Driving_Audio,VehPhysProc_SpinStop_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehPhysProc_SpinStop_Animate,VehEmitter_DriverMain},
+ {VehStuckProc_MaskGrab_Update,VehStuckProc_MaskGrab_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehStuckProc_MaskGrab_Animate,VehEmitter_DriverMain},
+ {VehStuckProc_PlantEaten_Update,VehStuckProc_PlantEaten_PhysLinear,VehPhysProc_Driving_Audio,NULL,NULL,NULL,NULL,NULL,NULL,NULL,VehStuckProc_PlantEaten_Animate,NULL},
+ {NULL,VehStuckProc_PlantEaten_PhysLinear,VehPhysProc_Driving_Audio,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL},
+ {VehStuckProc_RevEngine_Update,VehStuckProc_RevEngine_PhysLinear,VehPhysProc_Driving_Audio,NULL,NULL,NULL,NULL,NULL,NULL,VehPhysForce_TranslateMatrix,VehStuckProc_RevEngine_Animate,VehEmitter_DriverMain},
+ {VehStuckProc_Tumble_Update,VehStuckProc_Tumble_PhysLinear,VehPhysProc_Driving_Audio,VehStuckProc_Tumble_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehStuckProc_Tumble_Animate,VehEmitter_DriverMain},
+ {NULL,NULL,VehPhysProc_Driving_Audio,VehStuckProc_Warp_PhysAngular,NULL,NULL,NULL,NULL,NULL,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain}
+};
+static const struct NativeCanonicalDriverBehaviorRegistry productionRegistry={
+ {Z,T(driving_init),T(rev_init),T(freeze_init),T(warp_init),T(rip_init),T(tumble_init),T(plant_init),T(spin_init),T(drift_set_init),T(spin_set_init)},
+ {
+  {Z,Z,Z,Z,Z,Z,Z,Z,Z,Z,Z,Z},
+  {T(driving_update),T(driving_linear),T(driving_audio),T(general_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(jump_friction),T(translate),T(frame_driving),T(emitter)},
+  {Z,T(freeze_linear),T(driving_audio),T(general_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(jump_friction),T(translate),T(frame_driving),T(emitter)},
+  {T(freeze_update),T(driving_linear),T(driving_audio),T(general_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(freeze_reverse),T(translate),T(frame_driving),T(emitter)},
+  {Z,T(drift_linear),T(driving_audio),T(drift_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(jump_friction),T(translate),T(frame_driving),T(emitter)},
+  {T(drift_update),T(drift_linear),T(driving_audio),T(drift_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(jump_friction),T(translate),T(frame_driving),T(emitter)},
+  {T(slam_update),T(slam_linear),T(driving_audio),T(slam_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(jump_friction),T(translate),T(slam_animate),T(emitter)},
+  {Z,T(spin_linear),T(driving_audio),T(spin_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(jump_friction),T(translate),T(frame_spinning),T(emitter)},
+  {T(spin_update),T(spin_linear),T(driving_audio),T(spin_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(jump_friction),T(translate),T(frame_spinning),T(emitter)},
+  {T(last_update),T(last_linear),T(driving_audio),T(last_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(jump_friction),T(translate),T(frame_last),T(emitter)},
+  {T(stop_update),T(stop_linear),T(driving_audio),T(stop_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(jump_friction),T(translate),T(stop_animate),T(emitter)},
+  {T(mask_update),T(mask_linear),T(driving_audio),T(general_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(jump_friction),T(translate),T(mask_animate),T(emitter)},
+  {T(plant_update),T(plant_linear),T(driving_audio),Z,Z,Z,Z,Z,Z,Z,T(plant_animate),Z},
+  {Z,T(plant_linear),T(driving_audio),Z,Z,Z,Z,Z,Z,Z,Z,Z},
+  {T(rev_update),T(rev_linear),T(driving_audio),Z,Z,Z,Z,Z,Z,T(translate),T(rev_animate),T(emitter)},
+  {T(tumble_update),T(tumble_linear),T(driving_audio),T(tumble_angular),T(apply_forces),T(moved_search),T(collide_drivers),T(fixed_search),T(jump_friction),T(translate),T(tumble_animate),T(emitter)},
+  {Z,Z,T(driving_audio),T(warp_angular),Z,Z,Z,Z,Z,T(translate),T(frame_driving),T(emitter)}
+ }};
+
+static const void *TokenFor(DriverFunc f){
+ if(!f)return T(none);
+#define MATCH(fn,name) if(f==fn)return T(name)
+ MATCH(VehPhysProc_Driving_Init,driving_init);MATCH(VehStuckProc_RevEngine_Init,rev_init);MATCH(VehPhysProc_FreezeEndEvent_Init,freeze_init);MATCH(VehStuckProc_Warp_Init,warp_init);MATCH(VehStuckProc_RIP_Init,rip_init);MATCH(VehStuckProc_Tumble_Init,tumble_init);MATCH(VehStuckProc_PlantEaten_Init,plant_init);MATCH(VehPhysProc_SpinFirst_Init,spin_init);MATCH(VehPhysProc_PowerSlide_InitSetUpdate,drift_set_init);MATCH(VehPhysProc_SpinFirst_InitSetUpdate,spin_set_init);
+ MATCH(VehPhysProc_Driving_Update,driving_update);MATCH(VehPhysProc_Driving_PhysLinear,driving_linear);MATCH(VehPhysProc_Driving_Audio,driving_audio);MATCH(VehPhysGeneral_PhysAngular,general_angular);MATCH(VehPhysForce_OnApplyForces,apply_forces);MATCH(COLL_MOVED_PlayerSearch,moved_search);MATCH(VehPhysForce_CollideDrivers,collide_drivers);MATCH(COLL_FIXED_PlayerSearch,fixed_search);MATCH(VehPhysGeneral_JumpAndFriction,jump_friction);MATCH(VehPhysForce_TranslateMatrix,translate);MATCH(VehFrameProc_Driving,frame_driving);MATCH(VehEmitter_DriverMain,emitter);
+ MATCH(VehPhysProc_FreezeEndEvent_PhysLinear,freeze_linear);MATCH(VehPhysProc_FreezeVShift_Update,freeze_update);MATCH(VehPhysProc_FreezeVShift_ReverseOneFrame,freeze_reverse);MATCH(VehPhysProc_PowerSlide_PhysLinear,drift_linear);MATCH(VehPhysProc_PowerSlide_Update,drift_update);MATCH(VehPhysProc_PowerSlide_PhysAngular,drift_angular);MATCH(VehPhysProc_SlamWall_Update,slam_update);MATCH(VehPhysProc_SlamWall_PhysLinear,slam_linear);MATCH(VehPhysProc_SlamWall_PhysAngular,slam_angular);MATCH(VehPhysProc_SlamWall_Animate,slam_animate);MATCH(VehPhysProc_SpinFirst_PhysLinear,spin_linear);MATCH(VehPhysProc_SpinFirst_PhysAngular,spin_angular);MATCH(VehFrameProc_Spinning,frame_spinning);MATCH(VehPhysProc_SpinFirst_Update,spin_update);MATCH(VehPhysProc_SpinLast_Update,last_update);MATCH(VehPhysProc_SpinLast_PhysLinear,last_linear);MATCH(VehPhysProc_SpinLast_PhysAngular,last_angular);MATCH(VehFrameProc_LastSpin,frame_last);MATCH(VehPhysProc_SpinStop_Update,stop_update);MATCH(VehPhysProc_SpinStop_PhysLinear,stop_linear);MATCH(VehPhysProc_SpinStop_PhysAngular,stop_angular);MATCH(VehPhysProc_SpinStop_Animate,stop_animate);
+ MATCH(VehStuckProc_MaskGrab_Update,mask_update);MATCH(VehStuckProc_MaskGrab_PhysLinear,mask_linear);MATCH(VehStuckProc_MaskGrab_Animate,mask_animate);MATCH(VehStuckProc_PlantEaten_Update,plant_update);MATCH(VehStuckProc_PlantEaten_PhysLinear,plant_linear);MATCH(VehStuckProc_PlantEaten_Animate,plant_animate);MATCH(VehStuckProc_RevEngine_Update,rev_update);MATCH(VehStuckProc_RevEngine_PhysLinear,rev_linear);MATCH(VehStuckProc_RevEngine_Animate,rev_animate);MATCH(VehStuckProc_Tumble_Update,tumble_update);MATCH(VehStuckProc_Tumble_PhysLinear,tumble_linear);MATCH(VehStuckProc_Tumble_PhysAngular,tumble_angular);MATCH(VehStuckProc_Tumble_Animate,tumble_animate);MATCH(VehStuckProc_Warp_PhysAngular,warp_angular);
+ return NULL;
+}
+static int RegistrySelfTest(void){uint8_t id;for(uint8_t init=0;init<11;init++)for(uint8_t suffix=0;suffix<17;suffix++){const void*t[13];t[0]=TokenFor(initFunctions[init]);for(uint8_t n=0;n<12;n++)t[n+1]=TokenFor(suffixFunctions[suffix][n]);if(!NativeCanonicalDriverBehavior_Resolve(&productionRegistry,t,&id)||id!=(uint8_t)(suffix+17*init))return (int)(suffix+17*init+1);}return 0;}
+int MainCanonicalDrivers_ValidateProductionBinding(void){int failure;if(!NativeCanonicalDriverBehaviorRegistry_Validate(&productionRegistry))return -1;failure=RegistrySelfTest();return failure?-(failure+2):1;}
+const struct NativeCanonicalDriverBehaviorRegistry *MainCanonicalDrivers_ProductionRegistry(void){return MainCanonicalDrivers_ValidateProductionBinding()==1?&productionRegistry:NULL;}
+int MainCanonicalDrivers_ResolveBehavior(const DriverFunc table[13],uint8_t*out){const struct NativeCanonicalDriverBehaviorRegistry*r;const void*tokens[13];uint8_t id;if(!table||!out||(r=MainCanonicalDrivers_ProductionRegistry())==NULL)return MAIN_CANONICAL_DRIVERS_FAILURE;for(uint8_t n=0;n<13;n++)if((tokens[n]=TokenFor(table[n]))==NULL)return MAIN_CANONICAL_DRIVERS_FAILURE;if(!NativeCanonicalDriverBehavior_Resolve(r,tokens,&id))return MAIN_CANONICAL_DRIVERS_FAILURE;*out=id;return MAIN_CANONICAL_DRIVERS_OK;}
+int MainCanonicalDrivers_ResolveThread(void (*thread)(struct Thread *),uint8_t*out){uint8_t id;if(!out)return 0;if(!thread)id=0;else if(thread==VehBirth_NullThread)id=1;else if(thread==BOTS_ThTick_Drive)id=2;else if(thread==BOTS_ThTick_RevEngine)id=3;else return 0;*out=id;return 1;}
+int MainCanonicalDrivers_ProjectPrelude(const struct NativeCanonicalDriversRosterInput*input,const DriverFunc tables[8][13],void (*const threads[8])(struct Thread *),struct NativeCanonicalDriversRosterCandidate*out){struct NativeCanonicalDriversRosterInput local;struct NativeCanonicalDriversRosterCandidate candidate;if(!input||!tables||!threads||!out)return 0;local=*input;for(uint8_t n=0;n<8;n++)if(local.slots[n].present==1){if(!MainCanonicalDrivers_ResolveBehavior(tables[n],&local.slots[n].behaviorID)||!MainCanonicalDrivers_ResolveThread(threads[n],&local.slots[n].threadBehaviorID))return 0;}if(!NativeCanonicalDriversRoster_Normalize(&local,&candidate))return 0;*out=candidate;return 1;}

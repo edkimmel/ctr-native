@@ -732,6 +732,9 @@ void VehPhysProc_Driving_Init(struct Thread *t, struct Driver *d);
 void VehPhysProc_FreezeEndEvent_PhysLinear(struct Thread *t, struct Driver *d);
 void VehPhysProc_FreezeEndEvent_Init(struct Thread *t, struct Driver *d);
 void VehStuckProc_PlantEaten_Init(struct Thread *t, struct Driver *d);
+void VehStuckProc_PlantEaten_Update(struct Thread *t, struct Driver *d);
+void VehStuckProc_PlantEaten_PhysLinear(struct Thread *t, struct Driver *d);
+void VehStuckProc_PlantEaten_Animate(struct Thread *t, struct Driver *d);
 void VehStuckProc_RIP_Init(struct Thread *t, struct Driver *d);
 
 void VehPhysProc_FreezeVShift_ReverseOneFrame(struct Thread *t, struct Driver *d);

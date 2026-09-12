@@ -1,7 +1,16 @@
 #ifndef MAIN_CANONICAL_DRIVERS_H
 #define MAIN_CANONICAL_DRIVERS_H
 #include "platform/native_canonical_driver_behavior.h"
-enum MainCanonicalDriversStatus { MAIN_CANONICAL_DRIVERS_OK=1, MAIN_CANONICAL_DRIVERS_NOT_CONFIGURED=0 };
+#include "platform/native_canonical_drivers_roster.h"
+#include "namespace_Vehicle.h"
+enum MainCanonicalDriversStatus { MAIN_CANONICAL_DRIVERS_FAILURE=0, MAIN_CANONICAL_DRIVERS_OK=1 };
 const struct NativeCanonicalDriverBehaviorRegistry *MainCanonicalDrivers_ProductionRegistry(void);
-int MainCanonicalDrivers_ResolveBehavior(const void *const table[13], uint8_t *behaviorIDOut);
+int MainCanonicalDrivers_ValidateProductionBinding(void);
+/* These compare typed callbacks only and emit stable IDs; no pointer escapes. */
+int MainCanonicalDrivers_ResolveBehavior(const DriverFunc table[13], uint8_t *behaviorIDOut);
+int MainCanonicalDrivers_ResolveThread(void (*thread)(struct Thread *), uint8_t *threadBehaviorIDOut);
+/* Dormant candidate builder for a later full driver projection. */
+int MainCanonicalDrivers_ProjectPrelude(const struct NativeCanonicalDriversRosterInput *input,
+	const DriverFunc tables[8][13], void (*const threads[8])(struct Thread *),
+	struct NativeCanonicalDriversRosterCandidate *out);
 #endif
