@@ -2,6 +2,7 @@
 #define PLATFORM_NATIVE_CANONICAL_DRIVERS_DETAILED_H
 
 #include "platform/native_canonical_drivers.h"
+#include "platform/native_canonical_driver_behavior.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -24,10 +25,7 @@ enum NativeCanonicalDriverKind
 	NATIVE_CANONICAL_DRIVER_KIND_BOT = 2
 };
 
-/* IDs remain caller-projected values until the live behavior-ID audit is
- * stable.  All uint8 backing values are representable; zero is the explicit
- * no-behavior value used by non-bot slots. */
-enum { NATIVE_CANONICAL_DRIVER_BEHAVIOR_NONE = 0 };
+#define NATIVE_CANONICAL_DRIVER_BEHAVIOR_NONE 0u
 
 enum NativeCanonicalDriverActiveTag
 {
@@ -103,7 +101,8 @@ struct NativeCanonicalDriversPreludeV1
 	uint32_t slotCount, presenceMask;
 	uint8_t raceOrder[8], playerCount, activeBotCount;
 	int8_t numLaps;
-	uint8_t winnerCount, winnerSlots[4], humanPlayerPositions[8], navListCount[3], navListOrder[3][8], reserved[5];
+	uint8_t winnerCount, winnerSlots[4], humanPlayerPositions[8], navListCount[3], navListOrder[3][8], raceOrderCount;
+	uint32_t detailedVersion;
 };
 
 struct NativeCanonicalDriverMetaV1

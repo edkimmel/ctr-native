@@ -10,12 +10,6 @@ static int Zeros(const uint8_t *bytes, size_t count)
 
 static int ActiveTagValid(uint32_t tag) { return tag <= NATIVE_CANONICAL_DRIVER_ACTIVE_WARP; }
 static int KindValid(uint8_t kind) { return kind == NATIVE_CANONICAL_DRIVER_KIND_HUMAN || kind == NATIVE_CANONICAL_DRIVER_KIND_BOT; }
-static uint8_t PresentCount(uint32_t mask)
-{
-	uint8_t count=0;
-	for(uint32_t i=0;i<NATIVE_CANONICAL_DRIVERS_SLOT_COUNT;i++) if((mask&(UINT32_C(1)<<i))!=0) count++;
-	return count;
-}
 
 static int WritePrelude(struct NativeCodecWriter *w, const struct NativeCanonicalDriversPreludeV1 *v)
 {
@@ -24,7 +18,8 @@ static int WritePrelude(struct NativeCodecWriter *w, const struct NativeCanonica
 		NativeCodecWriter_WriteU8(w, v->activeBotCount) && NativeCodecWriter_WriteS8(w, v->numLaps) &&
 		NativeCodecWriter_WriteU8(w, v->winnerCount) && NativeCodecWriter_WriteBytes(w, v->winnerSlots, 4) &&
 		NativeCodecWriter_WriteBytes(w, v->humanPlayerPositions, 8) && NativeCodecWriter_WriteBytes(w, v->navListCount, 3) &&
-		NativeCodecWriter_WriteBytes(w, v->navListOrder, 24) && NativeCodecWriter_WriteBytes(w, v->reserved, 5);
+		NativeCodecWriter_WriteBytes(w, v->navListOrder, 24) && NativeCodecWriter_WriteU8(w, v->raceOrderCount) &&
+		NativeCodecWriter_WriteU32(w, v->detailedVersion);
 }
 
 static int WriteMeta(struct NativeCodecWriter *w, const struct NativeCanonicalDriverMetaV1 *v)
@@ -103,12 +98,19 @@ static int ValidateList(const uint8_t *list, uint8_t count, uint32_t presenceMas
 	}
 	return 1;
 }
+static int ValidateRanks(const uint8_t *ranks, uint8_t count)
+{
+	if(count>8)return 0;
+	for(uint8_t i=0;i<8;i++) { if(i<count) { if(ranks[i]>7)return 0; } else if(ranks[i]!=NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT)return 0; }
+	return 1;
+}
 
 void NativeCanonicalDriversDetailedV1_Init(struct NativeCanonicalDriversDetailedV1 *value)
 {
 	if(value==NULL)return;
 	memset(value,0,sizeof(*value));
 	value->prelude.slotCount=NATIVE_CANONICAL_DRIVERS_SLOT_COUNT;
+	value->prelude.detailedVersion=NATIVE_CANONICAL_DRIVERS_DETAILED_VERSION;
 	memset(value->prelude.raceOrder,NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT,sizeof(value->prelude.raceOrder));
 	memset(value->prelude.winnerSlots,NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT,sizeof(value->prelude.winnerSlots));
 	memset(value->prelude.humanPlayerPositions,NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT,sizeof(value->prelude.humanPlayerPositions));
@@ -121,18 +123,18 @@ int NativeCanonicalDriversDetailedV1_Validate(const struct NativeCanonicalDriver
 	uint32_t present=0,human=0,bot=0;
 	if(value==NULL)return 0;p=&value->prelude;
 	if(p->slotCount!=NATIVE_CANONICAL_DRIVERS_SLOT_COUNT || (p->presenceMask&~UINT32_C(0xff))!=0 || p->numLaps<0 ||
-		!Zeros(p->reserved,sizeof(p->reserved)) || !ValidateList(p->raceOrder,PresentCount(p->presenceMask),p->presenceMask,8,0,value->slots) ||
-		!ValidateList(p->winnerSlots,p->winnerCount,p->presenceMask,4,0,value->slots) ||
-		!ValidateList(p->humanPlayerPositions,p->playerCount,p->presenceMask,8,1,value->slots)) return 0;
+		p->detailedVersion!=NATIVE_CANONICAL_DRIVERS_DETAILED_VERSION || !ValidateList(p->raceOrder,p->raceOrderCount,p->presenceMask,8,0,value->slots) ||
+		!ValidateList(p->winnerSlots,p->winnerCount,p->presenceMask,4,0,value->slots) || !ValidateRanks(p->humanPlayerPositions,p->playerCount)) return 0;
 	for(uint32_t list=0;list<3;list++) if(!ValidateList(p->navListOrder[list],p->navListCount[list],p->presenceMask,8,0,value->slots))return 0;
 	for(uint32_t i=0;i<8;i++)
 	{
 		const struct NativeCanonicalDriverSlotV1 *s=&value->slots[i];
 		if((p->presenceMask&(UINT32_C(1)<<i))==0) { if(!SlotIsAllZero(s))return 0; continue; }
-		if(s->meta.present!=1 || s->meta.slotIndex!=i || !KindValid(s->meta.driverKind) || s->physics.reserved0!=0 || !Zeros(s->reservedTail,sizeof(s->reservedTail)) ||
+		if(s->meta.present!=1 || s->meta.slotIndex!=i || !KindValid(s->meta.driverKind) || s->meta.boolFirstFrameSinceRevEngine>1 || s->physics.reserved0!=0 || !Zeros(s->reservedTail,sizeof(s->reservedTail)) ||
 			!ActiveTagValid(s->active.unionTag) || (s->active.unionTag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE&&!Zeros(s->active.branchBytes,sizeof(s->active.branchBytes))))return 0;
-		if(s->meta.driverKind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN) { human++; if(s->meta.behaviorID!=NATIVE_CANONICAL_DRIVER_BEHAVIOR_NONE||s->meta.threadBehaviorID!=NATIVE_CANONICAL_DRIVER_BEHAVIOR_NONE||!Zeros(s->bot.bytes,sizeof(s->bot.bytes)))return 0; }
-		else bot++;
+		if(!NativeCanonicalDriverBehavior_ValidateKind(s->meta.driverKind,s->meta.behaviorID,s->meta.threadBehaviorID))return 0;
+		if(s->meta.driverKind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN) { human++; if(!Zeros(s->bot.bytes,sizeof(s->bot.bytes)))return 0; }
+		else { bot++; if(s->active.unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE)return 0; }
 		present++;
 	}
 	return p->playerCount==human && p->activeBotCount==bot && present==human+bot;
@@ -153,6 +155,7 @@ int NativeCanonicalDriversDetailedV1_BuildSummary(const struct NativeCanonicalDr
 	uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];struct NativeCodecWriter writer;struct NativeCanonicalDriversV1 candidate;
 	if(summary==NULL||!NativeCanonicalDriversDetailedV1_Validate(value))return 0;
 	NativeCodecWriter_Init(&writer,bytes,sizeof(bytes),NULL);
-	if(!NativeCanonicalDriversDetailedV1_Encode(&writer,value)||!NativeCanonicalDriversV1_FromNormativeStream(&candidate,value->prelude.presenceMask,bytes,sizeof(bytes)))return 0;
+	if(!NativeCanonicalDriversDetailedV1_Encode(&writer,value)||!NativeCanonicalDriversV1_FromNormativeStream(&candidate,value->prelude.presenceMask,bytes,sizeof(bytes))||
+		candidate.version!=value->prelude.detailedVersion)return 0;
 	*summary=candidate;return 1;
 }
