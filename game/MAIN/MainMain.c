@@ -2,6 +2,9 @@
 
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 #include <platform/native_perf.h>
+#include <platform/native_canonical_projector.h>
+#include <platform/native_identity.h>
+#include <platform/native_input.h>
 #include <platform/native_replay_scheduler.h>
 #include <platform/native_savestate.h>
 #endif
@@ -49,6 +52,38 @@ static struct NativeReplaySchedulerFrameInfo MainReplayScheduler_FrameInfo(struc
 
 	return info;
 }
+
+static int MainCanonicalState_ProjectLive(struct NativeCanonicalStateV1 *state, const struct NativeIdentityV1 *identity,
+                                          const struct NativeReplaySchedulerFrameInfo *info, struct GameTracker *gGT,
+                                          const struct NativeCanonicalInputV1 *input)
+{
+	struct NativeCanonicalControlV1 control;
+	struct NativeCanonicalRngV1 rng;
+
+	/* The control values deliberately follow the existing scheduler frame-info
+	 * audit.  The two game-mode words are the added schema-v2 authority. */
+	control.frameTimer = info->frameTimer;
+	control.frameCounter = info->frameCounter;
+	control.timer = info->timer;
+	control.framesInThisLEV = info->framesInThisLEV;
+	control.elapsedTimeMS = info->elapsedTimeMS;
+	control.msInThisLEV = info->msInThisLEV;
+	control.elapsedEventTime = info->elapsedEventTime;
+	control.mainGameState = info->mainGameState;
+	control.loadingStage = info->loadingStage;
+	control.levelID = info->levelID;
+	control.gameMode1 = gGT->gameMode1;
+	control.gameMode2 = gGT->gameMode2;
+
+	/* audioRNG and PSX rand are intentionally not authoritative M2 RNG. */
+	rng.mixRandomNumber = (u32)sdata->randomNumber;
+	rng.deadcoed0 = gGT->deadcoed_struct.state0;
+	rng.deadcoed1 = gGT->deadcoed_struct.state1;
+	rng.advRng0 = sdata->advRng.state0;
+	rng.advRng1 = sdata->advRng.state1;
+
+	return MainCanonicalState_ProjectV1(state, identity, (u32)info->frameCounter, &control, &rng, input);
+}
 #endif
 
 #ifdef CTR_NATIVE
@@ -71,6 +106,12 @@ u32 main(void)
 
 	struct GamepadSystem *gGS;
 	gGS = sdata->gGamepads;
+
+#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+	struct NativeCanonicalInputV1 canonicalInput;
+	s32 canonicalInputFrozen;
+	s32 canonicalRequired;
+#endif
 
 	// NOTE(aalhendi): Retail main calls __main before the state loop. Native has
 	// no linked __main body, so keep this as a CTR_NATIVE-only divergence.
@@ -316,6 +357,8 @@ u32 main(void)
 
 			// Process all gamepad input
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+			canonicalInputFrozen = 0;
+			canonicalRequired = NativeReplayScheduler_RequiresCanonicalState();
 			{
 				struct NativeReplaySchedulerFrameInfo replayFrameInfo = MainReplayScheduler_FrameInfo(gGT);
 
@@ -334,6 +377,22 @@ u32 main(void)
 			}
 #endif
 			GAMEPAD_ProcessAnyoneVars(gGS);
+
+#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+			/* Freeze the exact ingress bytes after rebinding/installed replay input
+			 * is consumed, before render/VSync has another opportunity to poll. */
+			if (canonicalRequired != 0)
+			{
+				struct PlatformInputPadSnapshot snapshots[PLATFORM_INPUT_PAD_COUNT];
+
+				if ((Platform_InputCapturePadSnapshots(snapshots, PLATFORM_INPUT_PAD_COUNT) == 0) ||
+				    !MainCanonicalState_FreezeInputV1(&canonicalInput, snapshots, PLATFORM_INPUT_PAD_COUNT))
+				{
+					return 0;
+				}
+				canonicalInputFrozen = 1;
+			}
+#endif
 
 			// Start new frame (ClearOTagR)
 			MainFrame_ResetDB(gGT);
@@ -440,8 +499,23 @@ u32 main(void)
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 			{
 				struct NativeReplaySchedulerFrameInfo replayFrameInfo = MainReplayScheduler_FrameInfo(gGT);
+				struct NativeCanonicalStateV1 canonicalState;
+				struct NativeIdentityV1 identity;
+				const struct NativeCanonicalStateV1 *canonicalStateArg = NULL;
 
-				if (NativeReplayScheduler_EndFrame(&replayFrameInfo) != 0)
+				/* Identity is requested only by a future canonical scheduler mode;
+				 * ordinary startup and v1 never trigger lazy disc hashing. */
+				if (canonicalRequired != 0)
+				{
+					if ((canonicalInputFrozen == 0) || !NativeIdentity_Get(&identity) ||
+					    !MainCanonicalState_ProjectLive(&canonicalState, &identity, &replayFrameInfo, gGT, &canonicalInput))
+					{
+						return 0;
+					}
+					canonicalStateArg = &canonicalState;
+				}
+
+				if (NativeReplayScheduler_EndFrame(&replayFrameInfo, canonicalStateArg) != 0)
 				{
 					return 0;
 				}

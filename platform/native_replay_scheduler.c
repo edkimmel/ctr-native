@@ -10,6 +10,7 @@
 #include "platform/native_log.h"
 #include "platform/native_memcard.h"
 #include "platform/native_path.h"
+#include "platform/native_replay_scheduler_seam.h"
 #include "platform/native_state.h"
 
 #include <errno.h>
@@ -126,6 +127,8 @@ global_variable char *s_reportLogPath;
 global_variable char *s_playbackMemcardPath;
 global_variable s32 s_memcardSandboxActive;
 global_variable s32 s_recordStartDeferredLogged;
+global_variable struct NativeCanonicalStateV1 s_pendingCanonicalState;
+global_variable s32 s_pendingCanonicalStateValid;
 
 internal void NativeReplayScheduler_ResetVSyncPackets(void)
 {
@@ -143,6 +146,7 @@ internal void NativeReplayScheduler_ResetSessionState(void)
 	s_frameTimingConsumed = 0;
 	s_stopRequested = 0;
 	s_recordStartDeferredLogged = 0;
+	s_pendingCanonicalStateValid = 0;
 	NativeReplayScheduler_ResetVSyncPackets();
 }
 
@@ -1522,6 +1526,25 @@ int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo
 	return 0;
 }
 
+int NativeReplayScheduler_RequiresCanonicalState(void)
+{
+	/* v2 has no selectable scheduler mode in this slice.  Keep the policy
+	 * explicit so MainMain never requests identity/content hashing for v1. */
+	switch (s_mode)
+	{
+	case NATIVE_REPLAY_MODE_NONE:
+		return NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_NONE);
+	case NATIVE_REPLAY_MODE_ARMED:
+		return NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_ARMED_V1);
+	case NATIVE_REPLAY_MODE_RECORD:
+		return NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V1);
+	case NATIVE_REPLAY_MODE_PLAYBACK:
+		return NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V1);
+	default:
+		return 0;
+	}
+}
+
 int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedVBlanks)
 {
 	if ((s_mode != NATIVE_REPLAY_MODE_PLAYBACK) || (s_beginOpen == 0) || (emittedVBlanks == NULL))
@@ -1589,10 +1612,11 @@ void NativeReplayScheduler_RecordVSyncPacket(int emittedVBlanks)
 	s_frameVBlankPacketCount++;
 }
 
-int NativeReplayScheduler_EndFrame(const struct NativeReplaySchedulerFrameInfo *info)
+int NativeReplayScheduler_EndFrame(const struct NativeReplaySchedulerFrameInfo *info, const struct NativeCanonicalStateV1 *canonicalState)
 {
 	struct PlatformInputPadSnapshot livePads[PLATFORM_INPUT_PAD_COUNT];
 	u32 livePadChecksum;
+	s32 canonicalRequired;
 
 	if ((s_mode == NATIVE_REPLAY_MODE_NONE) || (info == NULL))
 	{
@@ -1603,6 +1627,15 @@ int NativeReplayScheduler_EndFrame(const struct NativeReplaySchedulerFrameInfo *
 	{
 		return 0;
 	}
+
+	canonicalRequired = NativeReplayScheduler_RequiresCanonicalState();
+	if (!NativeReplayScheduler_CopyCanonicalEndState(canonicalRequired, canonicalState,
+	                                                 canonicalRequired ? &s_pendingCanonicalState : NULL))
+	{
+		Platform_Log("[CTR Replay] canonical state is incomplete at replay frame %u\n", s_replayFrame);
+		return 1;
+	}
+	s_pendingCanonicalStateValid = canonicalRequired;
 
 	if (Platform_InputCapturePadSnapshots(livePads, PLATFORM_INPUT_PAD_COUNT) == 0)
 	{

@@ -4,6 +4,8 @@
 #include <macros.h>
 
 #if defined(CTR_INTERNAL)
+struct NativeCanonicalStateV1;
+
 struct NativeReplaySchedulerFrameInfo
 {
 	s32 frameTimer;
@@ -30,9 +32,12 @@ void NativeReplayScheduler_Shutdown(void);
 int NativeReplayScheduler_RequestStart(void);
 int NativeReplayScheduler_RequestStop(void);
 int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo *info);
+/* False for all presently selectable normal/v1 replay modes. */
+int NativeReplayScheduler_RequiresCanonicalState(void);
 int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedVBlanks);
 int NativeReplayScheduler_ConsumeFrameElapsedTimeMS(int *elapsedTimeMS);
-int NativeReplayScheduler_EndFrame(const struct NativeReplaySchedulerFrameInfo *info);
+/* The canonical record is value-validated/copied synchronously if required. */
+int NativeReplayScheduler_EndFrame(const struct NativeReplaySchedulerFrameInfo *info, const struct NativeCanonicalStateV1 *canonicalState);
 void NativeReplayScheduler_RecordVSyncPacket(int emittedVBlanks);
 #endif
 

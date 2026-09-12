@@ -99,6 +99,27 @@ set_target_properties(ctr_native_canonical_state PROPERTIES
 target_include_directories(ctr_native_canonical_state PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_state PUBLIC ctr_native_canonical_codec)
 
+# The game-owned source is also unity-included by the executable.  This small
+# standalone target makes its explicit value projection directly testable.
+add_library(ctr_native_canonical_projector STATIC game/MAIN/MainCanonicalState.c)
+set_target_properties(ctr_native_canonical_projector PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_canonical_projector PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(ctr_native_canonical_projector PUBLIC CTR_NATIVE)
+target_link_libraries(ctr_native_canonical_projector PUBLIC ctr_native_canonical_state)
+
+add_library(ctr_native_replay_scheduler_seam STATIC platform/native_replay_scheduler_seam.c)
+set_target_properties(ctr_native_replay_scheduler_seam PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_replay_scheduler_seam PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_replay_scheduler_seam PUBLIC ctr_native_canonical_state)
+
 add_library(ctr_native_replay_v2 STATIC platform/native_replay_v2.c)
 set_target_properties(ctr_native_replay_v2 PROPERTIES
     C_STANDARD 17
@@ -177,7 +198,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_canonical_projector ctr_native_replay_scheduler_seam)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -249,6 +270,24 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_canonical_state_test PRIVATE ctr_native_canonical_state)
     add_test(NAME native_canonical_state_unit COMMAND $<TARGET_FILE:native_canonical_state_test>)
+
+    add_executable(native_canonical_projector_test tests/native_canonical_projector_test.c)
+    set_target_properties(native_canonical_projector_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_canonical_projector_test PRIVATE ctr_native_canonical_projector)
+    add_test(NAME native_canonical_projector_unit COMMAND $<TARGET_FILE:native_canonical_projector_test>)
+
+    add_executable(native_replay_scheduler_seam_test tests/native_replay_scheduler_seam_test.c)
+    set_target_properties(native_replay_scheduler_seam_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_replay_scheduler_seam_test PRIVATE ctr_native_replay_scheduler_seam)
+    add_test(NAME native_replay_scheduler_seam_unit COMMAND $<TARGET_FILE:native_replay_scheduler_seam_test>)
 
     add_executable(native_replay_v2_test tests/native_replay_v2_test.c)
     set_target_properties(native_replay_v2_test PROPERTIES
