@@ -6,8 +6,10 @@ static int GeometryValid(const struct NativeCanonicalPoolGeometry *geometry)
 {
 	return geometry!=NULL && geometry->base!=0 && (geometry->base%NATIVE_CANONICAL_POOL_ALIGNMENT)==0 && geometry->maxItems!=0 && geometry->stride>=sizeof(struct NativeCanonicalPoolItem) &&
 		geometry->stride==((geometry->itemSize/NATIVE_CANONICAL_POOL_ALIGNMENT)*NATIVE_CANONICAL_POOL_ALIGNMENT) &&
+		(size_t)geometry->maxItems<=SIZE_MAX/geometry->itemSize && geometry->allocationSpan!=0 &&
+		geometry->allocationSpan==(size_t)geometry->maxItems*geometry->itemSize && geometry->allocationSpan<=UINTPTR_MAX-geometry->base &&
 		(size_t)geometry->maxItems<=SIZE_MAX/geometry->stride && geometry->span!=0 &&
-		geometry->span==(size_t)geometry->maxItems*geometry->stride && geometry->span<=UINTPTR_MAX-geometry->base;
+		geometry->span==(size_t)geometry->maxItems*geometry->stride && geometry->span<=geometry->allocationSpan && geometry->span<=UINTPTR_MAX-geometry->base;
 }
 
 int NativeCanonicalPool_GeometrySnapshot(const struct NativeCanonicalPoolInput *input,
@@ -15,20 +17,24 @@ int NativeCanonicalPool_GeometrySnapshot(const struct NativeCanonicalPoolInput *
 {
 	struct NativeCanonicalPoolGeometry candidate;
 	uintptr_t base;
-	size_t stride,span,maxItems;
+	size_t stride,span,allocationSpan,maxItems;
 	if(input==NULL||geometryOut==NULL||input->base==NULL||input->maxItems<=0||input->poolSize<=0)return 0;
 	base=(uintptr_t)input->base;
 	if((base%NATIVE_CANONICAL_POOL_ALIGNMENT)!=0)return 0;
 	stride=((size_t)input->itemSize/NATIVE_CANONICAL_POOL_ALIGNMENT)*NATIVE_CANONICAL_POOL_ALIGNMENT;
 	if(stride<sizeof(struct NativeCanonicalPoolItem))return 0;
 	maxItems=(size_t)input->maxItems;
+	if(maxItems>SIZE_MAX/(size_t)input->itemSize)return 0;
+	allocationSpan=maxItems*(size_t)input->itemSize;
+	if(allocationSpan>(size_t)INT32_MAX||(size_t)input->poolSize!=allocationSpan||allocationSpan>UINTPTR_MAX-base)return 0;
 	if(maxItems>SIZE_MAX/stride)return 0;
 	span=maxItems*stride;
-	if(span>(size_t)INT32_MAX||(size_t)input->poolSize!=span||span>UINTPTR_MAX-base)return 0;
+	if(span>allocationSpan||span>UINTPTR_MAX-base)return 0;
 	candidate.base=base;
 	candidate.itemSize=(size_t)input->itemSize;
 	candidate.stride=stride;
 	candidate.span=span;
+	candidate.allocationSpan=allocationSpan;
 	candidate.maxItems=(uint32_t)input->maxItems;
 	*geometryOut=candidate;
 	return 1;
@@ -114,7 +120,8 @@ int NativeCanonicalPool_AllocatedInTaken(const struct NativeCanonicalPoolGeometr
 	if(slotIndexOut==NULL||!NativeCanonicalPool_SlotIndex(geometry,slot,&candidate)||!NativeCanonicalPool_ValidateList(geometry,takenList))return 0;
 	if(freeListMode==NATIVE_CANONICAL_POOL_FREE_LIST_IGNORE)
 	{
-		/* Thread/stack callers intentionally ignore stale taken/free metadata. */
+		/* A taken-only caller supplied an already valid taken list. Thread/stack
+		 * callers use AllocatedFromFree instead of this mode. */
 	}
 	else if(freeListMode==NATIVE_CANONICAL_POOL_FREE_LIST_OPTIONAL)
 	{
@@ -135,7 +142,7 @@ int NativeCanonicalPool_PayloadStartIndex(const struct NativeCanonicalPoolGeomet
 {
 	uintptr_t address,delta,slotDelta;
 	uint32_t candidate;
-	if(!GeometryValid(geometry)||payloadStart==NULL||slotIndexOut==NULL||payloadOffset>geometry->stride||payloadSize>geometry->stride-payloadOffset)return 0;
+	if(!GeometryValid(geometry)||payloadStart==NULL||slotIndexOut==NULL||payloadOffset>=geometry->stride||payloadSize>geometry->stride-payloadOffset)return 0;
 	address=(uintptr_t)payloadStart;
 	if(address<geometry->base)return 0;
 	delta=address-geometry->base;

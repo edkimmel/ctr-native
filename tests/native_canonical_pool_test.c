@@ -55,7 +55,7 @@ static int TestGeometryAndSlots(void)
 	struct NativeCanonicalPoolGeometry geometry,before;
 	uint32_t index,beforeIndex;
 	CHECK(NativeCanonicalPool_GeometrySnapshot(&input,&geometry));
-	CHECK(geometry.base==(uintptr_t)pool.slots&&geometry.maxItems==4&&geometry.stride==sizeof(struct TestSlot)&&geometry.span==sizeof(pool.slots));
+	CHECK(geometry.base==(uintptr_t)pool.slots&&geometry.maxItems==4&&geometry.stride==sizeof(struct TestSlot)&&geometry.span==sizeof(pool.slots)&&geometry.allocationSpan==sizeof(pool.slots));
 	for(uint32_t i=0;i<4;i++){index=UINT32_MAX;CHECK(NativeCanonicalPool_SlotIndex(&geometry,&pool.slots[i],&index)&&index==i);}
 	before=geometry;input.base=NULL;CHECK(!NativeCanonicalPool_GeometrySnapshot(&input,&geometry)&&memcmp(&geometry,&before,sizeof(geometry))==0);input=Input(&pool);
 	input.base=(const void *)((uintptr_t)pool.slots+1);CHECK(!NativeCanonicalPool_GeometrySnapshot(&input,&geometry));input=Input(&pool);
@@ -63,8 +63,12 @@ static int TestGeometryAndSlots(void)
 	input.itemSize=(uint32_t)(sizeof(struct NativeCanonicalPoolItem)-1);input.poolSize=4*(int32_t)input.itemSize;CHECK(!NativeCanonicalPool_GeometrySnapshot(&input,&geometry));input=Input(&pool);
 	input.poolSize--;CHECK(!NativeCanonicalPool_GeometrySnapshot(&input,&geometry));input=Input(&pool);
 	input.poolSize=-1;CHECK(!NativeCanonicalPool_GeometrySnapshot(&input,&geometry));input=Input(&pool);
-	input.maxItems=INT32_MAX;input.itemSize=4;input.poolSize=INT32_MAX;CHECK(!NativeCanonicalPool_GeometrySnapshot(&input,&geometry));input=Input(&pool);
-	input.base=(const void *)(UINTPTR_MAX-(uintptr_t)geometry.span+1);CHECK(!NativeCanonicalPool_GeometrySnapshot(&input,&geometry));
+	input.maxItems=INT32_MAX;input.itemSize=(uint32_t)sizeof(struct NativeCanonicalPoolItem);input.poolSize=INT32_MAX;CHECK(!NativeCanonicalPool_GeometrySnapshot(&input,&geometry));input=Input(&pool);
+	{ union { uint32_t align; uint8_t bytes[100]; } raw={{0}}; struct NativeCanonicalPoolInput nonaligned={raw.bytes,4,25,100};
+		CHECK(NativeCanonicalPool_GeometrySnapshot(&nonaligned,&geometry)&&geometry.stride==24&&geometry.span==96&&geometry.allocationSpan==100);
+		nonaligned.poolSize=96;CHECK(!NativeCanonicalPool_GeometrySnapshot(&nonaligned,&geometry)); }
+	input=Input(&pool);CHECK(NativeCanonicalPool_GeometrySnapshot(&input,&geometry));
+	input.base=(const void *)(UINTPTR_MAX-(uintptr_t)geometry.allocationSpan+1);CHECK(!NativeCanonicalPool_GeometrySnapshot(&input,&geometry));
 	beforeIndex=UINT32_C(0xa5a5a5a5);
 	CHECK(!NativeCanonicalPool_SlotIndex(&geometry,(const void *)((uintptr_t)pool.slots+1),&beforeIndex)&&beforeIndex==UINT32_C(0xa5a5a5a5));
 	CHECK(!NativeCanonicalPool_SlotIndex(&geometry,(const void *)(geometry.base-1),&beforeIndex)&&beforeIndex==UINT32_C(0xa5a5a5a5));
@@ -92,8 +96,15 @@ static int TestListsAndOwnership(void)
 	freeList=List(&pool,freeIndices,2);pool.slots[2].item.prev=NULL;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&freeList));
 	freeList=List(&pool,freeIndices,2);pool.slots[2].item.next=&pool.slots[1].item;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&freeList));
 	freeList=List(&pool,freeIndices,2);freeList.last=&pool.slots[3].item;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&freeList));
+	freeList=List(&pool,freeIndices,2);freeList.count=-1;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&freeList));
+	freeList=List(&pool,freeIndices,2);freeList.count=5;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&freeList));
 	freeList=List(&pool,freeIndices,2);freeList.count=0;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&freeList));
 	empty=List(&pool,NULL,0);CHECK(NativeCanonicalPool_ValidateList(&geometry,&empty));empty.first=&pool.slots[0].item;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&empty));
+	freeList=List(&pool,freeIndices,2);freeList.first=NULL;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&freeList));
+	freeList=List(&pool,freeIndices,2);freeList.last=NULL;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&freeList));
+	freeList=List(&pool,freeIndices,2);pool.slots[1].item.prev=&pool.slots[0].item;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&freeList));
+	freeList=List(&pool,freeIndices,2);pool.slots[1].item.next=NULL;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&freeList));
+	freeList=List(&pool,freeIndices,2);pool.slots[1].item.next=(const struct NativeCanonicalPoolItem *)(uintptr_t)1;CHECK(!NativeCanonicalPool_ValidateList(&geometry,&freeList));
 	takenList=List(&pool,takenIndices,1);empty=List(&pool,NULL,0);
 	CHECK(NativeCanonicalPool_AllocatedInTaken(&geometry,&takenList,&empty,NATIVE_CANONICAL_POOL_FREE_LIST_REQUIRED,&pool.slots[0],&index)&&index==0);
 	CHECK(NativeCanonicalPool_AllocatedInTaken(&geometry,&takenList,NULL,NATIVE_CANONICAL_POOL_FREE_LIST_OPTIONAL,&pool.slots[0],&index)&&index==0);
@@ -102,7 +113,12 @@ static int TestListsAndOwnership(void)
 	 * rejects that double-list even though neither list itself is malformed. */
 	takenList=List(&pool,takenIndices,1);freeList=takenList;
 	index=before;CHECK(!NativeCanonicalPool_AllocatedInTaken(&geometry,&takenList,&freeList,NATIVE_CANONICAL_POOL_FREE_LIST_REQUIRED,&pool.slots[0],&index)&&index==before);
-	/* IGNORE deliberately tolerates unrelated garbage free metadata. */
+	takenList=List(&pool,takenIndices,1);freeList=takenList;
+	index=before;CHECK(!NativeCanonicalPool_AllocatedInTaken(&geometry,&takenList,&freeList,NATIVE_CANONICAL_POOL_FREE_LIST_OPTIONAL,&pool.slots[0],&index)&&index==before);
+	takenList=List(&pool,takenIndices,1);freeList=List(&pool,freeIndices,2);freeList.first=(const struct NativeCanonicalPoolItem *)(uintptr_t)1;
+	index=before;CHECK(!NativeCanonicalPool_AllocatedInTaken(&geometry,&takenList,&freeList,NATIVE_CANONICAL_POOL_FREE_LIST_OPTIONAL,&pool.slots[0],&index)&&index==before);
+	index=before;CHECK(!NativeCanonicalPool_AllocatedInTaken(&geometry,&takenList,NULL,(enum NativeCanonicalPoolFreeListMode)99,&pool.slots[0],&index)&&index==before);
+	/* IGNORE deliberately tolerates unrelated free metadata for taken-only callers. */
 	takenList=List(&pool,takenIndices,1);freeList.first=(const struct NativeCanonicalPoolItem *)(uintptr_t)UINT32_C(0x12345678);
 	CHECK(NativeCanonicalPool_AllocatedInTaken(&geometry,&takenList,&freeList,NATIVE_CANONICAL_POOL_FREE_LIST_IGNORE,&pool.slots[0],&index)&&index==0);
 	return 0;
@@ -120,6 +136,7 @@ static int TestPayload(void)
 	CHECK(NativeCanonicalPool_PayloadStartIndex(&geometry,(const void *)payload,sizeof(struct NativeCanonicalPoolItem),geometry.stride-sizeof(struct NativeCanonicalPoolItem),&index)&&index==1);
 	index=before;CHECK(!NativeCanonicalPool_PayloadStartIndex(&geometry,(const void *)(payload-1),sizeof(struct NativeCanonicalPoolItem),1,&index)&&index==before);
 	CHECK(!NativeCanonicalPool_PayloadStartIndex(&geometry,(const void *)payload,sizeof(struct NativeCanonicalPoolItem),geometry.stride-sizeof(struct NativeCanonicalPoolItem)+1,&index)&&index==before);
+	CHECK(!NativeCanonicalPool_PayloadStartIndex(&geometry,(const void *)(geometry.base+geometry.stride),geometry.stride,0,&index)&&index==before);
 	CHECK(!NativeCanonicalPool_PayloadStartIndex(&geometry,(const void *)(geometry.base+geometry.span),0,1,&index)&&index==before);
 	return 0;
 }

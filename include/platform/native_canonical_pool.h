@@ -35,6 +35,7 @@ struct NativeCanonicalPoolGeometry
 	size_t itemSize;
 	size_t stride;
 	size_t span;
+	size_t allocationSpan;
 	uint32_t maxItems;
 };
 
@@ -45,8 +46,10 @@ enum NativeCanonicalPoolFreeListMode
 	NATIVE_CANONICAL_POOL_FREE_LIST_REQUIRED = 2
 };
 
-/* Snapshots only coherent JitPool geometry. On failure geometryOut is not
- * modified. The runtime stride is itemSize rounded down to 4-byte alignment. */
+/* Snapshots only coherent JitPool geometry. poolSize must equal the checked
+ * maxItems*raw itemSize allocation; span separately uses the runtime stride,
+ * itemSize rounded down to 4-byte alignment. On failure geometryOut is not
+ * modified. */
 int NativeCanonicalPool_GeometrySnapshot(const struct NativeCanonicalPoolInput *input,
 	struct NativeCanonicalPoolGeometry *geometryOut);
 
