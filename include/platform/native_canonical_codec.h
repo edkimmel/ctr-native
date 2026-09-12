@@ -9,7 +9,7 @@
  * never serializes native objects: callers write each schema field directly.
  */
 
-#define NATIVE_CANONICAL_STATE_SCHEMA_VERSION UINT32_C(1)
+#define NATIVE_CANONICAL_STATE_SCHEMA_VERSION UINT32_C(2)
 #define NATIVE_CANONICAL_REPLAY_FORMAT_VERSION UINT32_C(2)
 
 /*

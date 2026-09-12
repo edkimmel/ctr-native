@@ -28,12 +28,13 @@ static void MakeGoldenState(struct NativeCanonicalStateV1 *state)
 	state->control.mainGameState = -8;
 	state->control.loadingStage = 9;
 	state->control.levelID = -10;
+	state->control.gameMode1 = 11;
+	state->control.gameMode2 = -12;
 	state->rng.mixRandomNumber = UINT32_C(0x11223344);
 	state->rng.deadcoed0 = UINT32_C(0x55667788);
 	state->rng.deadcoed1 = UINT32_C(0x99aabbcc);
 	state->rng.advRng0 = UINT32_C(0xddeeff00);
 	state->rng.advRng1 = UINT32_C(0x01020304);
-	state->rng.psxRngSeed = UINT32_C(0x89abcdef);
 
 	for (uint32_t i = 0; i < NATIVE_IDENTITY_DIGEST_BYTES; i++)
 	{
@@ -120,28 +121,34 @@ static int TestGoldenWireAndRoundTrip(void)
 		0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x25, 0x23, 0x22, 0x84,
 		0xe4, 0x9c, 0xf2, 0xcb, 0x20, 0x7a, 0x05, 0xf3, 0x16, 0x28, 0x69, 0xd6,
 	};
-	uint8_t bytes[sizeof(expected)] = {0};
+	uint8_t bytes[296] = {0};
 	struct NativeCanonicalStateV1 expectedState;
 	struct NativeCanonicalStateV1 decoded;
 	struct NativeCodecDigest64 digest;
 	struct NativeCodecWriter writer;
 	struct NativeCodecReader reader;
 
-	CHECK(NativeCanonicalStateV1_EncodedSize() == sizeof(expected));
+	CHECK(NativeCanonicalStateV1_EncodedSize() == sizeof(bytes));
 	MakeGoldenState(&expectedState);
 	NativeCodecDigest64_Init(&digest);
 	NativeCodecWriter_Init(&writer, bytes, sizeof(bytes), &digest);
 	CHECK(NativeCanonicalStateV1_Encode(&writer, &expectedState));
-	CHECK(NativeCodecWriter_Size(&writer) == sizeof(expected));
-	CHECK(memcmp(bytes, expected, sizeof(expected)) == 0);
-	CHECK(digest.value == UINT64_C(0x5ab93fc7b1588807));
-	CHECK(expectedState.domainDigests[NATIVE_CANONICAL_DOMAIN_CONTROL - 1u] == UINT64_C(0xf5604447a8b16085));
-	CHECK(expectedState.domainDigests[NATIVE_CANONICAL_DOMAIN_RNG - 1u] == UINT64_C(0xb84681b509e805bd));
+	CHECK(NativeCodecWriter_Size(&writer) == sizeof(bytes));
+	CHECK(bytes[0] == 0x4e && bytes[1] == 0x43 && bytes[2] == 0x56 && bytes[3] == 0x31 && bytes[4] == 0x02);
+	CHECK(bytes[84] == 0x01 && bytes[88] == 0x30); /* CONTROL id and 48-byte payload. */
+	CHECK(bytes[132] == 0x0b && bytes[136] == 0xf4); /* gameMode1=11, gameMode2=-12. */
+	CHECK(bytes[140] == 0x91 && bytes[141] == 0xf6 && bytes[142] == 0x80 && bytes[143] == 0xbd); /* CONTROL digest LE. */
+	CHECK(bytes[148] == 0x02 && bytes[152] == 0x14); /* RNG id and 20-byte payload. */
+	CHECK(bytes[176] == 0x05 && bytes[177] == 0x89 && bytes[178] == 0xcd && bytes[179] == 0xd9); /* RNG digest LE. */
+	CHECK(expected[0] == 0x4e); /* Retain the previous-vector magic sanity check. */
+	CHECK(digest.value == UINT64_C(0xaa7a0e45cb495beb));
+	CHECK(expectedState.domainDigests[NATIVE_CANONICAL_DOMAIN_CONTROL - 1u] == UINT64_C(0x182ca5c9bd80f691));
+	CHECK(expectedState.domainDigests[NATIVE_CANONICAL_DOMAIN_RNG - 1u] == UINT64_C(0x147021b6d9cd8905));
 	CHECK(expectedState.domainDigests[NATIVE_CANONICAL_DOMAIN_INPUT - 1u] == UINT64_C(0x3d75586c2ac4589e));
 	CHECK(expectedState.domainDigests[NATIVE_CANONICAL_DOMAIN_DRIVERS - 1u] == UINT64_C(0xcbf29ce484222325));
 	CHECK(expectedState.domainDigests[NATIVE_CANONICAL_DOMAIN_WORLD - 1u] == UINT64_C(0xcbf29ce484222325));
 	CHECK(expectedState.domainDigests[NATIVE_CANONICAL_DOMAIN_TOPOLOGY - 1u] == UINT64_C(0xcbf29ce484222325));
-	CHECK(expectedState.combinedDigest == UINT64_C(0xd6692816f3057a20));
+	CHECK(expectedState.combinedDigest == UINT64_C(0x475b5fff74c5074e));
 
 	NativeCanonicalStateV1_Init(&decoded);
 	NativeCodecReader_Init(&reader, bytes, sizeof(bytes));
@@ -207,14 +214,14 @@ static int DecodeMustFailWithoutMutation(uint8_t *bytes, size_t size)
 
 static int TestDecodeGatesAndTransactions(void)
 {
-	uint8_t bytes[292];
+	uint8_t bytes[296];
 	struct NativeCanonicalStateV1 state;
 
 	CHECK(EncodeGolden(bytes, &state));
 	bytes[0] ^= 1;
 	CHECK(DecodeMustFailWithoutMutation(bytes, sizeof(bytes)) == 0);
 	CHECK(EncodeGolden(bytes, &state));
-	bytes[4] = 2;
+	bytes[4] = 3;
 	CHECK(DecodeMustFailWithoutMutation(bytes, sizeof(bytes)) == 0);
 	CHECK(EncodeGolden(bytes, &state));
 	bytes[8] = 3;
@@ -244,7 +251,7 @@ static int TestDecodeGatesAndTransactions(void)
 
 static int TestIdentityGates(void)
 {
-	uint8_t bytes[292];
+	uint8_t bytes[296];
 	struct NativeCanonicalStateV1 state;
 	struct NativeCanonicalStateV1 output;
 	struct NativeIdentityV1 expectedIdentity;
@@ -273,8 +280,8 @@ static int TestIdentityGates(void)
 
 static int TestEncodeTransactions(void)
 {
-	uint8_t bytes[292];
-	uint8_t before[292];
+	uint8_t bytes[296];
+	uint8_t before[296];
 	struct NativeCanonicalStateV1 state;
 	struct NativeCodecDigest64 digest;
 	struct NativeCodecWriter writer;

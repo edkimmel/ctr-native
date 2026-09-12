@@ -269,7 +269,7 @@ static int TestDomainAndVersionInvariants(void)
 		NATIVE_CANONICAL_DOMAIN_TOPOLOGY,
 	};
 
-	CHECK(NATIVE_CANONICAL_STATE_SCHEMA_VERSION == UINT32_C(1));
+	CHECK(NATIVE_CANONICAL_STATE_SCHEMA_VERSION == UINT32_C(2));
 	CHECK(NATIVE_CANONICAL_REPLAY_FORMAT_VERSION == UINT32_C(2));
 	CHECK(NATIVE_CANONICAL_DOMAIN_COUNT == (sizeof(expected) / sizeof(expected[0])));
 	CHECK(memcmp(NativeCanonicalDomainOrder, expected, sizeof(expected)) == 0);

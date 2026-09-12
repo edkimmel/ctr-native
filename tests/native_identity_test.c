@@ -168,7 +168,7 @@ static int TestIdentityProvider(void)
 
 static int TestCanonicalIdentityIntegration(void)
 {
-	uint8_t bytes[292];
+	uint8_t bytes[296];
 	struct NativeIdentityV1 identity;
 	struct NativeCanonicalStateV1 state;
 	struct NativeCanonicalStateV1 decoded;

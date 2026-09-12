@@ -2,8 +2,8 @@
 
 #include <string.h>
 
-#define NATIVE_CANONICAL_CONTROL_BYTES 40u
-#define NATIVE_CANONICAL_RNG_BYTES     24u
+#define NATIVE_CANONICAL_CONTROL_BYTES 48u
+#define NATIVE_CANONICAL_RNG_BYTES     20u
 #define NATIVE_CANONICAL_INPUT_BYTES   40u
 #define NATIVE_CANONICAL_HEADER_BYTES  84u
 #define NATIVE_CANONICAL_DOMAIN_BYTES  16u
@@ -39,7 +39,8 @@ static int NativeCanonicalStateV1_EncodeControl(struct NativeCodecWriter *writer
 	       NativeCodecWriter_WriteS32(writer, control->timer) && NativeCodecWriter_WriteS32(writer, control->framesInThisLEV) &&
 	       NativeCodecWriter_WriteS32(writer, control->elapsedTimeMS) && NativeCodecWriter_WriteS32(writer, control->msInThisLEV) &&
 	       NativeCodecWriter_WriteS32(writer, control->elapsedEventTime) && NativeCodecWriter_WriteS32(writer, control->mainGameState) &&
-	       NativeCodecWriter_WriteS32(writer, control->loadingStage) && NativeCodecWriter_WriteS32(writer, control->levelID);
+	       NativeCodecWriter_WriteS32(writer, control->loadingStage) && NativeCodecWriter_WriteS32(writer, control->levelID) &&
+	       NativeCodecWriter_WriteS32(writer, control->gameMode1) && NativeCodecWriter_WriteS32(writer, control->gameMode2);
 }
 
 static int NativeCanonicalStateV1_DecodeControl(struct NativeCodecReader *reader, struct NativeCanonicalControlV1 *control)
@@ -48,21 +49,22 @@ static int NativeCanonicalStateV1_DecodeControl(struct NativeCodecReader *reader
 	       NativeCodecReader_ReadS32(reader, &control->timer) && NativeCodecReader_ReadS32(reader, &control->framesInThisLEV) &&
 	       NativeCodecReader_ReadS32(reader, &control->elapsedTimeMS) && NativeCodecReader_ReadS32(reader, &control->msInThisLEV) &&
 	       NativeCodecReader_ReadS32(reader, &control->elapsedEventTime) && NativeCodecReader_ReadS32(reader, &control->mainGameState) &&
-	       NativeCodecReader_ReadS32(reader, &control->loadingStage) && NativeCodecReader_ReadS32(reader, &control->levelID);
+	       NativeCodecReader_ReadS32(reader, &control->loadingStage) && NativeCodecReader_ReadS32(reader, &control->levelID) &&
+	       NativeCodecReader_ReadS32(reader, &control->gameMode1) && NativeCodecReader_ReadS32(reader, &control->gameMode2);
 }
 
 static int NativeCanonicalStateV1_EncodeRng(struct NativeCodecWriter *writer, const struct NativeCanonicalRngV1 *rng)
 {
 	return NativeCodecWriter_WriteU32(writer, rng->mixRandomNumber) && NativeCodecWriter_WriteU32(writer, rng->deadcoed0) &&
 	       NativeCodecWriter_WriteU32(writer, rng->deadcoed1) && NativeCodecWriter_WriteU32(writer, rng->advRng0) &&
-	       NativeCodecWriter_WriteU32(writer, rng->advRng1) && NativeCodecWriter_WriteU32(writer, rng->psxRngSeed);
+	       NativeCodecWriter_WriteU32(writer, rng->advRng1);
 }
 
 static int NativeCanonicalStateV1_DecodeRng(struct NativeCodecReader *reader, struct NativeCanonicalRngV1 *rng)
 {
 	return NativeCodecReader_ReadU32(reader, &rng->mixRandomNumber) && NativeCodecReader_ReadU32(reader, &rng->deadcoed0) &&
 	       NativeCodecReader_ReadU32(reader, &rng->deadcoed1) && NativeCodecReader_ReadU32(reader, &rng->advRng0) &&
-	       NativeCodecReader_ReadU32(reader, &rng->advRng1) && NativeCodecReader_ReadU32(reader, &rng->psxRngSeed);
+	       NativeCodecReader_ReadU32(reader, &rng->advRng1);
 }
 
 static int NativeCanonicalStateV1_EncodeInput(struct NativeCodecWriter *writer, const struct NativeCanonicalInputV1 *input)

@@ -27,6 +27,8 @@ struct NativeCanonicalControlV1
 	int32_t mainGameState;
 	int32_t loadingStage;
 	int32_t levelID;
+	int32_t gameMode1;
+	int32_t gameMode2;
 };
 
 struct NativeCanonicalRngV1
@@ -36,7 +38,6 @@ struct NativeCanonicalRngV1
 	uint32_t deadcoed1;
 	uint32_t advRng0;
 	uint32_t advRng1;
-	uint32_t psxRngSeed;
 };
 
 struct NativeCanonicalInputPadV1
