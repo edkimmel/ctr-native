@@ -31,8 +31,14 @@ int NativeCanonicalDriverBehavior_Resolve(const struct NativeCanonicalDriverBeha
 int NativeCanonicalDriverBehavior_ResolveCallback(const struct NativeCanonicalDriverBehaviorRegistry *registry,
 	NativeCanonicalDriverBehaviorTokenCallback callback, void *context, uint8_t *behaviorIDOut);
 int NativeCanonicalDriverBehavior_ValidateKind(uint8_t kind, uint8_t behaviorID, uint8_t threadBehaviorID);
-/* Resolves the sole valid active tag for a pointer-free kind/behavior/state
- * tuple. On failure activeTagOut is not modified. */
+/* Returns a set of valid active tags for a pointer-free kind/behavior/state
+ * tuple. Bit n represents canonical active tag n. On failure the output is
+ * not modified. Some lifecycle observations deliberately allow more than one
+ * tag, so callers that validate an existing value must test membership. */
+int NativeCanonicalDriverBehavior_AllowedActiveTagMask(uint8_t kind, uint8_t behaviorID, uint8_t kartState,
+	uint32_t *activeTagMaskOut);
+/* Convenience only: resolves a tag when the allowed set has exactly one bit.
+ * It fails (without modifying the output) for a valid ambiguous set. */
 int NativeCanonicalDriverBehavior_ResolveActiveTag(uint8_t kind, uint8_t behaviorID, uint8_t kartState,
 	uint32_t *activeTagOut);
 /* Pointer-free state/tag gate.  Active tags use the stable detailed enum

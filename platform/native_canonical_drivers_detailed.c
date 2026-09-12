@@ -129,17 +129,17 @@ int NativeCanonicalDriversDetailedV1_Validate(const struct NativeCanonicalDriver
 	for(uint32_t i=0;i<8;i++)
 	{
 		const struct NativeCanonicalDriverSlotV1 *s=&value->slots[i];
-		uint32_t resolvedActiveTag;
+		uint32_t allowedActiveTagMask;
 		if((p->presenceMask&(UINT32_C(1)<<i))==0) { if(!SlotIsAllZero(s))return 0; continue; }
 		if(s->meta.present!=1 || s->meta.slotIndex!=i || !KindValid(s->meta.driverKind) || s->meta.boolFirstFrameSinceRevEngine>1 || s->physics.reserved0!=0 || !Zeros(s->reservedTail,sizeof(s->reservedTail)) ||
 			!ActiveTagValid(s->active.unionTag) || (s->active.unionTag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE&&!Zeros(s->active.branchBytes,sizeof(s->active.branchBytes))))return 0;
 		if((s->meta.externalPresenceFlags&~NATIVE_CANONICAL_DRIVER_EXTERNAL_KNOWN_MASK)!=0 ||
 			(s->meta.driverThreadSimFlags&~NATIVE_CANONICAL_DRIVER_THREAD_SIM_KNOWN_MASK)!=0)return 0;
 		if(!NativeCanonicalDriverBehavior_ValidateKind(s->meta.driverKind,s->meta.behaviorID,s->meta.threadBehaviorID) ||
-			!NativeCanonicalDriverBehavior_ResolveActiveTag(s->meta.driverKind,s->meta.behaviorID,s->meta.kartState,&resolvedActiveTag) ||
-			s->active.unionTag!=resolvedActiveTag)return 0;
+			!NativeCanonicalDriverBehavior_AllowedActiveTagMask(s->meta.driverKind,s->meta.behaviorID,s->meta.kartState,&allowedActiveTagMask) ||
+			(allowedActiveTagMask&(UINT32_C(1)<<s->active.unionTag))==0)return 0;
 		if((s->meta.externalPresenceFlags&NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT)!=0 &&
-			(s->meta.driverKind!=NATIVE_CANONICAL_DRIVER_KIND_HUMAN || resolvedActiveTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB))return 0;
+			(s->meta.driverKind!=NATIVE_CANONICAL_DRIVER_KIND_HUMAN || s->active.unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB))return 0;
 		if(s->meta.driverKind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN) { human++; if(!Zeros(s->bot.bytes,sizeof(s->bot.bytes)))return 0; }
 		else { bot++; if(s->active.unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE||!Zeros(s->active.branchBytes,sizeof(s->active.branchBytes)))return 0; }
 		present++;

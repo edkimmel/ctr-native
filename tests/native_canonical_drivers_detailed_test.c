@@ -107,6 +107,20 @@ static int TestRanksAndActiveTags(void)
 	value.prelude.raceOrderCount=0;value.prelude.raceOrder[0]=NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
 	return 0;
 }
+static int TestAllowedTagOverlap(void)
+{
+	struct NativeCanonicalDriversDetailedV1 value;
+	ValidHuman(&value);
+	/* behavior 31 = init 1 + steady RevEngine suffix 14. Podium's queued
+	 * NONE and the retained RevEngine union are both legacy-valid. */
+	value.slots[0].meta.behaviorID=31;value.slots[0].meta.kartState=4;
+	value.slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;
+	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_REV_ENGINE;
+	value.slots[0].active.branchBytes[0]=1;
+	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	return 0;
+}
 static void ValidMaskGrab(struct NativeCanonicalDriversDetailedV1 *value)
 {
 	ValidHuman(value);
@@ -160,6 +174,6 @@ static int TestMetaFlagContract(void)
 }
 int main(void)
 {
-	if(TestGoldenAndSummary()!=0||TestSemanticMutations()!=0||TestRejectionAndTransaction()!=0||TestBotAndReferences()!=0||TestRanksAndActiveTags()!=0||TestMetaFlagContract()!=0)return 1;
+	if(TestGoldenAndSummary()!=0||TestSemanticMutations()!=0||TestRejectionAndTransaction()!=0||TestBotAndReferences()!=0||TestRanksAndActiveTags()!=0||TestAllowedTagOverlap()!=0||TestMetaFlagContract()!=0)return 1;
 	puts("native_canonical_drivers_detailed_test: passed");return 0;
 }
