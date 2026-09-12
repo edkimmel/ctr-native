@@ -2008,6 +2008,15 @@ int NativeReplayScheduler_GetCanonicalProducerRequest(struct NativeReplaySchedul
 	return 1;
 }
 
+int NativeReplayScheduler_GetV3MismatchReport(struct NativeReplaySchedulerV3MismatchReport *report)
+{
+	struct NativeReplaySchedulerV3MismatchReport candidate;
+	if ((report == NULL) || (s_v3MismatchReportValid == 0)) return 0;
+	candidate = s_v3MismatchReport;
+	*report = candidate;
+	return 1;
+}
+
 int NativeReplayScheduler_SuppressesQuickState(void)
 {
 	return (s_v2Intent != 0) || (s_v3Intent != 0) || NativeReplayScheduler_ModeIsV2(s_mode) || NativeReplayScheduler_ModeIsV3(s_mode);
@@ -2537,8 +2546,17 @@ int NativeReplayScheduler_EndFrameRequest(const struct NativeReplaySchedulerFram
 	                                      const struct NativeReplaySchedulerCanonicalSubmission *submission)
 {
 	enum NativeReplaySchedulerCanonicalKind required = NativeReplayScheduler_RequiredCanonicalKind();
+	if (required == NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_NONE)
+	{
+		/* A normal/v1 frame accepts only an explicit NONE submission (or the
+		 * legacy NULL form).  Never discard a typed/forged submission. */
+		if ((submission != NULL) && (submission->kind != NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_NONE)) return 1;
+		return NativeReplayScheduler_EndFrame(info, NULL);
+	}
 	if ((submission == NULL) || (submission->kind != required))
 	{
+		if (s_mode == NATIVE_REPLAY_MODE_RECORD_V2)
+			(void)NativeReplayScheduler_PoisonV2Record("canonical request kind mismatch");
 		if (NativeReplayScheduler_ModeIsV3(s_mode))
 			(void)NativeReplaySchedulerV3Lifecycle_Submit(&s_v3Lifecycle, required, submission != NULL ? submission->kind : NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_NONE);
 		if (NativeReplayScheduler_ModeIsV3(s_mode))
@@ -2551,8 +2569,6 @@ int NativeReplayScheduler_EndFrameRequest(const struct NativeReplaySchedulerFram
 		NativeReplayScheduler_AbortCanonicalFrame("canonical request lifecycle failure");
 		return 1;
 	}
-	if (submission->kind == NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_NONE)
-		return NativeReplayScheduler_EndFrame(info, NULL);
 	if (submission->kind == NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V1)
 		return NativeReplayScheduler_EndFrame(info, submission->state.v1);
 	if (submission->kind == NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V3)

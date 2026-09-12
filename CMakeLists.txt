@@ -470,6 +470,22 @@ if(BUILD_TESTING)
     target_link_libraries(native_replay_scheduler_v3_lifecycle_test PRIVATE ctr_native_replay_scheduler_seam ctr_native_replay_v3_file)
     add_test(NAME native_replay_scheduler_v3_lifecycle_unit COMMAND $<TARGET_FILE:native_replay_scheduler_v3_lifecycle_test>)
 
+    add_executable(native_replay_scheduler_integration_test tests/native_replay_scheduler_integration_test.c)
+    set_target_properties(native_replay_scheduler_integration_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_include_directories(native_replay_scheduler_integration_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
+    target_compile_definitions(native_replay_scheduler_integration_test PRIVATE
+        CTR_NATIVE
+        CTR_INTERNAL
+        CTR_NATIVE_VERSION="${CTR_NATIVE_VERSION}"
+        CTR_NATIVE_BUILD_ID="${CTR_NATIVE_BUILD_ID}"
+    )
+    target_link_libraries(native_replay_scheduler_integration_test PRIVATE ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file)
+    add_test(NAME native_replay_scheduler_integration_unit COMMAND $<TARGET_FILE:native_replay_scheduler_integration_test>)
+
     add_executable(native_replay_v2_test tests/native_replay_v2_test.c)
     set_target_properties(native_replay_v2_test PROPERTIES
         C_STANDARD 17
