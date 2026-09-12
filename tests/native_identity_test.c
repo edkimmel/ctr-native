@@ -1,3 +1,7 @@
+#if !defined(_WIN32)
+#define _XOPEN_SOURCE 700
+#endif
+
 #include "platform/native_canonical_state.h"
 #include "platform/native_disc_image.h"
 #include "platform/native_identity.h"
@@ -9,6 +13,7 @@
 
 #if defined(_WIN32)
 #include <direct.h>
+#include <windows.h>
 #define NATIVE_IDENTITY_MKDIR(path) _mkdir(path)
 #define NATIVE_IDENTITY_UTIME(path, times) _utime(path, times)
 typedef struct _utimbuf NativeIdentityUtime;
@@ -24,19 +29,109 @@ typedef struct utimbuf NativeIdentityUtime;
 	{                                                                                                                                   \
 		if (!(expression))                                                                                                                \
 		{                                                                                                                               \
-			fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #expression);                                         \
-			return 1;                                                                                                                   \
+			fprintf(stderr, "%s:%d: check failed: %s\\n", __FILE__, __LINE__, #expression);                                         \
+			return 0;                                                                                                                   \
 		}                                                                                                                               \
 	} while (0)
 
-#define NATIVE_IDENTITY_FIXTURE_A "native_identity_fixture_a"
-#define NATIVE_IDENTITY_FIXTURE_B "native_identity_fixture_b"
-#define NATIVE_IDENTITY_ASSETS_A  NATIVE_IDENTITY_FIXTURE_A "/assets"
-#define NATIVE_IDENTITY_ASSETS_B  NATIVE_IDENTITY_FIXTURE_B "/assets"
-#define NATIVE_IDENTITY_FILE_A    NATIVE_IDENTITY_ASSETS_A "/ctr-u.bin"
-#define NATIVE_IDENTITY_FILE_B    NATIVE_IDENTITY_ASSETS_B "/ctr-u.bin"
+#define NATIVE_IDENTITY_PATH_CAP 1024
 
-static int WriteFixture(const char *path, int changedByte)
+struct NativeIdentityFixture
+{
+	char root[NATIVE_IDENTITY_PATH_CAP];
+	char directoryA[NATIVE_IDENTITY_PATH_CAP];
+	char directoryB[NATIVE_IDENTITY_PATH_CAP];
+	char assetsA[NATIVE_IDENTITY_PATH_CAP];
+	char assetsB[NATIVE_IDENTITY_PATH_CAP];
+	char fileA[NATIVE_IDENTITY_PATH_CAP];
+	char fileB[NATIVE_IDENTITY_PATH_CAP];
+	int rootOwned;
+	int directoryAOwned;
+	int directoryBOwned;
+	int assetsAOwned;
+	int assetsBOwned;
+	int fileAOwned;
+	int fileBOwned;
+};
+
+static int NativeIdentityPathJoin(char *output, size_t outputSize, const char *left, const char *right)
+{
+	int written = snprintf(output, outputSize, "%s/%s", left, right);
+
+	return (written >= 0) && ((size_t)written < outputSize);
+}
+
+static int NativeIdentityNewRoot(struct NativeIdentityFixture *fixture)
+{
+#if defined(_WIN32)
+	char tempPath[NATIVE_IDENTITY_PATH_CAP];
+	DWORD written = GetTempPathA(sizeof(tempPath), tempPath);
+
+	if ((written == 0) || (written >= sizeof(tempPath)) || !GetTempFileNameA(tempPath, "nid", 0, fixture->root) ||
+	    (remove(fixture->root) != 0) || (NATIVE_IDENTITY_MKDIR(fixture->root) != 0))
+	{
+		return 0;
+	}
+#else
+	char pattern[] = "/tmp/ctr-native-identity-XXXXXX";
+	char *root = mkdtemp(pattern);
+
+	if ((root == NULL) || (snprintf(fixture->root, sizeof(fixture->root), "%s", root) < 0) ||
+	    (strlen(root) >= sizeof(fixture->root)))
+	{
+		return 0;
+	}
+#endif
+
+	fixture->rootOwned = 1;
+	return 1;
+}
+
+static int NativeIdentityFixtureCleanup(struct NativeIdentityFixture *fixture)
+{
+	int success = 1;
+
+	/* The tested file remains retained after hashing. Release it before removal. */
+	NativeDiscImage_Shutdown();
+	if (fixture->fileBOwned && (remove(fixture->fileB) != 0))
+	{
+		success = 0;
+	}
+	if (fixture->fileAOwned && (remove(fixture->fileA) != 0))
+	{
+		success = 0;
+	}
+	fixture->fileBOwned = 0;
+	fixture->fileAOwned = 0;
+	if (fixture->assetsBOwned && (rmdir(fixture->assetsB) != 0))
+	{
+		success = 0;
+	}
+	if (fixture->assetsAOwned && (rmdir(fixture->assetsA) != 0))
+	{
+		success = 0;
+	}
+	fixture->assetsBOwned = 0;
+	fixture->assetsAOwned = 0;
+	if (fixture->directoryBOwned && (rmdir(fixture->directoryB) != 0))
+	{
+		success = 0;
+	}
+	if (fixture->directoryAOwned && (rmdir(fixture->directoryA) != 0))
+	{
+		success = 0;
+	}
+	fixture->directoryBOwned = 0;
+	fixture->directoryAOwned = 0;
+	if (fixture->rootOwned && (rmdir(fixture->root) != 0))
+	{
+		success = 0;
+	}
+	fixture->rootOwned = 0;
+	return success;
+}
+
+static int NativeIdentityWriteFixture(const char *path, int changedByte)
 {
 	uint8_t sector[2352];
 	FILE *file = fopen(path, "wb");
@@ -72,7 +167,7 @@ static int WriteFixture(const char *path, int changedByte)
 		}
 		if (fwrite(sector, 1, sizeof(sector), file) != sizeof(sector))
 		{
-			fclose(file);
+			(void)fclose(file);
 			return 0;
 		}
 	}
@@ -80,29 +175,61 @@ static int WriteFixture(const char *path, int changedByte)
 	return fclose(file) == 0;
 }
 
-static void CleanupFixtures(void)
+static int NativeIdentityFixturePrepare(struct NativeIdentityFixture *fixture)
 {
-	(void)remove(NATIVE_IDENTITY_FILE_A);
-	(void)remove(NATIVE_IDENTITY_FILE_B);
-	(void)rmdir(NATIVE_IDENTITY_ASSETS_A);
-	(void)rmdir(NATIVE_IDENTITY_ASSETS_B);
-	(void)rmdir(NATIVE_IDENTITY_FIXTURE_A);
-	(void)rmdir(NATIVE_IDENTITY_FIXTURE_B);
-}
-
-static int PrepareFixtures(void)
-{
-	CleanupFixtures();
-	if ((NATIVE_IDENTITY_MKDIR(NATIVE_IDENTITY_FIXTURE_A) != 0) || (NATIVE_IDENTITY_MKDIR(NATIVE_IDENTITY_ASSETS_A) != 0) ||
-	    (NATIVE_IDENTITY_MKDIR(NATIVE_IDENTITY_FIXTURE_B) != 0) || (NATIVE_IDENTITY_MKDIR(NATIVE_IDENTITY_ASSETS_B) != 0))
+	memset(fixture, 0, sizeof(*fixture));
+	NativeDiscImage_Shutdown();
+	if (!NativeIdentityNewRoot(fixture) ||
+	    !NativeIdentityPathJoin(fixture->directoryA, sizeof(fixture->directoryA), fixture->root, "a") ||
+	    !NativeIdentityPathJoin(fixture->directoryB, sizeof(fixture->directoryB), fixture->root, "b") ||
+	    !NativeIdentityPathJoin(fixture->assetsA, sizeof(fixture->assetsA), fixture->directoryA, "assets") ||
+	    !NativeIdentityPathJoin(fixture->assetsB, sizeof(fixture->assetsB), fixture->directoryB, "assets") ||
+	    !NativeIdentityPathJoin(fixture->fileA, sizeof(fixture->fileA), fixture->assetsA, "ctr-u.bin") ||
+	    !NativeIdentityPathJoin(fixture->fileB, sizeof(fixture->fileB), fixture->assetsB, "ctr-u.bin"))
 	{
+		(void)NativeIdentityFixtureCleanup(fixture);
 		return 0;
 	}
-
-	return WriteFixture(NATIVE_IDENTITY_FILE_A, 0) && WriteFixture(NATIVE_IDENTITY_FILE_B, 0);
+	if (NATIVE_IDENTITY_MKDIR(fixture->directoryA) != 0)
+	{
+		(void)NativeIdentityFixtureCleanup(fixture);
+		return 0;
+	}
+	fixture->directoryAOwned = 1;
+	if (NATIVE_IDENTITY_MKDIR(fixture->directoryB) != 0)
+	{
+		(void)NativeIdentityFixtureCleanup(fixture);
+		return 0;
+	}
+	fixture->directoryBOwned = 1;
+	if (NATIVE_IDENTITY_MKDIR(fixture->assetsA) != 0)
+	{
+		(void)NativeIdentityFixtureCleanup(fixture);
+		return 0;
+	}
+	fixture->assetsAOwned = 1;
+	if (NATIVE_IDENTITY_MKDIR(fixture->assetsB) != 0)
+	{
+		(void)NativeIdentityFixtureCleanup(fixture);
+		return 0;
+	}
+	fixture->assetsBOwned = 1;
+	if (!NativeIdentityWriteFixture(fixture->fileA, 0))
+	{
+		(void)NativeIdentityFixtureCleanup(fixture);
+		return 0;
+	}
+	fixture->fileAOwned = 1;
+	if (!NativeIdentityWriteFixture(fixture->fileB, 0))
+	{
+		(void)NativeIdentityFixtureCleanup(fixture);
+		return 0;
+	}
+	fixture->fileBOwned = 1;
+	return 1;
 }
 
-static int StatesEqual(const struct NativeCanonicalStateV1 *left, const struct NativeCanonicalStateV1 *right)
+static int NativeIdentityStatesEqual(const struct NativeCanonicalStateV1 *left, const struct NativeCanonicalStateV1 *right)
 {
 	return (left->frameNumber == right->frameNumber) &&
 	       (memcmp(left->identity.build, right->identity.build, NATIVE_IDENTITY_DIGEST_BYTES) == 0) &&
@@ -111,7 +238,7 @@ static int StatesEqual(const struct NativeCanonicalStateV1 *left, const struct N
 	       (left->combinedDigest == right->combinedDigest);
 }
 
-static int TestIdentityProvider(void)
+static int NativeIdentityTestProvider(struct NativeIdentityFixture *fixture)
 {
 	static const uint8_t expectedBuild[NATIVE_IDENTITY_DIGEST_BYTES] = {
 		0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
@@ -125,9 +252,9 @@ static int TestIdentityProvider(void)
 	uint8_t contentSecond[NATIVE_IDENTITY_DIGEST_BYTES];
 	NativeIdentityUtime times;
 
-	CHECK(PrepareFixtures());
+	CHECK(NativeIdentityFixturePrepare(fixture));
 	CHECK(NativeIdentity_BuildKnown());
-	CHECK(NativeDiscImage_Init(NATIVE_IDENTITY_ASSETS_A));
+	CHECK(NativeDiscImage_Init(fixture->assetsA));
 	CHECK(!NativeDiscImage_ContentIdentityReady());
 	CHECK(NativeIdentity_Get(&first));
 	CHECK(NativeDiscImage_ContentIdentityReady());
@@ -140,17 +267,17 @@ static int TestIdentityProvider(void)
 
 	times.actime = 1;
 	times.modtime = 2;
-	CHECK(NATIVE_IDENTITY_UTIME(NATIVE_IDENTITY_FILE_B, &times) == 0);
-	CHECK(NativeDiscImage_Init(NATIVE_IDENTITY_ASSETS_B));
+	CHECK(NATIVE_IDENTITY_UTIME(fixture->fileB, &times) == 0);
+	CHECK(NativeDiscImage_Init(fixture->assetsB));
 	CHECK(!NativeDiscImage_ContentIdentityReady());
 	CHECK(NativeDiscImage_GetContentIdentity(contentSecond));
 	CHECK(NativeDiscImage_ContentIdentityReady());
 	CHECK(memcmp(contentFirst, contentSecond, sizeof(contentFirst)) == 0);
 
-	CHECK(NativeDiscImage_Init(NATIVE_IDENTITY_ASSETS_A));
+	CHECK(NativeDiscImage_Init(fixture->assetsA));
 	CHECK(!NativeDiscImage_ContentIdentityReady());
-	CHECK(WriteFixture(NATIVE_IDENTITY_FILE_B, 1));
-	CHECK(NativeDiscImage_Init(NATIVE_IDENTITY_ASSETS_B));
+	CHECK(NativeIdentityWriteFixture(fixture->fileB, 1));
+	CHECK(NativeDiscImage_Init(fixture->assetsB));
 	CHECK(NativeIdentity_Get(&changed));
 	CHECK(memcmp(changed.content, contentFirst, sizeof(changed.content)) != 0);
 
@@ -162,11 +289,14 @@ static int TestIdentityProvider(void)
 		CHECK(((const uint8_t *)&untouched)[i] == 0xa5);
 	}
 
-	CleanupFixtures();
-	return 0;
+	NativeDiscImage_Shutdown();
+	NativeDiscImage_Shutdown();
+	CHECK(!NativeDiscImage_ContentIdentityReady());
+	CHECK(!NativeDiscImage_GetContentIdentity(contentSecond));
+	return 1;
 }
 
-static int TestCanonicalIdentityIntegration(void)
+static int NativeIdentityTestCanonicalIntegration(struct NativeIdentityFixture *fixture)
 {
 	uint8_t bytes[296];
 	struct NativeIdentityV1 identity;
@@ -175,8 +305,8 @@ static int TestCanonicalIdentityIntegration(void)
 	struct NativeCodecWriter writer;
 	struct NativeCodecReader reader;
 
-	CHECK(PrepareFixtures());
-	CHECK(NativeDiscImage_Init(NATIVE_IDENTITY_ASSETS_A));
+	CHECK(NativeIdentityFixturePrepare(fixture));
+	CHECK(NativeDiscImage_Init(fixture->assetsA));
 	CHECK(NativeIdentity_Get(&identity));
 	NativeCanonicalStateV1_Init(&state);
 	state.frameNumber = 77;
@@ -187,16 +317,31 @@ static int TestCanonicalIdentityIntegration(void)
 	NativeCanonicalStateV1_Init(&decoded);
 	NativeCodecReader_Init(&reader, bytes, sizeof(bytes));
 	CHECK(NativeCanonicalStateV1_Decode(&reader, &identity, &decoded));
-	CHECK(StatesEqual(&state, &decoded));
-	CleanupFixtures();
-	return 0;
+	CHECK(NativeIdentityStatesEqual(&state, &decoded));
+	return 1;
 }
 
 int main(void)
 {
-	if ((TestIdentityProvider() != 0) || (TestCanonicalIdentityIntegration() != 0))
+	struct NativeIdentityFixture provider = {0};
+	struct NativeIdentityFixture canonical = {0};
+	int success = NativeIdentityTestProvider(&provider);
+
+	if (!NativeIdentityFixtureCleanup(&provider))
 	{
-		CleanupFixtures();
+		success = 0;
+	}
+	if (success && !NativeIdentityTestCanonicalIntegration(&canonical))
+	{
+		success = 0;
+	}
+	if (!NativeIdentityFixtureCleanup(&canonical))
+	{
+		success = 0;
+	}
+	NativeDiscImage_Shutdown();
+	if (!success)
+	{
 		return 1;
 	}
 

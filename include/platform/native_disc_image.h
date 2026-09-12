@@ -13,6 +13,9 @@ struct NativeDiscImageFile
 };
 
 int NativeDiscImage_Init(const char *assetsDir);
+/* Releases the retained raw-image handle and invalidates all derived state.
+ * Safe to call repeatedly; callers must reinitialize before later reads. */
+void NativeDiscImage_Shutdown(void);
 /* Returns nonzero only after the lazy content digest has been cached. */
 int NativeDiscImage_ContentIdentityReady(void);
 int NativeDiscImage_GetContentIdentity(uint8_t content[NATIVE_IDENTITY_DIGEST_BYTES]);
