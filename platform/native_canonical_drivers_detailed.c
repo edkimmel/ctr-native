@@ -67,12 +67,16 @@ static int WritePhysics(struct NativeCodecWriter *w, const struct NativeCanonica
 		WriteS16s(w,v->axisAngle3,3)&&WriteS16s(w,v->axisAngle4,3)&&WriteS16s(w,v->rotCurr,4)&&WriteS16s(w,v->rotPrev,4)&&
 		WriteS16s(w,v->posWallColl,3)&&WriteS16s(w,v->forwardAccelVector,3)&&WriteS16s(w,v->accel,3);
 }
+static int WriteBot(struct NativeCodecWriter *w,const struct NativeCanonicalDriverBotV1 *v)
+{
+	return NativeCodecWriter_WriteS16(w,v->botPath)&&NativeCodecWriter_WriteU16(w,v->botNavFrameIndex)&&NativeCodecWriter_WriteS32(w,v->navProgressRemainder)&&NativeCodecWriter_WriteS32(w,v->reserved5ac)&&NativeCodecWriter_WriteU32(w,v->botFlags)&&NativeCodecWriter_WriteS32(w,v->botAccel)&&NativeCodecWriter_WriteS16(w,v->aiDamageState)&&NativeCodecWriter_WriteS16(w,v->rotXZ)&&NativeCodecWriter_WriteS16(w,v->driftTarget)&&NativeCodecWriter_WriteS16(w,v->mulDrift)&&NativeCodecWriter_WriteS16(w,v->simpTurnState)&&NativeCodecWriter_WriteS16(w,v->turboMeter)&&NativeCodecWriter_WriteS16(w,v->fireLevel)&&NativeCodecWriter_WriteS32(w,v->squishCooldown)&&NativeCodecWriter_WriteS32(w,v->reserved5cc)&&NativeCodecWriter_WriteS32(w,v->speedY)&&NativeCodecWriter_WriteS32(w,v->speedLinear)&&WriteS32s(w,v->accel,3)&&WriteS32s(w,v->velocity,3)&&WriteS32s(w,v->positionBackup,3)&&WriteS16s(w,v->aiRot,3)&&NativeCodecWriter_WriteS32(w,v->aiProgressCooldown)&&NativeCodecWriter_WriteS16(w,v->aiRotY)&&NativeCodecWriter_WriteU8(w,v->aiQuadblockCheckpointIndex)&&WriteS16s(w,v->estimatePos,3)&&NativeCodecWriter_WriteBytes(w,v->estimateRot,4)&&NativeCodecWriter_WriteS16(w,v->estimateDistXYZ)&&NativeCodecWriter_WriteS16(w,v->estimateDistXZ)&&NativeCodecWriter_WriteS16(w,v->estimateFlags)&&NativeCodecWriter_WriteS16(w,v->estimatePathChangeOpcode)&&NativeCodecWriter_WriteU8(w,v->estimateGoBackCount)&&NativeCodecWriter_WriteU8(w,v->estimateSpecialBits)&&NativeCodecWriter_WriteU8(w,v->maskObjPresent)&&NativeCodecWriter_WriteS16(w,v->weaponCooldown)&&NativeCodecWriter_WriteU8(w,v->blastBounceCount)&&NativeCodecWriter_WriteU8(w,v->desiredPathBossOnly)&&NativeCodecWriter_WriteS32(w,v->reserved628);
+}
 static int WriteSlot(struct NativeCodecWriter *w, const struct NativeCanonicalDriverSlotV1 *v)
 {
 	return WriteMeta(w,&v->meta)&&WriteRace(w,&v->race)&&WritePhysics(w,&v->physics)&&WriteS16s(w,v->dynamics.field,NATIVE_CANONICAL_DRIVER_DYN_COUNT)&&
 		NativeCodecWriter_WriteS32(w,v->dynamics.xSpeed)&&NativeCodecWriter_WriteS32(w,v->dynamics.ySpeed)&&NativeCodecWriter_WriteS32(w,v->dynamics.zSpeed)&&
 		NativeCodecWriter_WriteU32(w,v->active.unionTag)&&NativeCodecWriter_WriteBytes(w,v->active.branchBytes,20)&&
-		NativeCodecWriter_WriteBytes(w,v->bot.bytes,NATIVE_CANONICAL_DRIVERS_BOT_BYTES)&&NativeCodecWriter_WriteU8(w,v->pendingDamage.type)&&
+		WriteBot(w,&v->bot)&&NativeCodecWriter_WriteU8(w,v->pendingDamage.type)&&
 		NativeCodecWriter_WriteU8(w,v->pendingDamage.attackerSlotPlusOne)&&NativeCodecWriter_WriteU8(w,v->pendingDamage.reason)&&
 		NativeCodecWriter_WriteU8(w,v->pendingDamage.reservedZero);
 }
@@ -113,6 +117,23 @@ static int PendingDamageValid(const struct NativeCanonicalDriverPendingDamageV1 
 	if(p->attackerSlotPlusOne==0||p->attackerSlotPlusOne>8||(presence&(UINT32_C(1)<<(p->attackerSlotPlusOne-1)))==0||p->attackerSlotPlusOne-1==slot)return 0;
 	return (p->type==2&&(p->reason==0||p->reason==6))||(p->type==3&&p->reason==5);
 }
+static int BotZero(const struct NativeCanonicalDriverBotV1 *bot)
+{
+	uint8_t bytes[NATIVE_CANONICAL_DRIVERS_BOT_BYTES];struct NativeCodecWriter writer;
+	NativeCodecWriter_Init(&writer,bytes,sizeof(bytes),NULL);
+	return WriteBot(&writer,bot)&&NativeCodecWriter_Size(&writer)==sizeof(bytes)&&Zeros(bytes,sizeof(bytes));
+}
+static int BotValid(const struct NativeCanonicalDriverBotV1 *bot,uint8_t kind)
+{
+	if(kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN)return BotZero(bot);
+	if(bot->botPath<0||bot->botPath>2||bot->reserved5ac!=0||bot->reserved5cc!=0||bot->reserved628!=0||
+		(bot->botFlags&~NATIVE_CANONICAL_DRIVER_BOT_FLAGS_KNOWN_MASK)!=0||bot->maskObjPresent>1||bot->desiredPathBossOnly>2)return 0;
+	if(bot->aiDamageState!=0&&bot->aiDamageState!=1&&bot->aiDamageState!=2&&bot->aiDamageState!=3&&bot->aiDamageState!=5)return 0;
+	if((bot->botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)!=0&&bot->aiDamageState==0)return 0;
+	if((bot->botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS)!=0&&
+		(bot->botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)==0)return 0;
+	return 1;
+}
 
 void NativeCanonicalDriversDetailedV1_Init(struct NativeCanonicalDriversDetailedV1 *value)
 {
@@ -149,7 +170,8 @@ int NativeCanonicalDriversDetailedV1_Validate(const struct NativeCanonicalDriver
 			(allowedActiveTagMask&(UINT32_C(1)<<s->active.unionTag))==0)return 0;
 		if((s->meta.externalPresenceFlags&NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT)!=0 &&
 			(s->meta.driverKind!=NATIVE_CANONICAL_DRIVER_KIND_HUMAN || s->active.unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB))return 0;
-		if(s->meta.driverKind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN) { human++; if(!Zeros(s->bot.bytes,sizeof(s->bot.bytes)))return 0; }
+		if(!BotValid(&s->bot,s->meta.driverKind))return 0;
+		if(s->meta.driverKind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN) { human++; }
 		else { bot++; if(s->active.unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE||!Zeros(s->active.branchBytes,sizeof(s->active.branchBytes)))return 0; }
 		present++;
 	}

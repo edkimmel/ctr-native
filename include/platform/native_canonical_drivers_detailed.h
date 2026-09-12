@@ -158,7 +158,22 @@ struct NativeCanonicalDriverPhysicsV1
 
 struct NativeCanonicalDriverDynamicsV1 { int16_t field[NATIVE_CANONICAL_DRIVER_DYN_COUNT]; int32_t xSpeed, ySpeed, zSpeed; };
 struct NativeCanonicalDriverActiveV1 { uint32_t unionTag; uint8_t branchBytes[20]; };
-struct NativeCanonicalDriverBotV1 { uint8_t bytes[NATIVE_CANONICAL_DRIVERS_BOT_BYTES]; };
+/* Explicit values for bytes 388..515. This is a wire-value type, never a
+ * native BotData snapshot; every field is emitted LE below. */
+struct NativeCanonicalDriverBotV1 {
+	int16_t botPath; uint16_t botNavFrameIndex;
+	int32_t navProgressRemainder, reserved5ac; uint32_t botFlags; int32_t botAccel; int16_t aiDamageState;
+	int16_t rotXZ, driftTarget, mulDrift, simpTurnState, turboMeter, fireLevel;
+	int32_t squishCooldown, reserved5cc, speedY, speedLinear, accel[3], velocity[3], positionBackup[3];
+	int16_t aiRot[3]; int32_t aiProgressCooldown; int16_t aiRotY; uint8_t aiQuadblockCheckpointIndex;
+	int16_t estimatePos[3]; uint8_t estimateRot[4]; int16_t estimateDistXYZ, estimateDistXZ, estimateFlags, estimatePathChangeOpcode;
+	uint8_t estimateGoBackCount, estimateSpecialBits, maskObjPresent; int16_t weaponCooldown; uint8_t blastBounceCount, desiredPathBossOnly; int32_t reserved628;
+};
+enum NativeCanonicalDriverBotFlags {
+	NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE = UINT32_C(0x0002),
+	NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS = UINT32_C(0x0004),
+	NATIVE_CANONICAL_DRIVER_BOT_FLAGS_KNOWN_MASK = UINT32_C(0x03ff)
+};
 struct NativeCanonicalDriverPendingDamageV1 { uint8_t type, attackerSlotPlusOne, reason, reservedZero; };
 _Static_assert(sizeof(struct NativeCanonicalDriverPendingDamageV1)==NATIVE_CANONICAL_DRIVERS_TAIL_BYTES,
 	"pending-damage tail must remain four explicit bytes");

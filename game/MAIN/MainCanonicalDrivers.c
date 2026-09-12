@@ -254,22 +254,22 @@ static int ValidateMetaThread(const struct Thread *thread,const struct Thread *r
 	return instance->thread==thread;
 }
 
-int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
-	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,
-	struct MainCanonicalDriversMetaFlags *out)
+/* One ownership walk for external game attachments.  Callers choose which
+ * optional owned objects are semantically relevant; the walk itself always
+ * proves every child before dereferencing it. */
+static int MainCanonicalDrivers_ResolveAttachmentFlags(const struct GameTracker *gGT,
+	const struct Driver *driver,const struct Thread *cloudThread,
+	const struct MaskHeadWeapon *maskObject,struct MainCanonicalDriversMetaFlags *out)
 {
 	struct NativeCanonicalPoolGeometry threadGeometry,instanceGeometry,smallGeometry;
 	struct NativeCanonicalPoolList threadFree,instanceFree,instanceTaken,smallFree;
 	struct MainCanonicalDriversMetaFlags candidate={0};
 	const struct Instance *rootInstance;
 	const struct Thread *rootThread,*child;
-	const struct Thread *cloudThread;
-	const struct MaskHeadWeapon *maskObject=NULL;
 	uint32_t ignored,rootIndex,cloudMatches=0,maskMatches=0;
 	uint8_t *seenChildren;
 	int success=0;
-	int wantsMask;
-	if(!gGT||!driver||!out||!NativeCanonicalDriverBehavior_IsMaskGrabActive(kind,behaviorID,kartState,&wantsMask)||
+	if(!gGT||!driver||!out||
 		!SnapshotMetaPools(gGT,&threadGeometry,&instanceGeometry,&smallGeometry,&threadFree,&instanceFree,&instanceTaken,&smallFree))return 0;
 	/* The Driver's own large-stack root is an explicit precondition from the
 	 * roster gate. Revalidate the linked instance/thread before touching child
@@ -280,13 +280,11 @@ int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 	rootThread=rootInstance->thread;
 	if(!rootThread||!NativeCanonicalPool_AllocatedFromFree(&threadGeometry,&threadFree,rootThread,&rootIndex)||
 		rootThread->object!=driver||rootThread->inst!=rootInstance||(rootThread->flags&THREAD_FLAG_DEAD)!=0||
-		driver->kartState!=kartState||rootThread->parentThread==rootThread)return 0;
+		rootThread->parentThread==rootThread)return 0;
 	if((rootThread->flags&THREAD_FLAG_DISABLE_COLLISION)!=0)
 		candidate.driverThreadSimFlags=NATIVE_CANONICAL_DRIVER_THREAD_SIM_COLLISION_DISABLED;
 	seenChildren=(uint8_t *)calloc(threadGeometry.maxItems,sizeof(*seenChildren));
 	if(!seenChildren)return 0;
-	cloudThread=driver->thCloud;
-	if(wantsMask)maskObject=driver->KartStates.MaskGrab.maskObj;
 	child=rootThread->childThread;
 	for(uint32_t count=0;child!=NULL&&count<threadGeometry.maxItems;count++)
 	{
@@ -322,6 +320,17 @@ done:
 	free(seenChildren);
 	if(success)*out=candidate;
 	return success;
+}
+
+int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
+	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,
+	struct MainCanonicalDriversMetaFlags *out)
+{
+	int wantsMask;
+	if(!gGT||!driver||!out||driver->kartState!=kartState||
+		!NativeCanonicalDriverBehavior_IsMaskGrabActive(kind,behaviorID,kartState,&wantsMask))return 0;
+	return MainCanonicalDrivers_ResolveAttachmentFlags(gGT,driver,driver->thCloud,
+		wantsMask?driver->KartStates.MaskGrab.maskObj:NULL,out);
 }
 
 int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,const struct sData *sourceData,struct NativeCanonicalDriversRosterCandidate *out)
@@ -659,4 +668,50 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(const struct Gam
 	for(uint8_t slot=0;slot<8;slot++)if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))!=0&&
 		(!gGT->drivers[slot]||!MainCanonicalDrivers_ExtractPendingDamage(gGT,gGT->drivers[slot],&candidate.pendingDamage[slot])))return 0;
 	*out=candidate;return 1;
+}
+
+static int MainCanonicalDrivers_BotNavIndex(const struct GameTracker *gGT,const struct sData *sourceData,
+	const struct Driver *driver,uint16_t *out)
+{
+	const struct NavHeader *header;const struct NavFrame *base;uintptr_t baseAddress,endAddress,frameAddress;size_t span;int path;
+	if(!gGT||!sourceData||!driver||!out||(path=driver->botData.botPath)<0||path>2||!gGT->level1||!gGT->level1->LevNavTable)return 0;
+	header=sourceData->NavPath_ptrHeader[path];
+	if(!header||header!=gGT->level1->LevNavTable[path]||header->magicNumber!=-0x1303||header->numPoints<=1||header->numPoints>32766)return 0;
+	baseAddress=(uintptr_t)header+sizeof(struct NavHeader);if(baseAddress<(uintptr_t)header)return 0;
+	base=sourceData->NavPath_ptrNavFrameArray[path];if(!base||baseAddress!=(uintptr_t)base)return 0;
+	if((size_t)header->numPoints>SIZE_MAX/sizeof(struct NavFrame))return 0;span=(size_t)header->numPoints*sizeof(struct NavFrame);if(UINTPTR_MAX-baseAddress<span)return 0;endAddress=baseAddress+(uintptr_t)span;
+	if((uintptr_t)header->last!=endAddress||!driver->botData.botNavFrame)return 0;frameAddress=(uintptr_t)driver->botData.botNavFrame;
+	if(frameAddress<baseAddress||frameAddress>=endAddress||(frameAddress-baseAddress)%sizeof(struct NavFrame)!=0)return 0;
+	*out=(uint16_t)((frameAddress-baseAddress)/sizeof(struct NavFrame));return 1;
+}
+
+static int MainCanonicalDrivers_BotMaskPresent(const struct GameTracker *gGT,const struct Driver *driver,uint8_t threadBehaviorID,uint8_t *out)
+{
+	struct MainCanonicalDriversMetaFlags flags;
+	if(!gGT||!driver||!out)return 0;
+	if(!driver->botData.maskObj){*out=0;return 1;}
+	if(threadBehaviorID!=3||driver->kartState!=KS_MASK_GRABBED||
+		!MainCanonicalDrivers_ResolveAttachmentFlags(gGT,driver,NULL,driver->botData.maskObj,&flags)||
+		(flags.externalPresenceFlags&NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT)==0)return 0;
+	*out=1;return 1;
+}
+
+static int MainCanonicalDrivers_ExtractBot(const struct GameTracker *gGT,const struct sData *sourceData,const struct Driver *driver,uint8_t kind,uint8_t threadBehaviorID,struct NativeCanonicalDriverBotV1 *out)
+{
+	struct NativeCanonicalDriverBotV1 c={0};uint16_t index;uint8_t mask;
+	if(!gGT||!sourceData||!driver||!out)return 0;if(kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN){*out=c;return 1;}if(kind!=NATIVE_CANONICAL_DRIVER_KIND_BOT||!MainCanonicalDrivers_BotNavIndex(gGT,sourceData,driver,&index)||!MainCanonicalDrivers_BotMaskPresent(gGT,driver,threadBehaviorID,&mask))return 0;
+	if((driver->botData.botFlags&~NATIVE_CANONICAL_DRIVER_BOT_FLAGS_KNOWN_MASK)!=0||driver->botData.aiDamageState<0||driver->botData.aiDamageState==4||driver->botData.aiDamageState>5||
+		((driver->botData.botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)!=0&&driver->botData.aiDamageState==0)||
+		((driver->botData.botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS)!=0&&(driver->botData.botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)==0)||driver->botData.desiredPath_BossOnly>2)return 0;
+	c.botPath=driver->botData.botPath;c.botNavFrameIndex=index;c.navProgressRemainder=(int32_t)driver->botData.navProgressRemainder;c.botFlags=driver->botData.botFlags;c.botAccel=(int32_t)driver->botData.botAccel;c.aiDamageState=driver->botData.aiDamageState;
+	c.rotXZ=driver->botData.aiPhysics.rotXZ;c.driftTarget=driver->botData.aiPhysics.driftTarget;c.mulDrift=driver->botData.aiPhysics.mulDrift;c.simpTurnState=driver->botData.aiPhysics.simpTurnState;c.turboMeter=driver->botData.aiPhysics.turboMeter;c.fireLevel=driver->botData.aiPhysics.fireLevel;c.squishCooldown=(int32_t)driver->botData.aiPhysics.squishCooldown;c.speedY=(int32_t)driver->botData.aiPhysics.speedY;c.speedLinear=(int32_t)driver->botData.aiPhysics.speedLinear;
+	c.accel[0]=(int32_t)driver->botData.aiPhysics.accel.x;c.accel[1]=(int32_t)driver->botData.aiPhysics.accel.y;c.accel[2]=(int32_t)driver->botData.aiPhysics.accel.z;c.velocity[0]=(int32_t)driver->botData.aiPhysics.velocity.x;c.velocity[1]=(int32_t)driver->botData.aiPhysics.velocity.y;c.velocity[2]=(int32_t)driver->botData.aiPhysics.velocity.z;c.positionBackup[0]=(int32_t)driver->botData.positionBackup.x;c.positionBackup[1]=(int32_t)driver->botData.positionBackup.y;c.positionBackup[2]=(int32_t)driver->botData.positionBackup.z;c.aiRot[0]=driver->botData.aiRot.x;c.aiRot[1]=driver->botData.aiRot.y;c.aiRot[2]=driver->botData.aiRot.z;
+	c.estimatePos[0]=driver->botData.estimateNavFrame.pos.x;c.estimatePos[1]=driver->botData.estimateNavFrame.pos.y;c.estimatePos[2]=driver->botData.estimateNavFrame.pos.z;for(uint8_t n=0;n<4;n++)c.estimateRot[n]=driver->botData.estimateNavFrame.rot[n];c.aiProgressCooldown=(int32_t)driver->botData.ai_progress_cooldown;c.aiRotY=driver->botData.ai_rotY_608;c.aiQuadblockCheckpointIndex=driver->botData.ai_quadblock_checkpointIndex;c.estimateDistXYZ=driver->botData.estimateNavFrame.distToNextNavXYZ;c.estimateDistXZ=driver->botData.estimateNavFrame.distToNextNavXZ;c.estimateFlags=driver->botData.estimateNavFrame.flags;c.estimatePathChangeOpcode=driver->botData.estimateNavFrame.pathChangeOpcode;c.estimateGoBackCount=driver->botData.estimateNavFrame.goBackCount;c.estimateSpecialBits=driver->botData.estimateNavFrame.specialBits;c.maskObjPresent=mask;c.weaponCooldown=driver->botData.weaponCooldown;c.blastBounceCount=driver->botData.blastBounceCount;c.desiredPathBossOnly=driver->botData.desiredPath_BossOnly;*out=c;return 1;
+}
+
+int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(const struct GameTracker *gGT,const struct sData *sourceData,struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotCandidate *out)
+{
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingCandidate prior;struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotCandidate candidate;
+	if(!out||!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(gGT,sourceData,&prior))return 0;candidate.roster=prior.roster;memcpy(candidate.race,prior.race,sizeof(candidate.race));memcpy(candidate.dynamics,prior.dynamics,sizeof(candidate.dynamics));memcpy(candidate.active,prior.active,sizeof(candidate.active));memcpy(candidate.pendingDamage,prior.pendingDamage,sizeof(candidate.pendingDamage));memset(candidate.bot,0,sizeof(candidate.bot));
+	for(uint8_t slot=0;slot<8;slot++)if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))!=0&&(!gGT->drivers[slot]||!MainCanonicalDrivers_ExtractBot(gGT,sourceData,gGT->drivers[slot],candidate.roster.kind[slot],candidate.roster.threadBehaviorID[slot],&candidate.bot[slot])))return 0;*out=candidate;return 1;
 }

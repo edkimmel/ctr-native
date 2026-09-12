@@ -26,6 +26,9 @@ union SourceThreadSlot { uint32_t alignment; unsigned char bytes[sizeof(struct T
 union SourceInstanceSlot { uint32_t alignment; unsigned char bytes[SOURCE_INSTANCE_RAW_SIZE]; };
 struct SourceFixture {
 	struct GameTracker tracker;
+	struct Level level;
+	struct { struct NavHeader header; struct NavFrame frames[2]; } navPaths[3];
+	struct NavHeader *navTable[3];
 	union SourceLargeSlot large[SOURCE_POOL_ITEMS];
 	union SourceSmallSlot small[SOURCE_POOL_ITEMS];
 	union SourceThreadSlot thread[SOURCE_POOL_ITEMS];
@@ -100,10 +103,18 @@ static void SourceFixtureInit(struct SourceFixture *f)
 	FInitPool(&f->tracker.JitPools.thread,f->thread,sizeof(struct Thread));
 	FInitPool(&f->tracker.JitPools.instance,f->instance,SOURCE_INSTANCE_RAW_SIZE);
 	sd->gGT=&f->tracker;
+	f->tracker.level1=&f->level;f->level.LevNavTable=f->navTable;
+	for(uint8_t path=0;path<3;path++)
+	{
+		f->navPaths[path].header.magicNumber=-0x1303;f->navPaths[path].header.numPoints=2;
+		f->navPaths[path].header.last=&f->navPaths[path].frames[2];f->navTable[path]=&f->navPaths[path].header;
+		sd->NavPath_ptrHeader[path]=&f->navPaths[path].header;sd->NavPath_ptrNavFrameArray[path]=f->navPaths[path].frames;
+	}
 	SourceDriver(f,0,0);SourceDriver(f,2,1);SourceDriver(f,5,1);
 	f->tracker.driversInRaceOrder[0]=FD(f,0);f->tracker.driversInRaceOrder[1]=FD(f,2);f->tracker.driversInRaceOrder[2]=FD(f,5);
 	f->tracker.numWinners=2;f->tracker.winnerIndex[0]=5;f->tracker.winnerIndex[1]=0;f->tracker.humanPlayerPositions[0]=7;
-	FD(f,2)->botData.botPath=0;FD(f,5)->botData.botPath=2;
+	FD(f,2)->botData.botPath=0;FD(f,2)->botData.botNavFrame=&f->navPaths[0].frames[0];
+	FD(f,5)->botData.botPath=2;FD(f,5)->botData.botNavFrame=&f->navPaths[2].frames[0];
 	sd->navBotList[0].first=&FD(f,2)->botData.item;sd->navBotList[0].last=&FD(f,2)->botData.item;sd->navBotList[0].count=1;
 	sd->navBotList[2].first=&FD(f,5)->botData.item;sd->navBotList[2].last=&FD(f,5)->botData.item;sd->navBotList[2].count=1;
 }
@@ -970,4 +981,53 @@ static int PendingDamageTest(void)
 	return 1;
 }
 
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
+static int BotProjectionTest(void)
+{
+	struct SourceFixture fixture;
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotCandidate value,before;
+	struct Driver *bot;
+	struct Thread *root,*mask;
+	struct sData *sd=&sdata_static;
+	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);
+	bot->botData.botFlags=UINT32_C(3);bot->botData.aiDamageState=1;
+	bot->botData.reserved_0x5ac=INT_MAX;bot->botData.aiPhysics.reserved_0x5cc=INT_MIN;bot->botData.reserved_0x628=-1;
+	/* Canonical reserved fields are deliberately never read. */
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||
+		value.bot[2].botPath!=0||value.bot[2].botNavFrameIndex!=0||value.bot[2].botFlags!=3||
+		value.bot[2].reserved5ac!=0||value.bot[2].reserved5cc!=0||value.bot[2].reserved628!=0||
+		memcmp(&value.bot[0],&(struct NativeCanonicalDriverBotV1){0},sizeof(value.bot[0]))!=0)return 0;
+	/* Human BotData is uninspected, including invalid-looking pointer/scalar data. */
+	FLD(&fixture,0)->botData.botPath=99;FLD(&fixture,0)->botData.botNavFrame=(struct NavFrame *)(uintptr_t)1;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||
+		memcmp(&value.bot[0],&(struct NativeCanonicalDriverBotV1){0},sizeof(value.bot[0]))!=0)return 0;
+	before=value;bot->botData.botFlags=UINT32_C(0x400);
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);before=value;bot->botData.botNavFrame=(struct NavFrame *)(uintptr_t)1;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);before=value;fixture.navPaths[0].header.magicNumber=0;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);before=value;fixture.navPaths[0].header.numPoints=1;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);before=value;fixture.navPaths[0].header.numPoints=32767;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);before=value;fixture.navPaths[0].header.last=&fixture.navPaths[0].frames[1];
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);before=value;sd->NavPath_ptrHeader[0]=(struct NavHeader *)(uintptr_t)1;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);before=value;sd->NavPath_ptrNavFrameArray[0]=(struct NavFrame *)(uintptr_t)1;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);before=value;bot=FLD(&fixture,2);bot->botData.botPath=3;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);before=value;bot=FLD(&fixture,2);bot->botData.aiDamageState=4;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	/* A non-null bot mask must be the one owned immediate mask child. */
+	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);root=FLT(&fixture,2);root->funcThTick=BOTS_ThTick_RevEngine;
+	bot->kartState=KS_MASK_GRABBED;mask=FMetaChild(&fixture,3,3,3,root,RB_MaskWeapon_ThTick,STATIC_AKUAKU);
+	root->childThread=mask;bot->botData.maskObj=(struct MaskHeadWeapon *)mask->object;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||value.bot[2].maskObjPresent!=1)return 0;
+	before=value;mask->funcThTick=RB_RainCloud_ThTick;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	return 1;
+}
+
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
