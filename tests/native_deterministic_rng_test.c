@@ -187,6 +187,29 @@ static int TestBoundedDraws(void)
 	return 0;
 }
 
+static int TestBoundedDrawRejectionBranch(void)
+{
+	struct NativeDeterministicRngBankV1 bank;
+	uint32_t value = UINT32_MAX;
+	const uint8_t streamIndex = 3u + 4u;
+
+	CHECK(NativeDeterministicRngBankV1_Init(&bank, UINT64_C(0x72656a656374696f), 1));
+	/* The first U32 is zero and is rejected for bound 3 (threshold 1).  The
+	 * next state yields an accepted value, making the extra draw observable
+	 * without exposing or changing the bounded-draw implementation API. */
+	bank.streams[streamIndex].state[0] = UINT64_C(0x0000000100000000);
+	bank.streams[streamIndex].state[1] = UINT64_C(1);
+	bank.streams[streamIndex].state[2] = 0;
+	bank.streams[streamIndex].state[3] = 0;
+	bank.streams[streamIndex].drawCount = 0;
+	CHECK(NativeDeterministicRngBankV1_Validate(&bank));
+	CHECK(NativeDeterministicRngBankV1_NextBoundedU32(&bank,
+		NATIVE_DETERMINISTIC_RNG_STREAM_BOT, 4, 4, 3, &value));
+	CHECK(value < 3);
+	CHECK(bank.streams[streamIndex].drawCount == 2);
+	return 0;
+}
+
 static int TestOwnershipAndFailureAtomicity(void)
 {
 	struct NativeDeterministicRngBankV1 bank;
@@ -398,7 +421,8 @@ static int TestNonzeroOffsetAndEncodeFailures(void)
 int main(void)
 {
 	if (TestGoldenDerivationDrawsAndDigest() != 0 || TestStreamIsolationAndOrderInvariance() != 0 ||
-	    TestSeedSlotAndTagPerturbations() != 0 || TestBoundedDraws() != 0 || TestOwnershipAndFailureAtomicity() != 0 ||
+	    TestSeedSlotAndTagPerturbations() != 0 || TestBoundedDraws() != 0 || TestBoundedDrawRejectionBranch() != 0 ||
+	    TestOwnershipAndFailureAtomicity() != 0 ||
 	    TestCheckpointRoundTrip() != 0 || TestDecodeFailuresAreTransactional() != 0 ||
 	    TestNonzeroOffsetAndEncodeFailures() != 0)
 	{

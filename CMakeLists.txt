@@ -120,6 +120,17 @@ set_target_properties(ctr_native_deterministic_rng PROPERTIES
 target_include_directories(ctr_native_deterministic_rng PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_deterministic_rng PUBLIC ctr_native_canonical_codec ctr_native_sha256)
 
+# Dormant M3 stable-slot planner.  It consumes only portable config and the
+# audited pointer-free roster prelude input; no live game path calls it.
+add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
+set_target_properties(ctr_native_arcade_roster PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_roster PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_link_libraries(ctr_native_arcade_roster PUBLIC ctr_native_match_config ctr_native_canonical_drivers_roster)
+
 add_library(ctr_native_canonical_state STATIC platform/native_canonical_state.c)
 set_target_properties(ctr_native_canonical_state PROPERTIES
     C_STANDARD 17
@@ -416,6 +427,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_deterministic_rng_test PRIVATE ctr_native_deterministic_rng)
     add_test(NAME native_deterministic_rng_unit COMMAND $<TARGET_FILE:native_deterministic_rng_test>)
+
+    add_executable(main_arcade_roster_test tests/main_arcade_roster_test.c)
+    set_target_properties(main_arcade_roster_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(main_arcade_roster_test PRIVATE ctr_native_arcade_roster)
+    add_test(NAME main_arcade_roster_unit COMMAND $<TARGET_FILE:main_arcade_roster_test>)
 
     add_executable(native_canonical_state_test tests/native_canonical_state_test.c)
     set_target_properties(native_canonical_state_test PROPERTIES
