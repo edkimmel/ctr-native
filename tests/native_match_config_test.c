@@ -38,6 +38,30 @@ static void FillValid(struct NativeMatchConfigV1 *config)
 	}
 }
 
+static void FillValidOneCab(struct NativeMatchConfigV1 *config)
+{
+	NativeMatchConfigV1_InitArcadeOneCab(config);
+	config->trackID = UINT32_C(0x01020304);
+	config->gameMode1 = UINT32_C(0x11223344);
+	config->gameMode2 = UINT32_C(0x55667788);
+	config->rules = UINT32_C(0x99aabbcc);
+	config->lapCount = 7;
+	config->tickRateNumerator = 60;
+	config->tickRateDenominator = 1;
+	config->masterSeed = UINT64_C(0x0123456789abcdef);
+	for (uint8_t i = 0; i < NATIVE_SHA256_DIGEST_BYTES; i++)
+	{
+		config->buildIdentity[i] = (uint8_t)(0xa0u + i);
+		config->contentIdentity[i] = (uint8_t)(0xc0u + i);
+		config->botRulesDigest[i] = (uint8_t)(0x10u + i);
+	}
+	for (uint8_t i = 0; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		config->slots[i].characterID = i;
+		config->slots[i].difficulty = i == 0 ? 2 : 3;
+	}
+}
+
 static int Encode(const struct NativeMatchConfigV1 *config, uint8_t bytes[NATIVE_MATCH_CONFIG_V1_ENCODED_BYTES])
 {
 	struct NativeCodecWriter writer;
@@ -92,6 +116,49 @@ static int TestGoldenBytesRoundTripAndDigest(void)
 	return 0;
 }
 
+static int TestOneCabGoldenRoundTripAndDigest(void)
+{
+	static const uint8_t expectedRoles[NATIVE_MATCH_CONFIG_V1_SLOT_COUNT] = {
+		NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+	};
+	struct NativeMatchConfigV1 config;
+	struct NativeMatchConfigV1 decoded;
+	uint8_t bytes[NATIVE_MATCH_CONFIG_V1_ENCODED_BYTES];
+	uint8_t digest[NATIVE_SHA256_DIGEST_BYTES];
+	struct NativeCodecReader reader;
+
+	FillValidOneCab(&config);
+	CHECK(NativeMatchConfigV1_Validate(&config));
+	CHECK(Encode(&config, bytes));
+	CHECK(bytes[12] == 2 && bytes[13] == 0 && bytes[14] == 0 && bytes[15] == 0);
+	for (size_t i = 0; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		const size_t slotOffset = 132u + i * 8u;
+		CHECK(bytes[slotOffset] == expectedRoles[i]);
+		CHECK(bytes[slotOffset + 1] == NATIVE_MATCH_SLOT_LIFECYCLE_ACTIVE);
+		CHECK(bytes[slotOffset + 2] == i);
+		CHECK(bytes[slotOffset + 3] == (i == 0 ? 2 : 3));
+		CHECK(bytes[slotOffset + 4] == 0 && bytes[slotOffset + 5] == 0 && bytes[slotOffset + 6] == 0 &&
+		      bytes[slotOffset + 7] == 0);
+	}
+	CHECK(NativeMatchConfigV1_Digest(&config, digest));
+	CHECK(memcmp(digest, "\x3a\x9f\xc4\xe7\x13\x57\x87\xff\x56\xa2\x25\x7f\x71\x3f\xa2\x37"
+	                     "\x3a\x5d\x5b\x39\xa8\xc5\xa3\xdb\x5d\xf1\x5a\x01\xeb\xae\xcf\x36", sizeof(digest)) == 0);
+	memset(&decoded, 0xcc, sizeof(decoded));
+	NativeCodecReader_Init(&reader, bytes, sizeof(bytes));
+	CHECK(NativeMatchConfigV1_Decode(&reader, &decoded));
+	CHECK(reader.offset == sizeof(bytes));
+	CHECK(memcmp(&decoded, &config, sizeof(config)) == 0);
+	return 0;
+}
+
 static int TestValidationBoundariesAndReserved(void)
 {
 	struct NativeMatchConfigV1 config;
@@ -126,7 +193,7 @@ static int TestValidationBoundariesAndReserved(void)
 	config.configurationVersion++;
 	CHECK(!NativeMatchConfigV1_Validate(&config));
 	FillValid(&config);
-	config.profile++;
+	config.profile = 3;
 	CHECK(!NativeMatchConfigV1_Validate(&config));
 	FillValid(&config);
 	config.rngDerivationVersion++;
@@ -176,6 +243,15 @@ static int TestValidationBoundariesAndReserved(void)
 	CHECK(!NativeMatchConfigV1_Validate(&config));
 	FillValid(&config);
 	config.slots[2].initialLifecycle = NATIVE_MATCH_SLOT_LIFECYCLE_FINISHED;
+	CHECK(!NativeMatchConfigV1_Validate(&config));
+	FillValidOneCab(&config);
+	config.slots[1].role = NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN;
+	CHECK(!NativeMatchConfigV1_Validate(&config));
+	FillValidOneCab(&config);
+	config.slots[7].initialLifecycle = NATIVE_MATCH_SLOT_LIFECYCLE_INACTIVE;
+	CHECK(!NativeMatchConfigV1_Validate(&config));
+	FillValidOneCab(&config);
+	config.slots[7].role = NATIVE_MATCH_SLOT_ROLE_INACTIVE;
 	CHECK(!NativeMatchConfigV1_Validate(&config));
 
 	FillValid(&config);
@@ -229,7 +305,7 @@ static int TestDecodeFailuresAreTransactional(void)
 	REJECT_BYTE(0, 0);
 	REJECT_BYTE(4, 0xff);
 	REJECT_BYTE(8, 2);
-	REJECT_BYTE(12, 2);
+	REJECT_BYTE(12, 3);
 	REJECT_BYTE(228, 1);
 	REJECT_BYTE(136, 1);
 #undef REJECT_BYTE
@@ -340,6 +416,8 @@ static int TestCanonicalOwnershipIsLocalRoleInvariant(void)
 {
 	struct NativeMatchConfigV1 first;
 	struct NativeMatchConfigV1 second;
+	struct NativeMatchConfigV1 oneCabFirst;
+	struct NativeMatchConfigV1 oneCabSecond;
 	uint8_t before[NATIVE_MATCH_CONFIG_V1_ENCODED_BYTES];
 	uint8_t after[NATIVE_MATCH_CONFIG_V1_ENCODED_BYTES];
 	uint8_t slot = 0xff;
@@ -363,12 +441,32 @@ static int TestCanonicalOwnershipIsLocalRoleInvariant(void)
 	CHECK(!NativeMatchConfigV1_FindRoleSlot(&first, NATIVE_MATCH_SLOT_ROLE_BOT, &slot) && slot == 0x5a);
 	CHECK(!NativeMatchConfigV1_FindRoleSlot(NULL, NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &slot));
 	CHECK(!NativeMatchConfigV1_FindRoleSlot(&first, NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, NULL));
+
+	FillValidOneCab(&oneCabFirst);
+	FillValidOneCab(&oneCabSecond);
+	NativeMatchConfigV1_InitArcadeTwoCab(NULL);
+	NativeMatchConfigV1_InitArcadeOneCab(NULL);
+	CHECK(memcmp(&oneCabFirst, &oneCabSecond, sizeof(oneCabFirst)) == 0);
+	CHECK(oneCabFirst.slots[0].role == NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN);
+	for (uint8_t i = 1; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		CHECK(oneCabFirst.slots[i].role == NATIVE_MATCH_SLOT_ROLE_BOT);
+		CHECK(oneCabFirst.slots[i].initialLifecycle == NATIVE_MATCH_SLOT_LIFECYCLE_ACTIVE);
+	}
+	CHECK(Encode(&oneCabFirst, before));
+	CHECK(NativeMatchConfigV1_FindRoleSlot(&oneCabFirst, NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &slot) && slot == 0);
+	CHECK(Encode(&oneCabFirst, after));
+	CHECK(memcmp(before, after, sizeof(before)) == 0);
+	slot = 0x5a;
+	CHECK(!NativeMatchConfigV1_FindRoleSlot(&oneCabFirst, NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &slot));
+	CHECK(slot == 0x5a);
 	return 0;
 }
 
 int main(void)
 {
-	if (TestGoldenBytesRoundTripAndDigest() != 0 || TestValidationBoundariesAndReserved() != 0 ||
+	if (TestGoldenBytesRoundTripAndDigest() != 0 || TestOneCabGoldenRoundTripAndDigest() != 0 ||
+	    TestValidationBoundariesAndReserved() != 0 ||
 	    TestDecodeFailuresAreTransactional() != 0 || TestDecodeFromNonzeroOffset() != 0 || TestEncodeFailuresAreTransactional() != 0 ||
 	    TestLifecycleTransitions() != 0 || TestCanonicalOwnershipIsLocalRoleInvariant() != 0)
 	{

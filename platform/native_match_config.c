@@ -27,6 +27,17 @@ static int NativeMatchConfig_SlotValid(const struct NativeMatchConfigSlotV1 *slo
 	return 1;
 }
 
+static void NativeMatchConfigV1_InitTags(struct NativeMatchConfigV1 *config, uint32_t profile)
+{
+	memset(config, 0, sizeof(*config));
+	config->configurationVersion = NATIVE_MATCH_CONFIG_V1_VERSION;
+	config->profile = profile;
+	config->rngDerivationVersion = NATIVE_MATCH_CONFIG_V1_RNG_DERIVATION_VERSION;
+	config->canonicalSchemaVersion = NATIVE_MATCH_CONFIG_V1_CANONICAL_SCHEMA_VERSION;
+	config->replayFormatVersion = NATIVE_MATCH_CONFIG_V1_REPLAY_FORMAT_VERSION;
+	config->protocolVersion = NATIVE_MATCH_CONFIG_V1_PROTOCOL_VERSION;
+}
+
 void NativeMatchConfigV1_InitArcadeTwoCab(struct NativeMatchConfigV1 *config)
 {
 	if (config == NULL)
@@ -34,13 +45,7 @@ void NativeMatchConfigV1_InitArcadeTwoCab(struct NativeMatchConfigV1 *config)
 		return;
 	}
 
-	memset(config, 0, sizeof(*config));
-	config->configurationVersion = NATIVE_MATCH_CONFIG_V1_VERSION;
-	config->profile = NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB;
-	config->rngDerivationVersion = NATIVE_MATCH_CONFIG_V1_RNG_DERIVATION_VERSION;
-	config->canonicalSchemaVersion = NATIVE_MATCH_CONFIG_V1_CANONICAL_SCHEMA_VERSION;
-	config->replayFormatVersion = NATIVE_MATCH_CONFIG_V1_REPLAY_FORMAT_VERSION;
-	config->protocolVersion = NATIVE_MATCH_CONFIG_V1_PROTOCOL_VERSION;
+	NativeMatchConfigV1_InitTags(config, NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB);
 	config->slots[0].role = NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN;
 	config->slots[1].role = NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN;
 	for (uint32_t i = 2; i <= 5; i++)
@@ -53,9 +58,28 @@ void NativeMatchConfigV1_InitArcadeTwoCab(struct NativeMatchConfigV1 *config)
 	}
 }
 
+void NativeMatchConfigV1_InitArcadeOneCab(struct NativeMatchConfigV1 *config)
+{
+	if (config == NULL)
+	{
+		return;
+	}
+
+	NativeMatchConfigV1_InitTags(config, NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB);
+	config->slots[0].role = NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN;
+	for (uint32_t i = 1; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		config->slots[i].role = NATIVE_MATCH_SLOT_ROLE_BOT;
+	}
+	for (uint32_t i = 0; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		config->slots[i].initialLifecycle = NATIVE_MATCH_SLOT_LIFECYCLE_ACTIVE;
+	}
+}
+
 int NativeMatchConfigV1_Validate(const struct NativeMatchConfigV1 *config)
 {
-	static const uint8_t roles[NATIVE_MATCH_CONFIG_V1_SLOT_COUNT] = {
+	static const uint8_t twoCabRoles[NATIVE_MATCH_CONFIG_V1_SLOT_COUNT] = {
 		NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
 		NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,
 		NATIVE_MATCH_SLOT_ROLE_BOT,
@@ -65,9 +89,22 @@ int NativeMatchConfigV1_Validate(const struct NativeMatchConfigV1 *config)
 		NATIVE_MATCH_SLOT_ROLE_INACTIVE,
 		NATIVE_MATCH_SLOT_ROLE_INACTIVE,
 	};
+	static const uint8_t oneCabRoles[NATIVE_MATCH_CONFIG_V1_SLOT_COUNT] = {
+		NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+		NATIVE_MATCH_SLOT_ROLE_BOT,
+	};
+	const uint8_t *roles;
 
 	if ((config == NULL) || (config->configurationVersion != NATIVE_MATCH_CONFIG_V1_VERSION) ||
-	    (config->profile != NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB) || (config->lapCount == 0) ||
+	    ((config->profile != NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB) &&
+	     (config->profile != NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB)) ||
+	    (config->lapCount == 0) ||
 	    (config->tickRateNumerator == 0) || (config->tickRateDenominator == 0) ||
 	    (config->rngDerivationVersion != NATIVE_MATCH_CONFIG_V1_RNG_DERIVATION_VERSION) ||
 	    (config->canonicalSchemaVersion != NATIVE_MATCH_CONFIG_V1_CANONICAL_SCHEMA_VERSION) ||
@@ -80,6 +117,7 @@ int NativeMatchConfigV1_Validate(const struct NativeMatchConfigV1 *config)
 	{
 		return 0;
 	}
+	roles = config->profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB ? twoCabRoles : oneCabRoles;
 
 	for (uint32_t i = 0; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
 	{

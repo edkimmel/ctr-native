@@ -10,6 +10,7 @@
 #define NATIVE_MATCH_CONFIG_V1_MAGIC UINT32_C(0x31434d4e)
 #define NATIVE_MATCH_CONFIG_V1_VERSION UINT32_C(1)
 #define NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB UINT32_C(1)
+#define NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB UINT32_C(2)
 #define NATIVE_MATCH_CONFIG_V1_RNG_DERIVATION_VERSION UINT32_C(1)
 #define NATIVE_MATCH_CONFIG_V1_CANONICAL_SCHEMA_VERSION UINT32_C(5)
 #define NATIVE_MATCH_CONFIG_V1_REPLAY_FORMAT_VERSION UINT32_C(4)
@@ -72,8 +73,9 @@ struct NativeMatchConfigV1
 	uint8_t reserved[NATIVE_MATCH_CONFIG_V1_RESERVED_BYTES];
 };
 
-/* Initializes the immutable two-cab role/lifecycle map and all V1 tags. */
+/* Initialize immutable profile role/lifecycle maps and all V1 tags. */
 void NativeMatchConfigV1_InitArcadeTwoCab(struct NativeMatchConfigV1 *config);
+void NativeMatchConfigV1_InitArcadeOneCab(struct NativeMatchConfigV1 *config);
 int NativeMatchConfigV1_Validate(const struct NativeMatchConfigV1 *config);
 size_t NativeMatchConfigV1_EncodedSize(void);
 
