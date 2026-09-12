@@ -18,26 +18,39 @@ struct MainCanonicalTopologySnapshot
 	int32_t levelID;
 	uint8_t mempackIndex;
 	struct NativeCanonicalFixedArrayGeometry quadBlocks;
-	uint64_t lifecycleEpoch;
+	uint64_t capturedEpoch;
 	uint8_t valid;
 };
 
-/* Init starts a fresh lifecycle generation.  Invalidate permanently retires
- * the current capture and increments the generation without wrapping. */
-void MainCanonicalTopology_Init(struct MainCanonicalTopologySnapshot *snapshot);
-void MainCanonicalTopology_Invalidate(struct MainCanonicalTopologySnapshot *snapshot);
+/* This game-owned context is intentionally distinct from snapshots.  It is
+ * the mutable lifetime authority, so copied pre-invalidation captures cannot
+ * validate after a same-address reuse. */
+struct MainCanonicalTopologyContext
+{
+	uint64_t currentEpoch;
+	uint8_t captureActive;
+};
+
+/* Init starts a fresh lifecycle generation. Invalidate retires the current
+ * capture and increments the authoritative epoch without wrapping; epoch 0
+ * and UINT64_MAX are terminal fail-closed states. */
+void MainCanonicalTopology_Init(struct MainCanonicalTopologyContext *context);
+void MainCanonicalTopology_Invalidate(struct MainCanonicalTopologyContext *context);
 
 /* Capture and validate require sourceData->gGT == gGT.  Both establish the
  * active pack and prove all native spans before dereferencing level, mesh, or
  * QuadBlock storage.  Capture leaves snapshot unchanged on failure. */
-int MainCanonicalTopology_Capture(struct MainCanonicalTopologySnapshot *snapshot,
+int MainCanonicalTopology_Capture(struct MainCanonicalTopologyContext *context,
+	struct MainCanonicalTopologySnapshot *snapshot,
 	const struct GameTracker *gGT,const struct sData *sourceData);
-int MainCanonicalTopology_Validate(const struct MainCanonicalTopologySnapshot *snapshot,
+int MainCanonicalTopology_Validate(const struct MainCanonicalTopologyContext *context,
+	const struct MainCanonicalTopologySnapshot *snapshot,
 	const struct GameTracker *gGT,const struct sData *sourceData);
 
 /* Validates the current snapshot before normalizing a QuadBlock pointer.  A
  * null pointer maps to UINT32_MAX; failure leaves indexOut unchanged. */
-int MainCanonicalTopology_NullableQuadBlockIndex(const struct MainCanonicalTopologySnapshot *snapshot,
+int MainCanonicalTopology_NullableQuadBlockIndex(const struct MainCanonicalTopologyContext *context,
+	const struct MainCanonicalTopologySnapshot *snapshot,
 	const struct GameTracker *gGT,const struct sData *sourceData,
 	const struct QuadBlock *quadBlock,uint32_t *indexOut);
 

@@ -14,6 +14,11 @@ static int MainCanonicalTopology_SpanContains(uintptr_t base,size_t span,
 	return delta<span&&size<=span-delta;
 }
 
+static int MainCanonicalTopology_Aligned(uintptr_t address,size_t alignment)
+{
+	return address!=0&&alignment!=0&&(address%alignment)==0;
+}
+
 static int MainCanonicalTopology_ActivePack(const struct GameTracker *gGT,
 	const struct sData *sourceData,uint8_t *indexOut,const struct Mempack **packOut,
 	uintptr_t *baseOut,size_t *spanOut)
@@ -50,57 +55,64 @@ static int MainCanonicalTopology_Current(struct MainCanonicalTopologySnapshot *c
 	if(!candidate||lifecycleEpoch==0||
 		!MainCanonicalTopology_ActivePack(gGT,sourceData,&packIndex,&pack,&base,&span))return 0;
 	level=gGT->level1;
-	if(!MainCanonicalTopology_SpanContains(base,span,(uintptr_t)level,sizeof(*level)))return 0;
+	if(!MainCanonicalTopology_Aligned((uintptr_t)level,_Alignof(struct Level))||
+		!MainCanonicalTopology_SpanContains(base,span,(uintptr_t)level,sizeof(*level)))return 0;
 	mesh=level->ptr_mesh_info;
-	if(!MainCanonicalTopology_SpanContains(base,span,(uintptr_t)mesh,sizeof(*mesh))||mesh->numQuadBlock<=0)return 0;
+	if(!MainCanonicalTopology_Aligned((uintptr_t)mesh,_Alignof(struct mesh_info))||
+		!MainCanonicalTopology_SpanContains(base,span,(uintptr_t)mesh,sizeof(*mesh))||mesh->numQuadBlock<=0)return 0;
 	arrayInput.base=(uintptr_t)mesh->ptrQuadBlockArray;
 	arrayInput.count=(uint64_t)(uint32_t)mesh->numQuadBlock;
 	arrayInput.elementSize=sizeof(struct QuadBlock);
-	if(!NativeCanonicalFixedArray_GeometrySnapshot(&arrayInput,&candidate->quadBlocks)||
+	if(!MainCanonicalTopology_Aligned(arrayInput.base,_Alignof(struct QuadBlock))||
+		!NativeCanonicalFixedArray_GeometrySnapshot(&arrayInput,&candidate->quadBlocks)||
 		!MainCanonicalTopology_SpanContains(base,span,arrayInput.base,candidate->quadBlocks.span))return 0;
 	candidate->gGT=gGT;candidate->sourceData=sourceData;candidate->level=level;candidate->mesh=mesh;
 	candidate->mempack=pack;candidate->mempackBase=base;candidate->mempackSpan=span;
 	candidate->levelID=gGT->levelID;candidate->mempackIndex=packIndex;
-	candidate->lifecycleEpoch=lifecycleEpoch;candidate->valid=1;
+	candidate->capturedEpoch=lifecycleEpoch;candidate->valid=1;
 	return 1;
 }
 
-void MainCanonicalTopology_Init(struct MainCanonicalTopologySnapshot *snapshot)
+void MainCanonicalTopology_Init(struct MainCanonicalTopologyContext *context)
 {
-	if(!snapshot)return;
-	memset(snapshot,0,sizeof(*snapshot));
-	snapshot->lifecycleEpoch=1;
+	if(!context)return;
+	memset(context,0,sizeof(*context));
+	context->currentEpoch=1;
 }
 
-void MainCanonicalTopology_Invalidate(struct MainCanonicalTopologySnapshot *snapshot)
+void MainCanonicalTopology_Invalidate(struct MainCanonicalTopologyContext *context)
 {
 	uint64_t nextEpoch;
-	if(!snapshot)return;
-	nextEpoch=snapshot->lifecycleEpoch;
-	if(nextEpoch==0)nextEpoch=1;
-	else if(nextEpoch!=UINT64_MAX)nextEpoch++;
-	memset(snapshot,0,sizeof(*snapshot));
-	snapshot->lifecycleEpoch=nextEpoch;
+	if(!context)return;
+	nextEpoch=context->currentEpoch;
+	if(nextEpoch!=0&&nextEpoch!=UINT64_MAX)nextEpoch++;
+	context->currentEpoch=nextEpoch;
+	context->captureActive=0;
 }
 
-int MainCanonicalTopology_Capture(struct MainCanonicalTopologySnapshot *snapshot,
+int MainCanonicalTopology_Capture(struct MainCanonicalTopologyContext *context,
+	struct MainCanonicalTopologySnapshot *snapshot,
 	const struct GameTracker *gGT,const struct sData *sourceData)
 {
 	struct MainCanonicalTopologySnapshot candidate;
-	if(!snapshot||snapshot->lifecycleEpoch==0||snapshot->lifecycleEpoch==UINT64_MAX)return 0;
+	if(!context||!snapshot||context->currentEpoch==0||context->currentEpoch==UINT64_MAX||context->captureActive!=0)return 0;
 	memset(&candidate,0,sizeof(candidate));
-	if(!MainCanonicalTopology_Current(&candidate,gGT,sourceData,snapshot->lifecycleEpoch))return 0;
+	if(!MainCanonicalTopology_Current(&candidate,gGT,sourceData,context->currentEpoch))return 0;
 	*snapshot=candidate;
+	context->captureActive=1;
 	return 1;
 }
 
-int MainCanonicalTopology_Validate(const struct MainCanonicalTopologySnapshot *snapshot,
+int MainCanonicalTopology_Validate(const struct MainCanonicalTopologyContext *context,
+	const struct MainCanonicalTopologySnapshot *snapshot,
 	const struct GameTracker *gGT,const struct sData *sourceData)
 {
 	struct MainCanonicalTopologySnapshot current;
-	if(!snapshot||!snapshot->valid||snapshot->lifecycleEpoch==0)return 0;
+	if(!context||!snapshot||context->captureActive!=1||context->currentEpoch==0||
+		context->currentEpoch==UINT64_MAX||snapshot->valid!=1||
+		snapshot->capturedEpoch!=context->currentEpoch)return 0;
 	memset(&current,0,sizeof(current));
-	if(!MainCanonicalTopology_Current(&current,gGT,sourceData,snapshot->lifecycleEpoch))return 0;
+	if(!MainCanonicalTopology_Current(&current,gGT,sourceData,context->currentEpoch))return 0;
 	return current.gGT==snapshot->gGT&&current.sourceData==snapshot->sourceData&&
 		current.level==snapshot->level&&current.mesh==snapshot->mesh&&
 		current.mempack==snapshot->mempack&&current.mempackBase==snapshot->mempackBase&&
@@ -111,10 +123,11 @@ int MainCanonicalTopology_Validate(const struct MainCanonicalTopologySnapshot *s
 		current.quadBlocks.span==snapshot->quadBlocks.span&&current.quadBlocks.count==snapshot->quadBlocks.count;
 }
 
-int MainCanonicalTopology_NullableQuadBlockIndex(const struct MainCanonicalTopologySnapshot *snapshot,
+int MainCanonicalTopology_NullableQuadBlockIndex(const struct MainCanonicalTopologyContext *context,
+	const struct MainCanonicalTopologySnapshot *snapshot,
 	const struct GameTracker *gGT,const struct sData *sourceData,
 	const struct QuadBlock *quadBlock,uint32_t *indexOut)
 {
-	if(!indexOut||!MainCanonicalTopology_Validate(snapshot,gGT,sourceData))return 0;
+	if(!indexOut||!MainCanonicalTopology_Validate(context,snapshot,gGT,sourceData))return 0;
 	return NativeCanonicalFixedArray_NullableIndex(&snapshot->quadBlocks,(uintptr_t)quadBlock,indexOut);
 }
