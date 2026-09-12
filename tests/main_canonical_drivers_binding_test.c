@@ -374,6 +374,25 @@ static int MetaFlagsTest(void)
 	driver->botData.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
 	if(!MainCanonicalDrivers_ResolveMetaFlags(&f.tracker,driver,NATIVE_CANONICAL_DRIVER_KIND_BOT,1,KS_NORMAL,
 		NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||flags.externalPresenceFlags!=0||flags.driverThreadSimFlags!=0)return 0;
+	/* These structural cases have no cloud or mask request, so they isolate the
+	 * root/seen-slot gates rather than failing through duplicate source matches. */
+	MetaFixture(&f,0,0);if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags))return 0;
+	before=flags;root=FLT(&f,0);root->parentThread=root;root->childThread=root;root->siblingThread=NULL;
+	if(MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
+	MetaFixture(&f,0,0);if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags))return 0;
+	before=flags;root=FLT(&f,0);root->childThread=root;root->siblingThread=NULL;
+	if(MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
+	/* First establish a valid unrelated child.  Repeating its exact pool slot
+	 * then reaches seen-by-index rejection before a capacity-bound fallback. */
+	MetaFixture(&f,0,0);root=FLT(&f,0);FMetaChild(&f,1,1,1,root,VehBirth_NullThread,OTHER);root->childThread=FT(&f,1);
+	if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags))return 0;
+	before=flags;FT(&f,1)->siblingThread=FT(&f,1);
+	if(MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
+	/* The child is listed free while every root allocation remains valid. */
+	MetaFixture(&f,0,0);root=FLT(&f,0);FMetaChild(&f,1,1,1,root,VehBirth_NullThread,OTHER);root->childThread=FT(&f,1);
+	if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags))return 0;
+	before=flags;FList(&f.tracker.JitPools.thread.free,f.thread,sizeof(struct Thread),UINT32_C(0xda));
+	if(MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
 
 	#define FAIL_META(change) do { \
 		MetaFixture(&f,1,1);if(!MetaResolve(&f,11,KS_MASK_GRABBED,NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB,&flags))return 0; \
@@ -398,6 +417,7 @@ static int MetaFlagsTest(void)
 	FAIL_META(FLT(&f,0)->flags|=THREAD_FLAG_DEAD);
 	FAIL_META(FT(&f,1)->flags|=THREAD_FLAG_DEAD);
 	FAIL_META(FT(&f,1)->inst=NULL);
+	FAIL_META(FT(&f,1)->inst=(struct Instance *)(uintptr_t)1);
 	FAIL_META(FI(&f,1)->thread=FT(&f,3));
 	FAIL_META(FLT(&f,0)->childThread=(struct Thread *)(uintptr_t)1);
 	FAIL_META(FT(&f,1)->siblingThread=(struct Thread *)(uintptr_t)1);
