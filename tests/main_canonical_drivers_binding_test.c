@@ -42,6 +42,17 @@ static void SourceNavTwo(struct SourceFixture *f)
 	memset(&sd->navBotList[2],0,sizeof(sd->navBotList[2]));
 	sd->navBotList[0].first=&f->drivers[2].botData.item;sd->navBotList[0].last=&f->drivers[5].botData.item;sd->navBotList[0].count=2;
 }
+static void SourceNavInteriorCycle(struct SourceFixture *f)
+{
+	struct sData *sd=&sdata_static;
+	SourceDriver(f,6,1);SourceDriver(f,7,1);
+	f->drivers[2].botData.botPath=0;f->drivers[5].botData.botPath=0;f->drivers[6].botData.botPath=0;f->drivers[7].botData.botPath=0;
+	memset(&sd->navBotList[2],0,sizeof(sd->navBotList[2]));
+	f->drivers[2].botData.item.next=&f->drivers[5].botData.item;
+	f->drivers[5].botData.item.prev=&f->drivers[2].botData.item;f->drivers[5].botData.item.next=&f->drivers[7].botData.item;
+	f->drivers[7].botData.item.prev=&f->drivers[5].botData.item;f->drivers[7].botData.item.next=&f->drivers[5].botData.item;
+	sd->navBotList[0].first=&f->drivers[2].botData.item;sd->navBotList[0].last=&f->drivers[6].botData.item;sd->navBotList[0].count=4;
+}
 static int SourcePreludeTest(void)
 {
 	struct SourceFixture f,other;struct NativeCanonicalDriversRosterCandidate out,before;struct sData *sd=&sdata_static;struct Item foreign={0};
@@ -80,6 +91,9 @@ static int SourcePreludeTest(void)
 	FAIL_SOURCE(sd->navBotList[0].count=2);
 	FAIL_SOURCE(sd->navBotList[0].first=&f.drivers[0].botData.item);
 	FAIL_SOURCE(sd->navBotList[0].first=&foreign;sd->navBotList[0].last=&foreign);
+	/* A distinct known endpoint with next == NULL reaches the post-walk
+	 * declared-last check rather than an endpoint guard. */
+	FAIL_SOURCE(sd->navBotList[0].last=&f.drivers[5].botData.item);
 	FAIL_SOURCE(f.drivers[2].botData.botPath=1);
 	FAIL_SOURCE(sd->navBotList[2].first=&f.drivers[2].botData.item;sd->navBotList[2].last=&f.drivers[2].botData.item);
 	FAIL_SOURCE(f.drivers[2].botData.item.next=&f.drivers[2].botData.item;sd->navBotList[0].last=&f.drivers[2].botData.item);
@@ -88,10 +102,14 @@ static int SourcePreludeTest(void)
 	SourceFixtureInit(&f);SourceNavTwo(&f);if(!MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&out))return 0;
 	#define FAIL_TWO(change) do { before=out; change; if(MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&out)||memcmp(&out,&before,sizeof(out))!=0)return 0; SourceFixtureInit(&f);SourceNavTwo(&f); } while(0)
 	FAIL_TWO(f.drivers[5].botData.item.prev=NULL);
-	FAIL_TWO(sd->navBotList[0].last=&f.drivers[2].botData.item);
-	FAIL_TWO(sd->navBotList[0].count=1;sd->navBotList[0].last=&f.drivers[2].botData.item);
-	FAIL_TWO(f.drivers[5].botData.item.next=&f.drivers[2].botData.item);
+	/* count=1 leaves the known second node unconsumed; declared last remains
+	 * node 5 with next == NULL, so this reaches the exact post-walk gate. */
+	FAIL_TWO(sd->navBotList[0].count=1);
 	#undef FAIL_TWO
+	/* This enters a 2->5->7->5 interior cycle while the separately declared
+	 * known last node 6 has next == NULL, bypassing the endpoint guard. */
+	SourceFixtureInit(&f);SourceNavInteriorCycle(&f);before=out;
+	if(MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&out)||memcmp(&out,&before,sizeof(out))!=0)return 0;
 	#undef FAIL_SOURCE
 	return 1;
 }
