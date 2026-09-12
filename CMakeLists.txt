@@ -136,6 +136,18 @@ set_target_properties(ctr_native_canonical_fixed_array PROPERTIES
 )
 target_include_directories(ctr_native_canonical_fixed_array PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# Dormant game-owned topology lifetime/ownership snapshot. It normalizes only
+# already-validated QuadBlock identities and has no Physics or publish seam.
+add_library(ctr_native_canonical_topology STATIC game/MAIN/MainCanonicalTopology.c)
+set_target_properties(ctr_native_canonical_topology PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_canonical_topology PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(ctr_native_canonical_topology PUBLIC CTR_NATIVE)
+target_link_libraries(ctr_native_canonical_topology PUBLIC ctr_native_canonical_fixed_array)
+
 add_library(ctr_native_canonical_drivers_detailed STATIC platform/native_canonical_drivers_detailed.c)
 set_target_properties(ctr_native_canonical_drivers_detailed PROPERTIES
     C_STANDARD 17
@@ -285,7 +297,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_canonical_projector ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_canonical_projector ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -414,6 +426,13 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_canonical_fixed_array_test PRIVATE ctr_native_canonical_fixed_array)
     add_test(NAME native_canonical_fixed_array_unit COMMAND $<TARGET_FILE:native_canonical_fixed_array_test>)
+
+    add_executable(main_canonical_topology_test tests/main_canonical_topology_test.c)
+    set_target_properties(main_canonical_topology_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_include_directories(main_canonical_topology_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
+    target_compile_definitions(main_canonical_topology_test PRIVATE CTR_NATIVE)
+    target_link_libraries(main_canonical_topology_test PRIVATE ctr_native_canonical_fixed_array)
+    add_test(NAME main_canonical_topology_unit COMMAND $<TARGET_FILE:main_canonical_topology_test>)
 
     add_executable(native_canonical_state_v3_test tests/native_canonical_state_v3_test.c)
     set_target_properties(native_canonical_state_v3_test PROPERTIES
