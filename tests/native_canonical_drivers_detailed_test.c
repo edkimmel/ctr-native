@@ -34,17 +34,18 @@ static int TestGoldenAndSummary(void)
 	ValidHuman(&value); CHECK(NativeCanonicalDriversDetailedV1_Validate(&value)); CHECK(NativeCanonicalDriversDetailedV1_EncodedSize()==4224);
 	CHECK(Encode(&value,bytes));
 	/* Independent exact LE layout checks: prelude, META, RACE, PHYSICS, DYNAMICS. */
-	CHECK(bytes[0]==8&&bytes[1]==0&&bytes[4]==1&&bytes[8]==0&&bytes[9]==0xff&&bytes[16]==1&&bytes[18]==3&&bytes[24]==0&&bytes[25]==0xff&&bytes[59]==1&&bytes[60]==1);
+	CHECK(bytes[0]==8&&bytes[1]==0&&bytes[4]==1&&bytes[8]==0&&bytes[9]==0xff&&bytes[16]==1&&bytes[18]==3&&bytes[24]==0&&bytes[25]==0xff&&bytes[59]==1&&bytes[60]==NATIVE_CANONICAL_DRIVERS_DETAILED_VERSION);
 	CHECK(bytes[64]==1&&bytes[65]==0&&bytes[66]==5&&bytes[67]==7&&bytes[68]==NATIVE_CANONICAL_DRIVER_KIND_HUMAN&&bytes[71]==2);
 	CHECK(bytes[72]==0x44&&bytes[73]==0x33&&bytes[74]==0x22&&bytes[75]==0x11&&bytes[82]==0xfc&&bytes[104]==0xfb&&bytes[120]==0xfa);
 	CHECK(bytes[164]==0x88&&bytes[165]==0x77&&bytes[166]==0x66&&bytes[167]==0x55&&bytes[192]==0xf9&&bytes[284]==0xf8);
 	CHECK(bytes[64+100+148+2*NATIVE_CANONICAL_DRIVER_DYN_SPEED]==9&&bytes[64+100+148+2*NATIVE_CANONICAL_DRIVER_DYN_SPEED+1]==0);
 	CHECK(NativeCanonicalDriversDetailedV1_BuildSummary(&value,&summary));
 	CHECK(NativeCanonicalDriversV1_FromNormativeStream(&fromStream,1,bytes,sizeof(bytes))&&EqualSummary(&summary,&fromStream));
-	CHECK(summary.fullStreamDigest==UINT64_C(0x10a9f7cb8516b102));
+	CHECK(summary.version==NATIVE_CANONICAL_DRIVERS_VERSION&&summary.rosterMetaDigest==UINT64_C(0xdd0ffa2ea7a59e77));
 	CHECK(summary.slots[0].metaRaceDigest==UINT64_C(0x83b20f1aaa2437e4));
 	CHECK(summary.slots[0].physicsDynamicsDigest==UINT64_C(0x1b1387d3a5422bea));
 	CHECK(summary.slots[0].behaviorBotDigest==UINT64_C(0xeb4f61260020abd5));
+	CHECK(summary.fullStreamDigest==UINT64_C(0xcaced5d331e66801));
 	return 0;
 }
 static int TestSemanticMutations(void)
@@ -72,12 +73,33 @@ static int TestRejectionAndTransaction(void)
 	value.prelude.navListCount[0]=1;value.prelude.navListOrder[0][0]=4;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.prelude.navListCount[0]=0;value.prelude.navListOrder[0][0]=NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT;
 	value.slots[0].bot.bytes[0]=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.bytes[0]=0;
 	value.slots[0].meta.boolFirstFrameSinceRevEngine=2;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].meta.boolFirstFrameSinceRevEngine=0;
-	value.prelude.detailedVersion=0;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.prelude.detailedVersion=1;
+	value.prelude.detailedVersion=0;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.prelude.detailedVersion=NATIVE_CANONICAL_DRIVERS_DETAILED_VERSION;
 	value.slots[1].meta.present=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[1].meta.present=0;
 	CHECK(Encode(&value,bytes));memcpy(beforeBytes,bytes,sizeof(bytes));NativeCodecWriter_Init(&shortWriter,bytes,sizeof(bytes)-1,NULL);
 	CHECK(!NativeCanonicalDriversDetailedV1_Encode(&shortWriter,&value)&&shortWriter.offset==0&&memcmp(bytes,beforeBytes,sizeof(bytes))==0);
 	NativeCanonicalDriversV1_Init(&out);out.fullStreamDigest=UINT64_C(0x1111111111111111);before=out;value.prelude.numLaps=-1;
 	CHECK(!NativeCanonicalDriversDetailedV1_BuildSummary(&value,&out)&&EqualSummary(&out,&before));
+	return 0;
+}
+static int TestPendingDamageTail(void)
+{
+	struct NativeCanonicalDriversDetailedV1 value;
+	uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
+	ValidHuman(&value);
+	/* A second fully present human makes slot 1 a valid, distinct attacker. */
+	value.slots[1]=value.slots[0];value.slots[1].meta.slotIndex=1;value.slots[1].meta.driverID=6;
+	value.prelude.presenceMask=3;value.prelude.raceOrderCount=2;value.prelude.raceOrder[1]=1;
+	value.prelude.playerCount=2;value.prelude.humanPlayerPositions[1]=1;
+	value.slots[0].pendingDamage.type=2;value.slots[0].pendingDamage.attackerSlotPlusOne=2;
+	value.slots[0].pendingDamage.reason=6;
+	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));CHECK(Encode(&value,bytes));
+	CHECK(bytes[64+516]==2&&bytes[64+517]==2&&bytes[64+518]==6&&bytes[64+519]==0);
+	value.slots[0].pendingDamage.reason=0;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].pendingDamage.type=3;value.slots[0].pendingDamage.reason=5;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].pendingDamage.reason=6;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].pendingDamage.type=2;value.slots[0].pendingDamage.attackerSlotPlusOne=1;value.slots[0].pendingDamage.reason=0;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].pendingDamage.attackerSlotPlusOne=3;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].pendingDamage.type=0;value.slots[0].pendingDamage.attackerSlotPlusOne=2;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
 	return 0;
 }
 static int TestBotAndReferences(void)
@@ -174,6 +196,6 @@ static int TestMetaFlagContract(void)
 }
 int main(void)
 {
-	if(TestGoldenAndSummary()!=0||TestSemanticMutations()!=0||TestRejectionAndTransaction()!=0||TestBotAndReferences()!=0||TestRanksAndActiveTags()!=0||TestAllowedTagOverlap()!=0||TestMetaFlagContract()!=0)return 1;
+	if(TestGoldenAndSummary()!=0||TestSemanticMutations()!=0||TestRejectionAndTransaction()!=0||TestPendingDamageTail()!=0||TestBotAndReferences()!=0||TestRanksAndActiveTags()!=0||TestAllowedTagOverlap()!=0||TestMetaFlagContract()!=0)return 1;
 	puts("native_canonical_drivers_detailed_test: passed");return 0;
 }

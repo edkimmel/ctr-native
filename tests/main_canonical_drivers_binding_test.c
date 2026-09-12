@@ -928,5 +928,23 @@ static int ActiveCandidateTest(void)
 		(candidate.roster.prelude.presenceMask&(UINT32_C(1)<<5))!=0||memcmp(&candidate.active[5],&(struct NativeCanonicalDriverActiveV1){0},sizeof(candidate.active[5]))!=0)return 0;
 	return 1;
 }
+static int PendingDamageTest(void)
+{
+	struct SourceFixture fixture;
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingCandidate value,before;
+	struct sData *sd=&sdata_static;
+	SourceFixtureInit(&fixture);
+	FD(&fixture,0)->pendingDamageType=2;FD(&fixture,0)->pendingDamageAttacker=FD(&fixture,2);FD(&fixture,0)->pendingDamageReasonByte=6;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||
+		value.pendingDamage[0].type!=2||value.pendingDamage[0].attackerSlotPlusOne!=3||value.pendingDamage[0].reason!=6||value.pendingDamage[0].reservedZero!=0)return 0;
+	/* Type zero ignores stale attacker/reason storage exactly. */
+	FD(&fixture,0)->pendingDamageType=0;FD(&fixture,0)->pendingDamageAttacker=(struct Driver *)(uintptr_t)1;FD(&fixture,0)->pendingDamageReasonByte=0xff;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||memcmp(&value.pendingDamage[0],&(struct NativeCanonicalDriverPendingDamageV1){0},4)!=0)return 0;
+	before=value;FD(&fixture,0)->pendingDamageType=3;FD(&fixture,0)->pendingDamageAttacker=FD(&fixture,0);FD(&fixture,0)->pendingDamageReasonByte=5;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	FD(&fixture,0)->pendingDamageAttacker=(struct Driver *)(uintptr_t)1;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	return 1;
+}
 
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());puts("main_canonical_drivers_binding_test: passed");return 0;}

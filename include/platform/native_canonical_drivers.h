@@ -8,7 +8,7 @@
 
 /* Pointer-free synthetic normative stream contract.  Live Driver projection is
  * deliberately a later audit: callers supply only explicit bytes here. */
-#define NATIVE_CANONICAL_DRIVERS_VERSION 1u
+#define NATIVE_CANONICAL_DRIVERS_VERSION 2u
 #define NATIVE_CANONICAL_DRIVERS_SLOT_COUNT 8u
 #define NATIVE_CANONICAL_DRIVERS_GROUP_COUNT 3u
 #define NATIVE_CANONICAL_DRIVERS_ROSTER_BYTES 64u

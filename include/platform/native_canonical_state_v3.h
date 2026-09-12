@@ -7,7 +7,7 @@
 /* v3 is intentionally a new wire type. NativeCanonicalStateV1 remains the
  * sealed schema-2/v2 compatibility codec. */
 #define NATIVE_CANONICAL_STATE_V3_MAGIC UINT32_C(0x3356434e) /* Little-endian "NCV3". */
-#define NATIVE_CANONICAL_STATE_V3_SCHEMA_VERSION UINT32_C(3)
+#define NATIVE_CANONICAL_STATE_V3_SCHEMA_VERSION UINT32_C(4)
 #define NATIVE_CANONICAL_REPLAY_V3_FORMAT_VERSION UINT32_C(3)
 
 struct NativeCanonicalStateV3

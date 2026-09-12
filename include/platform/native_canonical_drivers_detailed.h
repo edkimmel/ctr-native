@@ -9,7 +9,7 @@
 
 /* Pointer-free source values for the fixed 4,224-byte DRIVERS normative
  * stream.  These types deliberately describe the wire contract, not Driver. */
-#define NATIVE_CANONICAL_DRIVERS_DETAILED_VERSION 1u
+#define NATIVE_CANONICAL_DRIVERS_DETAILED_VERSION 2u
 #define NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT UINT8_C(0xff)
 #define NATIVE_CANONICAL_DRIVERS_META_BYTES 40u
 #define NATIVE_CANONICAL_DRIVERS_RACE_BYTES 60u
@@ -159,6 +159,9 @@ struct NativeCanonicalDriverPhysicsV1
 struct NativeCanonicalDriverDynamicsV1 { int16_t field[NATIVE_CANONICAL_DRIVER_DYN_COUNT]; int32_t xSpeed, ySpeed, zSpeed; };
 struct NativeCanonicalDriverActiveV1 { uint32_t unionTag; uint8_t branchBytes[20]; };
 struct NativeCanonicalDriverBotV1 { uint8_t bytes[NATIVE_CANONICAL_DRIVERS_BOT_BYTES]; };
+struct NativeCanonicalDriverPendingDamageV1 { uint8_t type, attackerSlotPlusOne, reason, reservedZero; };
+_Static_assert(sizeof(struct NativeCanonicalDriverPendingDamageV1)==NATIVE_CANONICAL_DRIVERS_TAIL_BYTES,
+	"pending-damage tail must remain four explicit bytes");
 struct NativeCanonicalDriverSlotV1
 {
 	struct NativeCanonicalDriverMetaV1 meta;
@@ -167,7 +170,7 @@ struct NativeCanonicalDriverSlotV1
 	struct NativeCanonicalDriverDynamicsV1 dynamics;
 	struct NativeCanonicalDriverActiveV1 active;
 	struct NativeCanonicalDriverBotV1 bot;
-	uint8_t reservedTail[NATIVE_CANONICAL_DRIVERS_TAIL_BYTES];
+	struct NativeCanonicalDriverPendingDamageV1 pendingDamage;
 };
 struct NativeCanonicalDriversDetailedV1 { struct NativeCanonicalDriversPreludeV1 prelude; struct NativeCanonicalDriverSlotV1 slots[8]; };
 

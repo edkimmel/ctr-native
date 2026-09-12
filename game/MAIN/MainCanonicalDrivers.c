@@ -628,3 +628,35 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamicsActive(const struct GameTracke
 	*out=candidate;
 	return 1;
 }
+
+static int MainCanonicalDrivers_ExtractPendingDamage(const struct GameTracker *gGT,const struct Driver *victim,
+	struct NativeCanonicalDriverPendingDamageV1 *out)
+{
+	struct NativeCanonicalDriverPendingDamageV1 candidate={0};
+	uint8_t attacker;
+	if(!gGT||!victim||!out)return 0;
+	/* Type zero deliberately ignores stale attacker/reason bytes. */
+	if(victim->pendingDamageType==0){*out=candidate;return 1;}
+	if(!((victim->pendingDamageType==2&&(victim->pendingDamageReasonByte==0||victim->pendingDamageReasonByte==6))||
+		(victim->pendingDamageType==3&&victim->pendingDamageReasonByte==5)))return 0;
+	for(attacker=0;attacker<8;attacker++)if(gGT->drivers[attacker]==victim->pendingDamageAttacker)break;
+	if(attacker==8||gGT->drivers[attacker]==NULL||gGT->drivers[attacker]==victim)return 0;
+	candidate.type=victim->pendingDamageType;
+	candidate.attackerSlotPlusOne=(uint8_t)(attacker+1);
+	candidate.reason=victim->pendingDamageReasonByte;
+	*out=candidate;
+	return 1;
+}
+int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(const struct GameTracker *gGT,const struct sData *sourceData,
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingCandidate *out)
+{
+	struct MainCanonicalDriversRosterRaceDynamicsActiveCandidate prior;
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingCandidate candidate;
+	if(!out||!MainCanonicalDrivers_ExtractRosterRaceDynamicsActive(gGT,sourceData,&prior))return 0;
+	candidate.roster=prior.roster;memcpy(candidate.race,prior.race,sizeof(candidate.race));
+	memcpy(candidate.dynamics,prior.dynamics,sizeof(candidate.dynamics));memcpy(candidate.active,prior.active,sizeof(candidate.active));
+	memset(candidate.pendingDamage,0,sizeof(candidate.pendingDamage));
+	for(uint8_t slot=0;slot<8;slot++)if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))!=0&&
+		(!gGT->drivers[slot]||!MainCanonicalDrivers_ExtractPendingDamage(gGT,gGT->drivers[slot],&candidate.pendingDamage[slot])))return 0;
+	*out=candidate;return 1;
+}

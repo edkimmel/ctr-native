@@ -72,7 +72,9 @@ static int WriteSlot(struct NativeCodecWriter *w, const struct NativeCanonicalDr
 	return WriteMeta(w,&v->meta)&&WriteRace(w,&v->race)&&WritePhysics(w,&v->physics)&&WriteS16s(w,v->dynamics.field,NATIVE_CANONICAL_DRIVER_DYN_COUNT)&&
 		NativeCodecWriter_WriteS32(w,v->dynamics.xSpeed)&&NativeCodecWriter_WriteS32(w,v->dynamics.ySpeed)&&NativeCodecWriter_WriteS32(w,v->dynamics.zSpeed)&&
 		NativeCodecWriter_WriteU32(w,v->active.unionTag)&&NativeCodecWriter_WriteBytes(w,v->active.branchBytes,20)&&
-		NativeCodecWriter_WriteBytes(w,v->bot.bytes,NATIVE_CANONICAL_DRIVERS_BOT_BYTES)&&NativeCodecWriter_WriteBytes(w,v->reservedTail,NATIVE_CANONICAL_DRIVERS_TAIL_BYTES);
+		NativeCodecWriter_WriteBytes(w,v->bot.bytes,NATIVE_CANONICAL_DRIVERS_BOT_BYTES)&&NativeCodecWriter_WriteU8(w,v->pendingDamage.type)&&
+		NativeCodecWriter_WriteU8(w,v->pendingDamage.attackerSlotPlusOne)&&NativeCodecWriter_WriteU8(w,v->pendingDamage.reason)&&
+		NativeCodecWriter_WriteU8(w,v->pendingDamage.reservedZero);
 }
 
 static int SlotIsAllZero(const struct NativeCanonicalDriverSlotV1 *slot)
@@ -104,6 +106,13 @@ static int ValidateRanks(const uint8_t *ranks, uint8_t count)
 	for(uint8_t i=0;i<8;i++) { if(i<count) { if(ranks[i]>7)return 0; } else if(ranks[i]!=NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT)return 0; }
 	return 1;
 }
+static int PendingDamageValid(const struct NativeCanonicalDriverPendingDamageV1 *p,uint8_t slot,uint32_t presence)
+{
+	if(p->reservedZero!=0)return 0;
+	if(p->type==0)return p->attackerSlotPlusOne==0&&p->reason==0;
+	if(p->attackerSlotPlusOne==0||p->attackerSlotPlusOne>8||(presence&(UINT32_C(1)<<(p->attackerSlotPlusOne-1)))==0||p->attackerSlotPlusOne-1==slot)return 0;
+	return (p->type==2&&(p->reason==0||p->reason==6))||(p->type==3&&p->reason==5);
+}
 
 void NativeCanonicalDriversDetailedV1_Init(struct NativeCanonicalDriversDetailedV1 *value)
 {
@@ -131,7 +140,7 @@ int NativeCanonicalDriversDetailedV1_Validate(const struct NativeCanonicalDriver
 		const struct NativeCanonicalDriverSlotV1 *s=&value->slots[i];
 		uint32_t allowedActiveTagMask;
 		if((p->presenceMask&(UINT32_C(1)<<i))==0) { if(!SlotIsAllZero(s))return 0; continue; }
-		if(s->meta.present!=1 || s->meta.slotIndex!=i || !KindValid(s->meta.driverKind) || s->meta.boolFirstFrameSinceRevEngine>1 || s->physics.reserved0!=0 || !Zeros(s->reservedTail,sizeof(s->reservedTail)) ||
+		if(s->meta.present!=1 || s->meta.slotIndex!=i || !KindValid(s->meta.driverKind) || s->meta.boolFirstFrameSinceRevEngine>1 || s->physics.reserved0!=0 || !PendingDamageValid(&s->pendingDamage,(uint8_t)i,p->presenceMask) ||
 			!ActiveTagValid(s->active.unionTag) || (s->active.unionTag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE&&!Zeros(s->active.branchBytes,sizeof(s->active.branchBytes))))return 0;
 		if((s->meta.externalPresenceFlags&~NATIVE_CANONICAL_DRIVER_EXTERNAL_KNOWN_MASK)!=0 ||
 			(s->meta.driverThreadSimFlags&~NATIVE_CANONICAL_DRIVER_THREAD_SIM_KNOWN_MASK)!=0)return 0;
