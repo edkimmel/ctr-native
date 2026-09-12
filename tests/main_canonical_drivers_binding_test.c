@@ -632,4 +632,180 @@ static int RaceProjectionTest(void)
 	return 1;
 }
 
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
+static void SetDynamicsField(struct Driver *driver,uint8_t field,uint32_t value)
+{
+	int16_t v=(int16_t)(int32_t)value;
+	switch(field)
+	{
+		case NATIVE_CANONICAL_DRIVER_DYN_AMP_TURN_STATE:driver->ampTurnState=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_BUTTON_USED_TO_START_DRIFT:driver->buttonUsedToStartDrift=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_WALL_RUB_SPEED_LIMIT:driver->wallRubSpeedLimit=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_WHEEL_ROTATION:driver->wheelRotation=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_SPEED:driver->speed=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_SPEED_APPROX:driver->speedApprox=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_JUMP_HEIGHT_CURR:driver->jumpHeightCurr=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_JUMP_HEIGHT_PREV:driver->jumpHeightPrev=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_AXIS_ROTATION_Y:driver->axisRotationY=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_AXIS_ROTATION_X:driver->axisRotationX=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_ANGLE:driver->angle=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_BASE_SPEED:driver->baseSpeed=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_FIRE_SPEED:driver->fireSpeed=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_FORWARD_ACCEL_IMPULSE:driver->forwardAccelImpulse=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_ROTATION_SPIN_RATE:driver->rotationSpinRate=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_ACCEL_TAP_WINDOW_TIMER:driver->accelTapWindowTimer=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_ACCEL_TAP_COUNT:driver->accelTapCount=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TERRAIN_SCALED_BASE_SPEED:driver->terrainScaledBaseSpeed=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TURN_ANGLE_CURR:driver->turnAngleCurr=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TURN_ANGLE_PREV:driver->turnAnglePrev=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TURN_ANGLE_LERP_TARGET:driver->turnAngleLerpTarget=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TURN_ANGLE_LERP_VEL:driver->turnAngleLerpVel=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TURN_WOBBLE_ANGLE:driver->turnWobbleAngle=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TURN_WOBBLE_VELOCITY:driver->turnWobbleVelocity=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TURN_WOBBLE_TIMER:driver->turnWobbleTimer=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_MULT_DRIFT:driver->multDrift=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TURBO_METER_ROOM_LEFT:driver->turbo_MeterRoomLeft=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TURBO_OUTSIDE_TIMER:driver->turbo_outsideTimer=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_RESERVES:driver->reserves=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_FIRE_SPEED_CAP:driver->fireSpeedCap=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_NUM_FRAMES_SPENT_STEERING:driver->numFramesSpentSteering=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_FORWARD_DIR:driver->forwardDir=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_PREVIOUS_FRAME_MULT_DRIFT:driver->previousFrameMultDrift=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TIME_UNTIL_DRIFT_SPINOUT:driver->timeUntilDriftSpinout=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_DISTANCE_FROM_GROUND:driver->distanceFromGround=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_JUMP_TEN_BUFFER:driver->jump_TenBuffer=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_JUMP_COOLDOWN_MS:driver->jump_CooldownMS=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_JUMP_COYOTE_TIMER_MS:driver->jump_CoyoteTimerMS=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_JUMP_FORCED_MS:driver->jump_ForcedMS=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_JUMP_INITIAL_VEL_Y:driver->jump_InitialVelY=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_JUMP_HIGH_JUMP_TIMER_MS:driver->jump_HighJumpTimerMS=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_JUMP_LANDING_BOOST:driver->jump_LandingBoost=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_WALL_RUB_TIMER:driver->wallRubTimer=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_NO_INPUT_TIMER:driver->NoInputTimer=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_BURN_TIMER:driver->burnTimer=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_SQUISH_TIMER:driver->squishTimer=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_VSHIFT_START_GUARD_TIMER:driver->vShiftStartGuardTimer=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_VSHIFT_WINDOW_TIMER:driver->vShiftWindowTimer=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_VSHIFT_COUNT:driver->vShiftCount=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_JUMP_SQUISH_STRETCH:driver->jumpSquishStretch=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_JUMP_SQUISH_STRETCH2:driver->jumpSquishStretch2=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_TERRAIN_FRICTION_TIMER:driver->terrainFrictionTimer=v;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_COUNT:driver->xSpeed=(int)(int32_t)value;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_COUNT+1:driver->ySpeed=(int)(int32_t)value;break;
+		case NATIVE_CANONICAL_DRIVER_DYN_COUNT+2:driver->zSpeed=(int)(int32_t)value;break;
+	}
+}
+
+static uint32_t DynamicsValue(const struct NativeCanonicalDriverDynamicsV1 *dynamics,uint8_t field)
+{
+	if(field<NATIVE_CANONICAL_DRIVER_DYN_COUNT)return (uint32_t)(int32_t)dynamics->field[field];
+	if(field==NATIVE_CANONICAL_DRIVER_DYN_COUNT)return (uint32_t)dynamics->xSpeed;
+	if(field==NATIVE_CANONICAL_DRIVER_DYN_COUNT+1)return (uint32_t)dynamics->ySpeed;
+	return (uint32_t)dynamics->zSpeed;
+}
+
+static uint8_t DynamicsWidth(uint8_t field) { return field<NATIVE_CANONICAL_DRIVER_DYN_COUNT?2u:4u; }
+static size_t DynamicsOffset(uint8_t field)
+{
+	return field<NATIVE_CANONICAL_DRIVER_DYN_COUNT?(size_t)field*2u:
+		104u+(size_t)(field-NATIVE_CANONICAL_DRIVER_DYN_COUNT)*4u;
+}
+static uint32_t DynamicsMinimum(uint8_t field)
+{
+	return field<NATIVE_CANONICAL_DRIVER_DYN_COUNT?(uint32_t)(int32_t)INT16_MIN:(uint32_t)INT32_MIN;
+}
+static uint32_t DynamicsMaximum(uint8_t field)
+{
+	return field<NATIVE_CANONICAL_DRIVER_DYN_COUNT?INT16_MAX:INT32_MAX;
+}
+
+static int DetailedFromRaceDynamics(const struct MainCanonicalDriversRosterRaceDynamicsCandidate *candidate,
+	struct NativeCanonicalDriversDetailedV1 *detailed)
+{
+	NativeCanonicalDriversDetailedV1_Init(detailed);
+	detailed->prelude=candidate->roster.prelude;
+	for(uint8_t slot=0;slot<8;slot++)
+	{
+		struct NativeCanonicalDriverMetaV1 *meta=&detailed->slots[slot].meta;
+		if((candidate->roster.prelude.presenceMask&(UINT32_C(1)<<slot))==0)continue;
+		meta->present=1;meta->slotIndex=slot;meta->driverID=slot;
+		meta->driverKind=candidate->roster.kind[slot];meta->behaviorID=candidate->roster.behaviorID[slot];
+		meta->threadBehaviorID=candidate->roster.threadBehaviorID[slot];meta->kartState=KS_NORMAL;
+		detailed->slots[slot].race=candidate->race[slot];
+		detailed->slots[slot].dynamics=candidate->dynamics[slot];
+	}
+	return NativeCanonicalDriversDetailedV1_Validate(detailed);
+}
+
+static int DynamicsProjectionTest(void)
+{
+	struct SourceFixture fixture,other;
+	struct sData *sd=&sdata_static;
+	struct MainCanonicalDriversRosterRaceDynamicsCandidate base,changed,before;
+	struct NativeCanonicalDriversDetailedV1 baseDetailed,changedDetailed;
+	uint8_t baseBytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES],changedBytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
+	CTR_STATIC_ASSERT(NATIVE_CANONICAL_DRIVER_DYN_COUNT==52u);
+	CTR_STATIC_ASSERT(sizeof(struct NativeCanonicalDriverDynamicsV1)==NATIVE_CANONICAL_DRIVERS_DYNAMICS_BYTES);
+
+	/* Slot and physical-pool identities are independent of race order. */
+	SourceFixtureInit(&fixture);SourceDriverAt(&fixture,6,7,1,4,0);fixture.tracker.humanPlayerPositions[6]=5;
+	SetDynamicsField(FLD(&fixture,6),NATIVE_CANONICAL_DRIVER_DYN_SPEED,(uint32_t)(int32_t)-123);
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamics(&fixture.tracker,sd,&base)||
+		base.roster.prelude.raceOrderCount!=3||base.dynamics[6].field[NATIVE_CANONICAL_DRIVER_DYN_SPEED]!=-123)return 0;
+
+	/* Every signed source value reaches precisely its canonical field and wire
+	 * bytes.  The 52 s16s precede x/y/zSpeed's three s32s at dynamics offset 0. */
+	for(uint8_t field=0;field<NATIVE_CANONICAL_DRIVER_DYN_COUNT+3;field++)
+	{
+		uint32_t minimum=DynamicsMinimum(field),maximum=DynamicsMaximum(field);
+		size_t start=64u+520u*6u+40u+60u+148u+DynamicsOffset(field);
+		SourceFixtureInit(&fixture);SourceDriverAt(&fixture,6,7,1,4,0);fixture.tracker.humanPlayerPositions[6]=5;
+		SetDynamicsField(FLD(&fixture,6),field,minimum);
+		if(!MainCanonicalDrivers_ExtractRosterRaceDynamics(&fixture.tracker,sd,&changed)||DynamicsValue(&changed.dynamics[6],field)!=minimum)return 0;
+		SourceFixtureInit(&fixture);SourceDriverAt(&fixture,6,7,1,4,0);fixture.tracker.humanPlayerPositions[6]=5;
+		if(!MainCanonicalDrivers_ExtractRosterRaceDynamics(&fixture.tracker,sd,&base)||
+			!DetailedFromRaceDynamics(&base,&baseDetailed)||!EncodeDetailed(&baseDetailed,baseBytes))return 0;
+		SetDynamicsField(FLD(&fixture,6),field,maximum);
+		if(!MainCanonicalDrivers_ExtractRosterRaceDynamics(&fixture.tracker,sd,&changed)||DynamicsValue(&changed.dynamics[6],field)!=maximum||
+			!DetailedFromRaceDynamics(&changed,&changedDetailed)||!EncodeDetailed(&changedDetailed,changedBytes))return 0;
+		for(size_t byte=0;byte<sizeof(baseBytes);byte++)
+		{
+			int target=byte>=start&&byte<start+DynamicsWidth(field);
+			if((baseBytes[byte]!=changedBytes[byte])!=target)return 0;
+			if(target&&changedBytes[byte]!=(uint8_t)(maximum>>(8u*(byte-start))))return 0;
+		}
+	}
+
+	/* A conversion changes roster kind/thread identity but not the named
+	 * Dynamics values; no behavior branch selects a different source field. */
+	SourceFixtureInit(&fixture);SetDynamicsField(FD(&fixture,0),NATIVE_CANONICAL_DRIVER_DYN_COUNT,(uint32_t)(int32_t)-9);
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamics(&fixture.tracker,sd,&base))return 0;
+	FD(&fixture,0)->actionsFlagSet=ACTION_BOT;FD(&fixture,0)->botData.botPath=1;FLT(&fixture,0)->funcThTick=BOTS_ThTick_Drive;
+	sd->navBotList[1].first=&FD(&fixture,0)->botData.item;sd->navBotList[1].last=&FD(&fixture,0)->botData.item;sd->navBotList[1].count=1;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamics(&fixture.tracker,sd,&changed)||
+		changed.roster.kind[0]!=NATIVE_CANONICAL_DRIVER_KIND_BOT||memcmp(&base.dynamics[0],&changed.dynamics[0],sizeof(base.dynamics[0]))!=0)return 0;
+
+	/* A reused result cannot retain a Dynamics group for an absent root. */
+	SourceFixtureInit(&fixture);SourceDriverAt(&fixture,6,7,1,4,0);SetDynamicsField(FLD(&fixture,6),0,99);
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamics(&fixture.tracker,sd,&changed))return 0;
+	fixture.tracker.drivers[6]=NULL;FRefreshPools(&fixture);
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamics(&fixture.tracker,sd,&changed)||
+		(changed.roster.prelude.presenceMask&(UINT32_C(1)<<6))!=0||
+		memcmp(&changed.dynamics[6],&(struct NativeCanonicalDriverDynamicsV1){0},sizeof(changed.dynamics[6]))!=0)return 0;
+
+	SourceFixtureInit(&fixture);if(!MainCanonicalDrivers_ExtractRosterRaceDynamics(&fixture.tracker,sd,&changed))return 0;
+	before=changed;if(MainCanonicalDrivers_ExtractRosterRaceDynamics(NULL,sd,&changed)||memcmp(&changed,&before,sizeof(changed))!=0)return 0;
+	#define FAIL_DYNAMICS(change) do { before=changed; change; if(MainCanonicalDrivers_ExtractRosterRaceDynamics(&fixture.tracker,sd,&changed)||memcmp(&changed,&before,sizeof(changed))!=0)return 0; SourceFixtureInit(&fixture); } while(0)
+	FAIL_DYNAMICS(sd->gGT=NULL);
+	SourceFixtureInit(&other);before=changed;if(MainCanonicalDrivers_ExtractRosterRaceDynamics(&fixture.tracker,sd,&changed)||memcmp(&changed,&before,sizeof(changed))!=0)return 0;SourceFixtureInit(&fixture);
+	FAIL_DYNAMICS(fixture.tracker.drivers[1]=fixture.tracker.drivers[0]);
+	FAIL_DYNAMICS(FD(&fixture,2)->driverID=1);
+	FAIL_DYNAMICS(FI(&fixture,2)->thread=NULL);
+	FAIL_DYNAMICS(FT(&fixture,2)->object=FD(&fixture,0));
+	FAIL_DYNAMICS(FT(&fixture,2)->funcThTick=UnknownThread);
+	FAIL_DYNAMICS(FD(&fixture,2)->funcPtrs[6]=UnknownDriver);
+	FAIL_DYNAMICS(sd->navBotList[0].first=NULL);
+	#undef FAIL_DYNAMICS
+	return 1;
+}
+
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}

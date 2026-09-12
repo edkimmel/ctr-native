@@ -14,6 +14,16 @@ struct MainCanonicalDriversRosterRaceCandidate
 	struct NativeCanonicalDriverRaceV1 race[8];
 };
 
+/* Further dormant candidate: stable-slot Race plus the 116-byte Dynamics
+ * group.  It is an explicit value projection, never a native Driver layout
+ * snapshot, and remains outside the live detailed DRIVERS publisher. */
+struct MainCanonicalDriversRosterRaceDynamicsCandidate
+{
+	struct NativeCanonicalDriversRosterCandidate roster;
+	struct NativeCanonicalDriverRaceV1 race[8];
+	struct NativeCanonicalDriverDynamicsV1 dynamics[8];
+};
+
 /* Narrow dormant Meta foundation for one Driver whose large-stack root has
  * already passed the roster extractor's ownership gate.  This returns only
  * the frozen external/thread presence bits; it is not an aggregate Meta
@@ -45,6 +55,12 @@ int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,
 int MainCanonicalDrivers_ExtractRosterRace(const struct GameTracker *gGT,
 	const struct sData *sdata,
 	struct MainCanonicalDriversRosterRaceCandidate *out);
+/* Extends the same fully validated roster/root candidate with Dynamics in
+ * stable GameTracker.drivers[0..7] order.  Absent slots are exact zero
+ * values and output is assigned only after every present field is copied. */
+int MainCanonicalDrivers_ExtractRosterRaceDynamics(const struct GameTracker *gGT,
+	const struct sData *sdata,
+	struct MainCanonicalDriversRosterRaceDynamicsCandidate *out);
 int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,uint32_t activeTag,
 	struct MainCanonicalDriversMetaFlags *out);

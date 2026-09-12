@@ -7,6 +7,9 @@
 
 CTR_STATIC_ASSERT(NATIVE_CANONICAL_DRIVERS_RACE_BYTES == 60u);
 CTR_STATIC_ASSERT(sizeof(struct NativeCanonicalDriverRaceV1) == NATIVE_CANONICAL_DRIVERS_RACE_BYTES);
+CTR_STATIC_ASSERT(NATIVE_CANONICAL_DRIVER_DYN_COUNT == 52u);
+CTR_STATIC_ASSERT(NATIVE_CANONICAL_DRIVERS_DYNAMICS_BYTES == 116u);
+CTR_STATIC_ASSERT(sizeof(struct NativeCanonicalDriverDynamicsV1) == NATIVE_CANONICAL_DRIVERS_DYNAMICS_BYTES);
 /* Native source fields declared as int are persisted as explicit signed
  * int32_t values.  Do not permit a host where that conversion changes range. */
 CTR_STATIC_ASSERT(sizeof(int) == sizeof(int32_t));
@@ -408,6 +411,86 @@ int MainCanonicalDrivers_ExtractRosterRace(const struct GameTracker *gGT,const s
 		 * behavior, and nav membership before any candidate is published. */
 		if(gGT->drivers[slot]==NULL)return 0;
 		MainCanonicalDrivers_CopyRace(gGT->drivers[slot],&candidate.race[slot]);
+	}
+	*out=candidate;
+	return 1;
+}
+
+static void MainCanonicalDrivers_CopyDynamics(const struct Driver *driver,
+	struct NativeCanonicalDriverDynamicsV1 *dynamics)
+{
+	int16_t *field=dynamics->field;
+	field[NATIVE_CANONICAL_DRIVER_DYN_AMP_TURN_STATE]=driver->ampTurnState;
+	field[NATIVE_CANONICAL_DRIVER_DYN_BUTTON_USED_TO_START_DRIFT]=driver->buttonUsedToStartDrift;
+	field[NATIVE_CANONICAL_DRIVER_DYN_WALL_RUB_SPEED_LIMIT]=driver->wallRubSpeedLimit;
+	field[NATIVE_CANONICAL_DRIVER_DYN_WHEEL_ROTATION]=driver->wheelRotation;
+	field[NATIVE_CANONICAL_DRIVER_DYN_SPEED]=driver->speed;
+	field[NATIVE_CANONICAL_DRIVER_DYN_SPEED_APPROX]=driver->speedApprox;
+	field[NATIVE_CANONICAL_DRIVER_DYN_JUMP_HEIGHT_CURR]=driver->jumpHeightCurr;
+	field[NATIVE_CANONICAL_DRIVER_DYN_JUMP_HEIGHT_PREV]=driver->jumpHeightPrev;
+	field[NATIVE_CANONICAL_DRIVER_DYN_AXIS_ROTATION_Y]=driver->axisRotationY;
+	field[NATIVE_CANONICAL_DRIVER_DYN_AXIS_ROTATION_X]=driver->axisRotationX;
+	field[NATIVE_CANONICAL_DRIVER_DYN_ANGLE]=driver->angle;
+	field[NATIVE_CANONICAL_DRIVER_DYN_BASE_SPEED]=driver->baseSpeed;
+	field[NATIVE_CANONICAL_DRIVER_DYN_FIRE_SPEED]=driver->fireSpeed;
+	field[NATIVE_CANONICAL_DRIVER_DYN_FORWARD_ACCEL_IMPULSE]=driver->forwardAccelImpulse;
+	field[NATIVE_CANONICAL_DRIVER_DYN_ROTATION_SPIN_RATE]=driver->rotationSpinRate;
+	field[NATIVE_CANONICAL_DRIVER_DYN_ACCEL_TAP_WINDOW_TIMER]=driver->accelTapWindowTimer;
+	field[NATIVE_CANONICAL_DRIVER_DYN_ACCEL_TAP_COUNT]=driver->accelTapCount;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TERRAIN_SCALED_BASE_SPEED]=driver->terrainScaledBaseSpeed;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TURN_ANGLE_CURR]=driver->turnAngleCurr;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TURN_ANGLE_PREV]=driver->turnAnglePrev;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TURN_ANGLE_LERP_TARGET]=driver->turnAngleLerpTarget;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TURN_ANGLE_LERP_VEL]=driver->turnAngleLerpVel;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TURN_WOBBLE_ANGLE]=driver->turnWobbleAngle;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TURN_WOBBLE_VELOCITY]=driver->turnWobbleVelocity;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TURN_WOBBLE_TIMER]=driver->turnWobbleTimer;
+	field[NATIVE_CANONICAL_DRIVER_DYN_MULT_DRIFT]=driver->multDrift;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TURBO_METER_ROOM_LEFT]=driver->turbo_MeterRoomLeft;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TURBO_OUTSIDE_TIMER]=driver->turbo_outsideTimer;
+	field[NATIVE_CANONICAL_DRIVER_DYN_RESERVES]=driver->reserves;
+	field[NATIVE_CANONICAL_DRIVER_DYN_FIRE_SPEED_CAP]=driver->fireSpeedCap;
+	field[NATIVE_CANONICAL_DRIVER_DYN_NUM_FRAMES_SPENT_STEERING]=driver->numFramesSpentSteering;
+	field[NATIVE_CANONICAL_DRIVER_DYN_FORWARD_DIR]=driver->forwardDir;
+	field[NATIVE_CANONICAL_DRIVER_DYN_PREVIOUS_FRAME_MULT_DRIFT]=driver->previousFrameMultDrift;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TIME_UNTIL_DRIFT_SPINOUT]=driver->timeUntilDriftSpinout;
+	field[NATIVE_CANONICAL_DRIVER_DYN_DISTANCE_FROM_GROUND]=driver->distanceFromGround;
+	field[NATIVE_CANONICAL_DRIVER_DYN_JUMP_TEN_BUFFER]=driver->jump_TenBuffer;
+	field[NATIVE_CANONICAL_DRIVER_DYN_JUMP_COOLDOWN_MS]=driver->jump_CooldownMS;
+	field[NATIVE_CANONICAL_DRIVER_DYN_JUMP_COYOTE_TIMER_MS]=driver->jump_CoyoteTimerMS;
+	field[NATIVE_CANONICAL_DRIVER_DYN_JUMP_FORCED_MS]=driver->jump_ForcedMS;
+	field[NATIVE_CANONICAL_DRIVER_DYN_JUMP_INITIAL_VEL_Y]=driver->jump_InitialVelY;
+	field[NATIVE_CANONICAL_DRIVER_DYN_JUMP_HIGH_JUMP_TIMER_MS]=driver->jump_HighJumpTimerMS;
+	field[NATIVE_CANONICAL_DRIVER_DYN_JUMP_LANDING_BOOST]=driver->jump_LandingBoost;
+	field[NATIVE_CANONICAL_DRIVER_DYN_WALL_RUB_TIMER]=driver->wallRubTimer;
+	field[NATIVE_CANONICAL_DRIVER_DYN_NO_INPUT_TIMER]=driver->NoInputTimer;
+	field[NATIVE_CANONICAL_DRIVER_DYN_BURN_TIMER]=driver->burnTimer;
+	field[NATIVE_CANONICAL_DRIVER_DYN_SQUISH_TIMER]=driver->squishTimer;
+	field[NATIVE_CANONICAL_DRIVER_DYN_VSHIFT_START_GUARD_TIMER]=driver->vShiftStartGuardTimer;
+	field[NATIVE_CANONICAL_DRIVER_DYN_VSHIFT_WINDOW_TIMER]=driver->vShiftWindowTimer;
+	field[NATIVE_CANONICAL_DRIVER_DYN_VSHIFT_COUNT]=driver->vShiftCount;
+	field[NATIVE_CANONICAL_DRIVER_DYN_JUMP_SQUISH_STRETCH]=driver->jumpSquishStretch;
+	field[NATIVE_CANONICAL_DRIVER_DYN_JUMP_SQUISH_STRETCH2]=driver->jumpSquishStretch2;
+	field[NATIVE_CANONICAL_DRIVER_DYN_TERRAIN_FRICTION_TIMER]=driver->terrainFrictionTimer;
+	dynamics->xSpeed=(int32_t)driver->xSpeed;
+	dynamics->ySpeed=(int32_t)driver->ySpeed;
+	dynamics->zSpeed=(int32_t)driver->zSpeed;
+}
+
+int MainCanonicalDrivers_ExtractRosterRaceDynamics(const struct GameTracker *gGT,const struct sData *sourceData,
+	struct MainCanonicalDriversRosterRaceDynamicsCandidate *out)
+{
+	struct MainCanonicalDriversRosterRaceDynamicsCandidate candidate;
+	struct MainCanonicalDriversRosterRaceCandidate rosterRace;
+	if(!out||!MainCanonicalDrivers_ExtractRosterRace(gGT,sourceData,&rosterRace))return 0;
+	candidate.roster=rosterRace.roster;
+	memcpy(candidate.race,rosterRace.race,sizeof(candidate.race));
+	memset(candidate.dynamics,0,sizeof(candidate.dynamics));
+	for(uint8_t slot=0;slot<8;slot++)
+	{
+		if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))==0)continue;
+		if(!gGT->drivers[slot])return 0;
+		MainCanonicalDrivers_CopyDynamics(gGT->drivers[slot],&candidate.dynamics[slot]);
 	}
 	*out=candidate;
 	return 1;
