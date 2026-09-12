@@ -116,8 +116,8 @@ set_target_properties(ctr_native_canonical_driver_behavior PROPERTIES
 )
 target_include_directories(ctr_native_canonical_driver_behavior PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
-# Standalone JitPool geometry/list ownership validation. It is intentionally
-# not linked into the game until a future source projector adopts it.
+# Standalone JitPool geometry/list ownership validation. The dormant Driver
+# projector consumes it only for pre-dereference root ownership gates.
 add_library(ctr_native_canonical_pool STATIC platform/native_canonical_pool.c)
 set_target_properties(ctr_native_canonical_pool PROPERTIES
     C_STANDARD 17
@@ -275,7 +275,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_canonical_projector ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_canonical_drivers_roster)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_canonical_projector ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -375,7 +375,7 @@ if(BUILD_TESTING)
     set_target_properties(main_canonical_drivers_binding_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_include_directories(main_canonical_drivers_binding_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
     target_compile_definitions(main_canonical_drivers_binding_test PRIVATE CTR_NATIVE)
-    target_link_libraries(main_canonical_drivers_binding_test PRIVATE ctr_native_canonical_drivers_roster)
+    target_link_libraries(main_canonical_drivers_binding_test PRIVATE ctr_native_canonical_drivers_roster ctr_native_canonical_pool)
     add_test(NAME main_canonical_drivers_binding_unit COMMAND $<TARGET_FILE:main_canonical_drivers_binding_test>)
 
     add_executable(native_canonical_driver_behavior_test tests/native_canonical_driver_behavior_test.c)

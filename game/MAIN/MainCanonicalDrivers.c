@@ -1,6 +1,7 @@
 #include "common.h"
 #include "MainCanonicalDrivers.h"
 #include "functions.h"
+#include "platform/native_canonical_pool.h"
 
 #include <limits.h>
 
@@ -125,12 +126,96 @@ static int NavLists(const struct Driver *const drivers[8],const struct sData *so
 	return seen==botMask;
 }
 
+static struct NativeCanonicalPoolInput PoolInput(const struct JitPool *pool)
+{
+	struct NativeCanonicalPoolInput input;
+	input.base=pool->ptrPoolData;
+	input.maxItems=pool->maxItems;
+	input.itemSize=pool->itemSize;
+	input.poolSize=pool->poolSize;
+	return input;
+}
+
+static struct NativeCanonicalPoolList PoolList(const struct LinkedList *list)
+{
+	struct NativeCanonicalPoolList result;
+	result.first=(const struct NativeCanonicalPoolItem *)list->first;
+	result.last=(const struct NativeCanonicalPoolItem *)list->last;
+	result.count=list->count;
+	return result;
+}
+
+/* The native large-stack item begins with the JitPool Item header.  The
+ * Driver payload starts exactly eight bytes later; validate that relation
+ * before reading a single Driver field, then derive the proven slot address
+ * with integer arithmetic for the free-list ownership query. */
+static int PoolPayloadAllocatedFromFree(const struct NativeCanonicalPoolGeometry *geometry,
+	const struct NativeCanonicalPoolList *freeList,const void *payload,size_t offset,size_t size)
+{
+	uint32_t index,ownedIndex;
+	uintptr_t slot;
+	if(!NativeCanonicalPool_PayloadStartIndex(geometry,payload,offset,size,&index))return 0;
+	slot=geometry->base+(uintptr_t)index*geometry->stride;
+	return NativeCanonicalPool_AllocatedFromFree(geometry,freeList,(const void *)slot,&ownedIndex)&&ownedIndex==index;
+}
+
+static int SnapshotRootPools(const struct GameTracker *gGT,
+	struct NativeCanonicalPoolGeometry *large,struct NativeCanonicalPoolGeometry *thread,
+	struct NativeCanonicalPoolGeometry *instance,
+	struct NativeCanonicalPoolList *largeFree,struct NativeCanonicalPoolList *threadFree,
+	struct NativeCanonicalPoolList *instanceFree,struct NativeCanonicalPoolList *instanceTaken)
+{
+	const struct JitPool *largePool=&gGT->JitPools.largeStack;
+	const struct JitPool *threadPool=&gGT->JitPools.thread;
+	const struct JitPool *instancePool=&gGT->JitPools.instance;
+	struct NativeCanonicalPoolInput largeInput,threadInput,instanceInput;
+	size_t expectedInstanceSize;
+	if((size_t)gGT->numPlyrCurrGame>(UINT32_MAX-sizeof(struct Instance))/sizeof(struct InstDrawPerPlayer))return 0;
+	expectedInstanceSize=sizeof(struct Instance)+sizeof(struct InstDrawPerPlayer)*(size_t)gGT->numPlyrCurrGame;
+	if(largePool->itemSize!=0x670u||threadPool->itemSize!=sizeof(struct Thread)||
+		instancePool->itemSize!=expectedInstanceSize)return 0;
+	largeInput=PoolInput(largePool);threadInput=PoolInput(threadPool);instanceInput=PoolInput(instancePool);
+	if(!NativeCanonicalPool_GeometrySnapshot(&largeInput,large)||
+		!NativeCanonicalPool_GeometrySnapshot(&threadInput,thread)||
+		!NativeCanonicalPool_GeometrySnapshot(&instanceInput,instance))return 0;
+	if(large->stride!=0x670u||thread->stride!=sizeof(struct Thread)||instance->stride!=expectedInstanceSize)return 0;
+	*largeFree=PoolList(&largePool->free);
+	*threadFree=PoolList(&threadPool->free);
+	*instanceFree=PoolList(&instancePool->free);
+	*instanceTaken=PoolList(&instancePool->taken);
+	return 1;
+}
+
+static int ValidateDriverRootOwnership(const struct Driver *driver,
+	const struct NativeCanonicalPoolGeometry *large,const struct NativeCanonicalPoolList *largeFree,
+	const struct NativeCanonicalPoolGeometry *thread,const struct NativeCanonicalPoolList *threadFree,
+	const struct NativeCanonicalPoolGeometry *instance,const struct NativeCanonicalPoolList *instanceFree,
+	const struct NativeCanonicalPoolList *instanceTaken)
+{
+	const struct Instance *inst;
+	const struct Thread *nativeThread;
+	uint32_t ignored;
+	if(!PoolPayloadAllocatedFromFree(large,largeFree,driver,sizeof(struct Item),DRIVER_NTSC_RETAIL_SIZE))return 0;
+	/* driver is now a proven large-stack payload; only now read instSelf. */
+	inst=driver->instSelf;
+	if(!inst||!NativeCanonicalPool_AllocatedInTaken(instance,instanceTaken,instanceFree,
+		NATIVE_CANONICAL_POOL_FREE_LIST_REQUIRED,inst,&ignored))return 0;
+	/* inst is now a proven instance slot; only now read thread. */
+	nativeThread=inst->thread;
+	if(!nativeThread||!NativeCanonicalPool_AllocatedFromFree(thread,threadFree,nativeThread,&ignored))return 0;
+	return nativeThread->object==driver&&nativeThread->inst==inst&&
+		(nativeThread->flags&THREAD_FLAG_DEAD)==0;
+}
+
 int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,const struct sData *sourceData,struct NativeCanonicalDriversRosterCandidate *out)
 {
 	struct NativeCanonicalDriversRosterInput input;
 	DriverFunc tables[8][13]={{0}};
 	void(*threads[8])(struct Thread *)={0};
 	const struct Driver *drivers[8];
+	struct NativeCanonicalPoolGeometry largeGeometry,threadGeometry,instanceGeometry;
+	struct NativeCanonicalPoolList largeFree,threadFree,instanceFree,instanceTaken;
+	int anyRoot=0;
 	if(!gGT||!sourceData||!out||sourceData->gGT!=gGT||gGT->numLaps<0)return 0;
 	memset(&input,0,sizeof(input));
 	memset(input.raceOrder,0xff,sizeof(input.raceOrder));
@@ -138,14 +223,24 @@ int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,cons
 	memset(input.ranks,0xff,sizeof(input.ranks));
 	memset(input.navOrder,0xff,sizeof(input.navOrder));
 	input.numLaps=gGT->numLaps;
+	/* Root addresses are compared but never dereferenced until all three pool
+	 * snapshots prove ownership.  With no roots, menu/reset phases deliberately
+	 * accept uninitialized pools: there is no object to inspect. */
 	for(uint8_t slot=0;slot<8;slot++)
 	{
-		const struct Driver *driver=gGT->drivers[slot];
-		drivers[slot]=driver;
+		drivers[slot]=gGT->drivers[slot];
+		if(!drivers[slot])continue;
+		anyRoot=1;
+		for(uint8_t prior=0;prior<slot;prior++)if(drivers[prior]==drivers[slot])return 0;
+	}
+	if(anyRoot&&!SnapshotRootPools(gGT,&largeGeometry,&threadGeometry,&instanceGeometry,
+		&largeFree,&threadFree,&instanceFree,&instanceTaken))return 0;
+	for(uint8_t slot=0;slot<8;slot++)
+	{
+		const struct Driver *driver=drivers[slot];
 		if(!driver)continue;
-		for(uint8_t prior=0;prior<slot;prior++)if(drivers[prior]==driver)return 0;
-		if(driver->driverID!=slot||!driver->instSelf||!driver->instSelf->thread)return 0;
-		if(driver->instSelf->thread->object!=driver||driver->instSelf->thread->inst!=driver->instSelf||(driver->instSelf->thread->flags&THREAD_FLAG_DEAD))return 0;
+		if(!ValidateDriverRootOwnership(driver,&largeGeometry,&largeFree,&threadGeometry,&threadFree,
+			&instanceGeometry,&instanceFree,&instanceTaken)||driver->driverID!=slot)return 0;
 		input.slots[slot].present=1;input.slots[slot].driverID=slot;
 		input.slots[slot].kind=(driver->actionsFlagSet&ACTION_BOT)?NATIVE_CANONICAL_DRIVER_KIND_BOT:NATIVE_CANONICAL_DRIVER_KIND_HUMAN;
 		memcpy(tables[slot],driver->funcPtrs,sizeof(tables[slot]));threads[slot]=driver->instSelf->thread->funcThTick;
