@@ -1,6 +1,7 @@
 #include "common.h"
 #include "MAIN/MainCanonicalDrivers.h"
 #include "functions.h"
+#include <limits.h>
 #include <stdio.h>
 struct sData sdata_static;
 #define C(x) do{if(!(x)){fprintf(stderr,"fail %d\n",__LINE__);return 1;}}while(0)
@@ -150,4 +151,175 @@ static int ThreadOwnershipTest(void)
 	if(!NativeCanonicalDriverBehavior_ValidateKind(NATIVE_CANONICAL_DRIVER_KIND_BOT,1,NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE))return 0;
 	return 1;
 }
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());puts("main_canonical_drivers_binding_test: passed");return 0;}
+static void SetRaceField(struct Driver *driver, uint8_t field, uint32_t value)
+{
+	switch(field)
+	{
+		case 0: driver->clockReceive=(s16)(int32_t)value;break;
+		case 1: driver->hazardTimer=(s16)(int32_t)value;break;
+		case 2: driver->superEngineTimer=(s16)(int32_t)value;break;
+		case 3: driver->itemRollTimer=(s16)(int32_t)value;break;
+		case 4: driver->noItemTimer=(s16)(int32_t)value;break;
+		case 5: driver->jumpMeter=(s16)(int32_t)value;break;
+		case 6: driver->jumpMeterTimer=(s16)(int32_t)value;break;
+		case 7: driver->numTurbos=(s16)(int32_t)value;break;
+		case 8: driver->invincibleTimer=(int)(int32_t)value;break;
+		case 9: driver->invisibleTimer=(int)(int32_t)value;break;
+		case 10: driver->lapTime=(int)(int32_t)value;break;
+		case 11: driver->timeElapsedInRace=(int)(int32_t)value;break;
+		case 12: driver->driverRank=(s16)(int32_t)value;break;
+		case 13: driver->checkpoint.branchChoiceIndex=(uint8_t)value;break;
+		case 14: driver->checkpoint.currentIndex=(uint8_t)value;break;
+		case 15: driver->distanceToFinish_curr=value;break;
+		case 16: driver->distanceToFinish_checkpoint=value;break;
+		case 17: driver->distanceDrivenBackwards=value;break;
+		case 18: driver->BattleHUD.numLives=(int)(int32_t)value;break;
+		case 19: driver->BattleHUD.teamID=(int)(int32_t)value;break;
+		case 20: driver->PickupLetterHUD.numCollected=(int)(int32_t)value;break;
+	}
+}
+
+static uint32_t RaceValue(const struct NativeCanonicalDriverRaceV1 *race, uint8_t field)
+{
+	switch(field)
+	{
+		case 0:return (uint32_t)(int32_t)race->clockReceive;case 1:return (uint32_t)(int32_t)race->hazardTimer;
+		case 2:return (uint32_t)(int32_t)race->superEngineTimer;case 3:return (uint32_t)(int32_t)race->itemRollTimer;
+		case 4:return (uint32_t)(int32_t)race->noItemTimer;case 5:return (uint32_t)(int32_t)race->jumpMeter;
+		case 6:return (uint32_t)(int32_t)race->jumpMeterTimer;case 7:return (uint32_t)(int32_t)race->numTurbos;
+		case 8:return (uint32_t)race->invincibleTimer;case 9:return (uint32_t)race->invisibleTimer;
+		case 10:return (uint32_t)race->lapTime;case 11:return (uint32_t)race->timeElapsedInRace;
+		case 12:return (uint32_t)(int32_t)race->driverRank;case 13:return race->checkpointBranchChoiceIndex;
+		case 14:return race->checkpointCurrentIndex;case 15:return race->distanceToFinishCurr;
+		case 16:return race->distanceToFinishCheckpoint;case 17:return race->distanceDrivenBackwards;
+		case 18:return (uint32_t)race->battleNumLives;case 19:return (uint32_t)race->battleTeamID;
+		default:return (uint32_t)race->pickupLetterCount;
+	}
+}
+
+static uint8_t RaceWidth(uint8_t field)
+{
+	if(field<8||field==12)return 2;
+	if(field==13||field==14)return 1;
+	return 4;
+}
+
+static uint8_t RaceOffset(uint8_t field)
+{
+	static const uint8_t offsets[21]={0,2,4,6,8,10,12,14,16,20,24,28,32,34,35,36,40,44,48,52,56};
+	return offsets[field];
+}
+
+static uint32_t RaceMinimum(uint8_t field)
+{
+	if(field<8||field==12)return (uint32_t)(int32_t)INT16_MIN;
+	if((field>=8&&field<=11)||field>=18)return (uint32_t)INT32_MIN;
+	return 0;
+}
+
+static uint32_t RaceMaximum(uint8_t field)
+{
+	if(field<8||field==12)return INT16_MAX;
+	if((field>=8&&field<=11)||field>=18)return INT32_MAX;
+	return field==13||field==14?UINT8_MAX:UINT32_MAX;
+}
+
+static int DetailedFromRace(const struct MainCanonicalDriversRosterRaceCandidate *candidate,
+	struct NativeCanonicalDriversDetailedV1 *detailed)
+{
+	NativeCanonicalDriversDetailedV1_Init(detailed);
+	detailed->prelude=candidate->roster.prelude;
+	for(uint8_t slot=0;slot<8;slot++)
+	{
+		struct NativeCanonicalDriverMetaV1 *meta=&detailed->slots[slot].meta;
+		if((candidate->roster.prelude.presenceMask&(UINT32_C(1)<<slot))==0)continue;
+		meta->present=1;meta->slotIndex=slot;meta->driverID=slot;
+		meta->driverKind=candidate->roster.kind[slot];meta->behaviorID=candidate->roster.behaviorID[slot];
+		meta->threadBehaviorID=candidate->roster.threadBehaviorID[slot];meta->kartState=KS_NORMAL;
+		detailed->slots[slot].race=candidate->race[slot];
+	}
+	return NativeCanonicalDriversDetailedV1_Validate(detailed);
+}
+
+static int EncodeDetailed(const struct NativeCanonicalDriversDetailedV1 *detailed,
+	uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES])
+{
+	struct NativeCodecWriter writer;
+	NativeCodecWriter_Init(&writer,bytes,NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES,NULL);
+	return NativeCanonicalDriversDetailedV1_Encode(&writer,detailed)&&
+		NativeCodecWriter_Size(&writer)==NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES;
+}
+
+static int RaceProjectionTest(void)
+{
+	struct SourceFixture fixture,other;
+	struct sData *sd=&sdata_static;
+	struct MainCanonicalDriversRosterRaceCandidate base,changed,before;
+	struct NativeCanonicalDriversDetailedV1 baseDetailed,changedDetailed;
+	uint8_t baseBytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES],changedBytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
+
+	SourceFixtureInit(&fixture);SourceDriver(&fixture,6,0);fixture.tracker.humanPlayerPositions[6]=5;
+	if(!MainCanonicalDrivers_ExtractRosterRace(&fixture.tracker,sd,&base)||base.roster.prelude.raceOrderCount!=3||
+		(base.roster.prelude.presenceMask&(UINT32_C(1)<<6))==0||base.roster.prelude.playerCount!=2)return 0;
+	/* Slot 6 is deliberately absent from driversInRaceOrder.  Stable root slots,
+	 * not race order, are the Race extraction order. */
+	fixture.drivers[6].clockReceive=-123;
+	if(!MainCanonicalDrivers_ExtractRosterRace(&fixture.tracker,sd,&changed)||changed.race[6].clockReceive!=-123)return 0;
+
+	for(uint8_t field=0;field<21;field++)
+	{
+		uint32_t minimum=RaceMinimum(field),maximum=RaceMaximum(field);
+		size_t start=(size_t)64+520u*6u+40u+RaceOffset(field);
+		SourceFixtureInit(&fixture);SourceDriver(&fixture,6,0);fixture.tracker.humanPlayerPositions[6]=5;
+		SetRaceField(&fixture.drivers[6],field,minimum);
+		if(!MainCanonicalDrivers_ExtractRosterRace(&fixture.tracker,sd,&changed)||RaceValue(&changed.race[6],field)!=minimum)return 0;
+		SourceFixtureInit(&fixture);SourceDriver(&fixture,6,0);fixture.tracker.humanPlayerPositions[6]=5;
+		if(!MainCanonicalDrivers_ExtractRosterRace(&fixture.tracker,sd,&base)||!DetailedFromRace(&base,&baseDetailed)||!EncodeDetailed(&baseDetailed,baseBytes))return 0;
+		SetRaceField(&fixture.drivers[6],field,maximum);
+		if(!MainCanonicalDrivers_ExtractRosterRace(&fixture.tracker,sd,&changed)||RaceValue(&changed.race[6],field)!=maximum||
+			!DetailedFromRace(&changed,&changedDetailed)||!EncodeDetailed(&changedDetailed,changedBytes))return 0;
+		for(size_t byte=0;byte<sizeof(baseBytes);byte++)
+		{
+			int target=byte>=start&&byte<start+RaceWidth(field);
+			if((baseBytes[byte]!=changedBytes[byte])!=target)return 0;
+			if(target&&changedBytes[byte]!=(uint8_t)(maximum>>(8u*(byte-start))))return 0;
+		}
+	}
+	/* Pre-race, negative, finished, and battle values are copied verbatim; no
+	 * lifecycle or ghost special case exists beyond ACTION_BOT classification. */
+	SourceFixtureInit(&fixture);
+	SetRaceField(&fixture.drivers[0],0,(uint32_t)(int32_t)-1);SetRaceField(&fixture.drivers[0],10,(uint32_t)INT32_MIN);
+	SetRaceField(&fixture.drivers[0],11,(uint32_t)(int32_t)-7);SetRaceField(&fixture.drivers[0],12,(uint32_t)(int32_t)-1);
+	SetRaceField(&fixture.drivers[0],13,UINT8_MAX);SetRaceField(&fixture.drivers[0],15,UINT32_MAX);
+	SetRaceField(&fixture.drivers[0],18,(uint32_t)(int32_t)-2);SetRaceField(&fixture.drivers[0],19,(uint32_t)(int32_t)-3);
+	SetRaceField(&fixture.drivers[0],20,INT32_MAX);
+	if(!MainCanonicalDrivers_ExtractRosterRace(&fixture.tracker,sd,&changed)||changed.race[0].clockReceive!=-1||
+		changed.race[0].lapTime!=INT32_MIN||changed.race[0].timeElapsedInRace!=-7||changed.race[0].driverRank!=-1||
+		changed.race[0].checkpointBranchChoiceIndex!=UINT8_MAX||changed.race[0].distanceToFinishCurr!=UINT32_MAX||
+		changed.race[0].battleNumLives!=-2||changed.race[0].battleTeamID!=-3||changed.race[0].pickupLetterCount!=INT32_MAX)return 0;
+
+	/* A reused output cannot retain Race bytes for an absent second slot. */
+	fixture.drivers[5].clockReceive=123;
+	if(!MainCanonicalDrivers_ExtractRosterRace(&fixture.tracker,sd,&changed))return 0;
+	fixture.tracker.drivers[5]=NULL;fixture.tracker.driversInRaceOrder[2]=NULL;fixture.tracker.numWinners=1;fixture.tracker.winnerIndex[0]=0;
+	memset(&sd->navBotList[2],0,sizeof(sd->navBotList[2]));
+	if(!MainCanonicalDrivers_ExtractRosterRace(&fixture.tracker,sd,&changed)||
+		(changed.roster.prelude.presenceMask&(UINT32_C(1)<<5))!=0||memcmp(&changed.race[5],&(struct NativeCanonicalDriverRaceV1){0},sizeof(changed.race[5]))!=0)return 0;
+
+	SourceFixtureInit(&fixture);if(!MainCanonicalDrivers_ExtractRosterRace(&fixture.tracker,sd,&changed))return 0;
+	before=changed;if(MainCanonicalDrivers_ExtractRosterRace(NULL,sd,&changed)||memcmp(&changed,&before,sizeof(changed))!=0)return 0;
+	#define FAIL_RACE(change) do { before=changed; change; if(MainCanonicalDrivers_ExtractRosterRace(&fixture.tracker,sd,&changed)||memcmp(&changed,&before,sizeof(changed))!=0)return 0; SourceFixtureInit(&fixture); } while(0)
+	FAIL_RACE(sd->gGT=NULL);
+	SourceFixtureInit(&other);before=changed;if(MainCanonicalDrivers_ExtractRosterRace(&fixture.tracker,sd,&changed)||memcmp(&changed,&before,sizeof(changed))!=0)return 0;SourceFixtureInit(&fixture);
+	FAIL_RACE(fixture.tracker.drivers[1]=fixture.tracker.drivers[0]);
+	FAIL_RACE(fixture.drivers[2].driverID=1);
+	FAIL_RACE(((struct Instance *)fixture.instanceBytes[2])->thread=NULL);
+	FAIL_RACE(fixture.threads[2].object=&fixture.drivers[0]);
+	FAIL_RACE(fixture.threads[2].funcThTick=UnknownThread);
+	FAIL_RACE(fixture.drivers[2].funcPtrs[6]=UnknownDriver);
+	FAIL_RACE(sd->navBotList[0].first=NULL);
+	#undef FAIL_RACE
+	return 1;
+}
+
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}

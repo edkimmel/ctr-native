@@ -2,6 +2,16 @@
 #include "MainCanonicalDrivers.h"
 #include "functions.h"
 
+#include <limits.h>
+
+CTR_STATIC_ASSERT(NATIVE_CANONICAL_DRIVERS_RACE_BYTES == 60u);
+CTR_STATIC_ASSERT(sizeof(struct NativeCanonicalDriverRaceV1) == NATIVE_CANONICAL_DRIVERS_RACE_BYTES);
+/* Native source fields declared as int are persisted as explicit signed
+ * int32_t values.  Do not permit a host where that conversion changes range. */
+CTR_STATIC_ASSERT(sizeof(int) == sizeof(int32_t));
+CTR_STATIC_ASSERT(INT_MIN == INT32_MIN);
+CTR_STATIC_ASSERT(INT_MAX == INT32_MAX);
+
 /* Object tokens are deliberately separate from function pointers. The typed
  * matcher below is the only bridge from game callbacks to the portable codec. */
 #define TOKENS(X) \
@@ -154,4 +164,48 @@ int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,cons
 	}
 	if(!NavLists(drivers,sourceData,&input))return 0;
 	return MainCanonicalDrivers_ProjectPrelude(&input,tables,threads,out);
+}
+
+static void MainCanonicalDrivers_CopyRace(const struct Driver *driver, struct NativeCanonicalDriverRaceV1 *race)
+{
+	race->clockReceive = driver->clockReceive;
+	race->hazardTimer = driver->hazardTimer;
+	race->superEngineTimer = driver->superEngineTimer;
+	race->itemRollTimer = driver->itemRollTimer;
+	race->noItemTimer = driver->noItemTimer;
+	race->jumpMeter = driver->jumpMeter;
+	race->jumpMeterTimer = driver->jumpMeterTimer;
+	race->numTurbos = driver->numTurbos;
+	race->invincibleTimer = (int32_t)driver->invincibleTimer;
+	race->invisibleTimer = (int32_t)driver->invisibleTimer;
+	race->lapTime = (int32_t)driver->lapTime;
+	race->timeElapsedInRace = (int32_t)driver->timeElapsedInRace;
+	race->driverRank = driver->driverRank;
+	race->checkpointBranchChoiceIndex = driver->checkpoint.branchChoiceIndex;
+	race->checkpointCurrentIndex = driver->checkpoint.currentIndex;
+	race->distanceToFinishCurr = driver->distanceToFinish_curr;
+	race->distanceToFinishCheckpoint = driver->distanceToFinish_checkpoint;
+	race->distanceDrivenBackwards = driver->distanceDrivenBackwards;
+	race->battleNumLives = (int32_t)driver->BattleHUD.numLives;
+	race->battleTeamID = (int32_t)driver->BattleHUD.teamID;
+	race->pickupLetterCount = (int32_t)driver->PickupLetterHUD.numCollected;
+}
+
+int MainCanonicalDrivers_ExtractRosterRace(const struct GameTracker *gGT,const struct sData *sourceData,
+	struct MainCanonicalDriversRosterRaceCandidate *out)
+{
+	struct MainCanonicalDriversRosterRaceCandidate candidate;
+
+	if(!out || !MainCanonicalDrivers_ExtractRosterPrelude(gGT,sourceData,&candidate.roster))return 0;
+	memset(candidate.race,0,sizeof(candidate.race));
+	for(uint8_t slot=0;slot<8;slot++)
+	{
+		if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))==0)continue;
+		/* The prelude call validated this root, its identity, ownership,
+		 * behavior, and nav membership before any candidate is published. */
+		if(gGT->drivers[slot]==NULL)return 0;
+		MainCanonicalDrivers_CopyRace(gGT->drivers[slot],&candidate.race[slot]);
+	}
+	*out=candidate;
+	return 1;
 }

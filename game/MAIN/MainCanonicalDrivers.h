@@ -4,6 +4,16 @@
 #include "platform/native_canonical_drivers_roster.h"
 #include "namespace_Vehicle.h"
 enum MainCanonicalDriversStatus { MAIN_CANONICAL_DRIVERS_FAILURE=0, MAIN_CANONICAL_DRIVERS_OK=1 };
+
+/* Dormant source projection candidate.  This intentionally carries only the
+ * validated roster/prelude and the fixed Race group; it is not a detailed
+ * DRIVERS record and must not be published to the scheduler. */
+struct MainCanonicalDriversRosterRaceCandidate
+{
+	struct NativeCanonicalDriversRosterCandidate roster;
+	struct NativeCanonicalDriverRaceV1 race[8];
+};
+
 const struct NativeCanonicalDriverBehaviorRegistry *MainCanonicalDrivers_ProductionRegistry(void);
 int MainCanonicalDrivers_ValidateProductionBinding(void);
 /* These compare typed callbacks only and emit stable IDs; no pointer escapes. */
@@ -19,4 +29,10 @@ int MainCanonicalDrivers_ProjectPrelude(const struct NativeCanonicalDriversRoste
 int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,
 	const struct sData *sdata,
 	struct NativeCanonicalDriversRosterCandidate *out);
+/* Extends ExtractRosterPrelude with the explicit 60-byte Race group for each
+ * present stable driver slot.  The result is output-atomic and remains a
+ * dormant candidate until all 520-byte slot groups are independently mapped. */
+int MainCanonicalDrivers_ExtractRosterRace(const struct GameTracker *gGT,
+	const struct sData *sdata,
+	struct MainCanonicalDriversRosterRaceCandidate *out);
 #endif
