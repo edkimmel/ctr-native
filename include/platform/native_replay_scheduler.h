@@ -5,6 +5,7 @@
 
 #if defined(CTR_INTERNAL)
 #include "platform/native_replay_scheduler_seam.h"
+#include "platform/native_identity.h"
 struct NativeCanonicalStateV1;
 struct NativeCanonicalStateV3;
 struct NativeIdentityV1;
@@ -37,6 +38,20 @@ int NativeReplayScheduler_RequestStop(void);
 int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo *info);
 /* False for all presently selectable normal/v1 replay modes. */
 int NativeReplayScheduler_RequiresCanonicalState(void);
+/* The only canonical value type the current open frame may accept. */
+enum NativeReplaySchedulerCanonicalKind NativeReplayScheduler_RequiredCanonicalKind(void);
+/* Transactional post-BeginFrame producer contract.  It intentionally carries
+ * no canonical pointer: a game-owned projector receives this immutable frame,
+ * identity, and restore event, then submits a separately tagged value. */
+struct NativeReplaySchedulerCanonicalRequest
+{
+	enum NativeReplaySchedulerCanonicalKind requiredKind;
+	u32 replayFrame;
+	struct NativeIdentityV1 identity;
+	int restoredThisFrame;
+};
+int NativeReplayScheduler_GetCanonicalProducerRequest(struct NativeReplaySchedulerCanonicalRequest *request);
+int NativeReplayScheduler_GetV3MismatchReport(struct NativeReplaySchedulerV3MismatchReport *report);
 /* v2 never mixes quickstate restoration with its frame-zero checkpoint. */
 int NativeReplayScheduler_SuppressesQuickState(void);
 /* Available only for a required canonical frame, after BeginFrame succeeds. */
@@ -44,6 +59,9 @@ int NativeReplayScheduler_GetCanonicalReplayFrame(u32 *replayFrame);
 /* Playback-v2 begin observations are checked after its bootstrap checkpoint
  * has restored and MainMain has reloaded gGT/gGS. No-op success for v1. */
 int NativeReplayScheduler_ValidateRestoredBeginFrame(const struct NativeReplaySchedulerFrameInfo *info);
+/* One-shot: returns whether this BeginFrame successfully restored its
+ * bootstrap checkpoint, then clears the event. */
+int NativeReplayScheduler_TakeRestoredBootstrapCheckpoint(void);
 /* v2 caches the gated identity at configuration/start; it never re-hashes in MainMain. */
 int NativeReplayScheduler_GetCanonicalIdentity(struct NativeIdentityV1 *identity);
 /* Marks an active v2 recording unsealable after a caller-side frame failure. */
@@ -58,7 +76,7 @@ int NativeReplayScheduler_EndFrameV3(const struct NativeReplaySchedulerFrameInfo
 /* New tagged dispatch preserves EndFrame's V1 ABI while making a V3 value
  * unrepresentable as a V1 pointer at the transport seam. */
 int NativeReplayScheduler_EndFrameRequest(const struct NativeReplaySchedulerFrameInfo *info,
-	                                      const struct NativeReplaySchedulerCanonicalRequest *request);
+	                                      const struct NativeReplaySchedulerCanonicalSubmission *submission);
 /* Marks whichever active canonical record is in progress unsealable. */
 void NativeReplayScheduler_AbortCanonicalFrame(const char *reason);
 void NativeReplayScheduler_RecordVSyncPacket(int emittedVBlanks);

@@ -461,6 +461,15 @@ if(BUILD_TESTING)
     target_link_libraries(native_replay_scheduler_seam_test PRIVATE ctr_native_replay_scheduler_seam)
     add_test(NAME native_replay_scheduler_seam_unit COMMAND $<TARGET_FILE:native_replay_scheduler_seam_test>)
 
+    add_executable(native_replay_scheduler_v3_lifecycle_test tests/native_replay_scheduler_v3_lifecycle_test.c)
+    set_target_properties(native_replay_scheduler_v3_lifecycle_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_replay_scheduler_v3_lifecycle_test PRIVATE ctr_native_replay_scheduler_seam ctr_native_replay_v3_file)
+    add_test(NAME native_replay_scheduler_v3_lifecycle_unit COMMAND $<TARGET_FILE:native_replay_scheduler_v3_lifecycle_test>)
+
     add_executable(native_replay_v2_test tests/native_replay_v2_test.c)
     set_target_properties(native_replay_v2_test PROPERTIES
         C_STANDARD 17

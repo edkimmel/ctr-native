@@ -3,6 +3,7 @@
 
 #include "platform/native_canonical_state.h"
 #include "platform/native_canonical_state_v3.h"
+#include "platform/native_replay_v3.h"
 
 enum NativeReplaySchedulerCanonicalKind
 {
@@ -11,9 +12,9 @@ enum NativeReplaySchedulerCanonicalKind
 	NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V3
 };
 
-/* Tagged end-frame input prevents a v1 caller from being silently accepted
- * by a v3 transport (or vice versa).  Each union arm is a typed pointer. */
-struct NativeReplaySchedulerCanonicalRequest
+/* Pointer-bearing post-projection input prevents a v1 caller from being
+ * silently accepted by a v3 transport (or vice versa). */
+struct NativeReplaySchedulerCanonicalSubmission
 {
 	enum NativeReplaySchedulerCanonicalKind kind;
 	union
@@ -21,6 +22,35 @@ struct NativeReplaySchedulerCanonicalRequest
 		const struct NativeCanonicalStateV1 *v1;
 		const struct NativeCanonicalStateV3 *v3;
 	} state;
+};
+
+/* Stateful, transport-neutral V3 frame lifecycle.  The production scheduler
+ * uses this same tiny state machine; the dedicated temp-file harness therefore
+ * exercises the conditions that decide whether a provisional replay can seal. */
+struct NativeReplaySchedulerV3Lifecycle
+{
+	int beginOpen;
+	int poisoned;
+	uint32_t checkpointCount;
+	int checkpointClosed;
+};
+
+/* Retained verbatim by V3 playback on the first divergence.  Every component
+ * is independent so diagnostics remain useful when several observations differ. */
+struct NativeReplaySchedulerV3MismatchReport
+{
+	int observationMismatch;
+	int vsyncTotalMismatch;
+	int vsyncPacketCountMismatch;
+	int vsyncFirstPacketMismatch;
+	uint32_t padMask;
+	uint32_t firstDomainID;
+	uint64_t expectedDomainDigest;
+	uint64_t liveDomainDigest;
+	int combinedMismatch;
+	uint64_t expectedCombinedDigest;
+	uint64_t liveCombinedDigest;
+	struct NativeCanonicalDriversCompareMask drivers;
 };
 
 /* The scheduler owns transport; this seam only states which modes must supply
@@ -81,5 +111,25 @@ int NativeReplayScheduler_CopyCanonicalEndStateV3(uint32_t expectedReplayFrame, 
 int NativeReplayScheduler_CopyConsumedV2VSyncPacket(uint16_t *packets, uint32_t capacity, uint32_t index, uint16_t packet);
 int NativeReplayScheduler_V2BeginObservationNeedsValidation(int playbackV2, int pending);
 int NativeReplayScheduler_V2RecordMayFinalize(int poisoned, int checkpointClosed);
+/* V3 cannot seal a prefix: exactly one bootstrap checkpoint must have been
+ * written, no frame may remain open, and every prior failure must be clear. */
+int NativeReplayScheduler_V3RecordMayFinalize(int poisoned, int beginOpen, uint32_t checkpointCount, int checkpointClosed);
+void NativeReplaySchedulerV3Lifecycle_Init(struct NativeReplaySchedulerV3Lifecycle *lifecycle);
+int NativeReplaySchedulerV3Lifecycle_BeginFrame(struct NativeReplaySchedulerV3Lifecycle *lifecycle);
+int NativeReplaySchedulerV3Lifecycle_Submit(struct NativeReplaySchedulerV3Lifecycle *lifecycle,
+	                                          enum NativeReplaySchedulerCanonicalKind requiredKind,
+	                                          enum NativeReplaySchedulerCanonicalKind submittedKind);
+int NativeReplaySchedulerV3Lifecycle_EndFrame(struct NativeReplaySchedulerV3Lifecycle *lifecycle);
+void NativeReplaySchedulerV3Lifecycle_Abort(struct NativeReplaySchedulerV3Lifecycle *lifecycle);
+int NativeReplaySchedulerV3Lifecycle_CheckpointClosed(struct NativeReplaySchedulerV3Lifecycle *lifecycle, int success);
+int NativeReplaySchedulerV3Lifecycle_MayFinalize(const struct NativeReplaySchedulerV3Lifecycle *lifecycle);
+/* Pure, transactional diagnostic value builder used by live V3 playback and
+ * the temp-file scheduler harness. */
+int NativeReplayScheduler_BuildV3MismatchReport(const struct NativeReplayV3Frame *expected,
+	                                              const struct NativeReplayV2FrameObservation *liveEnd,
+	                                              uint32_t liveVsyncTotal, uint32_t liveVsyncPacketCount,
+	                                              const uint16_t *liveVsyncPackets, int playbackVsyncMismatch,
+	                                              const struct NativeCanonicalStateV3 *liveCanonical,
+	                                              struct NativeReplaySchedulerV3MismatchReport *report);
 
 #endif
