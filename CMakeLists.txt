@@ -108,6 +108,15 @@ set_target_properties(ctr_native_canonical_drivers PROPERTIES
 target_include_directories(ctr_native_canonical_drivers PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_drivers PUBLIC ctr_native_canonical_codec)
 
+add_library(ctr_native_canonical_drivers_detailed STATIC platform/native_canonical_drivers_detailed.c)
+set_target_properties(ctr_native_canonical_drivers_detailed PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_canonical_drivers_detailed PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_canonical_drivers_detailed PUBLIC ctr_native_canonical_drivers)
+
 add_library(ctr_native_canonical_state_v3 STATIC platform/native_canonical_state_v3.c)
 set_target_properties(ctr_native_canonical_state_v3 PROPERTIES
     C_STANDARD 17
@@ -324,6 +333,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_canonical_drivers_test PRIVATE ctr_native_canonical_drivers)
     add_test(NAME native_canonical_drivers_unit COMMAND $<TARGET_FILE:native_canonical_drivers_test>)
+
+    add_executable(native_canonical_drivers_detailed_test tests/native_canonical_drivers_detailed_test.c)
+    set_target_properties(native_canonical_drivers_detailed_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_canonical_drivers_detailed_test PRIVATE ctr_native_canonical_drivers_detailed)
+    add_test(NAME native_canonical_drivers_detailed_unit COMMAND $<TARGET_FILE:native_canonical_drivers_detailed_test>)
 
     add_executable(native_canonical_state_v3_test tests/native_canonical_state_v3_test.c)
     set_target_properties(native_canonical_state_v3_test PROPERTIES
