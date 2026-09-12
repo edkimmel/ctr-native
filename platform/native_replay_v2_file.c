@@ -1,12 +1,20 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+#if !defined(_WIN32) && !defined(_FILE_OFFSET_BITS)
+#define _FILE_OFFSET_BITS 64
+#endif
+
 #include "platform/native_replay_v2_file.h"
 
-#include <limits.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 
 #if defined(_WIN32)
 #include <io.h>
 #else
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -20,6 +28,49 @@ static int NativeReplayV2File_WriteExact(FILE *stream, const uint8_t *bytes, siz
 static int NativeReplayV2File_ReadExact(FILE *stream, uint8_t *bytes, size_t size)
 {
 	return (stream != NULL) && (fread(bytes, 1, size, stream) == size);
+}
+
+static int NativeReplayV2File_SeekAbsolute(FILE *stream, uint64_t offset)
+{
+	if ((stream == NULL) || (offset > (uint64_t)INT64_MAX)) return 0;
+#if defined(_WIN32)
+	return _fseeki64(stream, (__int64)offset, SEEK_SET) == 0;
+#else
+	return fseeko(stream, (off_t)offset, SEEK_SET) == 0;
+#endif
+}
+
+static int NativeReplayV2File_SeekEnd(FILE *stream)
+{
+	if (stream == NULL) return 0;
+#if defined(_WIN32)
+	return _fseeki64(stream, 0, SEEK_END) == 0;
+#else
+	return fseeko(stream, (off_t)0, SEEK_END) == 0;
+#endif
+}
+
+static int NativeReplayV2File_Tell(FILE *stream, uint64_t *offsetOut)
+{
+#if defined(_WIN32)
+	__int64 offset;
+#else
+	off_t offset;
+#endif
+	if ((stream == NULL) || (offsetOut == NULL)) return 0;
+#if defined(_WIN32)
+	offset = _ftelli64(stream);
+#else
+	offset = ftello(stream);
+#endif
+	if (offset < 0) return 0;
+	*offsetOut = (uint64_t)offset;
+	return 1;
+}
+
+static int NativeReplayV2File_Length(FILE *stream, uint64_t *lengthOut)
+{
+	return NativeReplayV2File_SeekEnd(stream) && NativeReplayV2File_Tell(stream, lengthOut) && NativeReplayV2File_SeekAbsolute(stream, 0);
 }
 
 static int NativeReplayV2File_FlushSync(FILE *stream)
@@ -45,6 +96,13 @@ static int NativeReplayV2File_EncodeFrame(const struct NativeReplayV2Header *hea
 	struct NativeCodecWriter writer;
 	NativeCodecWriter_Init(&writer, bytes, NATIVE_REPLAY_V2_FRAME_BYTES, NULL);
 	return NativeReplayV2Frame_Encode(&writer, header, frame) && (NativeCodecWriter_Size(&writer) == NATIVE_REPLAY_V2_FRAME_BYTES);
+}
+
+int NativeReplayV2File_ExpectedLength(uint32_t frameCount, uint64_t *lengthOut)
+{
+	if ((lengthOut == NULL) || (frameCount > ((UINT64_MAX - NATIVE_REPLAY_V2_HEADER_BYTES) / NATIVE_REPLAY_V2_FRAME_BYTES))) return 0;
+	*lengthOut = NATIVE_REPLAY_V2_HEADER_BYTES + ((uint64_t)frameCount * NATIVE_REPLAY_V2_FRAME_BYTES);
+	return 1;
 }
 
 void NativeReplayV2Record_Init(struct NativeReplayV2RecordSession *session)
@@ -90,6 +148,7 @@ int NativeReplayV2Record_AppendFrame(struct NativeReplayV2RecordSession *session
 {
 	struct NativeReplayV2Header candidateHeader;
 	uint8_t bytes[NATIVE_REPLAY_V2_FRAME_BYTES];
+	uint64_t expectedLength;
 	FILE *stream;
 
 	if ((session == NULL) || (session->failed != 0) || (session->finalized != 0) || (session->stream == NULL) || (frame == NULL)) return 0;
@@ -100,7 +159,7 @@ int NativeReplayV2Record_AppendFrame(struct NativeReplayV2RecordSession *session
 	}
 	candidateHeader = session->header;
 	candidateHeader.frameCount++;
-	if (!NativeReplayV2_StreamSize(&candidateHeader, &(size_t){0}) || !NativeReplayV2File_EncodeFrame(&session->header, frame, bytes))
+	if (!NativeReplayV2File_ExpectedLength(candidateHeader.frameCount, &expectedLength) || !NativeReplayV2File_EncodeFrame(&session->header, frame, bytes))
 	{
 		session->failed = 1;
 		return 0;
@@ -129,7 +188,7 @@ int NativeReplayV2Record_Finalize(struct NativeReplayV2RecordSession *session)
 		return 0;
 	}
 	stream = NativeReplayV2File_Stream(session->stream);
-	if ((fseek(stream, 0, SEEK_SET) != 0) || !NativeReplayV2File_WriteExact(stream, bytes, sizeof(bytes)) || !NativeReplayV2File_FlushSync(stream))
+	if (!NativeReplayV2File_SeekAbsolute(stream, 0) || !NativeReplayV2File_WriteExact(stream, bytes, sizeof(bytes)) || !NativeReplayV2File_FlushSync(stream))
 	{
 		session->failed = 1;
 		return 0;
@@ -166,12 +225,12 @@ int NativeReplayV2Playback_Open(struct NativeReplayV2PlaybackSession *session, c
 	struct NativeCodecReader reader;
 	struct NativeReplayV2Header header;
 	FILE *stream;
-	long length;
-	size_t expectedLength;
+	uint64_t length;
+	uint64_t expectedLength;
 
 	if ((session == NULL) || (session->stream != NULL) || (path == NULL) || (expectedIdentity == NULL) || (headerOut == NULL)) return 0;
 	stream = fopen(path, "rb");
-	if ((stream == NULL) || (fseek(stream, 0, SEEK_END) != 0) || ((length = ftell(stream)) < 0) || (fseek(stream, 0, SEEK_SET) != 0) ||
+	if ((stream == NULL) || !NativeReplayV2File_Length(stream, &length) ||
 	    !NativeReplayV2File_ReadExact(stream, bytes, sizeof(bytes)))
 	{
 		if (stream != NULL) (void)fclose(stream);
@@ -179,7 +238,7 @@ int NativeReplayV2Playback_Open(struct NativeReplayV2PlaybackSession *session, c
 	}
 	NativeCodecReader_Init(&reader, bytes, sizeof(bytes));
 	if (!NativeReplayV2Header_Decode(&reader, expectedIdentity, &header) || (NativeCodecReader_Remaining(&reader) != 0) ||
-	    !NativeReplayV2_StreamSize(&header, &expectedLength) || (expectedLength > (size_t)LONG_MAX) || ((size_t)length != expectedLength))
+	    !NativeReplayV2File_ExpectedLength(header.frameCount, &expectedLength) || (length != expectedLength))
 	{
 		(void)fclose(stream);
 		return 0;

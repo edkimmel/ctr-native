@@ -33,6 +33,13 @@ enum NativeReplayV2ReadResult
 	NATIVE_REPLAY_V2_READ_FRAME = 1
 };
 
+/*
+ * Computes the sealed on-disk size using the format's uint64_t arithmetic.
+ * This is deliberately independent of size_t and the host's long/seek width,
+ * so record and playback preflight accept exactly the same frame counts.
+ */
+int NativeReplayV2File_ExpectedLength(uint32_t frameCount, uint64_t *lengthOut);
+
 void NativeReplayV2Record_Init(struct NativeReplayV2RecordSession *session);
 int NativeReplayV2Record_Open(struct NativeReplayV2RecordSession *session, const char *path, const struct NativeIdentityV1 *identity);
 int NativeReplayV2Record_AppendFrame(struct NativeReplayV2RecordSession *session, const struct NativeReplayV2Frame *frame);
