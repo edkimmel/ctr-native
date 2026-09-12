@@ -70,3 +70,88 @@ const struct NativeCanonicalDriverBehaviorRegistry *MainCanonicalDrivers_Product
 int MainCanonicalDrivers_ResolveBehavior(const DriverFunc table[13],uint8_t*out){const struct NativeCanonicalDriverBehaviorRegistry*r;const void*tokens[13];uint8_t id;if(!table||!out||(r=MainCanonicalDrivers_ProductionRegistry())==NULL)return MAIN_CANONICAL_DRIVERS_FAILURE;for(uint8_t n=0;n<13;n++)if((tokens[n]=TokenFor(table[n]))==NULL)return MAIN_CANONICAL_DRIVERS_FAILURE;if(!NativeCanonicalDriverBehavior_Resolve(r,tokens,&id))return MAIN_CANONICAL_DRIVERS_FAILURE;*out=id;return MAIN_CANONICAL_DRIVERS_OK;}
 int MainCanonicalDrivers_ResolveThread(void (*thread)(struct Thread *),uint8_t*out){uint8_t id;if(!out)return 0;if(!thread)id=0;else if(thread==VehBirth_NullThread)id=1;else if(thread==BOTS_ThTick_Drive)id=2;else if(thread==BOTS_ThTick_RevEngine)id=3;else return 0;*out=id;return 1;}
 int MainCanonicalDrivers_ProjectPrelude(const struct NativeCanonicalDriversRosterInput*input,const DriverFunc tables[8][13],void (*const threads[8])(struct Thread *),struct NativeCanonicalDriversRosterCandidate*out){struct NativeCanonicalDriversRosterInput local;struct NativeCanonicalDriversRosterCandidate candidate;if(!input||!tables||!threads||!out)return 0;local=*input;for(uint8_t n=0;n<8;n++)if(local.slots[n].present==1){if(!MainCanonicalDrivers_ResolveBehavior(tables[n],&local.slots[n].behaviorID)||!MainCanonicalDrivers_ResolveThread(threads[n],&local.slots[n].threadBehaviorID))return 0;}if(!NativeCanonicalDriversRoster_Normalize(&local,&candidate))return 0;*out=candidate;return 1;}
+
+static int DriverSlot(const struct Driver *const drivers[8],const struct Driver *driver,uint8_t *slot)
+{
+	if(!driver||!slot)return 0;
+	for(uint8_t n=0;n<8;n++)if(drivers[n]==driver){*slot=n;return 1;}
+	return 0;
+}
+
+static int NavLists(const struct Driver *const drivers[8],const struct sData *sourceData,
+	struct NativeCanonicalDriversRosterInput *input)
+{
+	uint32_t seen=0,botMask=0;
+	for(uint8_t n=0;n<8;n++)if(drivers[n]&&(drivers[n]->actionsFlagSet&ACTION_BOT))botMask|=1u<<n;
+	for(uint8_t path=0;path<3;path++)
+	{
+		const struct LinkedList *list=&sourceData->navBotList[path];
+		const struct Item *item,*previous=NULL;
+		if(list->count<0||list->count>8)return 0;
+		if(list->count==0){if(list->first||list->last)return 0;continue;}
+		if(!list->first||!list->last||list->first->prev||list->last->next)return 0;
+		item=list->first;
+		for(int count=0;count<list->count;count++)
+		{
+			uint8_t slot;
+			if(!item||item->prev!=previous)return 0;
+			for(slot=0;slot<8;slot++)if(drivers[slot]&&item==&drivers[slot]->botData.item)break;
+			if(slot==8||(seen&(1u<<slot))||(drivers[slot]->actionsFlagSet&ACTION_BOT)==0||drivers[slot]->botData.botPath!=path)return 0;
+			seen|=1u<<slot;input->navOrder[path][count]=slot;previous=item;item=item->next;
+		}
+		if(item||previous!=list->last)return 0;
+		input->navCount[path]=(uint8_t)list->count;
+	}
+	return seen==botMask;
+}
+
+int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,const struct sData *sourceData,struct NativeCanonicalDriversRosterCandidate *out)
+{
+	struct NativeCanonicalDriversRosterInput input;
+	DriverFunc tables[8][13]={{0}};
+	void(*threads[8])(struct Thread *)={0};
+	const struct Driver *drivers[8];
+	if(!gGT||!sourceData||!out||gGT->numLaps<0)return 0;
+	memset(&input,0,sizeof(input));
+	memset(input.raceOrder,0xff,sizeof(input.raceOrder));
+	memset(input.winnerDriverIDs,0xff,sizeof(input.winnerDriverIDs));
+	memset(input.ranks,0xff,sizeof(input.ranks));
+	memset(input.navOrder,0xff,sizeof(input.navOrder));
+	input.numLaps=gGT->numLaps;
+	for(uint8_t slot=0;slot<8;slot++)
+	{
+		const struct Driver *driver=gGT->drivers[slot];
+		drivers[slot]=driver;
+		if(!driver)continue;
+		for(uint8_t prior=0;prior<slot;prior++)if(drivers[prior]==driver)return 0;
+		if(driver->driverID!=slot||!driver->instSelf||!driver->instSelf->thread)return 0;
+		if(driver->instSelf->thread->object!=driver||driver->instSelf->thread->inst!=driver->instSelf||(driver->instSelf->thread->flags&THREAD_FLAG_DEAD))return 0;
+		input.slots[slot].present=1;input.slots[slot].driverID=slot;
+		input.slots[slot].kind=(driver->actionsFlagSet&ACTION_BOT)?NATIVE_CANONICAL_DRIVER_KIND_BOT:NATIVE_CANONICAL_DRIVER_KIND_HUMAN;
+		memcpy(tables[slot],driver->funcPtrs,sizeof(tables[slot]));threads[slot]=driver->instSelf->thread->funcThTick;
+	}
+	for(uint8_t n=0,tail=0;n<8;n++)
+	{
+		uint8_t slot;const struct Driver *driver=gGT->driversInRaceOrder[n];
+		if(!driver){tail=1;continue;}
+		if(tail||!DriverSlot(drivers,driver,&slot))return 0;
+		for(uint8_t prior=0;prior<n;prior++)if(input.raceOrder[prior]==slot)return 0;
+		input.raceOrder[input.raceOrderCount++]=slot;
+	}
+	if(gGT->numWinners>4)return 0;
+	input.winnerCount=(uint8_t)gGT->numWinners;
+	for(uint8_t n=0;n<input.winnerCount;n++)
+	{
+		int id=gGT->winnerIndex[n];uint8_t slot;
+		if(id<0||id>7)return 0;
+		for(slot=0;slot<8;slot++)if(drivers[slot]&&drivers[slot]->driverID==(uint8_t)id)break;
+		if(slot==8)return 0;input.winnerDriverIDs[n]=(uint8_t)id;
+	}
+	for(uint8_t slot=0;slot<8;slot++)if(drivers[slot]&&(drivers[slot]->actionsFlagSet&ACTION_BOT)==0)
+	{
+		if(gGT->humanPlayerPositions[slot]>7)return 0;
+		input.ranks[input.playerCount++]=gGT->humanPlayerPositions[slot];
+	}
+	if(!NavLists(drivers,sourceData,&input))return 0;
+	return MainCanonicalDrivers_ProjectPrelude(&input,tables,threads,out);
+}

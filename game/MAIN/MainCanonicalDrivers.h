@@ -13,4 +13,10 @@ int MainCanonicalDrivers_ResolveThread(void (*thread)(struct Thread *), uint8_t 
 int MainCanonicalDrivers_ProjectPrelude(const struct NativeCanonicalDriversRosterInput *input,
 	const DriverFunc tables[8][13], void (*const threads[8])(struct Thread *),
 	struct NativeCanonicalDriversRosterCandidate *out);
+/* Dormant live-source adapter. It validates only the 64-byte roster prelude
+ * and behavior/thread identities into a local candidate; it does not publish
+ * a DRIVERS state or inspect the 520-byte slot payloads. */
+int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,
+	const struct sData *sdata,
+	struct NativeCanonicalDriversRosterCandidate *out);
 #endif
