@@ -109,6 +109,17 @@ set_target_properties(ctr_native_match_config PROPERTIES
 target_include_directories(ctr_native_match_config PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_match_config PUBLIC ctr_native_canonical_codec ctr_native_sha256)
 
+# Pure, dormant M3 simulation RNG bank. No retail RNG or live game callsite
+# consumes this target; it is intended for a later config-bound schema.
+add_library(ctr_native_deterministic_rng STATIC platform/native_deterministic_rng.c)
+set_target_properties(ctr_native_deterministic_rng PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_deterministic_rng PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_deterministic_rng PUBLIC ctr_native_canonical_codec ctr_native_sha256)
+
 add_library(ctr_native_canonical_state STATIC platform/native_canonical_state.c)
 set_target_properties(ctr_native_canonical_state PROPERTIES
     C_STANDARD 17
@@ -396,6 +407,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_match_config_test PRIVATE ctr_native_match_config)
     add_test(NAME native_match_config_unit COMMAND $<TARGET_FILE:native_match_config_test>)
+
+    add_executable(native_deterministic_rng_test tests/native_deterministic_rng_test.c)
+    set_target_properties(native_deterministic_rng_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_deterministic_rng_test PRIVATE ctr_native_deterministic_rng)
+    add_test(NAME native_deterministic_rng_unit COMMAND $<TARGET_FILE:native_deterministic_rng_test>)
 
     add_executable(native_canonical_state_test tests/native_canonical_state_test.c)
     set_target_properties(native_canonical_state_test PROPERTIES
