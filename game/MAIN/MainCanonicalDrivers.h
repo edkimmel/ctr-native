@@ -14,6 +14,16 @@ struct MainCanonicalDriversRosterRaceCandidate
 	struct NativeCanonicalDriverRaceV1 race[8];
 };
 
+/* Narrow dormant Meta foundation for one Driver whose large-stack root has
+ * already passed the roster extractor's ownership gate.  This returns only
+ * the frozen external/thread presence bits; it is not an aggregate Meta
+ * projector and must not publish a detailed DRIVERS record. */
+struct MainCanonicalDriversMetaFlags
+{
+	uint16_t externalPresenceFlags;
+	uint16_t driverThreadSimFlags;
+};
+
 const struct NativeCanonicalDriverBehaviorRegistry *MainCanonicalDrivers_ProductionRegistry(void);
 int MainCanonicalDrivers_ValidateProductionBinding(void);
 /* These compare typed callbacks only and emit stable IDs; no pointer escapes. */
@@ -35,4 +45,7 @@ int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,
 int MainCanonicalDrivers_ExtractRosterRace(const struct GameTracker *gGT,
 	const struct sData *sdata,
 	struct MainCanonicalDriversRosterRaceCandidate *out);
+int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
+	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,uint32_t activeTag,
+	struct MainCanonicalDriversMetaFlags *out);
 #endif

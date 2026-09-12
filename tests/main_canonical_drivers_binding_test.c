@@ -12,20 +12,26 @@ DRIVER_STUB(VehPhysProc_FreezeEndEvent_PhysLinear) DRIVER_STUB(VehPhysProc_Freez
 DRIVER_STUB(VehStuckProc_MaskGrab_Update) DRIVER_STUB(VehStuckProc_MaskGrab_PhysLinear) DRIVER_STUB(VehStuckProc_MaskGrab_Animate) DRIVER_STUB(VehStuckProc_PlantEaten_Update) DRIVER_STUB(VehStuckProc_PlantEaten_PhysLinear) DRIVER_STUB(VehStuckProc_PlantEaten_Animate) DRIVER_STUB(VehStuckProc_RevEngine_Update) DRIVER_STUB(VehStuckProc_RevEngine_PhysLinear) DRIVER_STUB(VehStuckProc_RevEngine_Animate) DRIVER_STUB(VehStuckProc_Tumble_Update) DRIVER_STUB(VehStuckProc_Tumble_PhysLinear) DRIVER_STUB(VehStuckProc_Tumble_PhysAngular) DRIVER_STUB(VehStuckProc_Tumble_Animate) DRIVER_STUB(VehStuckProc_Warp_PhysAngular)
 static volatile int birth_called,drive_called,rev_called; void VehBirth_NullThread(struct Thread*t){(void)t;birth_called++;} void BOTS_ThTick_Drive(struct Thread*t){(void)t;drive_called++;} void BOTS_ThTick_RevEngine(struct Thread*t){(void)t;rev_called++;}
 static void UnknownDriver(struct Thread*t,struct Driver*d){(void)t;(void)d;} static void UnknownThread(struct Thread*t){(void)t;}
+static volatile int rain_tick_calls,rain_fade_calls,mask_tick_calls;
+void RB_RainCloud_ThTick(struct Thread*t){(void)t;rain_tick_calls++;} void RB_RainCloud_FadeAway(struct Thread*t){(void)t;rain_fade_calls++;} void RB_MaskWeapon_ThTick(struct Thread*t){(void)t;mask_tick_calls++;}
 #include "../game/MAIN/MainCanonicalDrivers.c"
 static int ProjectPreludeTest(void){struct NativeCanonicalDriversRosterInput in;struct NativeCanonicalDriversRosterCandidate out,before;DriverFunc tables[8][13]={{0}};void(*threads[8])(struct Thread*)={0};memset(&in,0,sizeof(in));memset(in.raceOrder,0xff,sizeof(in.raceOrder));memset(in.winnerDriverIDs,0xff,sizeof(in.winnerDriverIDs));memset(in.ranks,0xff,sizeof(in.ranks));memset(in.navOrder,0xff,sizeof(in.navOrder));in.slots[3].present=1;in.slots[3].driverID=3;in.slots[3].kind=NATIVE_CANONICAL_DRIVER_KIND_HUMAN;in.playerCount=1;in.raceOrderCount=1;in.raceOrder[0]=3;in.ranks[0]=7;tables[3][1]=VehPhysProc_Driving_Update;tables[3][2]=VehPhysProc_Driving_PhysLinear;tables[3][3]=VehPhysProc_Driving_Audio;tables[3][4]=VehPhysGeneral_PhysAngular;tables[3][5]=VehPhysForce_OnApplyForces;tables[3][6]=COLL_MOVED_PlayerSearch;tables[3][7]=VehPhysForce_CollideDrivers;tables[3][8]=COLL_FIXED_PlayerSearch;tables[3][9]=VehPhysGeneral_JumpAndFriction;tables[3][10]=VehPhysForce_TranslateMatrix;tables[3][11]=VehFrameProc_Driving;tables[3][12]=VehEmitter_DriverMain;threads[3]=VehBirth_NullThread;if(!MainCanonicalDrivers_ProjectPrelude(&in,tables,threads,&out)||out.behaviorID[3]!=1||out.threadBehaviorID[3]!=1)return 0;before=out;tables[3][7]=UnknownDriver;if(MainCanonicalDrivers_ProjectPrelude(&in,tables,threads,&out)||memcmp(&out,&before,sizeof(out))!=0)return 0;return 1;}
 #define SOURCE_POOL_ITEMS 8u
 #define SOURCE_LARGE_RAW_SIZE 0x670u
+#define SOURCE_SMALL_RAW_SIZE 0x48u
 #define SOURCE_INSTANCE_RAW_SIZE (sizeof(struct Instance)+sizeof(struct InstDrawPerPlayer))
 union SourceLargeSlot { uint32_t alignment; unsigned char bytes[SOURCE_LARGE_RAW_SIZE]; };
+union SourceSmallSlot { uint32_t alignment; unsigned char bytes[SOURCE_SMALL_RAW_SIZE]; };
 union SourceThreadSlot { uint32_t alignment; unsigned char bytes[sizeof(struct Thread)]; };
 union SourceInstanceSlot { uint32_t alignment; unsigned char bytes[SOURCE_INSTANCE_RAW_SIZE]; };
 struct SourceFixture {
 	struct GameTracker tracker;
 	union SourceLargeSlot large[SOURCE_POOL_ITEMS];
+	union SourceSmallSlot small[SOURCE_POOL_ITEMS];
 	union SourceThreadSlot thread[SOURCE_POOL_ITEMS];
 	union SourceInstanceSlot instance[SOURCE_POOL_ITEMS];
 	uint8_t largeIndex[8],threadIndex[8],instanceIndex[8];
+	uint32_t childThreadMask,childInstanceMask,childSmallMask;
 };
 CTR_STATIC_ASSERT(sizeof(struct Item)==8);
 CTR_STATIC_ASSERT(sizeof(struct Thread)==0x48);
@@ -58,10 +64,13 @@ static void FRefreshPools(struct SourceFixture *f)
 		threadAllocated|=UINT32_C(1)<<f->threadIndex[slot];
 		instanceAllocated|=UINT32_C(1)<<f->instanceIndex[slot];
 	}
+	threadAllocated|=f->childThreadMask;
+	instanceAllocated|=f->childInstanceMask;
 	FList(&f->tracker.JitPools.largeStack.free,f->large,SOURCE_LARGE_RAW_SIZE,~largeAllocated&0xffu);
 	FList(&f->tracker.JitPools.thread.free,f->thread,sizeof(struct Thread),~threadAllocated&0xffu);
 	FList(&f->tracker.JitPools.instance.free,f->instance,SOURCE_INSTANCE_RAW_SIZE,~instanceAllocated&0xffu);
 	FList(&f->tracker.JitPools.instance.taken,f->instance,SOURCE_INSTANCE_RAW_SIZE,instanceAllocated);
+	FList(&f->tracker.JitPools.smallStack.free,f->small,SOURCE_SMALL_RAW_SIZE,~f->childSmallMask&0xffu);
 }
 static void FInitPool(struct JitPool *pool,void *base,uint32_t rawSize)
 {
@@ -87,6 +96,7 @@ static void SourceFixtureInit(struct SourceFixture *f)
 	struct sData *sd=&sdata_static;
 	memset(f,0,sizeof(*f));memset(f->largeIndex,0xff,sizeof(f->largeIndex));memset(f->threadIndex,0xff,sizeof(f->threadIndex));memset(f->instanceIndex,0xff,sizeof(f->instanceIndex));memset(sd,0,sizeof(*sd));f->tracker.numLaps=3;f->tracker.numPlyrCurrGame=1;
 	FInitPool(&f->tracker.JitPools.largeStack,f->large,SOURCE_LARGE_RAW_SIZE);
+	FInitPool(&f->tracker.JitPools.smallStack,f->small,SOURCE_SMALL_RAW_SIZE);
 	FInitPool(&f->tracker.JitPools.thread,f->thread,sizeof(struct Thread));
 	FInitPool(&f->tracker.JitPools.instance,f->instance,SOURCE_INSTANCE_RAW_SIZE);
 	sd->gGT=&f->tracker;
@@ -279,6 +289,139 @@ static int PoolPhysicalAllocationTest(void)
 	if(!MainCanonicalDrivers_ExtractRosterPrelude(&f.tracker,sd,&prelude)||
 		!MainCanonicalDrivers_ExtractRosterRace(&f.tracker,sd,&race)||
 		memcmp(&prelude,&preludeBefore,sizeof(prelude))!=0||memcmp(&race,&raceBefore,sizeof(race))!=0)return 0;
+	return 1;
+}
+
+static struct Thread *FMetaChild(struct SourceFixture *f,uint8_t threadIndex,uint8_t instanceIndex,uint8_t smallIndex,
+	struct Thread *parent,ThreadFunc callback,int modelIndex)
+{
+	struct Thread *thread=FT(f,threadIndex);
+	struct Instance *instance=FI(f,instanceIndex);
+	thread->parentThread=parent;thread->siblingThread=NULL;thread->childThread=NULL;
+	thread->flags=SMALL|OTHER;thread->funcThTick=callback;thread->modelIndex=(s16)modelIndex;
+	thread->object=f->small[smallIndex].bytes+sizeof(struct Item);thread->inst=instance;
+	instance->thread=thread;
+	f->childThreadMask|=UINT32_C(1)<<threadIndex;
+	f->childInstanceMask|=UINT32_C(1)<<instanceIndex;
+	f->childSmallMask|=UINT32_C(1)<<smallIndex;
+	FRefreshPools(f);
+	return thread;
+}
+
+static void MetaFixture(struct SourceFixture *f,int cloud,int mask)
+{
+	struct Driver *driver;
+	struct Thread *root,*cloudThread=NULL,*maskThread=NULL;
+	SourceFixtureInit(f);driver=FLD(f,0);root=FLT(f,0);
+	if(cloud)
+	{
+		cloudThread=FMetaChild(f,1,1,1,root,RB_RainCloud_ThTick,STATIC_CLOUD);
+		driver->thCloud=cloudThread;
+	}
+	if(mask)
+	{
+		maskThread=FMetaChild(f,3,3,3,root,RB_MaskWeapon_ThTick,STATIC_AKUAKU);
+		driver->kartState=KS_MASK_GRABBED;
+		driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)maskThread->object;
+	}
+	if(cloud&&mask)cloudThread->siblingThread=maskThread;
+	root->childThread=cloud?cloudThread:maskThread;
+}
+
+static int MetaResolve(const struct SourceFixture *f,uint8_t behaviorID,uint8_t kartState,uint32_t activeTag,
+	struct MainCanonicalDriversMetaFlags *out)
+{
+	return MainCanonicalDrivers_ResolveMetaFlags(&f->tracker,FLD((struct SourceFixture *)f,0),
+		NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behaviorID,kartState,activeTag,out);
+}
+
+static int MetaFlagsTest(void)
+{
+	struct SourceFixture f;
+	struct MainCanonicalDriversMetaFlags flags,before;
+	struct Driver *driver;
+	struct Thread *root;
+	MetaFixture(&f,1,1);
+	if(!MetaResolve(&f,11,KS_MASK_GRABBED,NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB,&flags)||
+		flags.externalPresenceFlags!=NATIVE_CANONICAL_DRIVER_EXTERNAL_KNOWN_MASK||flags.driverThreadSimFlags!=0)return 0;
+	/* Null sources clear their corresponding bit while retaining every fully
+	 * validated immediate child in the bounded walk. */
+	MetaFixture(&f,0,0);if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||flags.externalPresenceFlags!=0)return 0;
+	MetaFixture(&f,1,1);driver=FLD(&f,0);driver->KartStates.MaskGrab.maskObj=NULL;
+	if(!MetaResolve(&f,11,KS_MASK_GRABBED,NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB,&flags)||
+		flags.externalPresenceFlags!=NATIVE_CANONICAL_DRIVER_EXTERNAL_RAIN_CLOUD)return 0;
+	/* The active union is deliberately not read for any other state/kind. */
+	MetaFixture(&f,0,0);driver=FLD(&f,0);driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
+	if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||flags.externalPresenceFlags!=0)return 0;
+	/* Excluded pointers and unrelated structural root flags have no effect;
+	 * DISABLE_COLLISION is the sole thread structural bit persisted here. */
+	driver->thTrackingMe=(struct Thread *)(uintptr_t)1;driver->plantEatingMe=(struct Thread *)(uintptr_t)1;
+	driver->KartStates.RevEngine.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
+	driver->ghostTape=(struct GhostTape *)(uintptr_t)1;
+	driver->pendingDamageAttacker=(struct Driver *)(uintptr_t)1;
+	root=FLT(&f,0);root->flags=THREAD_FLAG_DISABLE_COLLISION|UINT32_C(0x0040);
+	if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||
+		flags.externalPresenceFlags!=0||flags.driverThreadSimFlags!=NATIVE_CANONICAL_DRIVER_THREAD_SIM_COLLISION_DISABLED)return 0;
+	root->flags=UINT32_C(0x0040);
+	if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||flags.driverThreadSimFlags!=0)return 0;
+	for(uint32_t bit=0;bit<32;bit++)if((UINT32_C(1)<<bit)!=THREAD_FLAG_DEAD&&(UINT32_C(1)<<bit)!=THREAD_FLAG_DISABLE_COLLISION)
+	{
+		root->flags=UINT32_C(1)<<bit;
+		if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||flags.externalPresenceFlags!=0||flags.driverThreadSimFlags!=0)return 0;
+	}
+	/* A bot has no active union even when the same native bytes contain poison. */
+	root->flags=0;
+	driver->botData.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
+	if(!MainCanonicalDrivers_ResolveMetaFlags(&f.tracker,driver,NATIVE_CANONICAL_DRIVER_KIND_BOT,1,KS_NORMAL,
+		NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||flags.externalPresenceFlags!=0||flags.driverThreadSimFlags!=0)return 0;
+
+	#define FAIL_META(change) do { \
+		MetaFixture(&f,1,1);if(!MetaResolve(&f,11,KS_MASK_GRABBED,NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB,&flags))return 0; \
+		before=flags;change; \
+		if(MetaResolve(&f,11,KS_MASK_GRABBED,NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0; \
+	} while(0)
+	/* Each independently snapshotted pool and its ownership lists are gates. */
+	FAIL_META(f.tracker.JitPools.thread.itemSize--);
+	FAIL_META(f.tracker.JitPools.instance.poolSize--);
+	FAIL_META(f.tracker.JitPools.smallStack.ptrPoolData=NULL);
+	FAIL_META(FList(&f.tracker.JitPools.thread.free,f.thread,sizeof(struct Thread),0xffu));
+	FAIL_META(FList(&f.tracker.JitPools.instance.free,f.instance,SOURCE_INSTANCE_RAW_SIZE,0xffu));
+	FAIL_META(FList(&f.tracker.JitPools.smallStack.free,f.small,SOURCE_SMALL_RAW_SIZE,0xffu));
+	/* A valid-but-missing taken entry is distinct from a malformed/overlapping
+	 * instance list: both must reject the child's reciprocal ownership. */
+	FAIL_META(FList(&f.tracker.JitPools.instance.taken,f.instance,SOURCE_INSTANCE_RAW_SIZE,
+		(UINT32_C(1)<<0)|(UINT32_C(1)<<2)|(UINT32_C(1)<<3)|(UINT32_C(1)<<5)));
+	FAIL_META(f.tracker.JitPools.instance.taken.first=NULL;f.tracker.JitPools.instance.taken.last=NULL;f.tracker.JitPools.instance.taken.count=1);
+	/* Child, instance, and bounded sibling graph corruption is rejected before
+	 * any foreign/poison cursor can be dereferenced. */
+	FAIL_META(FT(&f,1)->parentThread=NULL);
+	FAIL_META(FLT(&f,0)->flags|=THREAD_FLAG_DEAD);
+	FAIL_META(FT(&f,1)->flags|=THREAD_FLAG_DEAD);
+	FAIL_META(FT(&f,1)->inst=NULL);
+	FAIL_META(FI(&f,1)->thread=FT(&f,3));
+	FAIL_META(FLT(&f,0)->childThread=(struct Thread *)(uintptr_t)1);
+	FAIL_META(FT(&f,1)->siblingThread=(struct Thread *)(uintptr_t)1);
+	FAIL_META(FT(&f,1)->siblingThread=FT(&f,1));
+	FAIL_META(driver=FLD(&f,0);driver->thCloud=(struct Thread *)(uintptr_t)1);
+	/* Exact callback/model/SMALL/payload identities distinguish active sources
+	 * from fades, foreign models, and header/interior/poison object pointers. */
+	FAIL_META(FT(&f,1)->funcThTick=RB_RainCloud_FadeAway);
+	FAIL_META(FT(&f,1)->modelIndex=STATIC_AKUAKU);
+	FAIL_META(FT(&f,1)->flags=(FT(&f,1)->flags&~0x300u)|MEDIUM);
+	FAIL_META(FT(&f,1)->object=NULL);
+	FAIL_META(FT(&f,1)->object=(void *)((uintptr_t)FT(&f,1)->object+1));
+	FAIL_META(FT(&f,1)->object=(void *)(uintptr_t)1);
+	FAIL_META(FT(&f,3)->funcThTick=RB_RainCloud_ThTick);
+	FAIL_META(FT(&f,3)->modelIndex=STATIC_CLOUD);
+	FAIL_META(driver=FLD(&f,0);driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1);
+	/* Keep the identity match but move the Mask object into its payload.  This
+	 * reaches the exact small-stack payload-start gate rather than merely the
+	 * pointer-to-child equality check. */
+	FAIL_META(driver=FLD(&f,0);FT(&f,3)->object=(void *)((uintptr_t)FT(&f,3)->object+1);driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)FT(&f,3)->object);
+	/* Repeating an immediate child makes the requested cloud identity occur
+	 * twice; the exact-once gate rejects before a prefix can be accepted. */
+	FAIL_META(FT(&f,3)->siblingThread=FT(&f,1));
+	#undef FAIL_META
 	return 1;
 }
 static int ExactKnown(const DriverFunc table[13],uint8_t *id)
@@ -489,4 +632,4 @@ static int RaceProjectionTest(void)
 	return 1;
 }
 
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}

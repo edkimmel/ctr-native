@@ -207,6 +207,104 @@ static int ValidateDriverRootOwnership(const struct Driver *driver,
 		(nativeThread->flags&THREAD_FLAG_DEAD)==0;
 }
 
+static int SnapshotMetaPools(const struct GameTracker *gGT,
+	struct NativeCanonicalPoolGeometry *thread,struct NativeCanonicalPoolGeometry *instance,
+	struct NativeCanonicalPoolGeometry *small,struct NativeCanonicalPoolList *threadFree,
+	struct NativeCanonicalPoolList *instanceFree,struct NativeCanonicalPoolList *instanceTaken,
+	struct NativeCanonicalPoolList *smallFree)
+{
+	const struct JitPool *threadPool=&gGT->JitPools.thread;
+	const struct JitPool *instancePool=&gGT->JitPools.instance;
+	const struct JitPool *smallPool=&gGT->JitPools.smallStack;
+	struct NativeCanonicalPoolInput threadInput,instanceInput,smallInput;
+	size_t expectedInstanceSize;
+	if((size_t)gGT->numPlyrCurrGame>(UINT32_MAX-sizeof(struct Instance))/sizeof(struct InstDrawPerPlayer))return 0;
+	expectedInstanceSize=sizeof(struct Instance)+sizeof(struct InstDrawPerPlayer)*(size_t)gGT->numPlyrCurrGame;
+	if(threadPool->itemSize!=sizeof(struct Thread)||instancePool->itemSize!=expectedInstanceSize||smallPool->itemSize!=0x48u)return 0;
+	threadInput=PoolInput(threadPool);instanceInput=PoolInput(instancePool);smallInput=PoolInput(smallPool);
+	if(!NativeCanonicalPool_GeometrySnapshot(&threadInput,thread)||
+		!NativeCanonicalPool_GeometrySnapshot(&instanceInput,instance)||
+		!NativeCanonicalPool_GeometrySnapshot(&smallInput,small))return 0;
+	if(thread->stride!=sizeof(struct Thread)||instance->stride!=expectedInstanceSize||small->stride!=0x48u)return 0;
+	*threadFree=PoolList(&threadPool->free);
+	*instanceFree=PoolList(&instancePool->free);
+	*instanceTaken=PoolList(&instancePool->taken);
+	*smallFree=PoolList(&smallPool->free);
+	return 1;
+}
+
+static int ValidateMetaThread(const struct Thread *thread,const struct Thread *root,
+	const struct NativeCanonicalPoolGeometry *threadGeometry,const struct NativeCanonicalPoolList *threadFree,
+	const struct NativeCanonicalPoolGeometry *instanceGeometry,const struct NativeCanonicalPoolList *instanceFree,
+	const struct NativeCanonicalPoolList *instanceTaken)
+{
+	const struct Instance *instance;
+	uint32_t ignored;
+	if(!NativeCanonicalPool_AllocatedFromFree(threadGeometry,threadFree,thread,&ignored))return 0;
+	if(thread->parentThread!=root||(thread->flags&THREAD_FLAG_DEAD)!=0)return 0;
+	instance=thread->inst;
+	if(!instance||!NativeCanonicalPool_AllocatedInTaken(instanceGeometry,instanceTaken,instanceFree,
+		NATIVE_CANONICAL_POOL_FREE_LIST_REQUIRED,instance,&ignored))return 0;
+	return instance->thread==thread;
+}
+
+int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
+	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,uint32_t activeTag,
+	struct MainCanonicalDriversMetaFlags *out)
+{
+	struct NativeCanonicalPoolGeometry threadGeometry,instanceGeometry,smallGeometry;
+	struct NativeCanonicalPoolList threadFree,instanceFree,instanceTaken,smallFree;
+	struct MainCanonicalDriversMetaFlags candidate={0};
+	const struct Instance *rootInstance;
+	const struct Thread *rootThread,*child;
+	const struct Thread *cloudThread;
+	const struct MaskHeadWeapon *maskObject=NULL;
+	uint32_t ignored,cloudMatches=0,maskMatches=0;
+	int wantsMask;
+	if(!gGT||!driver||!out||!NativeCanonicalDriverBehavior_ValidateState(kind,behaviorID,kartState,activeTag)||
+		!SnapshotMetaPools(gGT,&threadGeometry,&instanceGeometry,&smallGeometry,&threadFree,&instanceFree,&instanceTaken,&smallFree))return 0;
+	/* The Driver's own large-stack root is an explicit precondition from the
+	 * roster gate. Revalidate the linked instance/thread before touching child
+	 * pointers, so no unowned child graph can be dereferenced. */
+	rootInstance=driver->instSelf;
+	if(!rootInstance||!NativeCanonicalPool_AllocatedInTaken(&instanceGeometry,&instanceTaken,&instanceFree,
+		NATIVE_CANONICAL_POOL_FREE_LIST_REQUIRED,rootInstance,&ignored))return 0;
+	rootThread=rootInstance->thread;
+	if(!rootThread||!NativeCanonicalPool_AllocatedFromFree(&threadGeometry,&threadFree,rootThread,&ignored)||
+		rootThread->object!=driver||rootThread->inst!=rootInstance||(rootThread->flags&THREAD_FLAG_DEAD)!=0||
+		driver->kartState!=kartState)return 0;
+	if((rootThread->flags&THREAD_FLAG_DISABLE_COLLISION)!=0)
+		candidate.driverThreadSimFlags=NATIVE_CANONICAL_DRIVER_THREAD_SIM_COLLISION_DISABLED;
+	cloudThread=driver->thCloud;
+	wantsMask=kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN&&activeTag==NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB;
+	if(wantsMask)maskObject=driver->KartStates.MaskGrab.maskObj;
+	child=rootThread->childThread;
+	for(uint32_t count=0;child!=NULL&&count<threadGeometry.maxItems;count++)
+	{
+		const struct Thread *next;
+		if(!ValidateMetaThread(child,rootThread,&threadGeometry,&threadFree,&instanceGeometry,&instanceFree,&instanceTaken))return 0;
+		next=child->siblingThread;
+		if(cloudThread&&child==cloudThread)
+		{
+			if(++cloudMatches!=1||child->funcThTick!=RB_RainCloud_ThTick||child->modelIndex!=STATIC_CLOUD||
+				(child->flags&0x300u)!=SMALL||!PoolPayloadAllocatedFromFree(&smallGeometry,&smallFree,child->object,
+				sizeof(struct Item),sizeof(struct RainCloud)))return 0;
+			candidate.externalPresenceFlags|=NATIVE_CANONICAL_DRIVER_EXTERNAL_RAIN_CLOUD;
+		}
+		if(maskObject&&child->object==maskObject)
+		{
+			if(++maskMatches!=1||child->funcThTick!=RB_MaskWeapon_ThTick||
+				(child->modelIndex!=STATIC_AKUAKU&&child->modelIndex!=STATIC_UKAUKA)||(child->flags&0x300u)!=SMALL||
+				!PoolPayloadAllocatedFromFree(&smallGeometry,&smallFree,child->object,sizeof(struct Item),sizeof(struct MaskHeadWeapon)))return 0;
+			candidate.externalPresenceFlags|=NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT;
+		}
+		child=next;
+	}
+	if(child!=NULL||(cloudThread&&cloudMatches!=1)||(maskObject&&maskMatches!=1))return 0;
+	*out=candidate;
+	return 1;
+}
+
 int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,const struct sData *sourceData,struct NativeCanonicalDriversRosterCandidate *out)
 {
 	struct NativeCanonicalDriversRosterInput input;
