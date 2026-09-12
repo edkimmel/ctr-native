@@ -115,6 +115,23 @@ static int TestRecordPlaybackAndPoisonedPrefix(void)
 	NativeReplayV3Playback_Init(&playback);
 	CHECK(!NativeReplayV3Playback_Open(&playback, path, &identity, &header));
 	CHECK(remove(path) == 0);
+
+	/* Session append failure is likewise terminal after no successful seal. */
+	CHECK(TemporaryPath(path));
+	NativeReplayV3Record_Init(&record);
+	NativeReplaySchedulerV3Lifecycle_Init(&lifecycle);
+	CHECK(NativeReplayV3Record_Open(&record, path, &identity));
+	CHECK(NativeReplaySchedulerV3Lifecycle_BeginFrame(&lifecycle));
+	CHECK(NativeReplaySchedulerV3Lifecycle_Submit(&lifecycle, NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V3,
+	                                               NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V3));
+	CHECK(MakeFrame(&record.header, 1u, &frame)); /* scheduler frame order fault */
+	CHECK(!NativeReplayV3Record_AppendFrame(&record, &frame));
+	NativeReplaySchedulerV3Lifecycle_Abort(&lifecycle);
+	CHECK(!NativeReplaySchedulerV3Lifecycle_MayFinalize(&lifecycle));
+	NativeReplayV3Record_Close(&record);
+	NativeReplayV3Playback_Init(&playback);
+	CHECK(!NativeReplayV3Playback_Open(&playback, path, &identity, &header));
+	CHECK(remove(path) == 0);
 	return 0;
 }
 
