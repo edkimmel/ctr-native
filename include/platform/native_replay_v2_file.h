@@ -5,8 +5,9 @@
 
 /*
  * Explicit v2 file sessions.  Their stream field is private FILE state; no
- * native record layout is ever written.  Init/Close are idempotent cleanup
- * operations.  A failed record session is sticky and cannot finalize.
+ * native record layout is ever written. Init/Close are idempotent cleanup
+ * operations. Record_Open writes an explicitly unsealed header; only
+ * Finalize sets its on-disk FINALIZED flag. A failed session cannot finalize.
  */
 struct NativeReplayV2RecordSession
 {

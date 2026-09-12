@@ -1918,6 +1918,7 @@ internal s32 NativeReplayScheduler_CloseV2Files(void)
 		if (!NativeReplayScheduler_CloseCheckpointFile()) ok = 0;
 		if (NativeReplayScheduler_V2RecordMayFinalize(s_v2RecordPoisoned, ok) && !NativeReplayV2Record_Finalize(&s_v2Record)) ok = 0;
 		if (s_v2RecordPoisoned != 0) ok = 0;
+		if (ok) finalHeader = s_v2Record.header;
 		if (!ok) NativeReplayV2Record_Close(&s_v2Record);
 		s_v2Header = finalHeader;
 		NativeReplayScheduler_WriteV2Metadata(ok);

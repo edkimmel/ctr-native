@@ -178,13 +178,20 @@ int NativeReplayV2Record_AppendFrame(struct NativeReplayV2RecordSession *session
 int NativeReplayV2Record_Finalize(struct NativeReplayV2RecordSession *session)
 {
 	uint8_t bytes[NATIVE_REPLAY_V2_HEADER_BYTES];
+	struct NativeReplayV2Header finalizedHeader;
 	FILE *stream;
 	int closeResult;
 
-	if ((session == NULL) || (session->failed != 0) || (session->finalized != 0) || (session->stream == NULL) ||
-	    !NativeReplayV2File_EncodeHeader(&session->header, bytes))
+	if ((session == NULL) || (session->failed != 0) || (session->finalized != 0) || (session->stream == NULL))
 	{
 		if (session != NULL) session->failed = 1;
+		return 0;
+	}
+	finalizedHeader = session->header;
+	finalizedHeader.flags |= NATIVE_REPLAY_V2_HEADER_FLAG_FINALIZED;
+	if (!NativeReplayV2File_EncodeHeader(&finalizedHeader, bytes))
+	{
+		session->failed = 1;
 		return 0;
 	}
 	stream = NativeReplayV2File_Stream(session->stream);
@@ -200,6 +207,7 @@ int NativeReplayV2Record_Finalize(struct NativeReplayV2RecordSession *session)
 		session->failed = 1;
 		return 0;
 	}
+	session->header = finalizedHeader;
 	session->finalized = 1;
 	return 1;
 }
@@ -238,6 +246,7 @@ int NativeReplayV2Playback_Open(struct NativeReplayV2PlaybackSession *session, c
 	}
 	NativeCodecReader_Init(&reader, bytes, sizeof(bytes));
 	if (!NativeReplayV2Header_Decode(&reader, expectedIdentity, &header) || (NativeCodecReader_Remaining(&reader) != 0) ||
+	    ((header.flags & NATIVE_REPLAY_V2_HEADER_FLAG_FINALIZED) == 0) ||
 	    !NativeReplayV2File_ExpectedLength(header.frameCount, &expectedLength) || (length != expectedLength))
 	{
 		(void)fclose(stream);

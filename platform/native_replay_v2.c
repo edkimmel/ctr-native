@@ -75,7 +75,7 @@ void NativeReplayV2Header_Init(struct NativeReplayV2Header *header)
 
 int NativeReplayV2Header_Validate(const struct NativeReplayV2Header *header)
 {
-	return header != NULL;
+	return (header != NULL) && ((header->flags & ~NATIVE_REPLAY_V2_HEADER_KNOWN_FLAGS) == 0);
 }
 
 size_t NativeReplayV2Header_EncodedSize(void) { return NATIVE_REPLAY_V2_HEADER_BYTES; }
@@ -99,7 +99,8 @@ int NativeReplayV2Header_Encode(struct NativeCodecWriter *writer, const struct N
 	encoded = *writer;
 	if (!NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_FILE_MAGIC) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_FORMAT_VERSION) ||
 	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_HEADER_BYTES) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_FRAME_BYTES) ||
-	    !NativeCodecWriter_WriteU32(&encoded, header->frameCount) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_CANONICAL_STATE_SCHEMA_VERSION) ||
+	    !NativeCodecWriter_WriteU32(&encoded, header->flags) || !NativeCodecWriter_WriteU32(&encoded, header->frameCount) ||
+	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_CANONICAL_STATE_SCHEMA_VERSION) ||
 	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_CANONICAL_REPLAY_FORMAT_VERSION) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_CANONICAL_DOMAIN_COUNT) ||
 	    !NativeCodecWriter_WriteU32(&encoded, (uint32_t)NativeCanonicalStateV1_EncodedSize()) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_PROFILE_NTSC_U) ||
 	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_TICK_RATE) || !NativeCodecWriter_WriteU32(&encoded, NATIVE_REPLAY_V2_ELAPSED_TICK_MS) ||
@@ -115,25 +116,27 @@ int NativeReplayV2Header_Decode(struct NativeCodecReader *reader, const struct N
 {
 	struct NativeCodecReader encoded;
 	struct NativeReplayV2Header decoded;
-	uint32_t values[14];
+	uint32_t values[15];
 	uint64_t vblankCycles;
 	uint64_t gpuClock;
 
 	if ((expectedIdentity == NULL) || (header == NULL) || !NativeReplayV2_ReaderReady(reader, NATIVE_REPLAY_V2_HEADER_BYTES)) return 0;
 	encoded = *reader;
-	for (uint32_t i = 0; i < 12; i++) if (!NativeCodecReader_ReadU32(&encoded, &values[i])) return 0;
+	for (uint32_t i = 0; i < 13; i++) if (!NativeCodecReader_ReadU32(&encoded, &values[i])) return 0;
 	if (!NativeCodecReader_ReadU64(&encoded, &vblankCycles) || !NativeCodecReader_ReadU64(&encoded, &gpuClock) ||
-	    !NativeCodecReader_ReadU32(&encoded, &values[12]) || !NativeCodecReader_ReadU32(&encoded, &values[13]) ||
+	    !NativeCodecReader_ReadU32(&encoded, &values[13]) || !NativeCodecReader_ReadU32(&encoded, &values[14]) ||
 	    !NativeCodecReader_ReadBytes(&encoded, decoded.identity.build, NATIVE_IDENTITY_DIGEST_BYTES) ||
 	    !NativeCodecReader_ReadBytes(&encoded, decoded.identity.content, NATIVE_IDENTITY_DIGEST_BYTES)) return 0;
-	decoded.frameCount = values[4];
+	decoded.flags = values[4];
+	decoded.frameCount = values[5];
 	if ((values[0] != NATIVE_REPLAY_V2_FILE_MAGIC) || (values[1] != NATIVE_REPLAY_V2_FORMAT_VERSION) || (values[2] != NATIVE_REPLAY_V2_HEADER_BYTES) ||
-	    (values[3] != NATIVE_REPLAY_V2_FRAME_BYTES) || (values[5] != NATIVE_CANONICAL_STATE_SCHEMA_VERSION) ||
-	    (values[6] != NATIVE_CANONICAL_REPLAY_FORMAT_VERSION) || (values[7] != NATIVE_CANONICAL_DOMAIN_COUNT) ||
-	    (values[8] != NativeCanonicalStateV1_EncodedSize()) || (values[9] != NATIVE_REPLAY_V2_PROFILE_NTSC_U) ||
-	    (values[10] != NATIVE_REPLAY_V2_TICK_RATE) || (values[11] != NATIVE_REPLAY_V2_ELAPSED_TICK_MS) ||
+	    (values[3] != NATIVE_REPLAY_V2_FRAME_BYTES) || ((values[4] & ~NATIVE_REPLAY_V2_HEADER_KNOWN_FLAGS) != 0) ||
+	    (values[6] != NATIVE_CANONICAL_STATE_SCHEMA_VERSION) || (values[7] != NATIVE_CANONICAL_REPLAY_FORMAT_VERSION) ||
+	    (values[8] != NATIVE_CANONICAL_DOMAIN_COUNT) || (values[9] != NativeCanonicalStateV1_EncodedSize()) ||
+	    (values[10] != NATIVE_REPLAY_V2_PROFILE_NTSC_U) || (values[11] != NATIVE_REPLAY_V2_TICK_RATE) ||
+	    (values[12] != NATIVE_REPLAY_V2_ELAPSED_TICK_MS) ||
 	    (vblankCycles != NATIVE_REPLAY_V2_VBLANK_CYCLES) || (gpuClock != NATIVE_REPLAY_V2_GPU_CLOCK_HZ) ||
-	    (values[12] != NATIVE_REPLAY_V2_PAD_COUNT) || (values[13] != NATIVE_REPLAY_V2_MAX_VSYNC_PACKETS) ||
+	    (values[13] != NATIVE_REPLAY_V2_PAD_COUNT) || (values[14] != NATIVE_REPLAY_V2_MAX_VSYNC_PACKETS) ||
 	    !NativeReplayV2_IdentityEquals(&decoded.identity, expectedIdentity)) return 0;
 	*header = decoded;
 	*reader = encoded;

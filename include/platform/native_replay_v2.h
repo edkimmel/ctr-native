@@ -17,8 +17,12 @@
 #define NATIVE_REPLAY_V2_GPU_CLOCK_HZ UINT64_C(53693175)
 #define NATIVE_REPLAY_V2_PAD_COUNT 4u
 #define NATIVE_REPLAY_V2_MAX_VSYNC_PACKETS 64u
-#define NATIVE_REPLAY_V2_HEADER_BYTES 136u
+#define NATIVE_REPLAY_V2_HEADER_BYTES 140u
 #define NATIVE_REPLAY_V2_FRAME_BYTES 616u
+/* Record_Open writes flags=0.  Only a successfully finalized file may carry
+ * this bit, and Playback_Open rejects every non-finalized header. */
+#define NATIVE_REPLAY_V2_HEADER_FLAG_FINALIZED UINT32_C(0x00000001)
+#define NATIVE_REPLAY_V2_HEADER_KNOWN_FLAGS NATIVE_REPLAY_V2_HEADER_FLAG_FINALIZED
 
 /* Mirrors the current scheduler observations by value, without importing its native layout. */
 struct NativeReplayV2FrameObservation
@@ -53,6 +57,7 @@ struct NativeReplayV2Pad
 
 struct NativeReplayV2Header
 {
+	uint32_t flags;
 	uint32_t frameCount;
 	struct NativeIdentityV1 identity;
 };

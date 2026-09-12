@@ -189,7 +189,7 @@ static int TestEmptyOneManyRoundTrip(void)
 	CHECK(WriteReplayFile(path, &identity, 0));
 	NativeReplayV2Playback_Init(&playback);
 	CHECK(NativeReplayV2Playback_Open(&playback, path, &identity, &header));
-	CHECK(header.frameCount == 0);
+	CHECK(header.frameCount == 0 && header.flags == NATIVE_REPLAY_V2_HEADER_FLAG_FINALIZED);
 	CHECK(NativeReplayV2Playback_ReadNext(&playback, &frame) == NATIVE_REPLAY_V2_READ_EOF);
 	NativeReplayV2Playback_Close(&playback); NativeReplayV2Playback_Close(&playback);
 	CHECK(remove(path) == 0);
@@ -259,7 +259,37 @@ static int OpenMustFail(const char *path, const struct NativeIdentityV1 *identit
 	memset(&header, 0xa5, sizeof(header)); before = header;
 	CHECK(!NativeReplayV2Playback_Open(&playback, path, identity, &header));
 	CHECK(memcmp(&header, &before, sizeof(header)) == 0);
+	CHECK(playback.stream == NULL && playback.nextFrame == 0 && playback.failed == 0);
 	NativeReplayV2Playback_Close(&playback);
+	return 0;
+}
+
+static int TestProvisionalFilesAreUnplayable(void)
+{
+	char path[NATIVE_REPLAY_V2_TEST_PATH_BYTES];
+	struct NativeIdentityV1 identity;
+	struct NativeReplayV2RecordSession record;
+	struct NativeReplayV2Frame frame;
+
+	FillIdentity(&identity);
+	/* A poisoned zero-frame record still has a syntactically complete header,
+	 * but its clear FINALIZED flag makes Playback_Open reject it. */
+	CHECK(MakePath(path)); NativeReplayV2Record_Init(&record);
+	CHECK(NativeReplayV2Record_Open(&record, path, &identity));
+	CHECK(FillFrame(&record.header, 1u, &frame));
+	CHECK(!NativeReplayV2Record_AppendFrame(&record, &frame));
+	CHECK(record.failed != 0 && record.header.frameCount == 0);
+	NativeReplayV2Record_Close(&record);
+	CHECK(OpenMustFail(path, &identity) == 0); CHECK(remove(path) == 0);
+
+	/* A prefix with appended frames remains unplayable until Finalize rewrites
+	 * its header with a matching count and the FINALIZED bit. */
+	CHECK(MakePath(path)); NativeReplayV2Record_Init(&record);
+	CHECK(NativeReplayV2Record_Open(&record, path, &identity));
+	CHECK(FillFrame(&record.header, 0u, &frame));
+	CHECK(NativeReplayV2Record_AppendFrame(&record, &frame));
+	NativeReplayV2Record_Close(&record);
+	CHECK(OpenMustFail(path, &identity) == 0); CHECK(remove(path) == 0);
 	return 0;
 }
 
@@ -278,7 +308,10 @@ static int TestPlaybackPreflightAndFrameGates(void)
 	CHECK(PatchByte(path, 0, 0)); CHECK(OpenMustFail(path, &identity) == 0); CHECK(remove(path) == 0);
 
 	CHECK(MakePath(path)); CHECK(WriteReplayFile(path, &identity, 1));
-	CHECK(PatchByte(path, 20, 0)); CHECK(OpenMustFail(path, &identity) == 0); CHECK(remove(path) == 0);
+	CHECK(PatchByte(path, 24, 0)); CHECK(OpenMustFail(path, &identity) == 0); CHECK(remove(path) == 0);
+
+	CHECK(MakePath(path)); CHECK(WriteReplayFile(path, &identity, 0));
+	CHECK(PatchByte(path, 16, 2)); CHECK(OpenMustFail(path, &identity) == 0); CHECK(remove(path) == 0);
 
 	CHECK(MakePath(path)); CHECK(WriteReplayFile(path, &identity, 1));
 	CHECK(TruncateLastByte(path));
@@ -332,7 +365,7 @@ static int TestLengthBoundaries(void)
 int main(void)
 {
 	if ((TestEmptyOneManyRoundTrip() != 0) || (TestRecordSequenceAndStickyFailure() != 0) || (TestIdentityGateDoesNotCreateFile() != 0) ||
-	    (TestPlaybackPreflightAndFrameGates() != 0) ||
+	    (TestProvisionalFilesAreUnplayable() != 0) || (TestPlaybackPreflightAndFrameGates() != 0) ||
 	    (TestLengthBoundaries() != 0)) return 1;
 	puts("native_replay_v2_file_test: passed");
 	return 0;
