@@ -13,10 +13,34 @@ static void Registry(struct NativeCanonicalDriverBehaviorRegistry *registry,uint
 	for(uint8_t i=0;i<11;i++)registry->initTokens[i]=&init[i];
 	for(uint8_t s=0;s<17;s++)for(uint8_t f=0;f<12;f++)registry->suffixTemplates[s][f]=&suffix[s][f];
 }
+static int TestStateRows(void)
+{
+	static const struct { uint8_t suffix,state; uint32_t tag; } rows[]={{1,0,0},{2,11,0},{3,9,0},{4,2,1},{5,2,1},{6,1,0},{7,3,2},{8,3,2},{9,3,2},{10,3,2},{11,5,4},{12,5,5},{13,5,5},{14,4,3},{15,6,6},{16,10,7}};
+	for(size_t i=0;i<sizeof(rows)/sizeof(rows[0]);i++)
+	{
+		CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,rows[i].suffix,rows[i].state,rows[i].tag));
+		CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,rows[i].suffix,(uint8_t)(rows[i].state^1),rows[i].tag));
+		CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,rows[i].suffix,rows[i].state,rows[i].tag^1));
+	}
+	/* Queued damage and podium retain no initialized union.  Repeated freeze
+	 * and warp remain their steady suffix/state rows above. */
+	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,1+17*6,0,0));
+	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,1+17*7,0,0));
+	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,1+17*8,0,0));
+	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,1+17,4,0));
+	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,2+17*3,11,0));
+	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,16+17*4,10,7));
+	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_BOT,1,0,0));
+	CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_BOT,1,0,1));
+	return 0;
+}
 int main(void)
 {
 	struct NativeCanonicalDriverBehaviorRegistry registry;uint8_t init[11],suffix[17][12],other=0;const void *table[13];struct CallbackContext context={{0},{0}};uint8_t out,before;
 	Registry(&registry,init,suffix);CHECK(NativeCanonicalDriverBehaviorRegistry_Validate(&registry));
+	registry.initTokens[1]=registry.initTokens[0];CHECK(!NativeCanonicalDriverBehaviorRegistry_Validate(&registry));Registry(&registry,init,suffix);
+	for(uint8_t f=0;f<12;f++)registry.suffixTemplates[1][f]=registry.suffixTemplates[0][f];CHECK(!NativeCanonicalDriverBehaviorRegistry_Validate(&registry));Registry(&registry,init,suffix);
+	registry.suffixTemplates[1][2]=NULL;CHECK(!NativeCanonicalDriverBehaviorRegistry_Validate(&registry));Registry(&registry,init,suffix);
 	for(uint8_t i=0;i<11;i++)for(uint8_t s=0;s<17;s++)
 	{
 		table[0]=registry.initTokens[i];for(uint8_t f=0;f<12;f++)table[f+1]=registry.suffixTemplates[s][f];out=UINT8_MAX;
@@ -35,5 +59,6 @@ int main(void)
 	CHECK(!NativeCanonicalDriverBehavior_ValidateKind(NATIVE_CANONICAL_DRIVER_KIND_BOT,187,NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE));
 	context.kinds[3]=NATIVE_CANONICAL_DRIVER_KIND_BOT;CHECK(NativeCanonicalDriverBehavior_ValidateKindCallback(KindCallback,&context,3,16,NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE));
 	context.kinds[3]=NATIVE_CANONICAL_DRIVER_KIND_HUMAN;CHECK(!NativeCanonicalDriverBehavior_ValidateKindCallback(KindCallback,&context,3,16,NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE));
+	if(TestStateRows()!=0)return 1;
 	puts("native_canonical_driver_behavior_test: passed");return 0;
 }

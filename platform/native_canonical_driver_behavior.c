@@ -53,6 +53,39 @@ int NativeCanonicalDriverBehavior_ValidateKind(uint8_t kind, uint8_t behaviorID,
 	if(kind==NATIVE_CANONICAL_DRIVER_KIND_BOT)return threadBehaviorID==NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE||threadBehaviorID==NATIVE_CANONICAL_DRIVER_THREAD_BOTS_REV_ENGINE;
 	return 0;
 }
+int NativeCanonicalDriverBehavior_ValidateState(uint8_t kind, uint8_t behaviorID, uint8_t kartState, uint32_t activeTag)
+{
+	uint8_t suffix,init,expectedState,expectedTag;
+	if(behaviorID>NATIVE_CANONICAL_DRIVER_BEHAVIOR_MAX)return 0;
+	/* Converted/native bots never carry a human active union. */
+	if(kind==NATIVE_CANONICAL_DRIVER_KIND_BOT)return activeTag==0;
+	if(kind!=NATIVE_CANONICAL_DRIVER_KIND_HUMAN)return 0;
+	suffix=(uint8_t)(behaviorID%NATIVE_CANONICAL_DRIVER_BEHAVIOR_SUFFIX_COUNT);
+	init=(uint8_t)(behaviorID/NATIVE_CANONICAL_DRIVER_BEHAVIOR_SUFFIX_COUNT);
+	/* Birth/teleport has no steady suffix yet. */
+	if(suffix==0)return activeTag==0;
+	/* Damage is queued before its suffix/union is installed; podium queues
+	 * driving while leaving the old RevEngine state with no active union. */
+	if((init==6||init==7||init==8)&&kartState==0&&activeTag==0)return 1;
+	if(init==1&&kartState==4&&activeTag==0)return 1;
+	expectedState=0;expectedTag=0;
+	switch(suffix)
+	{
+		case 1: break;
+		case 2: expectedState=11;break;
+		case 3: expectedState=9;break;
+		case 4:case 5: expectedState=2;expectedTag=1;break;
+		case 6: expectedState=1;break;
+		case 7:case 8:case 9:case 10: expectedState=3;expectedTag=2;break;
+		case 11: expectedState=5;expectedTag=4;break;
+		case 12:case 13: expectedState=5;expectedTag=5;break;
+		case 14: expectedState=4;expectedTag=3;break;
+		case 15: expectedState=6;expectedTag=6;break;
+		case 16: expectedState=10;expectedTag=7;break;
+		default:return 0;
+	}
+	return kartState==expectedState&&activeTag==expectedTag;
+}
 int NativeCanonicalDriverBehavior_ValidateKindCallback(NativeCanonicalDriverBehaviorKindCallback callback, void *context,
 	uint8_t slotIndex, uint8_t behaviorID, uint8_t threadBehaviorID)
 {

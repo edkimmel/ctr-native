@@ -13,4 +13,41 @@ static volatile int birth_called,drive_called,rev_called; void VehBirth_NullThre
 static void UnknownDriver(struct Thread*t,struct Driver*d){(void)t;(void)d;} static void UnknownThread(struct Thread*t){(void)t;}
 #include "../game/MAIN/MainCanonicalDrivers.c"
 static int ProjectPreludeTest(void){struct NativeCanonicalDriversRosterInput in;struct NativeCanonicalDriversRosterCandidate out,before;DriverFunc tables[8][13]={{0}};void(*threads[8])(struct Thread*)={0};memset(&in,0,sizeof(in));memset(in.raceOrder,0xff,sizeof(in.raceOrder));memset(in.winnerDriverIDs,0xff,sizeof(in.winnerDriverIDs));memset(in.ranks,0xff,sizeof(in.ranks));memset(in.navOrder,0xff,sizeof(in.navOrder));in.slots[3].present=1;in.slots[3].driverID=3;in.slots[3].kind=NATIVE_CANONICAL_DRIVER_KIND_HUMAN;in.playerCount=1;in.raceOrderCount=1;in.raceOrder[0]=3;in.ranks[0]=7;tables[3][1]=VehPhysProc_Driving_Update;tables[3][2]=VehPhysProc_Driving_PhysLinear;tables[3][3]=VehPhysProc_Driving_Audio;tables[3][4]=VehPhysGeneral_PhysAngular;tables[3][5]=VehPhysForce_OnApplyForces;tables[3][6]=COLL_MOVED_PlayerSearch;tables[3][7]=VehPhysForce_CollideDrivers;tables[3][8]=COLL_FIXED_PlayerSearch;tables[3][9]=VehPhysGeneral_JumpAndFriction;tables[3][10]=VehPhysForce_TranslateMatrix;tables[3][11]=VehFrameProc_Driving;tables[3][12]=VehEmitter_DriverMain;threads[3]=VehBirth_NullThread;if(!MainCanonicalDrivers_ProjectPrelude(&in,tables,threads,&out)||out.behaviorID[3]!=1||out.threadBehaviorID[3]!=1)return 0;before=out;tables[3][7]=UnknownDriver;if(MainCanonicalDrivers_ProjectPrelude(&in,tables,threads,&out)||memcmp(&out,&before,sizeof(out))!=0)return 0;return 1;}
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
+static int ExactKnown(const DriverFunc table[13],uint8_t *id)
+{
+	for(uint8_t i=0;i<11;i++)for(uint8_t s=0;s<17;s++){uint8_t n;if(table[0]!=initFunctions[i])continue;for(n=0;n<12;n++)if(table[n+1]!=suffixFunctions[s][n])break;if(n==12){*id=(uint8_t)(s+17*i);return 1;}}
+	return 0;
+}
+static int ExhaustiveProductionTokens(void)
+{
+	DriverFunc known[128],table[13];uint8_t count=0,id,before,expected;
+	for(uint8_t i=0;i<11;i++){uint8_t k;for(k=0;k<count;k++)if(known[k]==initFunctions[i])break;if(k==count)known[count++]=initFunctions[i];}
+	for(uint8_t s=0;s<17;s++)for(uint8_t n=0;n<12;n++){uint8_t k;for(k=0;k<count;k++)if(known[k]==suffixFunctions[s][n])break;if(k==count)known[count++]=suffixFunctions[s][n];}
+	for(uint8_t i=0;i<11;i++)for(uint8_t s=0;s<17;s++)
+	{
+		table[0]=initFunctions[i];for(uint8_t n=0;n<12;n++)table[n+1]=suffixFunctions[s][n];id=UINT8_MAX;if(!MainCanonicalDrivers_ResolveBehavior(table,&id)||id!=(uint8_t)(s+17*i))return 0;
+		for(uint8_t field=0;field<13;field++)for(uint8_t k=0;k<count;k++)if(table[field]!=known[k])
+		{
+			DriverFunc saved=table[field];table[field]=known[k];before=id;
+			if(ExactKnown(table,&expected)){if(!MainCanonicalDrivers_ResolveBehavior(table,&id)||id!=expected||id==before)return 0;}
+			else if(MainCanonicalDrivers_ResolveBehavior(table,&id)||id!=before)return 0;
+			table[field]=saved;
+		}
+		for(uint8_t field=0;field<13;field++){DriverFunc saved=table[field];table[field]=UnknownDriver;before=id;if(MainCanonicalDrivers_ResolveBehavior(table,&id)||id!=before)return 0;table[field]=saved;}
+	}
+	return 1;
+}
+static int ThreadOwnershipTest(void)
+{
+	void(*callbacks[4])(struct Thread*)={NULL,VehBirth_NullThread,BOTS_ThTick_Drive,BOTS_ThTick_RevEngine};
+	for(uint8_t kind=NATIVE_CANONICAL_DRIVER_KIND_HUMAN;kind<=NATIVE_CANONICAL_DRIVER_KIND_BOT;kind++)for(uint8_t id=0;id<4;id++)
+	{
+		int allowed=(kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN)?id<2:id>=2;
+		if(NativeCanonicalDriverBehavior_ValidateKind(kind,1,id)!=allowed)return 0;
+		if(callbacks[id]==UnknownThread)return 0;
+	}
+	/* A converted bot legitimately retains a human suffix but only bot callbacks. */
+	if(!NativeCanonicalDriverBehavior_ValidateKind(NATIVE_CANONICAL_DRIVER_KIND_BOT,1,NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE))return 0;
+	return 1;
+}
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());puts("main_canonical_drivers_binding_test: passed");return 0;}

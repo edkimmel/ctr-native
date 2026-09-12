@@ -56,7 +56,7 @@ static int TestSemanticMutations(void)
 	value.slots[0].physics.axisAngle4[2]=1;CHECK(Encode(&value,changed)&&memcmp(base,changed,sizeof(base))!=0);value.slots[0].physics.axisAngle4[2]=0;
 	for(uint32_t i=0;i<NATIVE_CANONICAL_DRIVER_DYN_COUNT;i++){value.slots[0].dynamics.field[i]=1;CHECK(Encode(&value,changed)&&memcmp(base,changed,sizeof(base))!=0);value.slots[0].dynamics.field[i]=0;}
 	value.slots[0].dynamics.xSpeed=1;CHECK(Encode(&value,changed)&&memcmp(base,changed,sizeof(base))!=0);value.slots[0].dynamics.xSpeed=0;
-	value.slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_DRIFT;value.slots[0].active.branchBytes[0]=1;CHECK(Encode(&value,changed)&&memcmp(base,changed,sizeof(base))!=0);
+	value.slots[0].meta.behaviorID=4;value.slots[0].meta.kartState=2;value.slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_DRIFT;value.slots[0].active.branchBytes[0]=1;CHECK(Encode(&value,changed)&&memcmp(base,changed,sizeof(base))!=0);
 	return 0;
 }
 static int TestRejectionAndTransaction(void)
@@ -86,19 +86,24 @@ static int TestBotAndReferences(void)
 	ValidHuman(&value);value.slots[0].meta.driverKind=NATIVE_CANONICAL_DRIVER_KIND_BOT;value.slots[0].meta.behaviorID=1;value.slots[0].meta.threadBehaviorID=2;
 	value.prelude.playerCount=0;value.prelude.humanPlayerPositions[0]=NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT;value.prelude.activeBotCount=1;
 	value.slots[0].bot.bytes[127]=3;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].active.branchBytes[0]=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].active.branchBytes[0]=0;
 	value.prelude.humanPlayerPositions[0]=0;value.prelude.playerCount=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
 	return 0;
 }
 static int TestRanksAndActiveTags(void)
 {
 	struct NativeCanonicalDriversDetailedV1 value;
+	static const struct { uint8_t behavior,kart; uint32_t tag; } rows[]={
+		{1,0,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE},{4,2,NATIVE_CANONICAL_DRIVER_ACTIVE_DRIFT},{7,3,NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN},
+		{14,4,NATIVE_CANONICAL_DRIVER_ACTIVE_REV_ENGINE},{11,5,NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB},{12,5,NATIVE_CANONICAL_DRIVER_ACTIVE_PLANT_EATEN},
+		{15,6,NATIVE_CANONICAL_DRIVER_ACTIVE_BLASTED},{16,10,NATIVE_CANONICAL_DRIVER_ACTIVE_WARP}};
 	ValidHuman(&value);value.prelude.humanPlayerPositions[0]=7;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
 	for(uint32_t tag=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;tag<=NATIVE_CANONICAL_DRIVER_ACTIVE_WARP;tag++)
 	{
-		value.slots[0].active.unionTag=tag;value.slots[0].active.branchBytes[0]=(uint8_t)(tag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE?0:1);
+		value.slots[0].meta.behaviorID=rows[tag].behavior;value.slots[0].meta.kartState=rows[tag].kart;value.slots[0].active.unionTag=rows[tag].tag;value.slots[0].active.branchBytes[0]=(uint8_t)(tag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE?0:1);
 		CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
 	}
-	value.slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_DRIFT;value.slots[0].active.branchBytes[0]=0;
+	value.slots[0].meta.behaviorID=4;value.slots[0].meta.kartState=2;value.slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_DRIFT;value.slots[0].active.branchBytes[0]=0;
 	value.prelude.raceOrderCount=0;value.prelude.raceOrder[0]=NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
 	return 0;
 }
