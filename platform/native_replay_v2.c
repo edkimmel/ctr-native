@@ -153,6 +153,10 @@ int NativeReplayV2Frame_Validate(const struct NativeReplayV2Header *header, cons
 		if (frame->vsyncPackets[i] == 0) return 0;
 		total += frame->vsyncPackets[i];
 	}
+	for (uint32_t i = frame->vsyncPacketCount; i < NATIVE_REPLAY_V2_MAX_VSYNC_PACKETS; i++)
+	{
+		if (frame->vsyncPackets[i] != 0) return 0;
+	}
 	if (total != frame->vsyncTotal) return 0;
 	NativeCodecWriter_Init(&canonicalWriter, canonicalBytes, NativeCanonicalStateV1_EncodedSize(), NULL);
 	return NativeCanonicalStateV1_Encode(&canonicalWriter, &frame->canonical) &&

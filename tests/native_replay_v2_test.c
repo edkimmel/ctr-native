@@ -152,11 +152,17 @@ static int TestGatesAndTransactions(void)
 	frame.padCount = 3; NativeCodecWriter_Init(&writer, frameBytes, sizeof(frameBytes), NULL); CHECK(!NativeReplayV2Frame_Encode(&writer, &header, &frame)); CHECK(writer.offset == 0);
 	CHECK(FillFrame(&header, &frame)); frame.vsyncPacketCount = NATIVE_REPLAY_V2_MAX_VSYNC_PACKETS + 1; NativeCodecWriter_Init(&writer, frameBytes, sizeof(frameBytes), NULL); CHECK(!NativeReplayV2Frame_Encode(&writer, &header, &frame));
 	CHECK(FillFrame(&header, &frame)); frame.vsyncPackets[0] = 0; NativeCodecWriter_Init(&writer, frameBytes, sizeof(frameBytes), NULL); CHECK(!NativeReplayV2Frame_Encode(&writer, &header, &frame));
+	CHECK(FillFrame(&header, &frame)); frame.vsyncPackets[frame.vsyncPacketCount] = 1; NativeCodecWriter_Init(&writer, frameBytes, sizeof(frameBytes), NULL);
+	CHECK(!NativeReplayV2Frame_Encode(&writer, &header, &frame)); CHECK(writer.offset == 0);
 	CHECK(FillFrame(&header, &frame)); frame.canonical.domainDigests[0] ^= 1; memset(frameBytes, 0xcc, sizeof(frameBytes));
 	{ uint8_t before[NATIVE_REPLAY_V2_FRAME_BYTES]; memcpy(before, frameBytes, sizeof(before)); NativeCodecWriter_Init(&writer, frameBytes, sizeof(frameBytes), NULL);
 	  CHECK(!NativeReplayV2Frame_Encode(&writer, &header, &frame)); CHECK(writer.offset == 0); CHECK(memcmp(frameBytes, before, sizeof(before)) == 0); }
 
 	CHECK(FillFrame(&header, &frame)); NativeCodecWriter_Init(&writer, frameBytes, sizeof(frameBytes), NULL); CHECK(NativeReplayV2Frame_Encode(&writer, &header, &frame));
+	frameBytes[192] = 1; NativeCodecReader_Init(&reader, frameBytes, sizeof(frameBytes)); originalOffset = reader.offset; memset(&untouched, 0xa5, sizeof(untouched));
+	{ struct NativeReplayV2Frame before = untouched;
+	  CHECK(!NativeReplayV2Frame_Decode(&reader, &header, &header.identity, &untouched)); CHECK(reader.offset == originalOffset); CHECK(memcmp(&untouched, &before, sizeof(before)) == 0); }
+	frameBytes[192] = 0;
 	frameBytes[320] ^= 1; NativeCodecReader_Init(&reader, frameBytes, sizeof(frameBytes)); originalOffset = reader.offset; memset(&untouched, 0xa5, sizeof(untouched));
 	CHECK(!NativeReplayV2Frame_Decode(&reader, &header, &header.identity, &untouched)); CHECK(reader.offset == originalOffset);
 	frameBytes[320] ^= 1; frameBytes[324] ^= 1; NativeCodecReader_Init(&reader, frameBytes, sizeof(frameBytes)); CHECK(!NativeReplayV2Frame_Decode(&reader, &header, &header.identity, &untouched));
