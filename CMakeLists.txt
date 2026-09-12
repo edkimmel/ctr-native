@@ -190,7 +190,7 @@ set_target_properties(ctr_native_replay_scheduler_seam PROPERTIES
     C_EXTENSIONS OFF
 )
 target_include_directories(ctr_native_replay_scheduler_seam PUBLIC ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(ctr_native_replay_scheduler_seam PUBLIC ctr_native_canonical_state)
+target_link_libraries(ctr_native_replay_scheduler_seam PUBLIC ctr_native_canonical_state ctr_native_canonical_state_v3)
 
 add_library(ctr_native_replay_v2 STATIC platform/native_replay_v2.c)
 set_target_properties(ctr_native_replay_v2 PROPERTIES
@@ -297,7 +297,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_canonical_projector ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_canonical_projector ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()

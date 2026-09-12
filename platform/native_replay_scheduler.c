@@ -13,6 +13,7 @@
 #include "platform/native_path.h"
 #include "platform/native_replay_scheduler_seam.h"
 #include "platform/native_replay_v2_file.h"
+#include "platform/native_replay_v3_file.h"
 #include "platform/native_state.h"
 
 #include <errno.h>
@@ -53,6 +54,12 @@
 #define NATIVE_REPLAY_RECORDING_V2_MEMCARD_NAME   "memcard.v2.recording"
 #define NATIVE_REPLAY_PLAYBACK_V2_MEMCARD_NAME    "memcard.v2.playback"
 #define NATIVE_REPLAY_REPORT_V2_METADATA_NAME     "metadata.v2.txt"
+#define NATIVE_REPLAY_REPORT_V3_REPLAY_NAME       "input.v3.ctrreplay"
+#define NATIVE_REPLAY_REPORT_V3_CHECKPOINT_NAME   "state.v3.ctrstates"
+#define NATIVE_REPLAY_REPORT_V3_MEMCARD_SEED_NAME "memcard.v3.seed"
+#define NATIVE_REPLAY_RECORDING_V3_MEMCARD_NAME   "memcard.v3.recording"
+#define NATIVE_REPLAY_PLAYBACK_V3_MEMCARD_NAME    "memcard.v3.playback"
+#define NATIVE_REPLAY_REPORT_V3_METADATA_NAME     "metadata.v3.txt"
 
 enum NativeReplaySchedulerMode
 {
@@ -62,7 +69,10 @@ enum NativeReplaySchedulerMode
 	NATIVE_REPLAY_MODE_PLAYBACK_V1,
 	NATIVE_REPLAY_MODE_ARMED_V2,
 	NATIVE_REPLAY_MODE_RECORD_V2,
-	NATIVE_REPLAY_MODE_PLAYBACK_V2
+	NATIVE_REPLAY_MODE_PLAYBACK_V2,
+	NATIVE_REPLAY_MODE_ARMED_V3,
+	NATIVE_REPLAY_MODE_RECORD_V3,
+	NATIVE_REPLAY_MODE_PLAYBACK_V3
 };
 
 enum NativeReplayCheckpointPolicy
@@ -161,6 +171,22 @@ global_variable char *s_reportV2CheckpointPath;
 global_variable char *s_reportV2MemcardSeedPath;
 global_variable char *s_reportV2MemcardRecordingPath;
 global_variable char *s_reportV2MetadataPath;
+global_variable struct NativeCanonicalStateV3 s_pendingCanonicalStateV3;
+global_variable s32 s_pendingCanonicalStateV3Valid;
+global_variable struct NativeReplayV3RecordSession s_v3Record;
+global_variable struct NativeReplayV3PlaybackSession s_v3Playback;
+global_variable struct NativeReplayV3Header s_v3Header;
+global_variable struct NativeReplayV3Frame s_v3PendingFrame;
+global_variable struct NativeIdentityV1 s_v3Identity;
+global_variable s32 s_v3IdentityValid;
+global_variable s32 s_v3Intent;
+global_variable s32 s_v3RecordPoisoned;
+global_variable s32 s_v3BeginValidationPending;
+global_variable char *s_reportV3ReplayPath;
+global_variable char *s_reportV3CheckpointPath;
+global_variable char *s_reportV3MemcardSeedPath;
+global_variable char *s_reportV3MemcardRecordingPath;
+global_variable char *s_reportV3MetadataPath;
 
 internal s32 NativeReplayScheduler_OpenV2Record(const char *replayPath, const char *checkpointPath);
 internal s32 NativeReplayScheduler_ArmV2Report(void);
@@ -170,6 +196,11 @@ internal s32 NativeReplayScheduler_CloseV2Files(void);
 internal void NativeReplayScheduler_WriteV2Metadata(s32 finalized);
 internal s32 NativeReplayScheduler_PrepareBootstrapCheckpoint(const char *replayPath);
 internal s32 NativeReplayScheduler_ActivatePlaybackMemcardSandbox(const char *replayPath);
+internal s32 NativeReplayScheduler_OpenV3Record(const char *replayPath, const char *checkpointPath);
+internal s32 NativeReplayScheduler_ArmV3Report(void);
+internal s32 NativeReplayScheduler_OpenV3Playback(const char *path);
+internal s32 NativeReplayScheduler_CloseV3Files(void);
+internal void NativeReplayScheduler_WriteV3Metadata(s32 finalized);
 
 internal void NativeReplayScheduler_ResetVSyncPackets(void)
 {
@@ -192,6 +223,9 @@ internal void NativeReplayScheduler_ResetSessionState(void)
 	s_canonicalExpectedReplayFrameCaptured = 0;
 	s_v2RecordPoisoned = 0;
 	s_v2BeginValidationPending = 0;
+	s_pendingCanonicalStateV3Valid = 0;
+	s_v3RecordPoisoned = 0;
+	s_v3BeginValidationPending = 0;
 	NativeReplayScheduler_ResetVSyncPackets();
 }
 
@@ -200,9 +234,19 @@ internal s32 NativeReplayScheduler_ModeIsV2(enum NativeReplaySchedulerMode mode)
 	return (mode == NATIVE_REPLAY_MODE_ARMED_V2) || (mode == NATIVE_REPLAY_MODE_RECORD_V2) || (mode == NATIVE_REPLAY_MODE_PLAYBACK_V2);
 }
 
+internal s32 NativeReplayScheduler_ModeIsV3(enum NativeReplaySchedulerMode mode)
+{
+	return (mode == NATIVE_REPLAY_MODE_ARMED_V3) || (mode == NATIVE_REPLAY_MODE_RECORD_V3) || (mode == NATIVE_REPLAY_MODE_PLAYBACK_V3);
+}
+
 internal s32 NativeReplayScheduler_ModeIsV2Playback(void)
 {
 	return s_mode == NATIVE_REPLAY_MODE_PLAYBACK_V2;
+}
+
+internal s32 NativeReplayScheduler_ModeIsV3Playback(void)
+{
+	return s_mode == NATIVE_REPLAY_MODE_PLAYBACK_V3;
 }
 
 internal s32 NativeReplayScheduler_PoisonV2Record(const char *reason)
@@ -215,6 +259,17 @@ internal s32 NativeReplayScheduler_PoisonV2Record(const char *reason)
 	{
 		s_v2RecordPoisoned = 1;
 		Platform_Log("[CTR Replay v2] recording poisoned: %s\n", reason);
+	}
+	return 1;
+}
+
+internal s32 NativeReplayScheduler_PoisonV3Record(const char *reason)
+{
+	if (s_mode != NATIVE_REPLAY_MODE_RECORD_V3) return 0;
+	if (s_v3RecordPoisoned == 0)
+	{
+		s_v3RecordPoisoned = 1;
+		Platform_Log("[CTR Replay v3] recording poisoned: %s\n", reason != NULL ? reason : "unknown failure");
 	}
 	return 1;
 }
@@ -310,6 +365,31 @@ internal s32 NativeReplayScheduler_V2CanonicalMatches(const struct NativeCanonic
 	{
 		if (expected->domainDigests[i] != live->domainDigests[i]) return 0;
 	}
+	return expected->combinedDigest == live->combinedDigest;
+}
+
+internal s32 NativeReplayScheduler_V3PadsMatchCanonical(const struct NativeReplayV3Frame *expected,
+	                                                       const struct NativeCanonicalStateV3 *canonical)
+{
+	if ((expected == NULL) || (canonical == NULL) || (expected->padCount != NATIVE_REPLAY_V2_PAD_COUNT) ||
+	    (canonical->input.padCount != NATIVE_CANONICAL_INPUT_PAD_COUNT)) return 0;
+	for (u32 i = 0; i < NATIVE_REPLAY_V2_PAD_COUNT; i++)
+	{
+		const struct NativeReplayV2Pad *left = &expected->pads[i];
+		const struct NativeCanonicalInputPadV1 *right = &canonical->input.pads[i];
+		if ((left->status != right->status) || (left->id != right->id) || (left->buttons[0] != right->buttons[0]) ||
+		    (left->buttons[1] != right->buttons[1]) || (left->analog[0] != right->analog[0]) || (left->analog[1] != right->analog[1]) ||
+		    (left->analog[2] != right->analog[2]) || (left->analog[3] != right->analog[3]) || (left->connected != right->connected)) return 0;
+	}
+	return 1;
+}
+
+internal s32 NativeReplayScheduler_V3CanonicalMatches(const struct NativeCanonicalStateV3 *expected,
+	                                                      const struct NativeCanonicalStateV3 *live)
+{
+	if ((expected == NULL) || (live == NULL)) return 0;
+	for (u32 i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+		if (expected->domainDigests[i] != live->domainDigests[i]) return 0;
 	return expected->combinedDigest == live->combinedDigest;
 }
 
@@ -718,6 +798,11 @@ internal void NativeReplayScheduler_FreeReportPaths(void)
 	free(s_reportV2MemcardSeedPath);
 	free(s_reportV2MemcardRecordingPath);
 	free(s_reportV2MetadataPath);
+	free(s_reportV3ReplayPath);
+	free(s_reportV3CheckpointPath);
+	free(s_reportV3MemcardSeedPath);
+	free(s_reportV3MemcardRecordingPath);
+	free(s_reportV3MetadataPath);
 	s_reportDir = NULL;
 	s_reportReplayPath = NULL;
 	s_reportCheckpointPath = NULL;
@@ -730,6 +815,11 @@ internal void NativeReplayScheduler_FreeReportPaths(void)
 	s_reportV2MemcardSeedPath = NULL;
 	s_reportV2MemcardRecordingPath = NULL;
 	s_reportV2MetadataPath = NULL;
+	s_reportV3ReplayPath = NULL;
+	s_reportV3CheckpointPath = NULL;
+	s_reportV3MemcardSeedPath = NULL;
+	s_reportV3MemcardRecordingPath = NULL;
+	s_reportV3MetadataPath = NULL;
 	s_reportEnabled = 0;
 }
 
@@ -814,9 +904,16 @@ internal s32 NativeReplayScheduler_PrepareReportPaths(const char *root)
 	s_reportV2MemcardSeedPath = NativeReplayScheduler_JoinPath(s_reportDir, NATIVE_REPLAY_REPORT_V2_MEMCARD_SEED_NAME);
 	s_reportV2MemcardRecordingPath = NativeReplayScheduler_JoinPath(s_reportDir, NATIVE_REPLAY_RECORDING_V2_MEMCARD_NAME);
 	s_reportV2MetadataPath = NativeReplayScheduler_JoinPath(s_reportDir, NATIVE_REPLAY_REPORT_V2_METADATA_NAME);
+	s_reportV3ReplayPath = NativeReplayScheduler_JoinPath(s_reportDir, NATIVE_REPLAY_REPORT_V3_REPLAY_NAME);
+	s_reportV3CheckpointPath = NativeReplayScheduler_JoinPath(s_reportDir, NATIVE_REPLAY_REPORT_V3_CHECKPOINT_NAME);
+	s_reportV3MemcardSeedPath = NativeReplayScheduler_JoinPath(s_reportDir, NATIVE_REPLAY_REPORT_V3_MEMCARD_SEED_NAME);
+	s_reportV3MemcardRecordingPath = NativeReplayScheduler_JoinPath(s_reportDir, NATIVE_REPLAY_RECORDING_V3_MEMCARD_NAME);
+	s_reportV3MetadataPath = NativeReplayScheduler_JoinPath(s_reportDir, NATIVE_REPLAY_REPORT_V3_METADATA_NAME);
 	if ((s_reportReplayPath == NULL) || (s_reportCheckpointPath == NULL) || (s_reportMemcardSeedPath == NULL) || (s_reportMemcardRecordingPath == NULL) ||
 	    (s_reportMetadataPath == NULL) || (s_reportLogPath == NULL) || (s_reportV2ReplayPath == NULL) || (s_reportV2CheckpointPath == NULL) ||
-	    (s_reportV2MemcardSeedPath == NULL) || (s_reportV2MemcardRecordingPath == NULL) || (s_reportV2MetadataPath == NULL))
+	    (s_reportV2MemcardSeedPath == NULL) || (s_reportV2MemcardRecordingPath == NULL) || (s_reportV2MetadataPath == NULL) ||
+	    (s_reportV3ReplayPath == NULL) || (s_reportV3CheckpointPath == NULL) || (s_reportV3MemcardSeedPath == NULL) ||
+	    (s_reportV3MemcardRecordingPath == NULL) || (s_reportV3MetadataPath == NULL))
 	{
 		goto fail;
 	}
@@ -1510,10 +1607,13 @@ int NativeReplayScheduler_ConfigureFromArgs(int argc, char **argv)
 	struct NativeReplaySchedulerArgs args;
 	const char *playbackPath;
 	const char *playbackV2Path;
+	const char *playbackV3Path;
 	s32 recordReport;
 	s32 recordV2;
 	s32 playback;
 	s32 playbackV2;
+	s32 recordV3;
+	s32 playbackV3;
 	s32 bypassHeaderIdentity;
 	s32 toggle;
 	s32 detailed;
@@ -1525,15 +1625,18 @@ int NativeReplayScheduler_ConfigureFromArgs(int argc, char **argv)
 	}
 	playbackPath = args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V1 ? args.replayPath : NULL;
 	playbackV2Path = args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V2 ? args.replayPath : NULL;
+	playbackV3Path = args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V3 ? args.replayPath : NULL;
 	recordReport = args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V1;
 	recordV2 = args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V2;
 	playback = args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V1;
 	playbackV2 = args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V2;
+	recordV3 = args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V3;
+	playbackV3 = args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V3;
 	bypassHeaderIdentity = args.bypassHeaderIdentity;
 	toggle = args.toggle;
 	detailed = args.detailed;
 
-	if (((recordReport != 0) || (recordV2 != 0)) && (s_reportEnabled == 0) && !NativeReplayScheduler_PrepareReportPaths(NATIVE_REPLAY_DEFAULT_REPORT_ROOT))
+	if (((recordReport != 0) || (recordV2 != 0) || (recordV3 != 0)) && (s_reportEnabled == 0) && !NativeReplayScheduler_PrepareReportPaths(NATIVE_REPLAY_DEFAULT_REPORT_ROOT))
 	{
 		Platform_Log("[CTR Replay] failed to prepare report folder under: %s\n", NATIVE_REPLAY_DEFAULT_REPORT_ROOT);
 		return 1;
@@ -1544,6 +1647,7 @@ int NativeReplayScheduler_ConfigureFromArgs(int argc, char **argv)
 	s_reportCompleted = 0;
 	s_reportManualStart = 0;
 	s_v2Intent = (recordV2 != 0) || (playbackV2 != 0);
+	s_v3Intent = (recordV3 != 0) || (playbackV3 != 0);
 	s_checkpointPolicy = (recordReport != 0) ? NATIVE_REPLAY_CHECKPOINT_POLICY_BOOTSTRAP_ONLY : NATIVE_REPLAY_CHECKPOINT_POLICY_ROLLING;
 	if (detailed != 0)
 	{
@@ -1565,6 +1669,11 @@ int NativeReplayScheduler_ConfigureFromArgs(int argc, char **argv)
 		if (toggle == 0) return NativeReplayScheduler_OpenV2Record(s_reportV2ReplayPath, s_reportV2CheckpointPath) ? 0 : 1;
 		return NativeReplayScheduler_ArmV2Report() ? 0 : 1;
 	}
+	if (recordV3 != 0)
+	{
+		s_checkpointPolicy = NATIVE_REPLAY_CHECKPOINT_POLICY_BOOTSTRAP_ONLY;
+		return NativeReplayScheduler_OpenV3Record(s_reportV3ReplayPath, s_reportV3CheckpointPath) ? 0 : 1;
+	}
 
 	if (playbackPath != NULL)
 	{
@@ -1574,13 +1683,18 @@ int NativeReplayScheduler_ConfigureFromArgs(int argc, char **argv)
 	{
 		return NativeReplayScheduler_OpenV2Playback(playbackV2Path) ? 0 : 1;
 	}
+	if (playbackV3Path != NULL)
+	{
+		return NativeReplayScheduler_OpenV3Playback(playbackV3Path) ? 0 : 1;
+	}
 
 	return 0;
 }
 
 void NativeReplayScheduler_Shutdown(void)
 {
-	if (NativeReplayScheduler_ModeIsV2(s_mode)) (void)NativeReplayScheduler_CloseV2Files();
+	if (NativeReplayScheduler_ModeIsV3(s_mode)) (void)NativeReplayScheduler_CloseV3Files();
+	else if (NativeReplayScheduler_ModeIsV2(s_mode)) (void)NativeReplayScheduler_CloseV2Files();
 	else NativeReplayScheduler_CloseFiles();
 	NativeReplayScheduler_ResetMemcardSandbox();
 	NativeReplayScheduler_FreeReportPaths();
@@ -1590,12 +1704,12 @@ void NativeReplayScheduler_Shutdown(void)
 
 int NativeReplayScheduler_RequestStart(void)
 {
-	if ((s_mode == NATIVE_REPLAY_MODE_RECORD_V1) || (s_mode == NATIVE_REPLAY_MODE_RECORD_V2))
+	if ((s_mode == NATIVE_REPLAY_MODE_RECORD_V1) || (s_mode == NATIVE_REPLAY_MODE_RECORD_V2) || (s_mode == NATIVE_REPLAY_MODE_RECORD_V3))
 	{
 		Platform_Log("[CTR Replay] report recording is already active\n");
 		return 1;
 	}
-	if ((s_mode != NATIVE_REPLAY_MODE_ARMED_V1) && (s_mode != NATIVE_REPLAY_MODE_ARMED_V2))
+	if ((s_mode != NATIVE_REPLAY_MODE_ARMED_V1) && (s_mode != NATIVE_REPLAY_MODE_ARMED_V2) && (s_mode != NATIVE_REPLAY_MODE_ARMED_V3))
 	{
 		return 0;
 	}
@@ -1615,12 +1729,12 @@ int NativeReplayScheduler_RequestStart(void)
 
 int NativeReplayScheduler_RequestStop(void)
 {
-	if ((s_mode == NATIVE_REPLAY_MODE_ARMED_V1) || (s_mode == NATIVE_REPLAY_MODE_ARMED_V2))
+	if ((s_mode == NATIVE_REPLAY_MODE_ARMED_V1) || (s_mode == NATIVE_REPLAY_MODE_ARMED_V2) || (s_mode == NATIVE_REPLAY_MODE_ARMED_V3))
 	{
 		Platform_Log("[CTR Replay] report is armed but not recording; press F9 to start\n");
 		return 1;
 	}
-	if ((s_mode != NATIVE_REPLAY_MODE_RECORD_V1) && (s_mode != NATIVE_REPLAY_MODE_RECORD_V2))
+	if ((s_mode != NATIVE_REPLAY_MODE_RECORD_V1) && (s_mode != NATIVE_REPLAY_MODE_RECORD_V2) && (s_mode != NATIVE_REPLAY_MODE_RECORD_V3))
 	{
 		return 0;
 	}
@@ -1675,6 +1789,20 @@ int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo
 		s_recordStartDeferredLogged = 0;
 		if (!NativeReplayScheduler_StartV2Recording()) return 1;
 	}
+	if (s_mode == NATIVE_REPLAY_MODE_ARMED_V3)
+	{
+		if (s_startRequested == 0) return 0;
+		if (!NativeReplayScheduler_MemcardIdleForRootSwitch())
+		{
+			NativeReplayScheduler_LogMemcardStartDeferred();
+			return 0;
+		}
+		s_startRequested = 0;
+		s_recordStartDeferredLogged = 0;
+		/* Arming is retained as a lifecycle state for callers that construct a
+		 * request programmatically; the CLI deliberately rejects --toggle-v3. */
+		if (!NativeReplayScheduler_OpenV3Record(s_reportV3ReplayPath, s_reportV3CheckpointPath)) return 1;
+	}
 	if (s_mode == NATIVE_REPLAY_MODE_RECORD_V2)
 	{
 		if (!NativeReplayScheduler_WriteCheckpointIfDue())
@@ -1716,6 +1844,52 @@ int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo
 		NativeReplayScheduler_ResetVSyncPackets();
 		s_v2BeginValidationPending = 1;
 		s_beginOpen = 1;
+		return 0;
+	}
+	if (s_mode == NATIVE_REPLAY_MODE_RECORD_V3)
+	{
+		if (!NativeReplayScheduler_WriteCheckpointIfDue())
+		{
+			NativeReplayScheduler_PoisonV3Record("checkpoint write failure");
+			return 1;
+		}
+		memset(&s_v3PendingFrame, 0, sizeof(s_v3PendingFrame));
+		s_v3PendingFrame.replayFrame = s_replayFrame;
+		NativeReplayScheduler_CopyObservation(&s_v3PendingFrame.begin, info);
+		s_v3PendingFrame.padCount = NATIVE_REPLAY_V2_PAD_COUNT;
+		s_frameTimingConsumed = 0;
+		NativeReplayScheduler_ResetVSyncPackets();
+		s_v3BeginValidationPending = 0;
+		s_beginOpen = 1;
+		return 0;
+	}
+	if (s_mode == NATIVE_REPLAY_MODE_PLAYBACK_V3)
+	{
+		struct PlatformInputPadSnapshot pads[PLATFORM_INPUT_PAD_COUNT];
+		s_v3BeginValidationPending = 0;
+		if (!NativeReplayScheduler_RestoreBootstrapCheckpoint()) return 1;
+		if (s_replayFrame >= s_v3Header.frameCount)
+		{
+			Platform_Log("[CTR Replay v3] replay finished after %u frames\n", s_replayFrame);
+			return 1;
+		}
+		if ((NativeReplayV3Playback_ReadNext(&s_v3Playback, &s_v3PendingFrame) != NATIVE_REPLAY_V3_READ_FRAME) ||
+		    (s_v3PendingFrame.replayFrame != s_replayFrame))
+		{
+			Platform_Log("[CTR Replay v3] failed to read replay frame %u\n", s_replayFrame);
+			return 1;
+		}
+		NativeReplayScheduler_CopyPadsFromV2(pads, s_v3PendingFrame.pads);
+		if (Platform_InputInstallPadSnapshots(pads, PLATFORM_INPUT_PAD_COUNT) == 0)
+		{
+			Platform_Log("[CTR Replay v3] failed to install replay input frame %u\n", s_replayFrame);
+			return 1;
+		}
+		s_frameTimingConsumed = 0;
+		NativeReplayScheduler_ResetVSyncPackets();
+		s_beginOpen = 1;
+		/* Set only after checkpoint restore and input installation both succeed. */
+		s_v3BeginValidationPending = 1;
 		return 0;
 	}
 
@@ -1799,6 +1973,12 @@ int NativeReplayScheduler_RequiresCanonicalState(void)
 		return NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V2);
 	case NATIVE_REPLAY_MODE_PLAYBACK_V2:
 		return NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V2);
+	case NATIVE_REPLAY_MODE_ARMED_V3:
+		return NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_ARMED_V3);
+	case NATIVE_REPLAY_MODE_RECORD_V3:
+		return NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V3);
+	case NATIVE_REPLAY_MODE_PLAYBACK_V3:
+		return NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V3);
 	default:
 		return 0;
 	}
@@ -1806,7 +1986,7 @@ int NativeReplayScheduler_RequiresCanonicalState(void)
 
 int NativeReplayScheduler_SuppressesQuickState(void)
 {
-	return (s_v2Intent != 0) || NativeReplayScheduler_ModeIsV2(s_mode);
+	return (s_v2Intent != 0) || (s_v3Intent != 0) || NativeReplayScheduler_ModeIsV2(s_mode) || NativeReplayScheduler_ModeIsV3(s_mode);
 }
 
 int NativeReplayScheduler_GetCanonicalReplayFrame(u32 *replayFrame)
@@ -1826,33 +2006,49 @@ int NativeReplayScheduler_GetCanonicalReplayFrame(u32 *replayFrame)
 
 int NativeReplayScheduler_ValidateRestoredBeginFrame(const struct NativeReplaySchedulerFrameInfo *info)
 {
-	if (s_mode != NATIVE_REPLAY_MODE_PLAYBACK_V2)
+	if ((s_mode != NATIVE_REPLAY_MODE_PLAYBACK_V2) && (s_mode != NATIVE_REPLAY_MODE_PLAYBACK_V3))
 	{
 		return 1;
 	}
 	if ((info == NULL) || (s_beginOpen == 0) ||
-	    !NativeReplayScheduler_V2BeginObservationNeedsValidation(1, s_v2BeginValidationPending))
+	    !NativeReplayScheduler_V2BeginObservationNeedsValidation(1, s_mode == NATIVE_REPLAY_MODE_PLAYBACK_V2 ? s_v2BeginValidationPending : s_v3BeginValidationPending))
 	{
 		return 0;
 	}
-	if (!NativeReplayScheduler_ObservationMatches(&s_v2PendingFrame.begin, info))
+	if (!NativeReplayScheduler_ObservationMatches(s_mode == NATIVE_REPLAY_MODE_PLAYBACK_V2 ? &s_v2PendingFrame.begin : &s_v3PendingFrame.begin, info))
 	{
 		Platform_Log("[CTR Replay v2] begin-observation mismatch at replay frame %u\n", s_replayFrame);
 		return 0;
 	}
-	s_v2BeginValidationPending = 0;
+	if (s_mode == NATIVE_REPLAY_MODE_PLAYBACK_V2) s_v2BeginValidationPending = 0;
+	else s_v3BeginValidationPending = 0;
 	return 1;
+}
+
+void NativeReplayScheduler_AbortCanonicalFrame(const char *reason)
+{
+	if (!NativeReplayScheduler_PoisonV2Record(reason != NULL ? reason : "caller could not complete canonical frame"))
+		(void)NativeReplayScheduler_PoisonV3Record(reason != NULL ? reason : "caller could not complete canonical frame");
 }
 
 void NativeReplayScheduler_AbortActiveV2Record(void)
 {
-	(void)NativeReplayScheduler_PoisonV2Record("caller could not complete canonical frame");
+	NativeReplayScheduler_AbortCanonicalFrame("caller could not complete canonical frame");
 }
 
 int NativeReplayScheduler_GetCanonicalIdentity(struct NativeIdentityV1 *identity)
 {
-	if ((identity == NULL) || (NativeReplayScheduler_RequiresCanonicalState() == 0) || (s_v2IdentityValid == 0)) return 0;
-	*identity = s_v2Identity;
+	if ((identity == NULL) || (NativeReplayScheduler_RequiresCanonicalState() == 0)) return 0;
+	if (NativeReplayScheduler_ModeIsV3(s_mode))
+	{
+		if (s_v3IdentityValid == 0) return 0;
+		*identity = s_v3Identity;
+	}
+	else
+	{
+		if (s_v2IdentityValid == 0) return 0;
+		*identity = s_v2Identity;
+	}
 	return 1;
 }
 
@@ -1988,6 +2184,120 @@ internal s32 NativeReplayScheduler_OpenV2Playback(const char *path)
 	return 1;
 }
 
+internal void NativeReplayScheduler_WriteV3Metadata(s32 finalized)
+{
+	FILE *file;
+	if ((s_reportEnabled == 0) || (s_reportV3MetadataPath == NULL)) return;
+	file = fopen(s_reportV3MetadataPath, "wb");
+	if (file == NULL) return;
+	fprintf(file, "ctr_native_replay_v3=1\n");
+	fprintf(file, "finalized=%d\n", finalized != 0);
+	fprintf(file, "checkpoint_mode=bootstrap-only\n");
+	fprintf(file, "replay_path=%s\n", s_reportV3ReplayPath != NULL ? s_reportV3ReplayPath : "");
+	fprintf(file, "checkpoint_path=%s\n", s_reportV3CheckpointPath != NULL ? s_reportV3CheckpointPath : "");
+	fprintf(file, "frame_count=%u\n", (unsigned int)s_v3Header.frameCount);
+	fclose(file);
+}
+
+internal s32 NativeReplayScheduler_OpenV3Record(const char *replayPath, const char *checkpointPath)
+{
+	if ((replayPath == NULL) || (checkpointPath == NULL) || (s_reportV3MemcardSeedPath == NULL) ||
+	    (s_reportV3MemcardRecordingPath == NULL) || !NativeIdentity_Get(&s_v3Identity))
+	{
+		Platform_Log("[CTR Replay v3] deterministic build/content identity is unavailable\n");
+		return 0;
+	}
+	s_v3IdentityValid = 1;
+	if (!NativeReplayScheduler_ActivateRecordMemcardSandboxFor(s_reportV3MemcardSeedPath, s_reportV3MemcardRecordingPath)) return 0;
+	NativeReplayV3Record_Init(&s_v3Record);
+	if (!NativeReplayV3Record_Open(&s_v3Record, replayPath, &s_v3Identity))
+	{
+		NativeReplayScheduler_ResetMemcardSandbox();
+		return 0;
+	}
+	s_v3Header = s_v3Record.header;
+	s_mode = NATIVE_REPLAY_MODE_RECORD_V3;
+	NativeAudio_SetDeterministicRenderMode(1);
+	if (!NativeReplayScheduler_OpenCheckpointRecord(checkpointPath))
+	{
+		NativeReplayV3Record_Close(&s_v3Record);
+		(void)NativeReplayScheduler_CloseCheckpointFile();
+		NativeReplayScheduler_ResetMemcardSandbox();
+		NativeAudio_SetDeterministicRenderMode(0);
+		s_mode = NATIVE_REPLAY_MODE_NONE;
+		(void)remove(replayPath);
+		return 0;
+	}
+	NativeReplayScheduler_WriteV3Metadata(0);
+	Platform_Log("[CTR Replay v3] recording explicit replay: %s\n", replayPath);
+	return 1;
+}
+
+internal s32 NativeReplayScheduler_CloseV3Files(void)
+{
+	s32 ok = 1;
+	if (s_mode == NATIVE_REPLAY_MODE_RECORD_V3)
+	{
+		struct NativeReplayV3Header finalHeader = s_v3Record.header;
+		if (!NativeReplayScheduler_CloseCheckpointFile()) ok = 0;
+		if ((s_v3RecordPoisoned == 0) && (ok != 0) && !NativeReplayV3Record_Finalize(&s_v3Record)) ok = 0;
+		if (s_v3RecordPoisoned != 0) ok = 0;
+		if (ok) finalHeader = s_v3Record.header;
+		if (!ok) NativeReplayV3Record_Close(&s_v3Record);
+		s_v3Header = finalHeader;
+		NativeReplayScheduler_WriteV3Metadata(ok);
+	}
+	else
+	{
+		NativeReplayV3Playback_Close(&s_v3Playback);
+		(void)NativeReplayScheduler_CloseCheckpointFile();
+	}
+	NativeAudio_SetDeterministicRenderMode(0);
+	s_stopRequested = 0;
+	s_mode = NATIVE_REPLAY_MODE_NONE;
+	return ok;
+}
+
+internal s32 NativeReplayScheduler_ArmV3Report(void)
+{
+	if ((s_reportEnabled == 0) || (s_reportV3ReplayPath == NULL)) return 0;
+	NativeReplayScheduler_ResetSessionState();
+	NativeReplayV3Record_Init(&s_v3Record);
+	s_mode = NATIVE_REPLAY_MODE_ARMED_V3;
+	s_reportManualStart = 1;
+	s_reportCompleted = 0;
+	NativeReplayScheduler_WriteV3Metadata(0);
+	return 1;
+}
+
+internal s32 NativeReplayScheduler_OpenV3Playback(const char *path)
+{
+	if ((path == NULL) || !NativeIdentity_Get(&s_v3Identity))
+	{
+		Platform_Log("[CTR Replay v3] deterministic build/content identity is unavailable\n");
+		return 0;
+	}
+	s_v3IdentityValid = 1;
+	NativeReplayV3Playback_Init(&s_v3Playback);
+	if (!NativeReplayV3Playback_Open(&s_v3Playback, path, &s_v3Identity, &s_v3Header))
+	{
+		Platform_Log("[CTR Replay v3] invalid replay preflight: %s\n", path);
+		return 0;
+	}
+	if (!NativeReplayScheduler_PrepareBootstrapCheckpointFor(path, NATIVE_REPLAY_REPORT_V3_CHECKPOINT_NAME, 1u) ||
+	    !NativeReplayScheduler_ActivatePlaybackMemcardSandboxFor(path, NATIVE_REPLAY_REPORT_V3_MEMCARD_SEED_NAME, NATIVE_REPLAY_PLAYBACK_V3_MEMCARD_NAME))
+	{
+		NativeReplayV3Playback_Close(&s_v3Playback);
+		(void)NativeReplayScheduler_CloseCheckpointFile();
+		NativeReplayScheduler_ResetMemcardSandbox();
+		return 0;
+	}
+	s_mode = NATIVE_REPLAY_MODE_PLAYBACK_V3;
+	NativeAudio_SetDeterministicRenderMode(1);
+	Platform_Log("[CTR Replay v3] playing explicit replay: %s frames=%u\n", path, (unsigned int)s_v3Header.frameCount);
+	return 1;
+}
+
 internal s32 NativeReplayScheduler_PrepareBootstrapCheckpoint(const char *replayPath)
 {
 	return NativeReplayScheduler_PrepareBootstrapCheckpointFor(replayPath, NATIVE_REPLAY_REPORT_CHECKPOINT_NAME, s_header.checkpointCount);
@@ -2001,7 +2311,7 @@ internal s32 NativeReplayScheduler_ActivatePlaybackMemcardSandbox(const char *re
 
 int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedVBlanks)
 {
-	if (((s_mode != NATIVE_REPLAY_MODE_PLAYBACK_V1) && !NativeReplayScheduler_ModeIsV2Playback()) || (s_beginOpen == 0) || (emittedVBlanks == NULL))
+	if (((s_mode != NATIVE_REPLAY_MODE_PLAYBACK_V1) && !NativeReplayScheduler_ModeIsV2Playback() && !NativeReplayScheduler_ModeIsV3Playback()) || (s_beginOpen == 0) || (emittedVBlanks == NULL))
 	{
 		return 0;
 	}
@@ -2011,7 +2321,8 @@ int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedV
 		requestedVBlanks = 1;
 	}
 
-	if (s_frameVBlankPacketCount >= (NativeReplayScheduler_ModeIsV2Playback() ? s_v2PendingFrame.vsyncPacketCount : s_pendingRecord.vblankPacketCount))
+	if (s_frameVBlankPacketCount >= (NativeReplayScheduler_ModeIsV2Playback() ? s_v2PendingFrame.vsyncPacketCount :
+	                                  NativeReplayScheduler_ModeIsV3Playback() ? s_v3PendingFrame.vsyncPacketCount : s_pendingRecord.vblankPacketCount))
 	{
 		s_vblankPlaybackMismatch = 1;
 		*emittedVBlanks = requestedVBlanks;
@@ -2019,6 +2330,7 @@ int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedV
 	}
 
 	u32 packet = NativeReplayScheduler_ModeIsV2Playback() ? s_v2PendingFrame.vsyncPackets[s_frameVBlankPacketCount] :
+	             NativeReplayScheduler_ModeIsV3Playback() ? s_v3PendingFrame.vsyncPackets[s_frameVBlankPacketCount] :
 	                                                       s_pendingRecord.vblankPackets[s_frameVBlankPacketCount];
 	if (packet == 0)
 	{
@@ -2027,7 +2339,7 @@ int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedV
 	}
 	/* EndFrame compares the emitted/consumed sequence. Playback must retain
 	 * the packet it supplied, otherwise valid nonzero packets look divergent. */
-	if (NativeReplayScheduler_ModeIsV2Playback())
+	if (NativeReplayScheduler_ModeIsV2Playback() || NativeReplayScheduler_ModeIsV3Playback())
 	{
 		if (!NativeReplayScheduler_CopyConsumedV2VSyncPacket(s_v2VblankPackets, NATIVE_REPLAY_V2_MAX_VSYNC_PACKETS,
 		                                                     s_frameVBlankPacketCount, (u16)packet))
@@ -2044,20 +2356,21 @@ int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedV
 
 int NativeReplayScheduler_ConsumeFrameElapsedTimeMS(int *elapsedTimeMS)
 {
-	if (((s_mode != NATIVE_REPLAY_MODE_PLAYBACK_V1) && !NativeReplayScheduler_ModeIsV2Playback()) || (s_beginOpen == 0) ||
+	if (((s_mode != NATIVE_REPLAY_MODE_PLAYBACK_V1) && !NativeReplayScheduler_ModeIsV2Playback() && !NativeReplayScheduler_ModeIsV3Playback()) || (s_beginOpen == 0) ||
 	    (elapsedTimeMS == NULL) || (s_frameTimingConsumed != 0))
 	{
 		return 0;
 	}
 
-	*elapsedTimeMS = NativeReplayScheduler_ModeIsV2Playback() ? s_v2PendingFrame.end.elapsedTimeMS : s_pendingRecord.endInfo.elapsedTimeMS;
+	*elapsedTimeMS = NativeReplayScheduler_ModeIsV2Playback() ? s_v2PendingFrame.end.elapsedTimeMS :
+	                 NativeReplayScheduler_ModeIsV3Playback() ? s_v3PendingFrame.end.elapsedTimeMS : s_pendingRecord.endInfo.elapsedTimeMS;
 	s_frameTimingConsumed = 1;
 	return 1;
 }
 
 void NativeReplayScheduler_RecordVSyncPacket(int emittedVBlanks)
 {
-	if (((s_mode != NATIVE_REPLAY_MODE_RECORD_V1) && (s_mode != NATIVE_REPLAY_MODE_RECORD_V2)) || (s_beginOpen == 0) || (emittedVBlanks <= 0))
+	if (((s_mode != NATIVE_REPLAY_MODE_RECORD_V1) && (s_mode != NATIVE_REPLAY_MODE_RECORD_V2) && (s_mode != NATIVE_REPLAY_MODE_RECORD_V3)) || (s_beginOpen == 0) || (emittedVBlanks <= 0))
 	{
 		return;
 	}
@@ -2079,6 +2392,100 @@ void NativeReplayScheduler_RecordVSyncPacket(int emittedVBlanks)
 	s_frameVBlankPacketCount++;
 }
 
+int NativeReplayScheduler_EndFrameV3(const struct NativeReplaySchedulerFrameInfo *info, const struct NativeCanonicalStateV3 *canonicalState)
+{
+	if ((info == NULL) || (s_beginOpen == 0) || !NativeReplayScheduler_ModeIsV3(s_mode)) return 0;
+	if (s_canonicalExpectedReplayFrameCaptured == 0)
+	{
+		Platform_Log("[CTR Replay v3] canonical replay frame was not captured\n");
+		NativeReplayScheduler_AbortCanonicalFrame("canonical replay frame was not captured");
+		return 1;
+	}
+	if (!NativeReplayScheduler_CopyCanonicalEndStateV3(s_canonicalExpectedReplayFrame, &s_v3Identity, canonicalState,
+	                                                  &s_pendingCanonicalStateV3))
+	{
+		Platform_Log("[CTR Replay v3] canonical state is incomplete at replay frame %u\n", s_replayFrame);
+		NativeReplayScheduler_AbortCanonicalFrame("canonical state validation failure");
+		return 1;
+	}
+	s_pendingCanonicalStateV3Valid = 1;
+
+	if (s_mode == NATIVE_REPLAY_MODE_RECORD_V3)
+	{
+		if (s_vblankPacketOverflow != 0)
+		{
+			NativeReplayScheduler_AbortCanonicalFrame("VSync or frozen-pad failure");
+			return 1;
+		}
+		s_v3PendingFrame.vsyncTotal = s_frameVBlankTotal;
+		s_v3PendingFrame.vsyncPacketCount = s_frameVBlankPacketCount;
+		memcpy(s_v3PendingFrame.vsyncPackets, s_v2VblankPackets, sizeof(s_v2VblankPackets));
+		NativeReplayScheduler_CopyObservation(&s_v3PendingFrame.end, info);
+		s_v3PendingFrame.canonical = s_pendingCanonicalStateV3;
+		/* Input has the same explicit V1/V3 value type and is copied fieldwise. */
+		for (u32 i = 0; i < NATIVE_REPLAY_V2_PAD_COUNT; i++)
+		{
+			const struct NativeCanonicalInputPadV1 *src = &s_pendingCanonicalStateV3.input.pads[i];
+			s_v3PendingFrame.pads[i].status = src->status; s_v3PendingFrame.pads[i].id = src->id;
+			s_v3PendingFrame.pads[i].buttons[0] = src->buttons[0]; s_v3PendingFrame.pads[i].buttons[1] = src->buttons[1];
+			memcpy(s_v3PendingFrame.pads[i].analog, src->analog, sizeof(src->analog)); s_v3PendingFrame.pads[i].connected = src->connected;
+		}
+		if (!NativeReplayV3Record_AppendFrame(&s_v3Record, &s_v3PendingFrame))
+		{
+			NativeReplayScheduler_AbortCanonicalFrame("replay frame append failure");
+			return 1;
+		}
+		s_v3Header = s_v3Record.header;
+		s_replayFrame++;
+		s_beginOpen = 0; s_canonicalExpectedReplayFrameCaptured = 0; s_frameTimingConsumed = 0;
+		NativeReplayScheduler_ResetVSyncPackets();
+		if (s_stopRequested != 0) return NativeReplayScheduler_CloseV3Files() ? 0 : 1;
+		return 0;
+	}
+
+	/* Playback stops at the first observation, VSync, pad, canonical, or
+	 * DRIVERS-summary mismatch; it never advances a failed frame. */
+	if ((s_vblankPlaybackMismatch != 0) || !NativeReplayScheduler_ObservationMatches(&s_v3PendingFrame.end, info) ||
+	    (s_v3PendingFrame.vsyncTotal != s_frameVBlankTotal) || (s_v3PendingFrame.vsyncPacketCount != s_frameVBlankPacketCount) ||
+	    (memcmp(s_v3PendingFrame.vsyncPackets, s_v2VblankPackets, s_frameVBlankPacketCount * sizeof(u16)) != 0) ||
+	    !NativeReplayScheduler_V3PadsMatchCanonical(&s_v3PendingFrame, &s_pendingCanonicalStateV3) ||
+	    !NativeReplayScheduler_V3CanonicalMatches(&s_v3PendingFrame.canonical, &s_pendingCanonicalStateV3))
+	{
+		if (s_divergenceLogged == 0)
+		{
+			struct NativeCanonicalDriversCompareMask masks;
+			s_divergenceLogged = 1;
+			Platform_Log("[CTR Replay v3] divergence at replay frame %u\n", s_replayFrame);
+			for (u32 i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+				if (s_v3PendingFrame.canonical.domainDigests[i] != s_pendingCanonicalStateV3.domainDigests[i])
+				{
+					Platform_Log("[CTR Replay v3] first canonical domain mismatch: id=%u\n", i + 1u);
+					break;
+				}
+			if (NativeCanonicalDriversV1_Compare(&s_v3PendingFrame.canonical.drivers, &s_pendingCanonicalStateV3.drivers, &masks) != 0)
+				Platform_Log("[CTR Replay v3] DRIVERS masks roster=%u slots=%u metaRace=%u physicsDynamics=%u behaviorBot=%u full=%u\n",
+				             masks.rosterMask, masks.slotMask, masks.metaRaceMask, masks.physicsDynamicsMask, masks.behaviorBotMask, masks.fullStreamMask);
+		}
+		return 1;
+	}
+	s_replayFrame++;
+	s_beginOpen = 0; s_canonicalExpectedReplayFrameCaptured = 0; s_frameTimingConsumed = 0;
+	NativeReplayScheduler_ResetVSyncPackets();
+	return 0;
+}
+
+int NativeReplayScheduler_EndFrameRequest(const struct NativeReplaySchedulerFrameInfo *info,
+	                                      const struct NativeReplaySchedulerCanonicalRequest *request)
+{
+	if ((request == NULL) || (request->kind == NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_NONE))
+		return NativeReplayScheduler_EndFrame(info, NULL);
+	if (request->kind == NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V1)
+		return NativeReplayScheduler_EndFrame(info, request->state.v1);
+	if (request->kind == NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V3)
+		return NativeReplayScheduler_EndFrameV3(info, request->state.v3);
+	return 1;
+}
+
 int NativeReplayScheduler_EndFrame(const struct NativeReplaySchedulerFrameInfo *info, const struct NativeCanonicalStateV1 *canonicalState)
 {
 	struct PlatformInputPadSnapshot livePads[PLATFORM_INPUT_PAD_COUNT];
@@ -2094,19 +2501,24 @@ int NativeReplayScheduler_EndFrame(const struct NativeReplaySchedulerFrameInfo *
 	{
 		return 0;
 	}
+	if (NativeReplayScheduler_ModeIsV3(s_mode))
+	{
+		NativeReplayScheduler_AbortCanonicalFrame("wrong canonical kind: V3 required");
+		return 1;
+	}
 
 	canonicalRequired = NativeReplayScheduler_RequiresCanonicalState();
 	if ((canonicalRequired != 0) && (s_canonicalExpectedReplayFrameCaptured == 0))
 	{
 		Platform_Log("[CTR Replay] canonical replay frame was not captured\n");
-		NativeReplayScheduler_PoisonV2Record("canonical replay frame was not captured");
+		NativeReplayScheduler_AbortCanonicalFrame("canonical replay frame was not captured");
 		return 1;
 	}
 	if (!NativeReplayScheduler_CopyCanonicalEndState(canonicalRequired, s_canonicalExpectedReplayFrame, canonicalState,
 	                                                 canonicalRequired ? &s_pendingCanonicalState : NULL))
 	{
 		Platform_Log("[CTR Replay] canonical state is incomplete at replay frame %u\n", s_replayFrame);
-		NativeReplayScheduler_PoisonV2Record("canonical state validation failure");
+		NativeReplayScheduler_AbortCanonicalFrame("canonical state validation failure");
 		return 1;
 	}
 	s_pendingCanonicalStateValid = canonicalRequired;

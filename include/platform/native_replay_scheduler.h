@@ -4,7 +4,9 @@
 #include <macros.h>
 
 #if defined(CTR_INTERNAL)
+#include "platform/native_replay_scheduler_seam.h"
 struct NativeCanonicalStateV1;
+struct NativeCanonicalStateV3;
 struct NativeIdentityV1;
 
 struct NativeReplaySchedulerFrameInfo
@@ -50,6 +52,15 @@ int NativeReplayScheduler_ConsumeVSyncPacket(int requestedVBlanks, int *emittedV
 int NativeReplayScheduler_ConsumeFrameElapsedTimeMS(int *elapsedTimeMS);
 /* The canonical record is value-validated/copied synchronously if required. */
 int NativeReplayScheduler_EndFrame(const struct NativeReplaySchedulerFrameInfo *info, const struct NativeCanonicalStateV1 *canonicalState);
+/* Future V3 projectors call this typed entry point.  MainMain intentionally
+ * remains unwired until it can produce the complete DRIVERS payload. */
+int NativeReplayScheduler_EndFrameV3(const struct NativeReplaySchedulerFrameInfo *info, const struct NativeCanonicalStateV3 *canonicalState);
+/* New tagged dispatch preserves EndFrame's V1 ABI while making a V3 value
+ * unrepresentable as a V1 pointer at the transport seam. */
+int NativeReplayScheduler_EndFrameRequest(const struct NativeReplaySchedulerFrameInfo *info,
+	                                      const struct NativeReplaySchedulerCanonicalRequest *request);
+/* Marks whichever active canonical record is in progress unsealable. */
+void NativeReplayScheduler_AbortCanonicalFrame(const char *reason);
 void NativeReplayScheduler_RecordVSyncPacket(int emittedVBlanks);
 #endif
 

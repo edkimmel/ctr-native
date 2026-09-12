@@ -32,11 +32,18 @@ int NativeReplayScheduler_ParseArgs(int argc, char **argv, struct NativeReplaySc
 			candidate.selector = NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V2;
 			selectorCount++;
 		}
-		else if (NativeReplaySchedulerArg_Equals(arg, "--replay") || NativeReplaySchedulerArg_Equals(arg, "--replay-v2"))
+		else if (NativeReplaySchedulerArg_Equals(arg, "--record-v3"))
+		{
+			candidate.selector = NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V3;
+			selectorCount++;
+		}
+		else if (NativeReplaySchedulerArg_Equals(arg, "--replay") || NativeReplaySchedulerArg_Equals(arg, "--replay-v2") ||
+		         NativeReplaySchedulerArg_Equals(arg, "--replay-v3"))
 		{
 			if ((i + 1 >= argc) || NativeReplaySchedulerArg_IsOption(argv[i + 1])) return 0;
 			candidate.selector = NativeReplaySchedulerArg_Equals(arg, "--replay") ? NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V1 :
-			                                                                NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V2;
+			                     NativeReplaySchedulerArg_Equals(arg, "--replay-v2") ? NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V2 :
+			                                                                        NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V3;
 			candidate.replayPath = argv[++i];
 			selectorCount++;
 		}
@@ -49,6 +56,11 @@ int NativeReplayScheduler_ParseArgs(int argc, char **argv, struct NativeReplaySc
 	    (candidate.selector != NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V1) &&
 	    (candidate.selector != NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V2)) return 0;
 	if ((candidate.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V2) && candidate.detailed) return 0;
+	/* V3 is bootstrap-only and deliberately has no toggle/detailed or legacy
+	 * compatibility bypass path. */
+	if (((candidate.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V3) ||
+	     (candidate.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V3)) &&
+	    (candidate.toggle || candidate.detailed || candidate.bypassHeaderIdentity)) return 0;
 	if (candidate.bypassHeaderIdentity && (candidate.selector != NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V1)) return 0;
 	*args = candidate;
 	return 1;
@@ -57,7 +69,26 @@ int NativeReplayScheduler_ParseArgs(int argc, char **argv, struct NativeReplaySc
 int NativeReplayScheduler_ModeRequiresCanonicalState(enum NativeReplaySchedulerCanonicalMode mode)
 {
 	return (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V2) ||
-	       (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V2);
+	       (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V2) ||
+	       (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V3) ||
+	       (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V3);
+}
+
+int NativeReplayScheduler_CopyCanonicalEndStateV3(uint32_t expectedReplayFrame, const struct NativeIdentityV1 *expectedIdentity,
+	                                               const struct NativeCanonicalStateV3 *source, struct NativeCanonicalStateV3 *destination)
+{
+	struct NativeCanonicalStateV3 candidate;
+
+	if ((expectedIdentity == NULL) || (source == NULL) || (destination == NULL) || (source->frameNumber != expectedReplayFrame) ||
+	    !NativeCanonicalStateV3_Validate(source) ||
+	    (memcmp(source->identity.build, expectedIdentity->build, NATIVE_IDENTITY_DIGEST_BYTES) != 0) ||
+	    (memcmp(source->identity.content, expectedIdentity->content, NATIVE_IDENTITY_DIGEST_BYTES) != 0)) return 0;
+	candidate = *source;
+	if (!NativeCanonicalStateV3_ComputeDigests(&candidate) ||
+	    (memcmp(candidate.domainDigests, source->domainDigests, sizeof(candidate.domainDigests)) != 0) ||
+	    (candidate.combinedDigest != source->combinedDigest)) return 0;
+	*destination = candidate;
+	return 1;
 }
 
 int NativeReplayScheduler_CopyCanonicalEndState(int required, uint32_t expectedReplayFrame, const struct NativeCanonicalStateV1 *source,
