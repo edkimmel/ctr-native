@@ -77,8 +77,15 @@ set_target_properties(ctr_native_canonical_codec PROPERTIES
 )
 target_include_directories(ctr_native_canonical_codec PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+add_library(ctr_native_sha256 STATIC platform/native_sha256.c)
+set_target_properties(ctr_native_sha256 PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_sha256 PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 add_library(ctr_native_identity STATIC
-    platform/native_sha256.c
     platform/native_disc_image.c
     platform/native_identity.c
 )
@@ -89,6 +96,18 @@ set_target_properties(ctr_native_identity PROPERTIES
 )
 target_include_directories(ctr_native_identity PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(ctr_native_identity PRIVATE CTR_NATIVE)
+target_link_libraries(ctr_native_identity PRIVATE ctr_native_sha256)
+
+# Pure, dormant M3 match identity. This target has no game-state dependency or
+# live callsite; it freezes the two-cab slot ownership contract on the wire.
+add_library(ctr_native_match_config STATIC platform/native_match_config.c)
+set_target_properties(ctr_native_match_config PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_match_config PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_match_config PUBLIC ctr_native_canonical_codec ctr_native_sha256)
 
 add_library(ctr_native_canonical_state STATIC platform/native_canonical_state.c)
 set_target_properties(ctr_native_canonical_state PROPERTIES
@@ -357,7 +376,7 @@ if(BUILD_TESTING)
         C_STANDARD_REQUIRED ON
         C_EXTENSIONS OFF
     )
-    target_link_libraries(native_sha256_test PRIVATE ctr_native_identity)
+    target_link_libraries(native_sha256_test PRIVATE ctr_native_sha256)
     add_test(NAME native_sha256_unit COMMAND $<TARGET_FILE:native_sha256_test>)
 
     add_executable(native_canonical_codec_test tests/native_canonical_codec_test.c)
@@ -368,6 +387,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_canonical_codec_test PRIVATE ctr_native_canonical_codec)
     add_test(NAME native_canonical_codec_unit COMMAND $<TARGET_FILE:native_canonical_codec_test>)
+
+    add_executable(native_match_config_test tests/native_match_config_test.c)
+    set_target_properties(native_match_config_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_match_config_test PRIVATE ctr_native_match_config)
+    add_test(NAME native_match_config_unit COMMAND $<TARGET_FILE:native_match_config_test>)
 
     add_executable(native_canonical_state_test tests/native_canonical_state_test.c)
     set_target_properties(native_canonical_state_test PROPERTIES
