@@ -18,25 +18,41 @@ static int TestStateRows(void)
 	static const struct { uint8_t suffix,state; uint32_t tag; } rows[]={{1,0,0},{2,11,0},{3,9,0},{4,2,1},{5,2,1},{6,1,0},{7,3,2},{8,3,2},{9,3,2},{10,3,2},{11,5,4},{12,5,5},{13,5,5},{14,4,3},{15,6,6},{16,10,7}};
 	for(size_t i=0;i<sizeof(rows)/sizeof(rows[0]);i++)
 	{
-		CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,rows[i].suffix,rows[i].state,rows[i].tag));
-		CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,rows[i].suffix,(uint8_t)(rows[i].state^1),rows[i].tag));
-		CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,rows[i].suffix,rows[i].state,rows[i].tag^1));
+		for(uint8_t init=0;init<11;init++)
+		{
+			uint8_t behavior=(uint8_t)(rows[i].suffix+17*init);uint32_t expected=rows[i].tag,resolved=UINT32_C(0xa5a5a5a5);
+			if(init==1&&rows[i].state==4)expected=0;
+			CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,rows[i].state,&resolved));
+			CHECK(resolved==expected);
+			CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,rows[i].state,expected));
+			resolved=UINT32_C(0xa5a5a5a5);
+			CHECK(!NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,UINT8_MAX,&resolved));
+			CHECK(resolved==UINT32_C(0xa5a5a5a5));
+			CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,rows[i].state,expected^1));
+		}
 	}
+	for(uint8_t init=0;init<11;init++){uint32_t resolved=UINT32_MAX;CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,(uint8_t)(17*init),0,&resolved)&&resolved==0);}
 	/* Queued damage and podium retain no initialized union.  Repeated freeze
 	 * and warp remain their steady suffix/state rows above. */
-	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,1+17*6,0,0));
-	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,1+17*7,0,0));
-	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,1+17*8,0,0));
-	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,1+17,4,0));
-	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,2+17*3,11,0));
-	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,16+17*4,10,7));
+	for(uint8_t init=6;init<=8;init++){uint32_t resolved=UINT32_MAX;CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,(uint8_t)(1+17*init),0,&resolved)&&resolved==0);}
+	{uint32_t resolved=UINT32_MAX;CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,1+17,4,&resolved)&&resolved==0);}
+	{uint32_t resolved=UINT32_MAX;CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,2+17*3,11,&resolved)&&resolved==0);}
+	{uint32_t resolved=UINT32_MAX;CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,16+17*4,10,&resolved)&&resolved==7);}
 	/* Internal post-init setters retain the armed suffix's union contract. */
-	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,4+17*9,2,1));
-	CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,4+17*9,2,2));
-	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,7+17*10,3,2));
-	CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,7+17*10,3,1));
-	CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_BOT,1,0,0));
-	CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_BOT,1,0,1));
+	{uint32_t resolved=UINT32_MAX;CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,4+17*9,2,&resolved)&&resolved==1);}
+	{uint32_t resolved=UINT32_MAX;CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,7+17*10,3,&resolved)&&resolved==2);}
+	/* KS_MASK_GRABBED remains suffix-disambiguated. */
+	{uint32_t resolved=UINT32_MAX;CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,11,5,&resolved)&&resolved==4);}
+	{uint32_t resolved=UINT32_MAX;CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,12,5,&resolved)&&resolved==5);}
+	{uint32_t resolved=UINT32_MAX;CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,13,5,&resolved)&&resolved==5);}
+	for(uint8_t behavior=0;behavior<=NATIVE_CANONICAL_DRIVER_BEHAVIOR_MAX;behavior++)
+	{
+		uint32_t resolved=UINT32_MAX;
+		CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_BOT,behavior,UINT8_MAX,&resolved)&&resolved==0);
+	}
+	{uint32_t resolved=UINT32_C(0xa5a5a5a5);CHECK(!NativeCanonicalDriverBehavior_ResolveActiveTag(0,1,0,&resolved)&&resolved==UINT32_C(0xa5a5a5a5));}
+	{uint32_t resolved=UINT32_C(0xa5a5a5a5);CHECK(!NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,187,0,&resolved)&&resolved==UINT32_C(0xa5a5a5a5));}
+	CHECK(!NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,1,0,NULL));
 	return 0;
 }
 int main(void)

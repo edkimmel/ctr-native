@@ -31,6 +31,10 @@ int NativeCanonicalDriverBehavior_Resolve(const struct NativeCanonicalDriverBeha
 int NativeCanonicalDriverBehavior_ResolveCallback(const struct NativeCanonicalDriverBehaviorRegistry *registry,
 	NativeCanonicalDriverBehaviorTokenCallback callback, void *context, uint8_t *behaviorIDOut);
 int NativeCanonicalDriverBehavior_ValidateKind(uint8_t kind, uint8_t behaviorID, uint8_t threadBehaviorID);
+/* Resolves the sole valid active tag for a pointer-free kind/behavior/state
+ * tuple. On failure activeTagOut is not modified. */
+int NativeCanonicalDriverBehavior_ResolveActiveTag(uint8_t kind, uint8_t behaviorID, uint8_t kartState,
+	uint32_t *activeTagOut);
 /* Pointer-free state/tag gate.  Active tags use the stable detailed enum
  * values (NONE through WARP); kartState is the documented PSX state value. */
 int NativeCanonicalDriverBehavior_ValidateState(uint8_t kind, uint8_t behaviorID, uint8_t kartState, uint32_t activeTag);

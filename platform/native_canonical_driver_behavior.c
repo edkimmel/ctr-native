@@ -53,21 +53,23 @@ int NativeCanonicalDriverBehavior_ValidateKind(uint8_t kind, uint8_t behaviorID,
 	if(kind==NATIVE_CANONICAL_DRIVER_KIND_BOT)return threadBehaviorID==NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE||threadBehaviorID==NATIVE_CANONICAL_DRIVER_THREAD_BOTS_REV_ENGINE;
 	return 0;
 }
-int NativeCanonicalDriverBehavior_ValidateState(uint8_t kind, uint8_t behaviorID, uint8_t kartState, uint32_t activeTag)
+int NativeCanonicalDriverBehavior_ResolveActiveTag(uint8_t kind, uint8_t behaviorID, uint8_t kartState,
+	uint32_t *activeTagOut)
 {
-	uint8_t suffix,init,expectedState,expectedTag;
-	if(behaviorID>NATIVE_CANONICAL_DRIVER_BEHAVIOR_MAX)return 0;
+	uint8_t suffix,init,expectedState;
+	uint32_t expectedTag;
+	if(behaviorID>NATIVE_CANONICAL_DRIVER_BEHAVIOR_MAX||activeTagOut==NULL)return 0;
 	/* Converted/native bots never carry a human active union. */
-	if(kind==NATIVE_CANONICAL_DRIVER_KIND_BOT)return activeTag==0;
+	if(kind==NATIVE_CANONICAL_DRIVER_KIND_BOT){*activeTagOut=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;return 1;}
 	if(kind!=NATIVE_CANONICAL_DRIVER_KIND_HUMAN)return 0;
 	suffix=(uint8_t)(behaviorID%NATIVE_CANONICAL_DRIVER_BEHAVIOR_SUFFIX_COUNT);
 	init=(uint8_t)(behaviorID/NATIVE_CANONICAL_DRIVER_BEHAVIOR_SUFFIX_COUNT);
 	/* Birth/teleport has no steady suffix yet. */
-	if(suffix==0)return activeTag==0;
+	if(suffix==0){*activeTagOut=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;return 1;}
 	/* Damage is queued before its suffix/union is installed; podium queues
 	 * driving while leaving the old RevEngine state with no active union. */
-	if((init==6||init==7||init==8)&&kartState==0&&activeTag==0)return 1;
-	if(init==1&&kartState==4&&activeTag==0)return 1;
+	if((init==6||init==7||init==8)&&kartState==0){*activeTagOut=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;return 1;}
+	if(init==1&&kartState==4){*activeTagOut=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;return 1;}
 	expectedState=0;expectedTag=0;
 	switch(suffix)
 	{
@@ -84,7 +86,14 @@ int NativeCanonicalDriverBehavior_ValidateState(uint8_t kind, uint8_t behaviorID
 		case 16: expectedState=10;expectedTag=7;break;
 		default:return 0;
 	}
-	return kartState==expectedState&&activeTag==expectedTag;
+	if(kartState!=expectedState)return 0;
+	*activeTagOut=expectedTag;
+	return 1;
+}
+int NativeCanonicalDriverBehavior_ValidateState(uint8_t kind, uint8_t behaviorID, uint8_t kartState, uint32_t activeTag)
+{
+	uint32_t expectedTag;
+	return NativeCanonicalDriverBehavior_ResolveActiveTag(kind,behaviorID,kartState,&expectedTag)&&activeTag==expectedTag;
 }
 int NativeCanonicalDriverBehavior_ValidateKindCallback(NativeCanonicalDriverBehaviorKindCallback callback, void *context,
 	uint8_t slotIndex, uint8_t behaviorID, uint8_t threadBehaviorID)

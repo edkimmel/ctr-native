@@ -107,8 +107,59 @@ static int TestRanksAndActiveTags(void)
 	value.prelude.raceOrderCount=0;value.prelude.raceOrder[0]=NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
 	return 0;
 }
+static void ValidMaskGrab(struct NativeCanonicalDriversDetailedV1 *value)
+{
+	ValidHuman(value);
+	value->slots[0].meta.behaviorID=11;
+	value->slots[0].meta.kartState=5;
+	value->slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB;
+}
+static int TestMetaFlagContract(void)
+{
+	struct NativeCanonicalDriversDetailedV1 value;
+	struct NativeCanonicalDriversV1 summary,before;
+	CHECK(NATIVE_CANONICAL_DRIVER_EXTERNAL_RAIN_CLOUD==UINT16_C(0x0001));
+	CHECK(NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT==UINT16_C(0x0002));
+	CHECK(NATIVE_CANONICAL_DRIVER_EXTERNAL_KNOWN_MASK==UINT16_C(0x0003));
+	CHECK(NATIVE_CANONICAL_DRIVER_THREAD_SIM_COLLISION_DISABLED==UINT16_C(0x0001));
+	CHECK(NATIVE_CANONICAL_DRIVER_THREAD_SIM_KNOWN_MASK==UINT16_C(0x0001));
+	for(uint8_t bit=0;bit<16;bit++)
+	{
+		uint16_t flag=(uint16_t)(UINT16_C(1)<<bit);
+		if(bit==1)ValidMaskGrab(&value);else ValidHuman(&value);
+		value.slots[0].meta.externalPresenceFlags=flag;
+		CHECK(NativeCanonicalDriversDetailedV1_Validate(&value)==(bit==0||bit==1));
+	}
+	for(uint8_t bit=0;bit<16;bit++)
+	{
+		uint16_t flag=(uint16_t)(UINT16_C(1)<<bit);
+		ValidHuman(&value);value.slots[0].meta.driverThreadSimFlags=flag;
+		CHECK(NativeCanonicalDriversDetailedV1_Validate(&value)==(bit==0));
+	}
+	ValidHuman(&value);value.slots[0].meta.externalPresenceFlags=NATIVE_CANONICAL_DRIVER_EXTERNAL_RAIN_CLOUD;
+	value.slots[0].meta.driverThreadSimFlags=NATIVE_CANONICAL_DRIVER_THREAD_SIM_COLLISION_DISABLED;
+	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	ValidHuman(&value);value.slots[0].meta.externalPresenceFlags=NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT;
+	CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
+	ValidMaskGrab(&value);value.slots[0].meta.externalPresenceFlags=NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT;
+	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].meta.externalPresenceFlags=NATIVE_CANONICAL_DRIVER_EXTERNAL_KNOWN_MASK;
+	value.slots[0].meta.driverThreadSimFlags=NATIVE_CANONICAL_DRIVER_THREAD_SIM_KNOWN_MASK;
+	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].meta.driverKind=NATIVE_CANONICAL_DRIVER_KIND_BOT;
+	value.slots[0].meta.threadBehaviorID=NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE;
+	value.slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;
+	value.prelude.playerCount=0;value.prelude.humanPlayerPositions[0]=NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT;value.prelude.activeBotCount=1;
+	value.slots[0].meta.externalPresenceFlags=0;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].meta.externalPresenceFlags=NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT;
+	CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
+	ValidHuman(&value);NativeCanonicalDriversV1_Init(&summary);summary.fullStreamDigest=UINT64_C(0x1111111111111111);before=summary;
+	value.slots[0].meta.externalPresenceFlags=UINT16_C(0x8000);
+	CHECK(!NativeCanonicalDriversDetailedV1_BuildSummary(&value,&summary)&&EqualSummary(&summary,&before));
+	return 0;
+}
 int main(void)
 {
-	if(TestGoldenAndSummary()!=0||TestSemanticMutations()!=0||TestRejectionAndTransaction()!=0||TestBotAndReferences()!=0||TestRanksAndActiveTags()!=0)return 1;
+	if(TestGoldenAndSummary()!=0||TestSemanticMutations()!=0||TestRejectionAndTransaction()!=0||TestBotAndReferences()!=0||TestRanksAndActiveTags()!=0||TestMetaFlagContract()!=0)return 1;
 	puts("native_canonical_drivers_detailed_test: passed");return 0;
 }
