@@ -688,22 +688,36 @@ static int MainCanonicalDrivers_BotNavIndex(const struct GameTracker *gGT,const 
 static int MainCanonicalDrivers_BotMaskPresent(const struct GameTracker *gGT,const struct Driver *driver,uint8_t threadBehaviorID,uint8_t *out)
 {
 	struct MainCanonicalDriversMetaFlags flags;
+	const struct MaskHeadWeapon *maskObject;
 	if(!gGT||!driver||!out)return 0;
-	if(!driver->botData.maskObj){*out=0;return 1;}
-	if(threadBehaviorID!=3||driver->kartState!=KS_MASK_GRABBED||
-		!MainCanonicalDrivers_ResolveAttachmentFlags(gGT,driver,NULL,driver->botData.maskObj,&flags)||
-		(flags.externalPresenceFlags&NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT)==0)return 0;
+	maskObject=driver->botData.maskObj;
+	if(maskObject&&(threadBehaviorID!=3||driver->kartState!=KS_MASK_GRABBED))return 0;
+	/* Null does not mean the child graph is safe to skip: all Bot extraction
+	 * uses the same complete immediate-child ownership walk as Meta. */
+	if(!MainCanonicalDrivers_ResolveAttachmentFlags(gGT,driver,NULL,maskObject,&flags))return 0;
+	if(maskObject==NULL)
+	{
+		if((flags.externalPresenceFlags&NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT)!=0)return 0;
+		*out=0;return 1;
+	}
+	if((flags.externalPresenceFlags&NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT)==0)return 0;
 	*out=1;return 1;
 }
 
 static int MainCanonicalDrivers_ExtractBot(const struct GameTracker *gGT,const struct sData *sourceData,const struct Driver *driver,uint8_t kind,uint8_t threadBehaviorID,struct NativeCanonicalDriverBotV1 *out)
 {
-	struct NativeCanonicalDriverBotV1 c={0};uint16_t index;uint8_t mask;
-	if(!gGT||!sourceData||!driver||!out)return 0;if(kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN){*out=c;return 1;}if(kind!=NATIVE_CANONICAL_DRIVER_KIND_BOT||!MainCanonicalDrivers_BotNavIndex(gGT,sourceData,driver,&index)||!MainCanonicalDrivers_BotMaskPresent(gGT,driver,threadBehaviorID,&mask))return 0;
-	if((driver->botData.botFlags&~NATIVE_CANONICAL_DRIVER_BOT_FLAGS_KNOWN_MASK)!=0||driver->botData.aiDamageState<0||driver->botData.aiDamageState==4||driver->botData.aiDamageState>5||
-		((driver->botData.botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)!=0&&driver->botData.aiDamageState==0)||
-		((driver->botData.botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS)!=0&&(driver->botData.botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)==0)||driver->botData.desiredPath_BossOnly>2)return 0;
-	c.botPath=driver->botData.botPath;c.botNavFrameIndex=index;c.navProgressRemainder=(int32_t)driver->botData.navProgressRemainder;c.botFlags=driver->botData.botFlags;c.botAccel=(int32_t)driver->botData.botAccel;c.aiDamageState=driver->botData.aiDamageState;
+	struct NativeCanonicalDriverBotV1 c={0};uint16_t index;uint8_t mask;uint32_t flags;
+	if(!gGT||!sourceData||!driver||!out)return 0;if(kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN){*out=c;return 1;}if(kind!=NATIVE_CANONICAL_DRIVER_KIND_BOT)return 0;
+	/* Reject all cheap scalar/callback-state inconsistencies before following
+	 * nav or attachment pointers. */
+	flags=driver->botData.botFlags;
+	if((flags&~NATIVE_CANONICAL_DRIVER_BOT_FLAGS_KNOWN_MASK)!=0||driver->botData.aiDamageState<0||driver->botData.aiDamageState==4||driver->botData.aiDamageState>5||
+		((flags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)!=0&&driver->botData.aiDamageState==0)||
+		((flags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS)!=0&&(flags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)==0)||driver->botData.desiredPath_BossOnly>2||
+		(threadBehaviorID==3&&(driver->kartState!=KS_MASK_GRABBED||(flags&(NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE|NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS))!=0))||
+		(driver->botData.maskObj!=NULL&&threadBehaviorID!=3))return 0;
+	if(!MainCanonicalDrivers_BotNavIndex(gGT,sourceData,driver,&index)||!MainCanonicalDrivers_BotMaskPresent(gGT,driver,threadBehaviorID,&mask))return 0;
+	c.botPath=driver->botData.botPath;c.botNavFrameIndex=index;c.navProgressRemainder=(int32_t)driver->botData.navProgressRemainder;c.botFlags=flags;c.botAccel=(int32_t)driver->botData.botAccel;c.aiDamageState=driver->botData.aiDamageState;
 	c.rotXZ=driver->botData.aiPhysics.rotXZ;c.driftTarget=driver->botData.aiPhysics.driftTarget;c.mulDrift=driver->botData.aiPhysics.mulDrift;c.simpTurnState=driver->botData.aiPhysics.simpTurnState;c.turboMeter=driver->botData.aiPhysics.turboMeter;c.fireLevel=driver->botData.aiPhysics.fireLevel;c.squishCooldown=(int32_t)driver->botData.aiPhysics.squishCooldown;c.speedY=(int32_t)driver->botData.aiPhysics.speedY;c.speedLinear=(int32_t)driver->botData.aiPhysics.speedLinear;
 	c.accel[0]=(int32_t)driver->botData.aiPhysics.accel.x;c.accel[1]=(int32_t)driver->botData.aiPhysics.accel.y;c.accel[2]=(int32_t)driver->botData.aiPhysics.accel.z;c.velocity[0]=(int32_t)driver->botData.aiPhysics.velocity.x;c.velocity[1]=(int32_t)driver->botData.aiPhysics.velocity.y;c.velocity[2]=(int32_t)driver->botData.aiPhysics.velocity.z;c.positionBackup[0]=(int32_t)driver->botData.positionBackup.x;c.positionBackup[1]=(int32_t)driver->botData.positionBackup.y;c.positionBackup[2]=(int32_t)driver->botData.positionBackup.z;c.aiRot[0]=driver->botData.aiRot.x;c.aiRot[1]=driver->botData.aiRot.y;c.aiRot[2]=driver->botData.aiRot.z;
 	c.estimatePos[0]=driver->botData.estimateNavFrame.pos.x;c.estimatePos[1]=driver->botData.estimateNavFrame.pos.y;c.estimatePos[2]=driver->botData.estimateNavFrame.pos.z;for(uint8_t n=0;n<4;n++)c.estimateRot[n]=driver->botData.estimateNavFrame.rot[n];c.aiProgressCooldown=(int32_t)driver->botData.ai_progress_cooldown;c.aiRotY=driver->botData.ai_rotY_608;c.aiQuadblockCheckpointIndex=driver->botData.ai_quadblock_checkpointIndex;c.estimateDistXYZ=driver->botData.estimateNavFrame.distToNextNavXYZ;c.estimateDistXZ=driver->botData.estimateNavFrame.distToNextNavXZ;c.estimateFlags=driver->botData.estimateNavFrame.flags;c.estimatePathChangeOpcode=driver->botData.estimateNavFrame.pathChangeOpcode;c.estimateGoBackCount=driver->botData.estimateNavFrame.goBackCount;c.estimateSpecialBits=driver->botData.estimateNavFrame.specialBits;c.maskObjPresent=mask;c.weaponCooldown=driver->botData.weaponCooldown;c.blastBounceCount=driver->botData.blastBounceCount;c.desiredPathBossOnly=driver->botData.desiredPath_BossOnly;*out=c;return 1;

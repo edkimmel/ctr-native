@@ -174,6 +174,9 @@ enum NativeCanonicalDriverBotFlags {
 	NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS = UINT32_C(0x0004),
 	NATIVE_CANONICAL_DRIVER_BOT_FLAGS_KNOWN_MASK = UINT32_C(0x03ff)
 };
+enum NativeCanonicalDriverKartState {
+	NATIVE_CANONICAL_DRIVER_KART_STATE_MASK_GRABBED = 5
+};
 struct NativeCanonicalDriverPendingDamageV1 { uint8_t type, attackerSlotPlusOne, reason, reservedZero; };
 _Static_assert(sizeof(struct NativeCanonicalDriverPendingDamageV1)==NATIVE_CANONICAL_DRIVERS_TAIL_BYTES,
 	"pending-damage tail must remain four explicit bytes");

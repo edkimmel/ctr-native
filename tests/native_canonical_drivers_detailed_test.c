@@ -109,10 +109,10 @@ static int TestPendingDamageTail(void)
 static int TestTypedBotLayout(void)
 {
 	struct NativeCanonicalDriversDetailedV1 value;struct NativeCanonicalDriversV1 summary,changedSummary;uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES],changed[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
-	ValidHuman(&value);value.slots[0].meta.driverKind=NATIVE_CANONICAL_DRIVER_KIND_BOT;value.slots[0].meta.behaviorID=1;value.slots[0].meta.threadBehaviorID=2;value.prelude.playerCount=0;value.prelude.activeBotCount=1;value.prelude.humanPlayerPositions[0]=NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT;
-	value.slots[0].bot.botPath=2;value.slots[0].bot.botNavFrameIndex=UINT16_C(0x1234);value.slots[0].bot.navProgressRemainder=INT32_C(-2);value.slots[0].bot.botFlags=UINT32_C(0x3);value.slots[0].bot.botAccel=INT32_MAX;value.slots[0].bot.aiDamageState=2;value.slots[0].bot.rotXZ=INT16_MIN;value.slots[0].bot.speedLinear=INT32_MIN;value.slots[0].bot.maskObjPresent=1;value.slots[0].bot.weaponCooldown=-3;value.slots[0].bot.desiredPathBossOnly=2;
+	ValidHuman(&value);value.slots[0].meta.driverKind=NATIVE_CANONICAL_DRIVER_KIND_BOT;value.slots[0].meta.behaviorID=1;value.slots[0].meta.threadBehaviorID=3;value.slots[0].meta.kartState=NATIVE_CANONICAL_DRIVER_KART_STATE_MASK_GRABBED;value.prelude.playerCount=0;value.prelude.activeBotCount=1;value.prelude.humanPlayerPositions[0]=NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT;
+	value.slots[0].bot.botPath=2;value.slots[0].bot.botNavFrameIndex=UINT16_C(0x1234);value.slots[0].bot.navProgressRemainder=INT32_C(-2);value.slots[0].bot.botFlags=UINT32_C(0x1);value.slots[0].bot.botAccel=INT32_MAX;value.slots[0].bot.aiDamageState=2;value.slots[0].bot.rotXZ=INT16_MIN;value.slots[0].bot.speedLinear=INT32_MIN;value.slots[0].bot.maskObjPresent=1;value.slots[0].bot.weaponCooldown=-3;value.slots[0].bot.desiredPathBossOnly=2;
 	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));CHECK(Encode(&value,bytes));
-	CHECK(bytes[64+388]==2&&bytes[64+389]==0&&bytes[64+390]==0x34&&bytes[64+391]==0x12&&bytes[64+392]==0xfe&&bytes[64+393]==0xff&&bytes[64+400]==3&&bytes[64+401]==0&&bytes[64+402]==0&&bytes[64+403]==0&&bytes[64+507]==1&&bytes[64+508]==0xfd&&bytes[64+509]==0xff&&bytes[64+511]==2);
+	CHECK(bytes[64+388]==2&&bytes[64+389]==0&&bytes[64+390]==0x34&&bytes[64+391]==0x12&&bytes[64+392]==0xfe&&bytes[64+393]==0xff&&bytes[64+400]==1&&bytes[64+401]==0&&bytes[64+402]==0&&bytes[64+403]==0&&bytes[64+507]==1&&bytes[64+508]==0xfd&&bytes[64+509]==0xff&&bytes[64+511]==2);
 	/* Every exact Bot byte participates in the behavior/Bot and full digests. */
 	CHECK(NativeCanonicalDriversDetailedV1_BuildSummary(&value,&summary));
 	for(uint32_t offset=0;offset<NATIVE_CANONICAL_DRIVERS_BOT_BYTES;offset++)
@@ -124,9 +124,23 @@ static int TestTypedBotLayout(void)
 	value.slots[0].bot.reserved5ac=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.reserved5ac=0;
 	value.slots[0].bot.reserved5cc=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.reserved5cc=0;
 	value.slots[0].bot.reserved628=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.reserved628=0;
-	value.slots[0].bot.botFlags=UINT32_C(0x400);CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.botFlags=UINT32_C(0x4);CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.botFlags=UINT32_C(0x3);
-	for(uint32_t n=0;n<5;n++){static const int16_t accepted[]={0,1,2,3,5};value.slots[0].bot.aiDamageState=accepted[n];value.slots[0].bot.botFlags=accepted[n]==0?0:3;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));}
-	value.slots[0].bot.aiDamageState=4;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.aiDamageState=2;value.slots[0].bot.botFlags=3;value.slots[0].bot.maskObjPresent=2;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.maskObjPresent=1;value.slots[0].bot.desiredPathBossOnly=3;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].bot.botNavFrameIndex=32766;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.botNavFrameIndex=UINT16_C(0x1234);
+	value.slots[0].meta.threadBehaviorID=2;value.slots[0].meta.kartState=0;value.slots[0].bot.maskObjPresent=0;
+	for(uint32_t flags=0;flags<=NATIVE_CANONICAL_DRIVER_BOT_FLAGS_KNOWN_MASK;flags++)
+	{
+		value.slots[0].bot.botFlags=flags;value.slots[0].bot.aiDamageState=(flags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)?1:0;
+		CHECK(NativeCanonicalDriversDetailedV1_Validate(&value)==((flags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS)==0||(flags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)!=0));
+	}
+	for(uint32_t bit=10;bit<32;bit++){value.slots[0].bot.botFlags=UINT32_C(1)<<bit;value.slots[0].bot.aiDamageState=0;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));}
+	for(int16_t state=-1;state<=6;state++)
+	{
+		int accepted=(state==0||state==1||state==2||state==3||state==5);
+		value.slots[0].bot.botFlags=state==0?0:NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE;value.slots[0].bot.aiDamageState=state;
+		CHECK(NativeCanonicalDriversDetailedV1_Validate(&value)==accepted);
+	}
+	value.slots[0].bot.botFlags=0;value.slots[0].bot.aiDamageState=0;
+	for(int16_t path=-1;path<=3;path++){value.slots[0].bot.botPath=path;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value)==(path>=0&&path<=2));}
+	value.slots[0].bot.botPath=2;value.slots[0].bot.botFlags=3;value.slots[0].bot.aiDamageState=2;value.slots[0].bot.maskObjPresent=2;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.maskObjPresent=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].meta.threadBehaviorID=3;value.slots[0].meta.kartState=NATIVE_CANONICAL_DRIVER_KART_STATE_MASK_GRABBED;value.slots[0].bot.botFlags=0;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.botFlags=NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].meta.threadBehaviorID=2;value.slots[0].meta.kartState=0;value.slots[0].bot.maskObjPresent=0;value.slots[0].bot.aiDamageState=5;CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));value.slots[0].bot.desiredPathBossOnly=3;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
 	return 0;
 }
 static int TestBotAndReferences(void)

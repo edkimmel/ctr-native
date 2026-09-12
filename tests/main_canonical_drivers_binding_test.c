@@ -996,7 +996,14 @@ static int BotProjectionTest(void)
 		value.bot[2].botPath!=0||value.bot[2].botNavFrameIndex!=0||value.bot[2].botFlags!=3||
 		value.bot[2].reserved5ac!=0||value.bot[2].reserved5cc!=0||value.bot[2].reserved628!=0||
 		memcmp(&value.bot[0],&(struct NativeCanonicalDriverBotV1){0},sizeof(value.bot[0]))!=0)return 0;
+	/* The maximum signed native point count is accepted without dereferencing
+	 * the synthetic one-past address; integer-address validation yields index. */
+	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);fixture.navPaths[0].header.numPoints=32766;
+	fixture.navPaths[0].header.last=(struct NavFrame *)((uintptr_t)&fixture.navPaths[0].header+sizeof(struct NavHeader)+(uintptr_t)32766*sizeof(struct NavFrame));
+	bot->botData.botNavFrame=(struct NavFrame *)((uintptr_t)&fixture.navPaths[0].header+sizeof(struct NavHeader)+(uintptr_t)32765*sizeof(struct NavFrame));
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||value.bot[2].botNavFrameIndex!=32765)return 0;
 	/* Human BotData is uninspected, including invalid-looking pointer/scalar data. */
+	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);
 	FLD(&fixture,0)->botData.botPath=99;FLD(&fixture,0)->botData.botNavFrame=(struct NavFrame *)(uintptr_t)1;
 	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||
 		memcmp(&value.bot[0],&(struct NativeCanonicalDriverBotV1){0},sizeof(value.bot[0]))!=0)return 0;
@@ -1012,6 +1019,10 @@ static int BotProjectionTest(void)
 	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
 	SourceFixtureInit(&fixture);before=value;fixture.navPaths[0].header.last=&fixture.navPaths[0].frames[1];
 	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);before=value;bot=FLD(&fixture,2);bot->botData.botNavFrame=&fixture.navPaths[0].frames[2];
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);before=value;bot=FLD(&fixture,2);bot->botData.botNavFrame=(struct NavFrame *)((uintptr_t)fixture.navPaths[0].frames+1);
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
 	SourceFixtureInit(&fixture);before=value;sd->NavPath_ptrHeader[0]=(struct NavHeader *)(uintptr_t)1;
 	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
 	SourceFixtureInit(&fixture);before=value;sd->NavPath_ptrNavFrameArray[0]=(struct NavFrame *)(uintptr_t)1;
@@ -1020,12 +1031,30 @@ static int BotProjectionTest(void)
 	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
 	SourceFixtureInit(&fixture);before=value;bot=FLD(&fixture,2);bot->botData.aiDamageState=4;
 	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	/* Callback 2 may carry active damage in state 5 with no mask object. */
+	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);bot->kartState=KS_MASK_GRABBED;bot->botData.botFlags=NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE;bot->botData.aiDamageState=5;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||value.bot[2].maskObjPresent!=0)return 0;
+	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);root=FLT(&fixture,2);root->funcThTick=BOTS_ThTick_RevEngine;bot->botData.botFlags=NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE;bot->botData.aiDamageState=1;before=value;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	/* A null Bot mask still traverses and validates the complete child graph. */
+	SourceFixtureInit(&fixture);root=FLT(&fixture,2);mask=FMetaChild(&fixture,3,3,3,root,VehBirth_NullThread,OTHER);root->childThread=mask;mask->siblingThread=mask;before=value;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
 	/* A non-null bot mask must be the one owned immediate mask child. */
 	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);root=FLT(&fixture,2);root->funcThTick=BOTS_ThTick_RevEngine;
 	bot->kartState=KS_MASK_GRABBED;mask=FMetaChild(&fixture,3,3,3,root,RB_MaskWeapon_ThTick,STATIC_AKUAKU);
 	root->childThread=mask;bot->botData.maskObj=(struct MaskHeadWeapon *)mask->object;
 	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||value.bot[2].maskObjPresent!=1)return 0;
 	before=value;mask->funcThTick=RB_RainCloud_ThTick;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);root=FLT(&fixture,2);root->funcThTick=BOTS_ThTick_RevEngine;bot->kartState=KS_MASK_GRABBED;mask=FMetaChild(&fixture,3,3,3,root,RB_MaskWeapon_ThTick,OTHER);root->childThread=mask;bot->botData.maskObj=(struct MaskHeadWeapon *)mask->object;before=value;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);root=FLT(&fixture,2);root->funcThTick=BOTS_ThTick_RevEngine;bot->kartState=KS_MASK_GRABBED;mask=FMetaChild(&fixture,3,3,3,root,RB_MaskWeapon_ThTick,STATIC_AKUAKU);root->childThread=mask;bot->botData.maskObj=(struct MaskHeadWeapon *)mask->object;mask->parentThread=FLT(&fixture,0);before=value;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);root=FLT(&fixture,2);root->funcThTick=BOTS_ThTick_RevEngine;bot->kartState=KS_MASK_GRABBED;mask=FMetaChild(&fixture,3,3,3,root,RB_MaskWeapon_ThTick,STATIC_AKUAKU);root->childThread=mask;bot->botData.maskObj=(struct MaskHeadWeapon *)mask->object;FList(&fixture.tracker.JitPools.smallStack.free,fixture.small,SOURCE_SMALL_RAW_SIZE,0xff);before=value;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);bot=FLD(&fixture,2);root=FLT(&fixture,2);root->funcThTick=BOTS_ThTick_RevEngine;bot->kartState=KS_MASK_GRABBED;mask=FMetaChild(&fixture,3,3,3,root,RB_MaskWeapon_ThTick,STATIC_AKUAKU);root->childThread=mask;bot->botData.maskObj=(struct MaskHeadWeapon *)mask->object;FMetaChild(&fixture,4,4,4,root,RB_MaskWeapon_ThTick,STATIC_AKUAKU)->object=mask->object;mask->siblingThread=FT(&fixture,4);before=value;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	SourceFixtureInit(&fixture);root=FLT(&fixture,2);root->childThread=(struct Thread *)(uintptr_t)1;before=value;
 	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
 	return 1;
 }

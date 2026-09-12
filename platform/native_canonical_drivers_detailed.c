@@ -123,15 +123,19 @@ static int BotZero(const struct NativeCanonicalDriverBotV1 *bot)
 	NativeCodecWriter_Init(&writer,bytes,sizeof(bytes),NULL);
 	return WriteBot(&writer,bot)&&NativeCodecWriter_Size(&writer)==sizeof(bytes)&&Zeros(bytes,sizeof(bytes));
 }
-static int BotValid(const struct NativeCanonicalDriverBotV1 *bot,uint8_t kind)
+static int BotValid(const struct NativeCanonicalDriverBotV1 *bot,const struct NativeCanonicalDriverMetaV1 *meta)
 {
-	if(kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN)return BotZero(bot);
-	if(bot->botPath<0||bot->botPath>2||bot->reserved5ac!=0||bot->reserved5cc!=0||bot->reserved628!=0||
+	if(meta->driverKind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN)return BotZero(bot);
+	if(bot->botPath<0||bot->botPath>2||bot->botNavFrameIndex>=32766||bot->reserved5ac!=0||bot->reserved5cc!=0||bot->reserved628!=0||
 		(bot->botFlags&~NATIVE_CANONICAL_DRIVER_BOT_FLAGS_KNOWN_MASK)!=0||bot->maskObjPresent>1||bot->desiredPathBossOnly>2)return 0;
 	if(bot->aiDamageState!=0&&bot->aiDamageState!=1&&bot->aiDamageState!=2&&bot->aiDamageState!=3&&bot->aiDamageState!=5)return 0;
 	if((bot->botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)!=0&&bot->aiDamageState==0)return 0;
 	if((bot->botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS)!=0&&
 		(bot->botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)==0)return 0;
+	if(meta->threadBehaviorID==3&&
+		(meta->kartState!=NATIVE_CANONICAL_DRIVER_KART_STATE_MASK_GRABBED||
+		 (bot->botFlags&(NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE|NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS))!=0))return 0;
+	if(bot->maskObjPresent!=0&&meta->threadBehaviorID!=3)return 0;
 	return 1;
 }
 
@@ -170,7 +174,7 @@ int NativeCanonicalDriversDetailedV1_Validate(const struct NativeCanonicalDriver
 			(allowedActiveTagMask&(UINT32_C(1)<<s->active.unionTag))==0)return 0;
 		if((s->meta.externalPresenceFlags&NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT)!=0 &&
 			(s->meta.driverKind!=NATIVE_CANONICAL_DRIVER_KIND_HUMAN || s->active.unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB))return 0;
-		if(!BotValid(&s->bot,s->meta.driverKind))return 0;
+		if(!BotValid(&s->bot,&s->meta))return 0;
 		if(s->meta.driverKind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN) { human++; }
 		else { bot++; if(s->active.unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE||!Zeros(s->active.branchBytes,sizeof(s->active.branchBytes)))return 0; }
 		present++;
