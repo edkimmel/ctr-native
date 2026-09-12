@@ -181,7 +181,7 @@ set_target_properties(ctr_native_canonical_projector PROPERTIES
 )
 target_include_directories(ctr_native_canonical_projector PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(ctr_native_canonical_projector PUBLIC CTR_NATIVE)
-target_link_libraries(ctr_native_canonical_projector PUBLIC ctr_native_canonical_state)
+target_link_libraries(ctr_native_canonical_projector PUBLIC ctr_native_canonical_state ctr_native_canonical_state_v3)
 
 add_library(ctr_native_replay_scheduler_seam STATIC platform/native_replay_scheduler_seam.c)
 set_target_properties(ctr_native_replay_scheduler_seam PROPERTIES
@@ -449,7 +449,7 @@ if(BUILD_TESTING)
         C_STANDARD_REQUIRED ON
         C_EXTENSIONS OFF
     )
-    target_link_libraries(native_canonical_projector_test PRIVATE ctr_native_canonical_projector)
+    target_link_libraries(native_canonical_projector_test PRIVATE ctr_native_canonical_projector ctr_native_replay_v3)
     add_test(NAME native_canonical_projector_unit COMMAND $<TARGET_FILE:native_canonical_projector_test>)
 
     add_executable(native_replay_scheduler_seam_test tests/native_replay_scheduler_seam_test.c)
