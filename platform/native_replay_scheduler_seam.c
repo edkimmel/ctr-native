@@ -229,6 +229,8 @@ int NativeReplayScheduler_BuildV3MismatchReport(const struct NativeReplayV3Frame
 	    (liveCanonical->input.padCount != NATIVE_CANONICAL_INPUT_PAD_COUNT) ||
 	    ((liveVsyncPacketCount != 0u) && (liveVsyncPackets == NULL))) return 0;
 	memset(&candidate, 0, sizeof(candidate));
+	candidate.expectedObservation = expected->end;
+	candidate.liveObservation = *liveEnd;
 	candidate.observationMismatch = (expected->end.frameTimer != liveEnd->frameTimer) ||
 	                                (expected->end.frameCounter != liveEnd->frameCounter) ||
 	                                (expected->end.timer != liveEnd->timer) ||
@@ -247,10 +249,22 @@ int NativeReplayScheduler_BuildV3MismatchReport(const struct NativeReplayV3Frame
 	                                (expected->end.advRng1 != liveEnd->advRng1);
 	candidate.vsyncTotalMismatch = (playbackVsyncMismatch != 0) || (expected->vsyncTotal != liveVsyncTotal);
 	candidate.vsyncPacketCountMismatch = expected->vsyncPacketCount != liveVsyncPacketCount;
+	candidate.expectedVsyncTotal = expected->vsyncTotal;
+	candidate.liveVsyncTotal = liveVsyncTotal;
+	candidate.expectedVsyncPacketCount = expected->vsyncPacketCount;
+	candidate.liveVsyncPacketCount = liveVsyncPacketCount;
+	candidate.firstVsyncPacketIndex = UINT32_MAX;
 	packetCount = expected->vsyncPacketCount < liveVsyncPacketCount ? expected->vsyncPacketCount : liveVsyncPacketCount;
 	if (packetCount > NATIVE_REPLAY_V2_MAX_VSYNC_PACKETS) packetCount = NATIVE_REPLAY_V2_MAX_VSYNC_PACKETS;
 	for (uint32_t index = 0; index < packetCount; index++)
-		if (expected->vsyncPackets[index] != liveVsyncPackets[index]) { candidate.vsyncFirstPacketMismatch = 1; break; }
+		if (expected->vsyncPackets[index] != liveVsyncPackets[index])
+		{
+			candidate.vsyncFirstPacketMismatch = 1;
+			candidate.firstVsyncPacketIndex = index;
+			candidate.expectedVsyncPacket = expected->vsyncPackets[index];
+			candidate.liveVsyncPacket = liveVsyncPackets[index];
+			break;
+		}
 	for (uint32_t index = 0; index < NATIVE_REPLAY_V2_PAD_COUNT; index++)
 	{
 		const struct NativeReplayV2Pad *recorded = &expected->pads[index];

@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 
-struct NativeReplayV3RecordSession { void *stream; struct NativeReplayV3Header header; uint32_t nextFrame; int failed; int finalized; };
+struct NativeReplayV3RecordSession { void *stream; struct NativeReplayV3Header header; uint32_t nextFrame; int failed; int finalized; char *path; char *temporaryPath; };
 struct NativeReplayV3PlaybackSession { void *stream; struct NativeReplayV3Header header; struct NativeIdentityV1 expectedIdentity; uint32_t nextFrame; int failed; };
 enum NativeReplayV3ReadResult { NATIVE_REPLAY_V3_READ_ERROR=-1, NATIVE_REPLAY_V3_READ_EOF=0, NATIVE_REPLAY_V3_READ_FRAME=1 };
 int NativeReplayV3File_ExpectedLength(uint32_t frameCount,uint64_t *lengthOut);
@@ -14,6 +14,10 @@ int NativeReplayV3Record_Open(struct NativeReplayV3RecordSession *session,const 
 int NativeReplayV3Record_AppendFrame(struct NativeReplayV3RecordSession *session,const struct NativeReplayV3Frame *frame);
 int NativeReplayV3Record_Finalize(struct NativeReplayV3RecordSession *session);
 void NativeReplayV3Record_Close(struct NativeReplayV3RecordSession *session);
+/* Headless fault seam: the next finalize close reports failure after closing
+ * the provisional stream.  It proves the final header is never published
+ * before a successful close. */
+void NativeReplayV3File_TestFailNextFinalizeClose(void);
 void NativeReplayV3Playback_Init(struct NativeReplayV3PlaybackSession *session);
 int NativeReplayV3Playback_Open(struct NativeReplayV3PlaybackSession *session,const char *path,const struct NativeIdentityV1 *expectedIdentity,struct NativeReplayV3Header *headerOut);
 int NativeReplayV3Playback_ReadNext(struct NativeReplayV3PlaybackSession *session,struct NativeReplayV3Frame *frame);

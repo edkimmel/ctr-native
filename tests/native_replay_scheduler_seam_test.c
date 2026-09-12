@@ -242,6 +242,10 @@ static int TestV3MismatchReport(void)
 	live.drivers.fullStreamDigest ^= 1u;
 	CHECK(NativeReplayScheduler_BuildV3MismatchReport(&expected, &liveEnd, 5u, 2u, packets, 1, &live, &report));
 	CHECK(report.observationMismatch && report.vsyncTotalMismatch && !report.vsyncPacketCountMismatch && report.vsyncFirstPacketMismatch);
+	CHECK(report.expectedObservation.timer == 0 && report.liveObservation.timer == 1);
+	CHECK(report.expectedVsyncTotal == 4u && report.liveVsyncTotal == 5u &&
+	      report.expectedVsyncPacketCount == 2u && report.liveVsyncPacketCount == 2u &&
+	      report.firstVsyncPacketIndex == 0u && report.expectedVsyncPacket == 2u && report.liveVsyncPacket == 3u);
 	CHECK(report.padMask == (UINT32_C(1) << 2u));
 	CHECK(report.firstDomainID == NATIVE_CANONICAL_DOMAIN_INPUT && report.expectedDomainDigest != report.liveDomainDigest);
 	CHECK(report.combinedMismatch && report.expectedCombinedDigest != report.liveCombinedDigest);

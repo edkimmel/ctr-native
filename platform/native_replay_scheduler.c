@@ -2521,9 +2521,14 @@ int NativeReplayScheduler_EndFrameV3(const struct NativeReplaySchedulerFrameInfo
 		{
 			s_divergenceLogged = 1;
 			Platform_Log("[CTR Replay v3] divergence at replay frame %u\n", s_replayFrame);
-			Platform_Log("[CTR Replay v3] observation=%d vsync(total=%d count=%d packet=%d) pads=0x%x firstDomain=%u expected=0x%016llx live=0x%016llx combined=%d expected=0x%016llx live=0x%016llx\n",
-			             s_v3MismatchReport.observationMismatch, s_v3MismatchReport.vsyncTotalMismatch,
+			Platform_Log("[CTR Replay v3] observation=%d (timer expected=%d live=%d) vsync(flags total=%d count=%d packet=%d; totals expected=%u live=%u counts expected=%u live=%u first=%u expected=%u live=%u) pads=0x%x firstDomain=%u expected=0x%016llx live=0x%016llx combined=%d expected=0x%016llx live=0x%016llx\n",
+			             s_v3MismatchReport.observationMismatch, s_v3MismatchReport.expectedObservation.timer,
+			             s_v3MismatchReport.liveObservation.timer, s_v3MismatchReport.vsyncTotalMismatch,
 			             s_v3MismatchReport.vsyncPacketCountMismatch, s_v3MismatchReport.vsyncFirstPacketMismatch,
+			             s_v3MismatchReport.expectedVsyncTotal, s_v3MismatchReport.liveVsyncTotal,
+			             s_v3MismatchReport.expectedVsyncPacketCount, s_v3MismatchReport.liveVsyncPacketCount,
+			             s_v3MismatchReport.firstVsyncPacketIndex, s_v3MismatchReport.expectedVsyncPacket,
+			             s_v3MismatchReport.liveVsyncPacket,
 			             s_v3MismatchReport.padMask, s_v3MismatchReport.firstDomainID,
 			             (unsigned long long)s_v3MismatchReport.expectedDomainDigest, (unsigned long long)s_v3MismatchReport.liveDomainDigest,
 			             s_v3MismatchReport.combinedMismatch, (unsigned long long)s_v3MismatchReport.expectedCombinedDigest,

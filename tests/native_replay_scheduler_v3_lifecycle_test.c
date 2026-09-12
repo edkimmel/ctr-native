@@ -114,7 +114,6 @@ static int TestRecordPlaybackAndPoisonedPrefix(void)
 	NativeReplayV3Record_Close(&record);
 	NativeReplayV3Playback_Init(&playback);
 	CHECK(!NativeReplayV3Playback_Open(&playback, path, &identity, &header));
-	CHECK(remove(path) == 0);
 
 	/* Session append failure is likewise terminal after no successful seal. */
 	CHECK(TemporaryPath(path));
@@ -131,7 +130,6 @@ static int TestRecordPlaybackAndPoisonedPrefix(void)
 	NativeReplayV3Record_Close(&record);
 	NativeReplayV3Playback_Init(&playback);
 	CHECK(!NativeReplayV3Playback_Open(&playback, path, &identity, &header));
-	CHECK(remove(path) == 0);
 	return 0;
 }
 

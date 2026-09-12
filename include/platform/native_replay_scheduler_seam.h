@@ -40,9 +40,20 @@ struct NativeReplaySchedulerV3Lifecycle
 struct NativeReplaySchedulerV3MismatchReport
 {
 	int observationMismatch;
+	/* Preserve the full values, not merely their comparison result, so an
+	 * artifact can identify which observation changed without replaying it. */
+	struct NativeReplayV2FrameObservation expectedObservation;
+	struct NativeReplayV2FrameObservation liveObservation;
 	int vsyncTotalMismatch;
 	int vsyncPacketCountMismatch;
 	int vsyncFirstPacketMismatch;
+	uint32_t expectedVsyncTotal;
+	uint32_t liveVsyncTotal;
+	uint32_t expectedVsyncPacketCount;
+	uint32_t liveVsyncPacketCount;
+	uint32_t firstVsyncPacketIndex;
+	uint16_t expectedVsyncPacket;
+	uint16_t liveVsyncPacket;
 	uint32_t padMask;
 	uint32_t firstDomainID;
 	uint64_t expectedDomainDigest;
