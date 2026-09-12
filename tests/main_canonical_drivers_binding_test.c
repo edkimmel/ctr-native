@@ -4,6 +4,7 @@
 #include <limits.h>
 #include <stdio.h>
 struct sData sdata_static;
+struct Data data;
 #define C(x) do{if(!(x)){fprintf(stderr,"fail %d\n",__LINE__);return 1;}}while(0)
 #define DRIVER_STUB(name) static volatile int name##_called; void name(struct Thread*t,struct Driver*d){(void)t;(void)d;name##_called++;}
 DRIVER_STUB(VehPhysProc_Driving_Init) DRIVER_STUB(VehStuckProc_RevEngine_Init) DRIVER_STUB(VehPhysProc_FreezeEndEvent_Init) DRIVER_STUB(VehStuckProc_Warp_Init) DRIVER_STUB(VehStuckProc_RIP_Init) DRIVER_STUB(VehStuckProc_Tumble_Init) DRIVER_STUB(VehStuckProc_PlantEaten_Init) DRIVER_STUB(VehPhysProc_SpinFirst_Init) DRIVER_STUB(VehPhysProc_PowerSlide_InitSetUpdate) DRIVER_STUB(VehPhysProc_SpinFirst_InitSetUpdate)
@@ -97,7 +98,7 @@ static void SourceDriver(struct SourceFixture *f,uint8_t slot,int bot){SourceDri
 static void SourceFixtureInit(struct SourceFixture *f)
 {
 	struct sData *sd=&sdata_static;
-	memset(f,0,sizeof(*f));memset(f->largeIndex,0xff,sizeof(f->largeIndex));memset(f->threadIndex,0xff,sizeof(f->threadIndex));memset(f->instanceIndex,0xff,sizeof(f->instanceIndex));memset(sd,0,sizeof(*sd));f->tracker.numLaps=3;f->tracker.numPlyrCurrGame=1;
+	memset(f,0,sizeof(*f));memset(f->largeIndex,0xff,sizeof(f->largeIndex));memset(f->threadIndex,0xff,sizeof(f->threadIndex));memset(f->instanceIndex,0xff,sizeof(f->instanceIndex));memset(sd,0,sizeof(*sd));memset(&data,0,sizeof(data));f->tracker.numLaps=3;f->tracker.numPlyrCurrGame=1;
 	FInitPool(&f->tracker.JitPools.largeStack,f->large,SOURCE_LARGE_RAW_SIZE);
 	FInitPool(&f->tracker.JitPools.smallStack,f->small,SOURCE_SMALL_RAW_SIZE);
 	FInitPool(&f->tracker.JitPools.thread,f->thread,sizeof(struct Thread));
@@ -1059,4 +1060,56 @@ static int BotProjectionTest(void)
 	return 1;
 }
 
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
+static void SourceBehavior(struct SourceFixture *fixture,uint8_t slot,uint8_t init,uint8_t suffix)
+{
+	struct Driver *driver=FLD(fixture,slot);
+	driver->funcPtrs[0]=initFunctions[init];
+	for(uint8_t n=0;n<12;n++)driver->funcPtrs[n+1]=suffixFunctions[suffix][n];
+}
+
+static int MetaProjectionTest(void)
+{
+	struct SourceFixture fixture;
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate value,before;
+	struct Driver *driver;struct Thread *root,*child;struct sData *sd=&sdata_static;
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);data.characterIDs[0]=15;
+	driver->actionsFlagSet=UINT32_C(0x04000011);driver->actionsFlagSetPrevFrame=UINT32_C(0x04000022);driver->heldItemID=HELD_ITEM_ROULETTE;driver->numHeldItems=3;driver->numWumpas=-1;driver->numCrystals=-2;driver->numTimeCrates=-3;driver->accelConst=-4;driver->turnConst=-5;driver->turboConst=-6;driver->lapIndex=7;driver->simpTurnState=-8;driver->currentTerrain=20;driver->forcedJumpType=2;driver->normalVecID=-9;driver->boolFirstFrameSinceRevEngine=1;driver->clockSend=10;driver->revEngineState=2;driver->collisionFlags=DRIVER_COLL_FLAG_MASK_GRAB_REQUEST|DRIVER_COLL_FLAG_GROUNDED;driver->rainCloudEffect=6;
+	/* Inactive human union storage remains uninspected. */
+	driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||
+		value.meta[0].present!=1||value.meta[0].slotIndex!=0||value.meta[0].driverID!=0||value.meta[0].characterID!=15||
+		value.meta[0].actionsFlagSet!=0x11||value.meta[0].actionsFlagSetPrevFrame!=0x22||value.meta[0].heldItemID!=HELD_ITEM_ROULETTE||
+		value.meta[0].numWumpas!=-1||value.meta[0].normalVecID!=-9||value.meta[0].externalPresenceFlags!=0||value.meta[0].collisionFlags!=9||value.meta[0].rainCloudEffect!=6||
+		value.meta[2].driverKind!=NATIVE_CANONICAL_DRIVER_KIND_BOT||value.bot[2].botPath!=0||
+		memcmp(&value.meta[1],&(struct NativeCanonicalDriverMetaV1){0},sizeof(value.meta[1]))!=0)return 0;
+	/* An absent stable slot is never read, even if its free-pool payload holds
+	 * stale scalar values that would otherwise fail the Meta gates. */
+	SourceFixtureInit(&fixture);data.characterIDs[1]=99;FD(&fixture,1)->heldItemID=14;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||
+		memcmp(&value.meta[1],&(struct NativeCanonicalDriverMetaV1){0},sizeof(value.meta[1]))!=0||
+		memcmp(&value.bot[1],&(struct NativeCanonicalDriverBotV1){0},sizeof(value.bot[1]))!=0)return 0;
+	#define FAIL_META_CAND(change) do { before=value; change; if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0; SourceFixtureInit(&fixture); } while(0)
+	FAIL_META_CAND(data.characterIDs[0]=16);
+	FAIL_META_CAND(FLD(&fixture,0)->boolFirstFrameSinceRevEngine=2);
+	FAIL_META_CAND(FLD(&fixture,0)->heldItemID=14);
+	FAIL_META_CAND(FLD(&fixture,0)->currentTerrain=21);
+	FAIL_META_CAND(FLD(&fixture,0)->forcedJumpType=3);
+	FAIL_META_CAND(FLD(&fixture,0)->revEngineState=3);
+	FAIL_META_CAND(FLD(&fixture,0)->collisionFlags=0x10);
+	FAIL_META_CAND(FLD(&fixture,0)->rainCloudEffect=7);
+	#undef FAIL_META_CAND
+	/* Rain is the only always-selected human attachment fact. */
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);root=FLT(&fixture,0);child=FMetaChild(&fixture,1,1,1,root,RB_RainCloud_ThTick,STATIC_CLOUD);root->childThread=child;driver->thCloud=child;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.meta[0].externalPresenceFlags!=NATIVE_CANONICAL_DRIVER_EXTERNAL_RAIN_CLOUD)return 0;
+	/* The actual MASK_GRAB branch owns/emits the mask fact. */
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,0,11);driver->kartState=KS_MASK_GRABBED;root=FLT(&fixture,0);child=FMetaChild(&fixture,3,3,3,root,RB_MaskWeapon_ThTick,STATIC_AKUAKU);root->childThread=child;driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)child->object;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||(value.meta[0].externalPresenceFlags&NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT)==0)return 0;
+	/* REV_ENGINE validates its selected pointer but never emits the Meta mask bit. */
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,0,14);driver->kartState=KS_ENGINE_REVVING;driver->KartStates.RevEngine.boolMaskGrab=1;root=FLT(&fixture,0);child=FMetaChild(&fixture,3,3,3,root,RB_MaskWeapon_ThTick,STATIC_AKUAKU);root->childThread=child;driver->KartStates.RevEngine.maskObj=(struct MaskHeadWeapon *)child->object;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.meta[0].externalPresenceFlags!=0)return 0;
+	before=value;driver->KartStates.RevEngine.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	return 1;
+}
+
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}

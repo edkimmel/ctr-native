@@ -259,7 +259,7 @@ static int ValidateMetaThread(const struct Thread *thread,const struct Thread *r
  * proves every child before dereferencing it. */
 static int MainCanonicalDrivers_ResolveAttachmentFlags(const struct GameTracker *gGT,
 	const struct Driver *driver,const struct Thread *cloudThread,
-	const struct MaskHeadWeapon *maskObject,struct MainCanonicalDriversMetaFlags *out)
+	const struct MaskHeadWeapon *maskObject,int emitMaskFlag,struct MainCanonicalDriversMetaFlags *out)
 {
 	struct NativeCanonicalPoolGeometry threadGeometry,instanceGeometry,smallGeometry;
 	struct NativeCanonicalPoolList threadFree,instanceFree,instanceTaken,smallFree;
@@ -310,7 +310,7 @@ static int MainCanonicalDrivers_ResolveAttachmentFlags(const struct GameTracker 
 			if(++maskMatches!=1||child->funcThTick!=RB_MaskWeapon_ThTick||
 				(child->modelIndex!=STATIC_AKUAKU&&child->modelIndex!=STATIC_UKAUKA)||(child->flags&0x300u)!=SMALL||
 				!PoolPayloadAllocatedFromFree(&smallGeometry,&smallFree,child->object,sizeof(struct Item),sizeof(struct MaskHeadWeapon)))goto done;
-			candidate.externalPresenceFlags|=NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT;
+			if(emitMaskFlag)candidate.externalPresenceFlags|=NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT;
 		}
 		child=next;
 	}
@@ -330,7 +330,7 @@ int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 	if(!gGT||!driver||!out||driver->kartState!=kartState||
 		!NativeCanonicalDriverBehavior_IsMaskGrabActive(kind,behaviorID,kartState,&wantsMask))return 0;
 	return MainCanonicalDrivers_ResolveAttachmentFlags(gGT,driver,driver->thCloud,
-		wantsMask?driver->KartStates.MaskGrab.maskObj:NULL,out);
+		wantsMask?driver->KartStates.MaskGrab.maskObj:NULL,wantsMask,out);
 }
 
 int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,const struct sData *sourceData,struct NativeCanonicalDriversRosterCandidate *out)
@@ -694,13 +694,12 @@ static int MainCanonicalDrivers_BotMaskPresent(const struct GameTracker *gGT,con
 	if(maskObject&&(threadBehaviorID!=3||driver->kartState!=KS_MASK_GRABBED))return 0;
 	/* Null does not mean the child graph is safe to skip: all Bot extraction
 	 * uses the same complete immediate-child ownership walk as Meta. */
-	if(!MainCanonicalDrivers_ResolveAttachmentFlags(gGT,driver,NULL,maskObject,&flags))return 0;
+	if(!MainCanonicalDrivers_ResolveAttachmentFlags(gGT,driver,NULL,maskObject,0,&flags))return 0;
 	if(maskObject==NULL)
 	{
 		if((flags.externalPresenceFlags&NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT)!=0)return 0;
 		*out=0;return 1;
 	}
-	if((flags.externalPresenceFlags&NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT)==0)return 0;
 	*out=1;return 1;
 }
 
@@ -723,9 +722,98 @@ static int MainCanonicalDrivers_ExtractBot(const struct GameTracker *gGT,const s
 	c.estimatePos[0]=driver->botData.estimateNavFrame.pos.x;c.estimatePos[1]=driver->botData.estimateNavFrame.pos.y;c.estimatePos[2]=driver->botData.estimateNavFrame.pos.z;for(uint8_t n=0;n<4;n++)c.estimateRot[n]=driver->botData.estimateNavFrame.rot[n];c.aiProgressCooldown=(int32_t)driver->botData.ai_progress_cooldown;c.aiRotY=driver->botData.ai_rotY_608;c.aiQuadblockCheckpointIndex=driver->botData.ai_quadblock_checkpointIndex;c.estimateDistXYZ=driver->botData.estimateNavFrame.distToNextNavXYZ;c.estimateDistXZ=driver->botData.estimateNavFrame.distToNextNavXZ;c.estimateFlags=driver->botData.estimateNavFrame.flags;c.estimatePathChangeOpcode=driver->botData.estimateNavFrame.pathChangeOpcode;c.estimateGoBackCount=driver->botData.estimateNavFrame.goBackCount;c.estimateSpecialBits=driver->botData.estimateNavFrame.specialBits;c.maskObjPresent=mask;c.weaponCooldown=driver->botData.weaponCooldown;c.blastBounceCount=driver->botData.blastBounceCount;c.desiredPathBossOnly=driver->botData.desiredPath_BossOnly;*out=c;return 1;
 }
 
+static int MainCanonicalDrivers_ValidMetaScalars(const struct Driver *driver,uint8_t slot)
+{
+	int characterID;
+	if(!driver||slot>=8)return 0;
+	characterID=data.characterIDs[slot];
+	return characterID>=0&&characterID<=15&&driver->boolFirstFrameSinceRevEngine<=1&&
+		((int)driver->heldItemID<=13||driver->heldItemID==15||driver->heldItemID==16)&&
+		driver->currentTerrain<=20&&driver->forcedJumpType<=2&&(int8_t)driver->revEngineState>=0&&
+		(int8_t)driver->revEngineState<=2&&((uint16_t)driver->collisionFlags&~UINT16_C(0xf))==0&&
+		(int)driver->rainCloudEffect>=0&&(int)driver->rainCloudEffect<=6;
+}
+
+static int MainCanonicalDrivers_SelectAttachmentFacts(const struct Driver *driver,uint8_t kind,
+	uint8_t behaviorID,uint8_t kartState,const struct Thread **cloudOut,
+	const struct MaskHeadWeapon **maskOut,int *emitMaskOut)
+{
+	uint32_t tag;
+	if(!driver||!cloudOut||!maskOut||!emitMaskOut||driver->kartState!=kartState)return 0;
+	*cloudOut=driver->thCloud;*maskOut=NULL;*emitMaskOut=0;
+	if(kind==NATIVE_CANONICAL_DRIVER_KIND_BOT)
+	{
+		*maskOut=driver->botData.maskObj;
+		return 1;
+	}
+	if(kind!=NATIVE_CANONICAL_DRIVER_KIND_HUMAN||
+		!NativeCanonicalDriverBehavior_ResolveActualActiveTag(kind,behaviorID,kartState,&tag))return 0;
+	if(tag==NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB)
+	{
+		*maskOut=driver->KartStates.MaskGrab.maskObj;*emitMaskOut=1;
+	}
+	else if(tag==NATIVE_CANONICAL_DRIVER_ACTIVE_REV_ENGINE)
+	{
+		if(driver->KartStates.RevEngine.boolMaskGrab>1)return 0;
+		if(driver->KartStates.RevEngine.boolMaskGrab)
+		{
+			if(!driver->KartStates.RevEngine.maskObj)return 0;
+			*maskOut=driver->KartStates.RevEngine.maskObj;
+		}
+	}
+	return 1;
+}
+
+static int MainCanonicalDrivers_ExtractMetaAndBot(const struct GameTracker *gGT,const struct sData *sourceData,
+	const struct Driver *driver,uint8_t slot,const struct NativeCanonicalDriversRosterCandidate *roster,
+	struct NativeCanonicalDriverMetaV1 *metaOut,struct NativeCanonicalDriverBotV1 *botOut)
+{
+	struct NativeCanonicalDriverMetaV1 meta={0};struct NativeCanonicalDriverBotV1 bot={0};
+	struct MainCanonicalDriversMetaFlags facts;const struct Thread *cloud;const struct MaskHeadWeapon *mask;
+	uint8_t kind,threadBehaviorID;int emitMask;uint16_t navIndex;
+	if(!gGT||!sourceData||!driver||!roster||!metaOut||!botOut||slot>=8||!MainCanonicalDrivers_ValidMetaScalars(driver,slot))return 0;
+	kind=roster->kind[slot];threadBehaviorID=roster->threadBehaviorID[slot];
+	/* Bot pointer-state gates are intentionally checked before traversal. */
+	if(kind==NATIVE_CANONICAL_DRIVER_KIND_BOT&&
+		((driver->botData.botFlags&~NATIVE_CANONICAL_DRIVER_BOT_FLAGS_KNOWN_MASK)!=0||driver->botData.aiDamageState<0||driver->botData.aiDamageState==4||driver->botData.aiDamageState>5||
+		 ((driver->botData.botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)!=0&&driver->botData.aiDamageState==0)||
+		 ((driver->botData.botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS)!=0&&(driver->botData.botFlags&NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE)==0)||driver->botData.desiredPath_BossOnly>2||
+		 (threadBehaviorID==3&&(driver->kartState!=KS_MASK_GRABBED||(driver->botData.botFlags&(NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_ACTIVE|NATIVE_CANONICAL_DRIVER_BOT_FLAG_DAMAGE_SUPPRESS))!=0))||
+		 (driver->botData.maskObj!=NULL&&threadBehaviorID!=3)))return 0;
+	if(!MainCanonicalDrivers_SelectAttachmentFacts(driver,kind,roster->behaviorID[slot],driver->kartState,&cloud,&mask,&emitMask)||
+		!MainCanonicalDrivers_ResolveAttachmentFlags(gGT,driver,cloud,mask,emitMask,&facts))return 0;
+	meta.present=1;meta.slotIndex=slot;meta.driverID=slot;meta.characterID=(uint8_t)data.characterIDs[slot];meta.driverKind=kind;
+	meta.behaviorID=roster->behaviorID[slot];meta.threadBehaviorID=threadBehaviorID;meta.kartState=driver->kartState;
+	meta.actionsFlagSet=(uint32_t)driver->actionsFlagSet&~UINT32_C(0x04000000);meta.actionsFlagSetPrevFrame=(uint32_t)driver->actionsFlagSetPrevFrame&~UINT32_C(0x04000000);
+	meta.heldItemID=(uint8_t)driver->heldItemID;meta.numHeldItems=driver->numHeldItems;meta.numWumpas=(int8_t)driver->numWumpas;meta.numCrystals=(int8_t)driver->numCrystals;meta.numTimeCrates=(int8_t)driver->numTimeCrates;meta.accelConst=(int8_t)driver->accelConst;meta.turnConst=(int8_t)driver->turnConst;meta.turboConst=(int8_t)driver->turboConst;meta.lapIndex=driver->lapIndex;meta.simpTurnState=(int8_t)driver->simpTurnState;meta.currentTerrain=driver->currentTerrain;meta.forcedJumpType=(uint8_t)driver->forcedJumpType;meta.normalVecID=(int8_t)driver->normalVecID;meta.boolFirstFrameSinceRevEngine=driver->boolFirstFrameSinceRevEngine;meta.clockSend=driver->clockSend;meta.revEngineState=(int8_t)driver->revEngineState;meta.externalPresenceFlags=facts.externalPresenceFlags;meta.driverThreadSimFlags=facts.driverThreadSimFlags;meta.collisionFlags=(int16_t)driver->collisionFlags;meta.rainCloudEffect=(int16_t)driver->rainCloudEffect;
+	if(kind==NATIVE_CANONICAL_DRIVER_KIND_BOT)
+	{
+		if(!MainCanonicalDrivers_BotNavIndex(gGT,sourceData,driver,&navIndex))return 0;
+		/* Reuse the proven attachment fact; pointer presence has already passed
+		 * the one walk above, so no second child traversal is needed. */
+		bot.botPath=driver->botData.botPath;bot.botNavFrameIndex=navIndex;bot.navProgressRemainder=(int32_t)driver->botData.navProgressRemainder;bot.botFlags=driver->botData.botFlags;bot.botAccel=(int32_t)driver->botData.botAccel;bot.aiDamageState=driver->botData.aiDamageState;bot.maskObjPresent=mask?1:0;
+		bot.rotXZ=driver->botData.aiPhysics.rotXZ;bot.driftTarget=driver->botData.aiPhysics.driftTarget;bot.mulDrift=driver->botData.aiPhysics.mulDrift;bot.simpTurnState=driver->botData.aiPhysics.simpTurnState;bot.turboMeter=driver->botData.aiPhysics.turboMeter;bot.fireLevel=driver->botData.aiPhysics.fireLevel;bot.squishCooldown=(int32_t)driver->botData.aiPhysics.squishCooldown;bot.speedY=(int32_t)driver->botData.aiPhysics.speedY;bot.speedLinear=(int32_t)driver->botData.aiPhysics.speedLinear;
+		bot.accel[0]=(int32_t)driver->botData.aiPhysics.accel.x;bot.accel[1]=(int32_t)driver->botData.aiPhysics.accel.y;bot.accel[2]=(int32_t)driver->botData.aiPhysics.accel.z;bot.velocity[0]=(int32_t)driver->botData.aiPhysics.velocity.x;bot.velocity[1]=(int32_t)driver->botData.aiPhysics.velocity.y;bot.velocity[2]=(int32_t)driver->botData.aiPhysics.velocity.z;bot.positionBackup[0]=(int32_t)driver->botData.positionBackup.x;bot.positionBackup[1]=(int32_t)driver->botData.positionBackup.y;bot.positionBackup[2]=(int32_t)driver->botData.positionBackup.z;bot.aiRot[0]=driver->botData.aiRot.x;bot.aiRot[1]=driver->botData.aiRot.y;bot.aiRot[2]=driver->botData.aiRot.z;
+		bot.estimatePos[0]=driver->botData.estimateNavFrame.pos.x;bot.estimatePos[1]=driver->botData.estimateNavFrame.pos.y;bot.estimatePos[2]=driver->botData.estimateNavFrame.pos.z;for(uint8_t n=0;n<4;n++)bot.estimateRot[n]=driver->botData.estimateNavFrame.rot[n];bot.aiProgressCooldown=(int32_t)driver->botData.ai_progress_cooldown;bot.aiRotY=driver->botData.ai_rotY_608;bot.aiQuadblockCheckpointIndex=driver->botData.ai_quadblock_checkpointIndex;bot.estimateDistXYZ=driver->botData.estimateNavFrame.distToNextNavXYZ;bot.estimateDistXZ=driver->botData.estimateNavFrame.distToNextNavXZ;bot.estimateFlags=driver->botData.estimateNavFrame.flags;bot.estimatePathChangeOpcode=driver->botData.estimateNavFrame.pathChangeOpcode;bot.estimateGoBackCount=driver->botData.estimateNavFrame.goBackCount;bot.estimateSpecialBits=driver->botData.estimateNavFrame.specialBits;bot.weaponCooldown=driver->botData.weaponCooldown;bot.blastBounceCount=driver->botData.blastBounceCount;bot.desiredPathBossOnly=driver->botData.desiredPath_BossOnly;
+	}
+	*metaOut=meta;*botOut=bot;return 1;
+}
+
 int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(const struct GameTracker *gGT,const struct sData *sourceData,struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotCandidate *out)
 {
 	struct MainCanonicalDriversRosterRaceDynamicsActivePendingCandidate prior;struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotCandidate candidate;
 	if(!out||!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(gGT,sourceData,&prior))return 0;candidate.roster=prior.roster;memcpy(candidate.race,prior.race,sizeof(candidate.race));memcpy(candidate.dynamics,prior.dynamics,sizeof(candidate.dynamics));memcpy(candidate.active,prior.active,sizeof(candidate.active));memcpy(candidate.pendingDamage,prior.pendingDamage,sizeof(candidate.pendingDamage));memset(candidate.bot,0,sizeof(candidate.bot));
 	for(uint8_t slot=0;slot<8;slot++)if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))!=0&&(!gGT->drivers[slot]||!MainCanonicalDrivers_ExtractBot(gGT,sourceData,gGT->drivers[slot],candidate.roster.kind[slot],candidate.roster.threadBehaviorID[slot],&candidate.bot[slot])))return 0;*out=candidate;return 1;
+}
+
+int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(const struct GameTracker *gGT,const struct sData *sourceData,
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate *out)
+{
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingCandidate prior;
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate candidate;
+	if(!out||!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(gGT,sourceData,&prior))return 0;
+	candidate.roster=prior.roster;memcpy(candidate.race,prior.race,sizeof(candidate.race));memcpy(candidate.dynamics,prior.dynamics,sizeof(candidate.dynamics));memcpy(candidate.active,prior.active,sizeof(candidate.active));memcpy(candidate.pendingDamage,prior.pendingDamage,sizeof(candidate.pendingDamage));memset(candidate.bot,0,sizeof(candidate.bot));memset(candidate.meta,0,sizeof(candidate.meta));
+	for(uint8_t slot=0;slot<8;slot++)if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))!=0&&
+		(!gGT->drivers[slot]||!MainCanonicalDrivers_ExtractMetaAndBot(gGT,sourceData,gGT->drivers[slot],slot,&candidate.roster,&candidate.meta[slot],&candidate.bot[slot])))return 0;
+	*out=candidate;return 1;
 }

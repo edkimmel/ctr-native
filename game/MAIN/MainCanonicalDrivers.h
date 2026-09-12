@@ -51,6 +51,18 @@ struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotCandidate
 	struct NativeCanonicalDriverPendingDamageV1 pendingDamage[8];
 	struct NativeCanonicalDriverBotV1 bot[8];
 };
+/* Local-only complete-within-scope Meta extension.  This remains a candidate,
+ * not a detailed-stream publisher or scheduler payload. */
+struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate
+{
+	struct NativeCanonicalDriversRosterCandidate roster;
+	struct NativeCanonicalDriverRaceV1 race[8];
+	struct NativeCanonicalDriverDynamicsV1 dynamics[8];
+	struct NativeCanonicalDriverActiveV1 active[8];
+	struct NativeCanonicalDriverPendingDamageV1 pendingDamage[8];
+	struct NativeCanonicalDriverBotV1 bot[8];
+	struct NativeCanonicalDriverMetaV1 meta[8];
+};
 
 /* Narrow dormant Meta foundation for one Driver whose large-stack root has
  * already passed the roster extractor's ownership gate.  This returns only
@@ -104,6 +116,9 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePending(const struct Gam
 int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBot(const struct GameTracker *gGT,
 	const struct sData *sdata,
 	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotCandidate *out);
+int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(const struct GameTracker *gGT,
+	const struct sData *sdata,
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate *out);
 int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,
 	struct MainCanonicalDriversMetaFlags *out);
