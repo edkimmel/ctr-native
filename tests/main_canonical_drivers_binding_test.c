@@ -833,4 +833,100 @@ static int DynamicsProjectionTest(void)
 	return 1;
 }
 
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
+static void ActivePut16(uint8_t bytes[20],size_t offset,int16_t value)
+{
+	uint16_t bits=(uint16_t)value;bytes[offset]=(uint8_t)bits;bytes[offset+1]=(uint8_t)(bits>>8);
+}
+static void ActivePut32(uint8_t bytes[20],size_t offset,int32_t value)
+{
+	uint32_t bits=(uint32_t)value;for(size_t n=0;n<4;n++)bytes[offset+n]=(uint8_t)(bits>>(8*n));
+}
+static int ActiveExpect(const struct Driver *driver,uint8_t kind,uint8_t behavior,uint8_t state,uint32_t tag,const uint8_t expected[20])
+{
+	struct NativeCanonicalDriverActiveV1 active;
+	if(!MainCanonicalDrivers_ExtractDriverActive(driver,kind,behavior,state,&active)||active.unionTag!=tag||memcmp(active.branchBytes,expected,20)!=0)return 0;
+	return 1;
+}
+static int ActiveEncoded(const struct NativeCanonicalDriverActiveV1 *active,uint8_t kind,uint8_t behavior,uint8_t state)
+{
+	struct NativeCanonicalDriversDetailedV1 detailed;
+	uint8_t bytes[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
+	NativeCanonicalDriversDetailedV1_Init(&detailed);
+	detailed.prelude.presenceMask=1;detailed.prelude.playerCount=(kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN);detailed.prelude.activeBotCount=(kind==NATIVE_CANONICAL_DRIVER_KIND_BOT);if(kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN)detailed.prelude.humanPlayerPositions[0]=0;
+	detailed.slots[0].meta.present=1;detailed.slots[0].meta.slotIndex=0;detailed.slots[0].meta.driverID=0;
+	detailed.slots[0].meta.driverKind=kind;detailed.slots[0].meta.behaviorID=behavior;detailed.slots[0].meta.threadBehaviorID=(kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN)?0:2;detailed.slots[0].meta.kartState=state;
+	detailed.slots[0].active=*active;
+	if(!NativeCanonicalDriversDetailedV1_Validate(&detailed)||!EncodeDetailed(&detailed,bytes))return 0;
+	return bytes[428]==(uint8_t)active->unionTag&&bytes[429]==0&&bytes[430]==0&&bytes[431]==0&&memcmp(bytes+432,active->branchBytes,20)==0;
+}
+static int ActiveProjectionTest(void)
+{
+	struct Driver driver={0};
+	struct NativeCanonicalDriverActiveV1 active,before;
+	uint8_t expected[20];
+	CTR_STATIC_ASSERT(sizeof(struct NativeCanonicalDriverActiveV1)==24u);
+	/* NONE branches must not inspect any union storage. */
+	memset(&driver.KartStates,0xa5,sizeof(driver.KartStates));driver.kartState=KS_NORMAL;memset(expected,0,sizeof(expected));
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,103,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,expected))return 0;
+	if(!MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,103,KS_NORMAL,&active)||!ActiveEncoded(&active,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,103,KS_NORMAL))return 0;
+	driver.kartState=KS_FREEZE;
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,2,KS_FREEZE,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,expected))return 0;
+	driver.kartState=KS_ENGINE_REVVING;
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,31,KS_ENGINE_REVVING,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,expected))return 0;
+	driver.kartState=KS_NORMAL;
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_BOT,186,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,expected))return 0;
+
+	memset(&driver,0,sizeof(driver));driver.kartState=KS_DRIFTING;driver.KartStates.Drifting.numFramesDrifting=INT16_MIN;driver.KartStates.Drifting.driftBoostTimeMS=7;driver.KartStates.Drifting.driftTotalTimeMS=INT16_MAX;driver.KartStates.Drifting.numBoostsAttempted=-3;driver.KartStates.Drifting.numBoostsSuccess=4;
+	memset(expected,0,sizeof(expected));ActivePut16(expected,0,INT16_MIN);ActivePut16(expected,2,7);ActivePut16(expected,4,INT16_MAX);expected[6]=(uint8_t)-3;expected[7]=4;
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,4,KS_DRIFTING,NATIVE_CANONICAL_DRIVER_ACTIVE_DRIFT,expected))return 0;
+	if(!MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,4,KS_DRIFTING,&active)||!ActiveEncoded(&active,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,4,KS_DRIFTING))return 0;
+	driver.KartStates.Drifting.driftBoostTimeMS=-9;if(!MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,4,KS_DRIFTING,&active)||memcmp(active.branchBytes,expected,2)!=0||active.branchBytes[2]!=(uint8_t)-9||active.branchBytes[3]!=0xff||memcmp(active.branchBytes+4,expected+4,16)!=0)return 0;
+
+	memset(&driver,0,sizeof(driver));driver.kartState=KS_SPINNING;driver.KartStates.Spinning.driftSpinRate=INT16_MIN;driver.KartStates.Spinning.spinDir=INT16_MAX;memset(expected,0,sizeof(expected));ActivePut16(expected,0,INT16_MIN);ActivePut16(expected,2,INT16_MAX);
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,7,KS_SPINNING,NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN,expected)||!MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,7,KS_SPINNING,&active)||!ActiveEncoded(&active,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,7,KS_SPINNING))return 0;
+
+	memset(&driver,0,sizeof(driver));driver.kartState=KS_ENGINE_REVVING;driver.KartStates.RevEngine.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;driver.KartStates.RevEngine.boostMeter=INT32_MIN;driver.KartStates.RevEngine.fireLevel=INT32_MAX;driver.KartStates.RevEngine.overRevTimerMS=INT16_MIN;driver.KartStates.RevEngine.releaseCooldownTimerMS=-2;driver.KartStates.RevEngine.emptyCooldownTimerMS=INT16_MAX;driver.KartStates.RevEngine.chargeState=2;driver.KartStates.RevEngine.lockoutFlags=3;driver.KartStates.RevEngine.boolMaskGrab=1;
+	memset(expected,0,sizeof(expected));ActivePut32(expected,0,INT32_MIN);ActivePut32(expected,4,INT32_MAX);ActivePut16(expected,8,INT16_MIN);ActivePut16(expected,10,-2);ActivePut16(expected,12,INT16_MAX);expected[14]=2;expected[15]=3;expected[16]=1;
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,14,KS_ENGINE_REVVING,NATIVE_CANONICAL_DRIVER_ACTIVE_REV_ENGINE,expected)||!MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,14,KS_ENGINE_REVVING,&active)||!ActiveEncoded(&active,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,14,KS_ENGINE_REVVING))return 0;
+	before=active;driver.KartStates.RevEngine.chargeState=3;if(MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,14,KS_ENGINE_REVVING,&active)||memcmp(&active,&before,sizeof(active))!=0)return 0;driver.KartStates.RevEngine.chargeState=2;driver.KartStates.RevEngine.lockoutFlags=4;if(MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,14,KS_ENGINE_REVVING,&active)||memcmp(&active,&before,sizeof(active))!=0)return 0;driver.KartStates.RevEngine.lockoutFlags=3;driver.KartStates.RevEngine.boolMaskGrab=2;if(MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,14,KS_ENGINE_REVVING,&active)||memcmp(&active,&before,sizeof(active))!=0)return 0;
+
+	memset(&driver,0,sizeof(driver));driver.kartState=KS_MASK_GRABBED;driver.KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;driver.KartStates.MaskGrab.AngleAxis_NormalVec.x=INT16_MIN;driver.KartStates.MaskGrab.AngleAxis_NormalVec.y=-1;driver.KartStates.MaskGrab.AngleAxis_NormalVec.z=INT16_MAX;driver.KartStates.MaskGrab.animFrame=9;driver.KartStates.MaskGrab.boolParticlesSpawned=1;driver.KartStates.MaskGrab.boolStillFalling=0;driver.KartStates.MaskGrab.boolLiftingPlayer=1;driver.KartStates.MaskGrab.boolWhistle=1;
+	memset(expected,0,sizeof(expected));ActivePut16(expected,0,INT16_MIN);ActivePut16(expected,2,-1);ActivePut16(expected,4,INT16_MAX);ActivePut16(expected,6,9);expected[8]=1;expected[10]=1;expected[11]=1;
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,11,KS_MASK_GRABBED,NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB,expected)||!MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,11,KS_MASK_GRABBED,&active)||!ActiveEncoded(&active,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,11,KS_MASK_GRABBED))return 0;
+	before=active;driver.KartStates.MaskGrab.boolWhistle=2;if(MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,11,KS_MASK_GRABBED,&active)||memcmp(&active,&before,sizeof(active))!=0)return 0;
+
+	memset(&driver,0,sizeof(driver));driver.kartState=KS_MASK_GRABBED;driver.KartStates.EatenByPlant.boolInited=1;memset(expected,0,sizeof(expected));expected[0]=1;
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,12,KS_MASK_GRABBED,NATIVE_CANONICAL_DRIVER_ACTIVE_PLANT_EATEN,expected)||!MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,12,KS_MASK_GRABBED,&active)||!ActiveEncoded(&active,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,12,KS_MASK_GRABBED))return 0;
+	driver.KartStates.EatenByPlant.boolInited=2;before=active;if(MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,12,KS_MASK_GRABBED,&active)||memcmp(&active,&before,sizeof(active))!=0)return 0;
+
+	memset(&driver,0,sizeof(driver));driver.kartState=KS_BLASTED;driver.KartStates.Blasted.boolPlayBackwards=4;memset(expected,0,sizeof(expected));expected[0]=4;
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,15,KS_BLASTED,NATIVE_CANONICAL_DRIVER_ACTIVE_BLASTED,expected)||!MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,15,KS_BLASTED,&active)||!ActiveEncoded(&active,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,15,KS_BLASTED))return 0;
+	driver.KartStates.Blasted.boolPlayBackwards=1;before=active;if(MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,15,KS_BLASTED,&active)||memcmp(&active,&before,sizeof(active))!=0)return 0;
+
+	memset(&driver,0,sizeof(driver));driver.kartState=KS_WARP_PAD;driver.KartStates.Warp.timer=INT32_MIN;driver.KartStates.Warp.heightOffset=-2;driver.KartStates.Warp.quadHeight=3;driver.KartStates.Warp.dustAngle=INT32_MAX;driver.KartStates.Warp.beamHeight=-5;memset(expected,0,sizeof(expected));ActivePut32(expected,0,INT32_MIN);ActivePut32(expected,4,-2);ActivePut32(expected,8,3);ActivePut32(expected,12,INT32_MAX);ActivePut32(expected,16,-5);
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,16,KS_WARP_PAD,NATIVE_CANONICAL_DRIVER_ACTIVE_WARP,expected)||!MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,16,KS_WARP_PAD,&active)||!ActiveEncoded(&active,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,16,KS_WARP_PAD)||!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,84,KS_WARP_PAD,NATIVE_CANONICAL_DRIVER_ACTIVE_WARP,expected))return 0;
+	return 1;
+}
+
+static int ActiveCandidateTest(void)
+{
+	struct SourceFixture fixture;
+	struct MainCanonicalDriversRosterRaceDynamicsActiveCandidate candidate,before;
+	struct sData *sd=&sdata_static;
+	SourceFixtureInit(&fixture);
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActive(&fixture.tracker,sd,&candidate)||
+		candidate.active[0].unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE||
+		memcmp(candidate.active[0].branchBytes,(uint8_t[20]){0},20)!=0)return 0;
+	/* The composed candidate remains local and inherits all prelude/root gates
+	 * before its Active array can be assigned. */
+	before=candidate;fixture.tracker.drivers[1]=fixture.tracker.drivers[0];
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActive(&fixture.tracker,sd,&candidate)||memcmp(&candidate,&before,sizeof(candidate))!=0)return 0;
+	SourceFixtureInit(&fixture);
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActive(&fixture.tracker,sd,&candidate))return 0;
+	fixture.tracker.drivers[5]=NULL;fixture.tracker.driversInRaceOrder[2]=NULL;fixture.tracker.numWinners=1;fixture.tracker.winnerIndex[0]=0;memset(&sd->navBotList[2],0,sizeof(sd->navBotList[2]));
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActive(&fixture.tracker,sd,&candidate)||
+		(candidate.roster.prelude.presenceMask&(UINT32_C(1)<<5))!=0||memcmp(&candidate.active[5],&(struct NativeCanonicalDriverActiveV1){0},sizeof(candidate.active[5]))!=0)return 0;
+	return 1;
+}
+
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());puts("main_canonical_drivers_binding_test: passed");return 0;}

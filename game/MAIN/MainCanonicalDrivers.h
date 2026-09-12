@@ -24,6 +24,16 @@ struct MainCanonicalDriversRosterRaceDynamicsCandidate
 	struct NativeCanonicalDriverDynamicsV1 dynamics[8];
 };
 
+/* Dormant local-only extension with the selected 24-byte Active value.  It
+ * is deliberately not a detailed record publisher or scheduler payload. */
+struct MainCanonicalDriversRosterRaceDynamicsActiveCandidate
+{
+	struct NativeCanonicalDriversRosterCandidate roster;
+	struct NativeCanonicalDriverRaceV1 race[8];
+	struct NativeCanonicalDriverDynamicsV1 dynamics[8];
+	struct NativeCanonicalDriverActiveV1 active[8];
+};
+
 /* Narrow dormant Meta foundation for one Driver whose large-stack root has
  * already passed the roster extractor's ownership gate.  This returns only
  * the frozen external/thread presence bits; it is not an aggregate Meta
@@ -61,6 +71,15 @@ int MainCanonicalDrivers_ExtractRosterRace(const struct GameTracker *gGT,
 int MainCanonicalDrivers_ExtractRosterRaceDynamics(const struct GameTracker *gGT,
 	const struct sData *sdata,
 	struct MainCanonicalDriversRosterRaceDynamicsCandidate *out);
+/* Fieldwise selected-union projection.  The Driver must already be a valid
+ * root when this is used in game-owned code; this routine never copies a
+ * pointer or inactive union branch and assigns its output only on success. */
+int MainCanonicalDrivers_ExtractDriverActive(const struct Driver *driver,
+	uint8_t kind,uint8_t behaviorID,uint8_t kartState,
+	struct NativeCanonicalDriverActiveV1 *out);
+int MainCanonicalDrivers_ExtractRosterRaceDynamicsActive(const struct GameTracker *gGT,
+	const struct sData *sdata,
+	struct MainCanonicalDriversRosterRaceDynamicsActiveCandidate *out);
 int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,
 	struct MainCanonicalDriversMetaFlags *out);

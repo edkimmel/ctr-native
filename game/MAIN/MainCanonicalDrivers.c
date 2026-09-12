@@ -11,6 +11,8 @@ CTR_STATIC_ASSERT(sizeof(struct NativeCanonicalDriverRaceV1) == NATIVE_CANONICAL
 CTR_STATIC_ASSERT(NATIVE_CANONICAL_DRIVER_DYN_COUNT == 52u);
 CTR_STATIC_ASSERT(NATIVE_CANONICAL_DRIVERS_DYNAMICS_BYTES == 116u);
 CTR_STATIC_ASSERT(sizeof(struct NativeCanonicalDriverDynamicsV1) == NATIVE_CANONICAL_DRIVERS_DYNAMICS_BYTES);
+CTR_STATIC_ASSERT(NATIVE_CANONICAL_DRIVERS_ACTIVE_BYTES == 24u);
+CTR_STATIC_ASSERT(sizeof(struct NativeCanonicalDriverActiveV1) == NATIVE_CANONICAL_DRIVERS_ACTIVE_BYTES);
 /* Native source fields declared as int are persisted as explicit signed
  * int32_t values.  Do not permit a host where that conversion changes range. */
 CTR_STATIC_ASSERT(sizeof(int) == sizeof(int32_t));
@@ -505,6 +507,123 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamics(const struct GameTracker *gGT
 		if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))==0)continue;
 		if(!gGT->drivers[slot])return 0;
 		MainCanonicalDrivers_CopyDynamics(gGT->drivers[slot],&candidate.dynamics[slot]);
+	}
+	*out=candidate;
+	return 1;
+}
+
+static void MainCanonicalDrivers_PutU16LE(uint8_t bytes[20],size_t offset,uint16_t value)
+{
+	bytes[offset]=(uint8_t)value;
+	bytes[offset+1]=(uint8_t)(value>>8);
+}
+static void MainCanonicalDrivers_PutS16LE(uint8_t bytes[20],size_t offset,int16_t value)
+{
+	MainCanonicalDrivers_PutU16LE(bytes,offset,(uint16_t)value);
+}
+static void MainCanonicalDrivers_PutU32LE(uint8_t bytes[20],size_t offset,uint32_t value)
+{
+	bytes[offset]=(uint8_t)value;
+	bytes[offset+1]=(uint8_t)(value>>8);
+	bytes[offset+2]=(uint8_t)(value>>16);
+	bytes[offset+3]=(uint8_t)(value>>24);
+}
+static void MainCanonicalDrivers_PutS32LE(uint8_t bytes[20],size_t offset,int32_t value)
+{
+	MainCanonicalDrivers_PutU32LE(bytes,offset,(uint32_t)value);
+}
+static int MainCanonicalDrivers_Boolean(uint8_t value) { return value<=1; }
+
+int MainCanonicalDrivers_ExtractDriverActive(const struct Driver *driver,
+	uint8_t kind,uint8_t behaviorID,uint8_t kartState,
+	struct NativeCanonicalDriverActiveV1 *out)
+{
+	struct NativeCanonicalDriverActiveV1 candidate;
+	uint32_t activeTag;
+	if(!driver||!out||driver->kartState!=kartState||
+		!NativeCanonicalDriverBehavior_ResolveActualActiveTag(kind,behaviorID,kartState,&activeTag))return 0;
+	memset(&candidate,0,sizeof(candidate));
+	candidate.unionTag=activeTag;
+	/* The source pointers at offset zero of RevEngine/MaskGrab are never
+	 * copied or read.  Each selected scalar is placed explicitly in canonical
+	 * little-endian branch bytes; inactive storage remains zero. */
+	switch(activeTag)
+	{
+		case NATIVE_CANONICAL_DRIVER_ACTIVE_NONE: break;
+		case NATIVE_CANONICAL_DRIVER_ACTIVE_DRIFT:
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,0,driver->KartStates.Drifting.numFramesDrifting);
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,2,driver->KartStates.Drifting.driftBoostTimeMS);
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,4,driver->KartStates.Drifting.driftTotalTimeMS);
+			candidate.branchBytes[6]=(uint8_t)driver->KartStates.Drifting.numBoostsAttempted;
+			candidate.branchBytes[7]=(uint8_t)driver->KartStates.Drifting.numBoostsSuccess;
+			break;
+		case NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN:
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,0,driver->KartStates.Spinning.driftSpinRate);
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,2,driver->KartStates.Spinning.spinDir);
+			break;
+		case NATIVE_CANONICAL_DRIVER_ACTIVE_REV_ENGINE:
+			if(driver->KartStates.RevEngine.chargeState>REV_ENGINE_CHARGE_ACTIVE||
+				(driver->KartStates.RevEngine.lockoutFlags&~REV_ENGINE_LOCKOUT_ALL)!=0||
+				!MainCanonicalDrivers_Boolean(driver->KartStates.RevEngine.boolMaskGrab))return 0;
+			MainCanonicalDrivers_PutS32LE(candidate.branchBytes,0,(int32_t)driver->KartStates.RevEngine.boostMeter);
+			MainCanonicalDrivers_PutS32LE(candidate.branchBytes,4,(int32_t)driver->KartStates.RevEngine.fireLevel);
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,8,driver->KartStates.RevEngine.overRevTimerMS);
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,10,driver->KartStates.RevEngine.releaseCooldownTimerMS);
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,12,driver->KartStates.RevEngine.emptyCooldownTimerMS);
+			candidate.branchBytes[14]=driver->KartStates.RevEngine.chargeState;
+			candidate.branchBytes[15]=driver->KartStates.RevEngine.lockoutFlags;
+			candidate.branchBytes[16]=driver->KartStates.RevEngine.boolMaskGrab;
+			break;
+		case NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB:
+			if(!MainCanonicalDrivers_Boolean(driver->KartStates.MaskGrab.boolParticlesSpawned)||
+				!MainCanonicalDrivers_Boolean(driver->KartStates.MaskGrab.boolStillFalling)||
+				!MainCanonicalDrivers_Boolean(driver->KartStates.MaskGrab.boolLiftingPlayer)||
+				!MainCanonicalDrivers_Boolean(driver->KartStates.MaskGrab.boolWhistle))return 0;
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,0,driver->KartStates.MaskGrab.AngleAxis_NormalVec.x);
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,2,driver->KartStates.MaskGrab.AngleAxis_NormalVec.y);
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,4,driver->KartStates.MaskGrab.AngleAxis_NormalVec.z);
+			MainCanonicalDrivers_PutS16LE(candidate.branchBytes,6,driver->KartStates.MaskGrab.animFrame);
+			candidate.branchBytes[8]=driver->KartStates.MaskGrab.boolParticlesSpawned;
+			candidate.branchBytes[9]=driver->KartStates.MaskGrab.boolStillFalling;
+			candidate.branchBytes[10]=driver->KartStates.MaskGrab.boolLiftingPlayer;
+			candidate.branchBytes[11]=driver->KartStates.MaskGrab.boolWhistle;
+			break;
+		case NATIVE_CANONICAL_DRIVER_ACTIVE_PLANT_EATEN:
+			if(!MainCanonicalDrivers_Boolean(driver->KartStates.EatenByPlant.boolInited))return 0;
+			candidate.branchBytes[0]=driver->KartStates.EatenByPlant.boolInited;
+			break;
+		case NATIVE_CANONICAL_DRIVER_ACTIVE_BLASTED:
+			if(driver->KartStates.Blasted.boolPlayBackwards!=0&&driver->KartStates.Blasted.boolPlayBackwards!=4)return 0;
+			candidate.branchBytes[0]=driver->KartStates.Blasted.boolPlayBackwards;
+			break;
+		case NATIVE_CANONICAL_DRIVER_ACTIVE_WARP:
+			MainCanonicalDrivers_PutS32LE(candidate.branchBytes,0,driver->KartStates.Warp.timer);
+			MainCanonicalDrivers_PutS32LE(candidate.branchBytes,4,driver->KartStates.Warp.heightOffset);
+			MainCanonicalDrivers_PutS32LE(candidate.branchBytes,8,driver->KartStates.Warp.quadHeight);
+			MainCanonicalDrivers_PutS32LE(candidate.branchBytes,12,driver->KartStates.Warp.dustAngle);
+			MainCanonicalDrivers_PutS32LE(candidate.branchBytes,16,driver->KartStates.Warp.beamHeight);
+			break;
+		default:return 0;
+	}
+	*out=candidate;
+	return 1;
+}
+
+int MainCanonicalDrivers_ExtractRosterRaceDynamicsActive(const struct GameTracker *gGT,const struct sData *sourceData,
+	struct MainCanonicalDriversRosterRaceDynamicsActiveCandidate *out)
+{
+	struct MainCanonicalDriversRosterRaceDynamicsCandidate rosterRaceDynamics;
+	struct MainCanonicalDriversRosterRaceDynamicsActiveCandidate candidate;
+	if(!out||!MainCanonicalDrivers_ExtractRosterRaceDynamics(gGT,sourceData,&rosterRaceDynamics))return 0;
+	candidate.roster=rosterRaceDynamics.roster;
+	memcpy(candidate.race,rosterRaceDynamics.race,sizeof(candidate.race));
+	memcpy(candidate.dynamics,rosterRaceDynamics.dynamics,sizeof(candidate.dynamics));
+	memset(candidate.active,0,sizeof(candidate.active));
+	for(uint8_t slot=0;slot<8;slot++)
+	{
+		if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))==0)continue;
+		if(!gGT->drivers[slot]||!MainCanonicalDrivers_ExtractDriverActive(gGT->drivers[slot],candidate.roster.kind[slot],
+			candidate.roster.behaviorID[slot],gGT->drivers[slot]->kartState,&candidate.active[slot]))return 0;
 	}
 	*out=candidate;
 	return 1;
