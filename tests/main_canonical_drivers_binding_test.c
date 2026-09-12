@@ -18,6 +18,7 @@ void RB_RainCloud_ThTick(struct Thread*t){(void)t;rain_tick_calls++;} void RB_Ra
 #include "../game/MAIN/MainCanonicalTopology.c"
 #include "../game/MAIN/MainCanonicalDrivers.c"
 #include "../game/MAIN/MainCanonicalState.c"
+#define MAIN_CANONICAL_RUNTIME_TESTING 1
 #include "../game/MAIN/MainCanonicalRuntime.c"
 static int ProjectPreludeTest(void){struct NativeCanonicalDriversRosterInput in;struct NativeCanonicalDriversRosterCandidate out,before;DriverFunc tables[8][13]={{0}};void(*threads[8])(struct Thread*)={0};memset(&in,0,sizeof(in));memset(in.raceOrder,0xff,sizeof(in.raceOrder));memset(in.winnerDriverIDs,0xff,sizeof(in.winnerDriverIDs));memset(in.ranks,0xff,sizeof(in.ranks));memset(in.navOrder,0xff,sizeof(in.navOrder));in.slots[3].present=1;in.slots[3].driverID=3;in.slots[3].kind=NATIVE_CANONICAL_DRIVER_KIND_HUMAN;in.playerCount=1;in.raceOrderCount=1;in.raceOrder[0]=3;in.ranks[0]=7;tables[3][1]=VehPhysProc_Driving_Update;tables[3][2]=VehPhysProc_Driving_PhysLinear;tables[3][3]=VehPhysProc_Driving_Audio;tables[3][4]=VehPhysGeneral_PhysAngular;tables[3][5]=VehPhysForce_OnApplyForces;tables[3][6]=COLL_MOVED_PlayerSearch;tables[3][7]=VehPhysForce_CollideDrivers;tables[3][8]=COLL_FIXED_PlayerSearch;tables[3][9]=VehPhysGeneral_JumpAndFriction;tables[3][10]=VehPhysForce_TranslateMatrix;tables[3][11]=VehFrameProc_Driving;tables[3][12]=VehEmitter_DriverMain;threads[3]=VehBirth_NullThread;if(!MainCanonicalDrivers_ProjectPrelude(&in,tables,threads,&out)||out.behaviorID[3]!=1||out.threadBehaviorID[3]!=1)return 0;before=out;tables[3][7]=UnknownDriver;if(MainCanonicalDrivers_ProjectPrelude(&in,tables,threads,&out)||memcmp(&out,&before,sizeof(out))!=0)return 0;return 1;}
 #define SOURCE_POOL_ITEMS 8u
@@ -1242,28 +1243,97 @@ static int DetailedAssemblyTest(void)
 }
 static int RuntimeWorkspaceTest(void)
 {
-	struct MainCanonicalRuntimeWorkspace workspace,before;
+	struct MainCanonicalRuntimeWorkspace workspace;
 	struct NativeReplaySchedulerCanonicalRequest request,wrong;
 	struct NativeReplaySchedulerCanonicalSubmission submission,beforeSubmission;
 	struct NativeCanonicalControlV1 control={0};struct NativeCanonicalRngV1 rng={0};struct NativeCanonicalInputV1 input={0};
+	struct NativeCanonicalStateV3 expected,beforeState;
 	struct GameTracker rootless={0};struct sData rootlessSource={0};
 	struct SourceFixture fixture;struct PhysicsTopologyFixture top;struct MainCanonicalTopologyContext unusedContext;struct MainCanonicalTopologySnapshot unusedSnapshot;
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate independent;
+	uint64_t epoch;
+	#define RUNTIME_CHECK(x) do{if(!(x)){fprintf(stderr,"runtime fail %d\n",__LINE__);return 0;}}while(0)
+	memset(&request,0,sizeof(request));
 	for(uint8_t index=0;index<NATIVE_IDENTITY_DIGEST_BYTES;index++){request.identity.build[index]=(uint8_t)(index+1);request.identity.content[index]=(uint8_t)(0x80u+index);}
 	request.requiredKind=NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V3;request.replayFrame=7u;request.restoredThisFrame=0;input.padCount=NATIVE_CANONICAL_INPUT_PAD_COUNT;
-	C(MainCanonicalRuntime_Global()==MainCanonicalRuntime_Global());C(MainCanonicalRuntime_WorkspaceSize()==sizeof(workspace));C(sizeof(workspace)<=MAIN_CANONICAL_RUNTIME_WORKSPACE_MAX_BYTES);
-	memset(&workspace,0,sizeof(workspace));MainCanonicalRuntime_Init(&workspace);before=workspace;MainCanonicalRuntime_Init(&workspace);C(memcmp(&workspace,&before,sizeof(workspace))==0);
-	rootlessSource.gGT=&rootless;C(MainCanonicalRuntime_BeginFrame(&workspace));C(MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input));
-	C(MainCanonicalRuntime_ViewV3(&workspace,&request)!=NULL);memset(&submission,0xa5,sizeof(submission));C(MainCanonicalRuntime_GetSubmissionV3(&workspace,&request,&submission)&&submission.kind==NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V3&&submission.state.v3==MainCanonicalRuntime_ViewV3(&workspace,&request));
-	wrong=request;wrong.replayFrame++;beforeSubmission=submission;C(MainCanonicalRuntime_ViewV3(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_GetSubmissionV3(&workspace,&wrong,&submission)&&memcmp(&submission,&beforeSubmission,sizeof(submission))==0);
-	wrong=request;wrong.identity.content[0]^=UINT8_C(1);C(MainCanonicalRuntime_ViewV3(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_GetSubmissionV3(&workspace,&wrong,&submission)&&memcmp(&submission,&beforeSubmission,sizeof(submission))==0);
-	C(!MainCanonicalRuntime_BeginFrame(&workspace)&&!MainCanonicalRuntime_InvalidateTopology(&workspace));C(MainCanonicalRuntime_ReleaseV3(&workspace,&request)&&!workspace.prepared&&workspace.topologyContext.captureActive==0);
-	MainCanonicalRuntime_Reset(&workspace);C(!workspace.poisoned&&workspace.topologyContext.currentEpoch>before.topologyContext.currentEpoch);
-	/* Rooted extraction lazily captures only an unavailable snapshot. */
-	SourceFixtureInit(&fixture);C(PhysicsTopologyInit(&fixture,&top,&unusedContext,&unusedSnapshot));for(uint8_t slot=0;slot<8;slot++)if(fixture.tracker.drivers[slot]){fixture.tracker.drivers[slot]->terrainMeta1=&data.MetaDataTerrain[0];fixture.tracker.drivers[slot]->terrainMeta2=&data.MetaDataTerrain[0];}
-	request.replayFrame=8u;C(MainCanonicalRuntime_BeginFrame(&workspace));C(MainCanonicalRuntime_PrepareV3(&workspace,&request,&fixture.tracker,&sdata_static,&control,&rng,&input)&&workspace.topologyContext.captureActive&&workspace.prepared);C(MainCanonicalRuntime_ReleaseV3(&workspace,&request));
-	/* An available but stale snapshot poisons instead of silently recapturing. */
-	C(MainCanonicalRuntime_CaptureTopology(&workspace,&fixture.tracker,&sdata_static));fixture.tracker.level1=NULL;before=workspace;C(MainCanonicalRuntime_BeginFrame(&workspace));C(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&fixture.tracker,&sdata_static,&control,&rng,&input)&&workspace.poisoned&&!workspace.prepared&&memcmp(&workspace.state,&before.state,sizeof(workspace.state))==0);fixture.tracker.level1=top.level;
-	MainCanonicalRuntime_Reset(&workspace);input.padCount=3;C(MainCanonicalRuntime_BeginFrame(&workspace));C(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&workspace.poisoned&&!workspace.prepared);input.padCount=NATIVE_CANONICAL_INPUT_PAD_COUNT;
+	RUNTIME_CHECK(MAIN_CANONICAL_RUNTIME_FAILURE_NULL_ARGUMENT==1&&MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT==12);
+	RUNTIME_CHECK(MainCanonicalRuntime_Global()==MainCanonicalRuntime_Global());RUNTIME_CHECK(MainCanonicalRuntime_WorkspaceSize()==sizeof(workspace));RUNTIME_CHECK(sizeof(workspace)<=MAIN_CANONICAL_RUNTIME_WORKSPACE_MAX_BYTES);
+	memset(&workspace,0,sizeof(workspace));MainCanonicalRuntime_Init(&workspace);epoch=workspace.topologyContext.currentEpoch;MainCanonicalRuntime_Init(&workspace);RUNTIME_CHECK(workspace.topologyContext.currentEpoch==epoch&&workspace.initialized&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_NONE);
+	rootlessSource.gGT=&rootless;
+	/* BeginFrame is a real one-shot gate; Prepare without it poisons at the
+	 * frame boundary before any source traversal. */
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_BeginFrame(&workspace));MainCanonicalRuntime_Reset(&workspace);
+	RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_FRAME_STATE&&workspace.stageCounts.rosterPreflight==0);
+	MainCanonicalRuntime_Reset(&workspace);
+	#define RUNTIME_NULL(call) do{RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!(call)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_NULL_ARGUMENT&&workspace.stageCounts.rosterPreflight==0);MainCanonicalRuntime_Reset(&workspace);}while(0)
+	RUNTIME_NULL(MainCanonicalRuntime_PrepareV3(&workspace,NULL,&rootless,&rootlessSource,&control,&rng,&input));
+	RUNTIME_NULL(MainCanonicalRuntime_PrepareV3(&workspace,&request,NULL,&rootlessSource,&control,&rng,&input));
+	RUNTIME_NULL(MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,NULL,&control,&rng,&input));
+	RUNTIME_NULL(MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,NULL,&rng,&input));
+	RUNTIME_NULL(MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,NULL,&input));
+	RUNTIME_NULL(MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,NULL));
+	#undef RUNTIME_NULL
+
+	/* Cheap request/input rejection precedes even a poison native root. */
+	rootless.drivers[0]=(struct Driver *)(uintptr_t)1;rootless.level1=(struct Level *)(uintptr_t)1;
+	input.padCount=3;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_INPUT&&workspace.stageCounts.rosterPreflight==0);
+	MainCanonicalRuntime_Reset(&workspace);input.padCount=NATIVE_CANONICAL_INPUT_PAD_COUNT;wrong=request;wrong.requiredKind=NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V1;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&wrong,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_REQUEST&&workspace.stageCounts.rosterPreflight==0);
+	MainCanonicalRuntime_Reset(&workspace);wrong=request;wrong.restoredThisFrame=2;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&wrong,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_REQUEST&&workspace.stageCounts.rosterPreflight==0);
+	MainCanonicalRuntime_Reset(&workspace);
+	/* The audited preflight rejects poison roots without before topology reads. */
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_ROSTER_PREFLIGHT&&workspace.stageCounts.rosterPreflight==1&&workspace.stageCounts.sourceExtract==0&&!workspace.topologyContext.captureActive);
+	rootless.drivers[0]=NULL;rootless.level1=NULL;MainCanonicalRuntime_Reset(&workspace);
+
+	/* Rootless success is exact, request-tagged, and stage-counted once. */
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input));
+	RUNTIME_CHECK(workspace.stageCounts.rosterPreflight==1&&workspace.stageCounts.sourceExtract==1&&workspace.stageCounts.assembly==1&&workspace.stageCounts.project==1);
+	RUNTIME_CHECK(MainCanonicalState_ProjectV3(&expected,&request.identity,request.replayFrame,&control,&rng,&input,&workspace.drivers.summary)&&memcmp(&expected,&workspace.state,sizeof(expected))==0&&workspace.state.combinedDigest==expected.combinedDigest);
+	RUNTIME_CHECK(MainCanonicalRuntime_ViewV3(&workspace,&request)!=NULL);memset(&submission,0xa5,sizeof(submission));RUNTIME_CHECK(MainCanonicalRuntime_GetSubmissionV3(&workspace,&request,&submission)&&submission.kind==NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V3&&submission.state.v3==MainCanonicalRuntime_ViewV3(&workspace,&request));
+	wrong=request;wrong.restoredThisFrame=1;beforeSubmission=submission;RUNTIME_CHECK(MainCanonicalRuntime_ViewV3(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_GetSubmissionV3(&workspace,&wrong,&submission)&&!MainCanonicalRuntime_ReleaseV3(&workspace,&wrong)&&memcmp(&submission,&beforeSubmission,sizeof(submission))==0&&workspace.prepared);
+	wrong=request;wrong.replayFrame++;RUNTIME_CHECK(MainCanonicalRuntime_ViewV3(&workspace,&wrong)==NULL);wrong=request;wrong.identity.content[0]^=UINT8_C(1);RUNTIME_CHECK(MainCanonicalRuntime_ViewV3(&workspace,&wrong)==NULL);
+	RUNTIME_CHECK(!MainCanonicalRuntime_BeginFrame(&workspace)&&!MainCanonicalRuntime_InvalidateTopology(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV3(&workspace,&request)&&!workspace.prepared&&!workspace.frameActive&&!workspace.topologyContext.captureActive);
+
+	/* Rooted frames reuse one topology generation across releases. */
+	SourceFixtureInit(&fixture);RUNTIME_CHECK(PhysicsTopologyInit(&fixture,&top,&unusedContext,&unusedSnapshot));for(uint8_t slot=0;slot<8;slot++)if(fixture.tracker.drivers[slot]){fixture.tracker.drivers[slot]->terrainMeta1=&data.MetaDataTerrain[0];fixture.tracker.drivers[slot]->terrainMeta2=&data.MetaDataTerrain[0];}
+	request.replayFrame=8u;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV3(&workspace,&request,&fixture.tracker,&sdata_static,&control,&rng,&input)&&workspace.topologyContext.captureActive&&workspace.prepared);
+	RUNTIME_CHECK(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMetaPhysics(&fixture.tracker,&sdata_static,&workspace.topologyContext,&workspace.topologySnapshot,&independent)&&memcmp(&independent,&workspace.sourceCandidate,sizeof(independent))==0);
+	epoch=workspace.topologyContext.currentEpoch;RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV3(&workspace,&request)&&workspace.topologyContext.captureActive&&workspace.topologyContext.currentEpoch==epoch);
+	request.replayFrame=9u;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV3(&workspace,&request,&fixture.tracker,&sdata_static,&control,&rng,&input)&&workspace.topologyContext.currentEpoch==epoch);RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV3(&workspace,&request)&&workspace.topologyContext.captureActive);
+
+	/* Rootless retirement is once, and a later rooted frame captures fresh. */
+	request.replayFrame=10u;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&workspace.topologyContext.currentEpoch==epoch+1&&!workspace.topologyContext.captureActive);RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV3(&workspace,&request));
+	request.replayFrame=11u;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV3(&workspace,&request,&fixture.tracker,&sdata_static,&control,&rng,&input)&&workspace.topologyContext.captureActive&&workspace.topologyContext.currentEpoch==epoch+1);RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV3(&workspace,&request));
+
+	/* A restore retires before preflight/topology and permits same-address
+	 * recapture; the restore tag remains part of the transaction token. */
+	epoch=workspace.topologyContext.currentEpoch;request.replayFrame=12u;request.restoredThisFrame=1;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV3(&workspace,&request,&fixture.tracker,&sdata_static,&control,&rng,&input)&&workspace.topologyContext.currentEpoch==epoch+1&&workspace.topologyContext.captureActive);
+	wrong=request;wrong.restoredThisFrame=0;RUNTIME_CHECK(MainCanonicalRuntime_ViewV3(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_ReleaseV3(&workspace,&wrong)&&workspace.prepared);RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV3(&workspace,&request));request.restoredThisFrame=0;
+
+	/* Stable stage failures retain the last published state and exact counts. */
+	MainCanonicalRuntime_Reset(&workspace);request.replayFrame=20u;beforeState=workspace.state;MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_ASSEMBLY);
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_ASSEMBLY&&workspace.stageCounts.rosterPreflight==1&&workspace.stageCounts.sourceExtract==1&&workspace.stageCounts.assembly==1&&workspace.stageCounts.project==0&&memcmp(&workspace.state,&beforeState,sizeof(beforeState))==0);
+	MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_NONE);MainCanonicalRuntime_Reset(&workspace);beforeState=workspace.state;MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT);
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT&&workspace.stageCounts.project==1&&memcmp(&workspace.state,&beforeState,sizeof(beforeState))==0);
+	MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_NONE);MainCanonicalRuntime_Reset(&workspace);
+
+	/* Natural topology/source failures are distinguished. */
+	SourceFixtureInit(&fixture);fixture.tracker.level1=NULL;for(uint8_t slot=0;slot<8;slot++)if(fixture.tracker.drivers[slot]){fixture.tracker.drivers[slot]->terrainMeta1=&data.MetaDataTerrain[0];fixture.tracker.drivers[slot]->terrainMeta2=&data.MetaDataTerrain[0];}
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&fixture.tracker,&sdata_static,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_TOPOLOGY_CAPTURE&&workspace.stageCounts.sourceExtract==0);
+	MainCanonicalRuntime_Reset(&workspace);SourceFixtureInit(&fixture);RUNTIME_CHECK(PhysicsTopologyInit(&fixture,&top,&unusedContext,&unusedSnapshot));for(uint8_t slot=0;slot<8;slot++)if(fixture.tracker.drivers[slot]){fixture.tracker.drivers[slot]->terrainMeta1=&data.MetaDataTerrain[0];fixture.tracker.drivers[slot]->terrainMeta2=&data.MetaDataTerrain[0];}fixture.tracker.drivers[0]->currentTerrain=21;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&fixture.tracker,&sdata_static,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_SOURCE_EXTRACT&&workspace.stageCounts.sourceExtract==1&&workspace.stageCounts.assembly==0);
+	MainCanonicalRuntime_Reset(&workspace);SourceFixtureInit(&fixture);RUNTIME_CHECK(PhysicsTopologyInit(&fixture,&top,&unusedContext,&unusedSnapshot));for(uint8_t slot=0;slot<8;slot++)if(fixture.tracker.drivers[slot]){fixture.tracker.drivers[slot]->terrainMeta1=&data.MetaDataTerrain[0];fixture.tracker.drivers[slot]->terrainMeta2=&data.MetaDataTerrain[0];}
+	RUNTIME_CHECK(MainCanonicalRuntime_CaptureTopology(&workspace,&fixture.tracker,&sdata_static));fixture.tracker.level1=NULL;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&fixture.tracker,&sdata_static,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_TOPOLOGY_VALIDATE&&workspace.stageCounts.rosterPreflight==1&&workspace.stageCounts.sourceExtract==0);
+
+	/* Terminal epochs fail closed at the lifecycle stage that reaches them. */
+	MainCanonicalRuntime_Reset(&workspace);workspace.topologyContext.currentEpoch=UINT64_MAX-1;workspace.topologyContext.captureActive=1;request.restoredThisFrame=1;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_RESTORE_EPOCH&&workspace.stageCounts.rosterPreflight==0&&workspace.topologyContext.currentEpoch==UINT64_MAX);
+	MainCanonicalRuntime_Reset(&workspace);workspace.topologyContext.currentEpoch=UINT64_MAX-1;workspace.topologyContext.captureActive=1;request.restoredThisFrame=0;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_TOPOLOGY_EPOCH&&workspace.stageCounts.rosterPreflight==1&&workspace.topologyContext.currentEpoch==UINT64_MAX);
+	RUNTIME_CHECK(MainCanonicalRuntime_FailureReason(NULL)==MAIN_CANONICAL_RUNTIME_FAILURE_NULL_ARGUMENT);
+	#undef RUNTIME_CHECK
 	return 1;
 }
 int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());C(PhysicsProjectionTest());C(DetailedAssemblyTest());C(RuntimeWorkspaceTest());puts("main_canonical_drivers_binding_test: passed");return 0;}

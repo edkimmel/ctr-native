@@ -198,6 +198,10 @@ struct NativeCanonicalDriversDetailedV1 { struct NativeCanonicalDriversPreludeV1
 int NativeCanonicalDriverPhysicsV1_Validate(const struct NativeCanonicalDriverPhysicsV1 *value);
 void NativeCanonicalDriversDetailedV1_Init(struct NativeCanonicalDriversDetailedV1 *value);
 int NativeCanonicalDriversDetailedV1_Validate(const struct NativeCanonicalDriversDetailedV1 *value);
+/* Workspace validation avoids the 520-byte absent-slot/Bot encoding buffer on
+ * the caller stack. Scratch may be overwritten and must hold one slot. */
+int NativeCanonicalDriversDetailedV1_ValidateWithScratch(const struct NativeCanonicalDriversDetailedV1 *value,
+	uint8_t *scratch,size_t scratchSize);
 size_t NativeCanonicalDriversDetailedV1_EncodedSize(void);
 int NativeCanonicalDriversDetailedV1_Encode(struct NativeCodecWriter *writer, const struct NativeCanonicalDriversDetailedV1 *value);
 /* In-place summary builder for game-owned static workspaces. `scratch` must

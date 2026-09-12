@@ -149,6 +149,15 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMetaPhysics(
 	const struct MainCanonicalTopologyContext *topologyContext,
 	const struct MainCanonicalTopologySnapshot *topologySnapshot,
 	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *out);
+/* Workspace-only continuation after ExtractRosterPrelude has populated
+ * out->roster.  Remaining groups are written directly into caller-owned
+ * staging memory, avoiding the nested complete-candidate copies used by the
+ * public transactional wrappers.  Failure may leave staging modified. */
+int MainCanonicalDrivers_ExtractCompleteFromPreludeInPlace(
+	const struct GameTracker *gGT,const struct sData *sdata,
+	const struct MainCanonicalTopologyContext *topologyContext,
+	const struct MainCanonicalTopologySnapshot *topologySnapshot,
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *staging);
 /* Assembles an already successful Meta+Physics candidate into the frozen
  * detailed stream and its digest summary.  The output is transactional. */
 int MainCanonicalDrivers_AssembleDetailed(

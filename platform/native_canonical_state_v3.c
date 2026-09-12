@@ -85,6 +85,18 @@ int NativeCanonicalStateV3_ComputeDigests(struct NativeCanonicalStateV3 *s)
 	struct NativeCanonicalStateV3 c;uint8_t b[NATIVE_CANONICAL_DRIVERS_SUMMARY_BYTES];if(!NativeCanonicalStateV3_Validate(s))return 0;c=*s;
 	for(uint32_t i=0;i<NATIVE_CANONICAL_DOMAIN_COUNT;i++){size_t n=V3PayloadSize(NativeCanonicalDomainOrder[i]);if(n==SIZE_MAX||!V3Payload(s,NativeCanonicalDomainOrder[i],b,n))return 0;c.domainDigests[i]=V3Digest(b,n);}c.combinedDigest=V3Combined(c.domainDigests);*s=c;return 1;
 }
+int NativeCanonicalStateV3_ComputeDigestsInPlaceWithScratch(struct NativeCanonicalStateV3 *s,uint8_t *b,size_t scratchSize)
+{
+	if(!NativeCanonicalStateV3_Validate(s)||!b||scratchSize<NATIVE_CANONICAL_DRIVERS_SUMMARY_BYTES)return 0;
+	for(uint32_t i=0;i<NATIVE_CANONICAL_DOMAIN_COUNT;i++)
+	{
+		size_t n=V3PayloadSize(NativeCanonicalDomainOrder[i]);
+		if(n==SIZE_MAX||!V3Payload(s,NativeCanonicalDomainOrder[i],b,n))return 0;
+		s->domainDigests[i]=V3Digest(b,n);
+	}
+	s->combinedDigest=V3Combined(s->domainDigests);
+	return 1;
+}
 size_t NativeCanonicalStateV3_EncodedSize(void){return V3_STATE_BYTES;}
 int NativeCanonicalStateV3_Encode(struct NativeCodecWriter *w,const struct NativeCanonicalStateV3 *s)
 {

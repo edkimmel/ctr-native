@@ -552,6 +552,39 @@ if(BUILD_TESTING)
 
     add_test(NAME native_build_identity_cmake COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_build_identity_test.cmake")
 
+    if(CTR_NATIVE_MSVC_FRONTEND)
+        # Produce Release x86 code listings for every translation unit reachable
+        # from the dormant runtime probe.  The CTest parser proves the complete
+        # direct-call path fits the declared stack budget; no game target uses
+        # these listing flags.
+        set(CTR_NATIVE_RUNTIME_STACK_LISTING_DIR "${CMAKE_CURRENT_BINARY_DIR}/runtime-stack-listings")
+        file(MAKE_DIRECTORY "${CTR_NATIVE_RUNTIME_STACK_LISTING_DIR}")
+        foreach(stack_target IN ITEMS
+            main_canonical_drivers_binding_test
+            ctr_native_canonical_codec
+            ctr_native_canonical_state
+            ctr_native_canonical_state_v3
+            ctr_native_canonical_drivers
+            ctr_native_canonical_drivers_detailed
+            ctr_native_canonical_drivers_roster
+            ctr_native_canonical_driver_behavior
+            ctr_native_canonical_pool
+            ctr_native_canonical_fixed_array
+        )
+            target_compile_options(${stack_target} PRIVATE
+                "$<$<CONFIG:Release>:/FAcs>"
+                "$<$<CONFIG:Release>:/Fa${CTR_NATIVE_RUNTIME_STACK_LISTING_DIR}/>"
+            )
+        endforeach()
+        add_test(NAME main_canonical_runtime_stack_budget
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_SOURCE_DIR}/tests/main_canonical_runtime_stack_budget.ps1"
+                -AsmDirectory "${CTR_NATIVE_RUNTIME_STACK_LISTING_DIR}"
+                -BudgetBytes 1536
+        )
+        set_tests_properties(main_canonical_runtime_stack_budget PROPERTIES CONFIGURATIONS Release)
+    endif()
+
     add_test(NAME ctr_native_version COMMAND $<TARGET_FILE:ctr_native> --version)
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Native ")
 

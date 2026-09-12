@@ -139,3 +139,25 @@ int MainCanonicalState_ProjectV3(struct NativeCanonicalStateV3 *state, const str
 	*state = candidate;
 	return 1;
 }
+
+int MainCanonicalState_ProjectV3InPlaceWithScratch(struct NativeCanonicalStateV3 *state,
+	const struct NativeIdentityV1 *identity,uint32_t replayFrameNumber,
+	const struct NativeCanonicalControlV1 *control,const struct NativeCanonicalRngV1 *rng,
+	const struct NativeCanonicalInputV1 *input,const struct NativeCanonicalDriversV1 *drivers,
+	uint8_t *scratch,size_t scratchSize)
+{
+	if(!state||!identity||!control||!rng||!input||!drivers||
+		input->padCount!=NATIVE_CANONICAL_INPUT_PAD_COUNT||!NativeCanonicalDriversV1_Validate(drivers))return 0;
+	memset(state,0,sizeof(*state));
+	state->schemaVersion=NATIVE_CANONICAL_STATE_V3_SCHEMA_VERSION;
+	state->replayFormatVersion=NATIVE_CANONICAL_REPLAY_V3_FORMAT_VERSION;
+	state->domainCount=NATIVE_CANONICAL_DOMAIN_COUNT;
+	state->frameNumber=replayFrameNumber;
+	memcpy(state->identity.build,identity->build,NATIVE_IDENTITY_DIGEST_BYTES);
+	memcpy(state->identity.content,identity->content,NATIVE_IDENTITY_DIGEST_BYTES);
+	state->control=*control;
+	state->rng=*rng;
+	state->input=*input;
+	state->drivers=*drivers;
+	return NativeCanonicalStateV3_ComputeDigestsInPlaceWithScratch(state,scratch,scratchSize);
+}

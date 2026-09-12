@@ -32,5 +32,12 @@ int MainCanonicalState_ProjectV1(struct NativeCanonicalStateV1 *state, const str
 int MainCanonicalState_ProjectV3(struct NativeCanonicalStateV3 *state, const struct NativeIdentityV1 *identity, uint32_t replayFrameNumber,
                                  const struct NativeCanonicalControlV1 *control, const struct NativeCanonicalRngV1 *rng,
                                  const struct NativeCanonicalInputV1 *input, const struct NativeCanonicalDriversV1 *drivers);
+/* Runtime-workspace form. The caller owns unpublished staging and scratch;
+ * unlike ProjectV3, failure may modify `state`. */
+int MainCanonicalState_ProjectV3InPlaceWithScratch(struct NativeCanonicalStateV3 *state,
+	const struct NativeIdentityV1 *identity,uint32_t replayFrameNumber,
+	const struct NativeCanonicalControlV1 *control,const struct NativeCanonicalRngV1 *rng,
+	const struct NativeCanonicalInputV1 *input,const struct NativeCanonicalDriversV1 *drivers,
+	uint8_t *scratch,size_t scratchSize);
 
 #endif

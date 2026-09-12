@@ -28,6 +28,10 @@ struct NativeCanonicalStateV3
 void NativeCanonicalStateV3_Init(struct NativeCanonicalStateV3 *state);
 int NativeCanonicalStateV3_Validate(const struct NativeCanonicalStateV3 *state);
 int NativeCanonicalStateV3_ComputeDigests(struct NativeCanonicalStateV3 *state);
+/* Workspace form for already-private staging. It avoids the transactional
+ * whole-state automatic copy; failure may leave digest fields modified. */
+int NativeCanonicalStateV3_ComputeDigestsInPlaceWithScratch(struct NativeCanonicalStateV3 *state,
+	uint8_t *scratch,size_t scratchSize);
 size_t NativeCanonicalStateV3_EncodedSize(void);
 int NativeCanonicalStateV3_Encode(struct NativeCodecWriter *writer, const struct NativeCanonicalStateV3 *state);
 int NativeCanonicalStateV3_Decode(struct NativeCodecReader *reader, const struct NativeIdentityV1 *expectedIdentity,

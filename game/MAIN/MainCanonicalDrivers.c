@@ -877,17 +877,44 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMetaPhysics(co
 	const struct MainCanonicalTopologyContext *topologyContext,const struct MainCanonicalTopologySnapshot *topologySnapshot,
 	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *out)
 {
-	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate prior;
 	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate candidate;
-	if(!out||!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(gGT,sourceData,&prior))return 0;
-	memset(&candidate,0,sizeof(candidate));candidate.roster=prior.roster;
-	memcpy(candidate.race,prior.race,sizeof(candidate.race));memcpy(candidate.dynamics,prior.dynamics,sizeof(candidate.dynamics));
-	memcpy(candidate.active,prior.active,sizeof(candidate.active));memcpy(candidate.pendingDamage,prior.pendingDamage,sizeof(candidate.pendingDamage));
-	memcpy(candidate.bot,prior.bot,sizeof(candidate.bot));memcpy(candidate.meta,prior.meta,sizeof(candidate.meta));
-	if(candidate.roster.prelude.presenceMask!=0&&!MainCanonicalTopology_Validate(topologyContext,topologySnapshot,gGT,sourceData))return 0;
-	for(uint8_t slot=0;slot<8;slot++)if((candidate.roster.prelude.presenceMask&(UINT32_C(1)<<slot))!=0&&
-		(!gGT->drivers[slot]||!MainCanonicalDrivers_ExtractPhysics(topologyContext,topologySnapshot,gGT,sourceData,gGT->drivers[slot],&candidate.physics[slot])))return 0;
+	if(!out||!MainCanonicalDrivers_ExtractRosterPrelude(gGT,sourceData,&candidate.roster)||
+		!MainCanonicalDrivers_ExtractCompleteFromPreludeInPlace(gGT,sourceData,topologyContext,topologySnapshot,&candidate))return 0;
 	*out=candidate;return 1;
+}
+
+int MainCanonicalDrivers_ExtractCompleteFromPreludeInPlace(const struct GameTracker *gGT,const struct sData *sourceData,
+	const struct MainCanonicalTopologyContext *topologyContext,const struct MainCanonicalTopologySnapshot *topologySnapshot,
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *staging)
+{
+	uint32_t presenceMask;
+	if(!gGT||!sourceData||!staging||sourceData->gGT!=gGT)return 0;
+	presenceMask=staging->roster.prelude.presenceMask;
+	memset(staging->race,0,sizeof(staging->race));
+	memset(staging->dynamics,0,sizeof(staging->dynamics));
+	memset(staging->active,0,sizeof(staging->active));
+	memset(staging->pendingDamage,0,sizeof(staging->pendingDamage));
+	memset(staging->bot,0,sizeof(staging->bot));
+	memset(staging->meta,0,sizeof(staging->meta));
+	memset(staging->physics,0,sizeof(staging->physics));
+	if(presenceMask!=0&&!MainCanonicalTopology_Validate(topologyContext,topologySnapshot,gGT,sourceData))return 0;
+	for(uint8_t slot=0;slot<8;slot++)
+	{
+		const struct Driver *driver;
+		if((presenceMask&(UINT32_C(1)<<slot))==0)continue;
+		driver=gGT->drivers[slot];
+		if(!driver)return 0;
+		MainCanonicalDrivers_CopyRace(driver,&staging->race[slot]);
+		MainCanonicalDrivers_CopyDynamics(driver,&staging->dynamics[slot]);
+		if(!MainCanonicalDrivers_ExtractDriverActive(driver,staging->roster.kind[slot],
+			staging->roster.behaviorID[slot],driver->kartState,&staging->active[slot])||
+			!MainCanonicalDrivers_ExtractPendingDamage(gGT,driver,&staging->pendingDamage[slot])||
+			!MainCanonicalDrivers_ExtractMetaAndBot(gGT,sourceData,driver,slot,&staging->roster,
+				&staging->meta[slot],&staging->bot[slot])||
+			!MainCanonicalDrivers_ExtractPhysics(topologyContext,topologySnapshot,gGT,sourceData,driver,
+				&staging->physics[slot]))return 0;
+	}
+	return 1;
 }
 
 int MainCanonicalDrivers_AssembleDetailed(
@@ -916,6 +943,9 @@ int MainCanonicalDrivers_AssembleDetailed(
 	return 1;
 }
 
+#if defined(_MSC_VER)
+__declspec(noinline)
+#endif
 int MainCanonicalDrivers_AssembleDetailedWithScratch(
 	const struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate *candidate,
 	uint8_t *scratch,size_t scratchSize,struct MainCanonicalDriversDetailedAssembly *out)
@@ -946,7 +976,7 @@ int MainCanonicalDrivers_AssembleDetailedWithScratch(
 		}
 		else if(candidate->roster.kind[slot]!=0||candidate->roster.behaviorID[slot]!=0||candidate->roster.threadBehaviorID[slot]!=0)return 0;
 	}
-	if(!NativeCanonicalDriversDetailedV1_Validate(&out->detailed)||
+	if(!NativeCanonicalDriversDetailedV1_ValidateWithScratch(&out->detailed,scratch,scratchSize)||
 		!NativeCanonicalDriversDetailedV1_BuildSummaryWithScratch(&out->detailed,scratch,scratchSize,&summary))return 0;
 	out->summary=summary;
 	return 1;
