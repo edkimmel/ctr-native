@@ -126,6 +126,16 @@ set_target_properties(ctr_native_canonical_pool PROPERTIES
 )
 target_include_directories(ctr_native_canonical_pool PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# Portable fixed-array address-to-index identity validation for a later
+# topology projector. It has no game-state or pointer dereference dependency.
+add_library(ctr_native_canonical_fixed_array STATIC platform/native_canonical_fixed_array.c)
+set_target_properties(ctr_native_canonical_fixed_array PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_canonical_fixed_array PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 add_library(ctr_native_canonical_drivers_detailed STATIC platform/native_canonical_drivers_detailed.c)
 set_target_properties(ctr_native_canonical_drivers_detailed PROPERTIES
     C_STANDARD 17
@@ -395,6 +405,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_canonical_pool_test PRIVATE ctr_native_canonical_pool)
     add_test(NAME native_canonical_pool_unit COMMAND $<TARGET_FILE:native_canonical_pool_test>)
+
+    add_executable(native_canonical_fixed_array_test tests/native_canonical_fixed_array_test.c)
+    set_target_properties(native_canonical_fixed_array_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_canonical_fixed_array_test PRIVATE ctr_native_canonical_fixed_array)
+    add_test(NAME native_canonical_fixed_array_unit COMMAND $<TARGET_FILE:native_canonical_fixed_array_test>)
 
     add_executable(native_canonical_state_v3_test tests/native_canonical_state_v3_test.c)
     set_target_properties(native_canonical_state_v3_test PROPERTIES
