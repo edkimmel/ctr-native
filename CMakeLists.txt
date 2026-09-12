@@ -116,6 +116,16 @@ set_target_properties(ctr_native_canonical_driver_behavior PROPERTIES
 )
 target_include_directories(ctr_native_canonical_driver_behavior PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# Standalone JitPool geometry/list ownership validation. It is intentionally
+# not linked into the game until a future source projector adopts it.
+add_library(ctr_native_canonical_pool STATIC platform/native_canonical_pool.c)
+set_target_properties(ctr_native_canonical_pool PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_canonical_pool PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 add_library(ctr_native_canonical_drivers_detailed STATIC platform/native_canonical_drivers_detailed.c)
 set_target_properties(ctr_native_canonical_drivers_detailed PROPERTIES
     C_STANDARD 17
@@ -376,6 +386,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_canonical_driver_behavior_test PRIVATE ctr_native_canonical_driver_behavior)
     add_test(NAME native_canonical_driver_behavior_unit COMMAND $<TARGET_FILE:native_canonical_driver_behavior_test>)
+
+    add_executable(native_canonical_pool_test tests/native_canonical_pool_test.c)
+    set_target_properties(native_canonical_pool_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_canonical_pool_test PRIVATE ctr_native_canonical_pool)
+    add_test(NAME native_canonical_pool_unit COMMAND $<TARGET_FILE:native_canonical_pool_test>)
 
     add_executable(native_canonical_state_v3_test tests/native_canonical_state_v3_test.c)
     set_target_properties(native_canonical_state_v3_test PROPERTIES
