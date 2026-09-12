@@ -35,13 +35,35 @@ static int s_checkpointWrites;
 static int s_checkpointReads;
 static struct PlatformInputPadSnapshot s_installedPads[PLATFORM_INPUT_PAD_COUNT];
 static int s_installedPadCount;
+#if defined(_WIN32)
+static volatile LONG s_temporaryPathSequence;
+#endif
 
 static int TemporaryPath(char path[PATH_BYTES])
 {
 #if defined(_WIN32)
-	char directory[MAX_PATH];
-	DWORD length = GetTempPathA(sizeof(directory), directory);
-	return (length > 0) && (length < sizeof(directory)) && (GetTempFileNameA(directory, "csi", 0, path) != 0) && (remove(path) == 0);
+	/* Do not rely on TEMP/TMP being configured or on GetTempFileName's
+	 * three-character prefix namespace.  CTest's working directory is already
+	 * the isolated writable build tree.  CREATE_NEW proves this exact candidate
+	 * is ours, then DeleteFile restores the absent-path contract for sessions. */
+	for (unsigned int attempt = 0; attempt < 128u; attempt++)
+	{
+		const LONG sequence = InterlockedIncrement(&s_temporaryPathSequence);
+		const int written = _snprintf_s(path, PATH_BYTES, _TRUNCATE, "ctr-scheduler-%lu-%ld.tmp",
+		                                (unsigned long)GetCurrentProcessId(), (long)sequence);
+		HANDLE file;
+		if ((written < 0) || (written >= PATH_BYTES)) return 0;
+		file = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY, NULL);
+		if (file == INVALID_HANDLE_VALUE)
+		{
+			if (GetLastError() == ERROR_FILE_EXISTS) continue;
+			return 0;
+		}
+		if ((CloseHandle(file) != 0) && (DeleteFileA(path) != 0)) return 1;
+		(void)DeleteFileA(path);
+		return 0;
+	}
+	return 0;
 #else
 	char templatePath[] = "/tmp/ctr-scheduler-integration-XXXXXX";
 	int descriptor = mkstemp(templatePath);
