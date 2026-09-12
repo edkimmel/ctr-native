@@ -41,6 +41,18 @@ int NativeCanonicalDriverBehavior_AllowedActiveTagMask(uint8_t kind, uint8_t beh
  * It fails (without modifying the output) for a valid ambiguous set. */
 int NativeCanonicalDriverBehavior_ResolveActiveTag(uint8_t kind, uint8_t behaviorID, uint8_t kartState,
 	uint32_t *activeTagOut);
+/* Chooses the actual observed tag for a source tuple with the documented
+ * lifecycle precedence.  Unlike ResolveActiveTag, this succeeds for valid
+ * overlaps (for example podium's queued NONE over a retained RevEngine
+ * suffix).  On failure the output is not modified. */
+int NativeCanonicalDriverBehavior_ResolveActualActiveTag(uint8_t kind, uint8_t behaviorID, uint8_t kartState,
+	uint32_t *activeTagOut);
+/* Resolves whether the MaskGrab union is applicable.  It is true only for a
+ * HUMAN tuple whose complete allowed-tag set is exactly MASK_GRAB.  The
+ * success return distinguishes an invalid tuple from a valid false result;
+ * on failure the boolean output is not modified. */
+int NativeCanonicalDriverBehavior_IsMaskGrabActive(uint8_t kind, uint8_t behaviorID, uint8_t kartState,
+	int *isMaskGrabActiveOut);
 /* Pointer-free state/tag gate.  Active tags use the stable detailed enum
  * values (NONE through WARP); kartState is the documented PSX state value. */
 int NativeCanonicalDriverBehavior_ValidateState(uint8_t kind, uint8_t behaviorID, uint8_t kartState, uint32_t activeTag);

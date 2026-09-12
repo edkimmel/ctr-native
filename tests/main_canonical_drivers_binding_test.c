@@ -328,11 +328,11 @@ static void MetaFixture(struct SourceFixture *f,int cloud,int mask)
 	root->childThread=cloud?cloudThread:maskThread;
 }
 
-static int MetaResolve(const struct SourceFixture *f,uint8_t behaviorID,uint8_t kartState,uint32_t activeTag,
+static int MetaResolve(const struct SourceFixture *f,uint8_t behaviorID,uint8_t kartState,
 	struct MainCanonicalDriversMetaFlags *out)
 {
 	return MainCanonicalDrivers_ResolveMetaFlags(&f->tracker,FLD((struct SourceFixture *)f,0),
-		NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behaviorID,kartState,activeTag,out);
+		NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behaviorID,kartState,out);
 }
 
 static int MetaFlagsTest(void)
@@ -342,17 +342,22 @@ static int MetaFlagsTest(void)
 	struct Driver *driver;
 	struct Thread *root;
 	MetaFixture(&f,1,1);
-	if(!MetaResolve(&f,11,KS_MASK_GRABBED,NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB,&flags)||
+	if(!MetaResolve(&f,11,KS_MASK_GRABBED,&flags)||
 		flags.externalPresenceFlags!=NATIVE_CANONICAL_DRIVER_EXTERNAL_KNOWN_MASK||flags.driverThreadSimFlags!=0)return 0;
 	/* Null sources clear their corresponding bit while retaining every fully
 	 * validated immediate child in the bounded walk. */
-	MetaFixture(&f,0,0);if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||flags.externalPresenceFlags!=0)return 0;
+	MetaFixture(&f,0,0);if(!MetaResolve(&f,1,KS_NORMAL,&flags)||flags.externalPresenceFlags!=0)return 0;
 	MetaFixture(&f,1,1);driver=FLD(&f,0);driver->KartStates.MaskGrab.maskObj=NULL;
-	if(!MetaResolve(&f,11,KS_MASK_GRABBED,NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB,&flags)||
+	if(!MetaResolve(&f,11,KS_MASK_GRABBED,&flags)||
 		flags.externalPresenceFlags!=NATIVE_CANONICAL_DRIVER_EXTERNAL_RAIN_CLOUD)return 0;
 	/* The active union is deliberately not read for any other state/kind. */
 	MetaFixture(&f,0,0);driver=FLD(&f,0);driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
-	if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||flags.externalPresenceFlags!=0)return 0;
+	if(!MetaResolve(&f,1,KS_NORMAL,&flags)||flags.externalPresenceFlags!=0)return 0;
+	/* Podium's queued Driving/NONE precedence is a valid multi-tag tuple, but
+	 * it is not a singleton MASK_GRAB source and must not read union poison. */
+	driver->kartState=KS_ENGINE_REVVING;
+	if(!MetaResolve(&f,31,KS_ENGINE_REVVING,&flags)||flags.externalPresenceFlags!=0)return 0;
+	driver->kartState=KS_NORMAL;
 	/* Excluded pointers and unrelated structural root flags have no effect;
 	 * DISABLE_COLLISION is the sole thread structural bit persisted here. */
 	driver->thTrackingMe=(struct Thread *)(uintptr_t)1;driver->plantEatingMe=(struct Thread *)(uintptr_t)1;
@@ -360,44 +365,44 @@ static int MetaFlagsTest(void)
 	driver->ghostTape=(struct GhostTape *)(uintptr_t)1;
 	driver->pendingDamageAttacker=(struct Driver *)(uintptr_t)1;
 	root=FLT(&f,0);root->flags=THREAD_FLAG_DISABLE_COLLISION|UINT32_C(0x0040);
-	if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||
+	if(!MetaResolve(&f,1,KS_NORMAL,&flags)||
 		flags.externalPresenceFlags!=0||flags.driverThreadSimFlags!=NATIVE_CANONICAL_DRIVER_THREAD_SIM_COLLISION_DISABLED)return 0;
 	root->flags=UINT32_C(0x0040);
-	if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||flags.driverThreadSimFlags!=0)return 0;
+	if(!MetaResolve(&f,1,KS_NORMAL,&flags)||flags.driverThreadSimFlags!=0)return 0;
 	for(uint32_t bit=0;bit<32;bit++)if((UINT32_C(1)<<bit)!=THREAD_FLAG_DEAD&&(UINT32_C(1)<<bit)!=THREAD_FLAG_DISABLE_COLLISION)
 	{
 		root->flags=UINT32_C(1)<<bit;
-		if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||flags.externalPresenceFlags!=0||flags.driverThreadSimFlags!=0)return 0;
+		if(!MetaResolve(&f,1,KS_NORMAL,&flags)||flags.externalPresenceFlags!=0||flags.driverThreadSimFlags!=0)return 0;
 	}
 	/* A bot has no active union even when the same native bytes contain poison. */
 	root->flags=0;
 	driver->botData.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
 	if(!MainCanonicalDrivers_ResolveMetaFlags(&f.tracker,driver,NATIVE_CANONICAL_DRIVER_KIND_BOT,1,KS_NORMAL,
-		NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||flags.externalPresenceFlags!=0||flags.driverThreadSimFlags!=0)return 0;
+		&flags)||flags.externalPresenceFlags!=0||flags.driverThreadSimFlags!=0)return 0;
 	/* These structural cases have no cloud or mask request, so they isolate the
 	 * root/seen-slot gates rather than failing through duplicate source matches. */
-	MetaFixture(&f,0,0);if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags))return 0;
+	MetaFixture(&f,0,0);if(!MetaResolve(&f,1,KS_NORMAL,&flags))return 0;
 	before=flags;root=FLT(&f,0);root->parentThread=root;root->childThread=root;root->siblingThread=NULL;
-	if(MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
-	MetaFixture(&f,0,0);if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags))return 0;
+	if(MetaResolve(&f,1,KS_NORMAL,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
+	MetaFixture(&f,0,0);if(!MetaResolve(&f,1,KS_NORMAL,&flags))return 0;
 	before=flags;root=FLT(&f,0);root->childThread=root;root->siblingThread=NULL;
-	if(MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
+	if(MetaResolve(&f,1,KS_NORMAL,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
 	/* First establish a valid unrelated child.  Repeating its exact pool slot
 	 * then reaches seen-by-index rejection before a capacity-bound fallback. */
 	MetaFixture(&f,0,0);root=FLT(&f,0);FMetaChild(&f,1,1,1,root,VehBirth_NullThread,OTHER);root->childThread=FT(&f,1);
-	if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags))return 0;
+	if(!MetaResolve(&f,1,KS_NORMAL,&flags))return 0;
 	before=flags;FT(&f,1)->siblingThread=FT(&f,1);
-	if(MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
+	if(MetaResolve(&f,1,KS_NORMAL,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
 	/* The child is listed free while every root allocation remains valid. */
 	MetaFixture(&f,0,0);root=FLT(&f,0);FMetaChild(&f,1,1,1,root,VehBirth_NullThread,OTHER);root->childThread=FT(&f,1);
-	if(!MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags))return 0;
+	if(!MetaResolve(&f,1,KS_NORMAL,&flags))return 0;
 	before=flags;FList(&f.tracker.JitPools.thread.free,f.thread,sizeof(struct Thread),UINT32_C(0xda));
-	if(MetaResolve(&f,1,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
+	if(MetaResolve(&f,1,KS_NORMAL,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0;
 
 	#define FAIL_META(change) do { \
-		MetaFixture(&f,1,1);if(!MetaResolve(&f,11,KS_MASK_GRABBED,NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB,&flags))return 0; \
+		MetaFixture(&f,1,1);if(!MetaResolve(&f,11,KS_MASK_GRABBED,&flags))return 0; \
 		before=flags;change; \
-		if(MetaResolve(&f,11,KS_MASK_GRABBED,NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0; \
+		if(MetaResolve(&f,11,KS_MASK_GRABBED,&flags)||memcmp(&flags,&before,sizeof(flags))!=0)return 0; \
 	} while(0)
 	/* Each independently snapshotted pool and its ownership lists are gates. */
 	FAIL_META(f.tracker.JitPools.thread.itemSize--);

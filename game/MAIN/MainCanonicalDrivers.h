@@ -62,6 +62,6 @@ int MainCanonicalDrivers_ExtractRosterRaceDynamics(const struct GameTracker *gGT
 	const struct sData *sdata,
 	struct MainCanonicalDriversRosterRaceDynamicsCandidate *out);
 int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
-	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,uint32_t activeTag,
+	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,
 	struct MainCanonicalDriversMetaFlags *out);
 #endif

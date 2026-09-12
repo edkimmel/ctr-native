@@ -253,7 +253,7 @@ static int ValidateMetaThread(const struct Thread *thread,const struct Thread *r
 }
 
 int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
-	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,uint32_t activeTag,
+	const struct Driver *driver,uint8_t kind,uint8_t behaviorID,uint8_t kartState,
 	struct MainCanonicalDriversMetaFlags *out)
 {
 	struct NativeCanonicalPoolGeometry threadGeometry,instanceGeometry,smallGeometry;
@@ -267,7 +267,7 @@ int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 	uint8_t *seenChildren;
 	int success=0;
 	int wantsMask;
-	if(!gGT||!driver||!out||!NativeCanonicalDriverBehavior_ValidateState(kind,behaviorID,kartState,activeTag)||
+	if(!gGT||!driver||!out||!NativeCanonicalDriverBehavior_IsMaskGrabActive(kind,behaviorID,kartState,&wantsMask)||
 		!SnapshotMetaPools(gGT,&threadGeometry,&instanceGeometry,&smallGeometry,&threadFree,&instanceFree,&instanceTaken,&smallFree))return 0;
 	/* The Driver's own large-stack root is an explicit precondition from the
 	 * roster gate. Revalidate the linked instance/thread before touching child
@@ -284,7 +284,6 @@ int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 	seenChildren=(uint8_t *)calloc(threadGeometry.maxItems,sizeof(*seenChildren));
 	if(!seenChildren)return 0;
 	cloudThread=driver->thCloud;
-	wantsMask=kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN&&activeTag==NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB;
 	if(wantsMask)maskObject=driver->KartStates.MaskGrab.maskObj;
 	child=rootThread->childThread;
 	for(uint32_t count=0;child!=NULL&&count<threadGeometry.maxItems;count++)

@@ -106,6 +106,61 @@ int NativeCanonicalDriverBehavior_ResolveActiveTag(uint8_t kind, uint8_t behavio
 		if((allowed&(UINT32_C(1)<<candidate))!=0){*activeTagOut=candidate;return 1;}
 	return 0;
 }
+int NativeCanonicalDriverBehavior_ResolveActualActiveTag(uint8_t kind, uint8_t behaviorID, uint8_t kartState,
+	uint32_t *activeTagOut)
+{
+	uint8_t suffix,init,expectedState;
+	uint32_t candidate,allowed;
+	if(activeTagOut==NULL||behaviorID>NATIVE_CANONICAL_DRIVER_BEHAVIOR_MAX)return 0;
+	if(kind==NATIVE_CANONICAL_DRIVER_KIND_BOT)candidate=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;
+	else
+	{
+		if(kind!=NATIVE_CANONICAL_DRIVER_KIND_HUMAN)return 0;
+		suffix=(uint8_t)(behaviorID%NATIVE_CANONICAL_DRIVER_BEHAVIOR_SUFFIX_COUNT);
+		init=(uint8_t)(behaviorID/NATIVE_CANONICAL_DRIVER_BEHAVIOR_SUFFIX_COUNT);
+		/* These queued observations intentionally take precedence over a
+		 * retained steady suffix (notably podium RevEngine). */
+		if(suffix==0||(init>=6&&init<=8&&kartState==0)||(init==1&&kartState==4))
+			candidate=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;
+		else
+		{
+			expectedState=0;candidate=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;
+			switch(suffix)
+			{
+				case 1: break;
+				case 2: expectedState=11;break;
+				case 3: expectedState=9;break;
+				case 4:case 5: expectedState=2;candidate=NATIVE_CANONICAL_DRIVER_ACTIVE_DRIFT;break;
+				case 6: expectedState=1;break;
+				case 7:case 8:case 9:case 10: expectedState=3;candidate=NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN;break;
+				case 11: expectedState=5;candidate=NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB;break;
+				case 12:case 13: expectedState=5;candidate=NATIVE_CANONICAL_DRIVER_ACTIVE_PLANT_EATEN;break;
+				case 14: expectedState=4;candidate=NATIVE_CANONICAL_DRIVER_ACTIVE_REV_ENGINE;break;
+				case 15: expectedState=6;candidate=NATIVE_CANONICAL_DRIVER_ACTIVE_BLASTED;break;
+				case 16: expectedState=10;candidate=NATIVE_CANONICAL_DRIVER_ACTIVE_WARP;break;
+				default:return 0;
+			}
+			if(kartState!=expectedState)return 0;
+		}
+	}
+	/* Keep the precedence resolver mechanically tied to the complete
+	 * acceptance contract without using the singular ambiguity resolver. */
+	if(!NativeCanonicalDriverBehavior_AllowedActiveTagMask(kind,behaviorID,kartState,&allowed)||
+		(allowed&(UINT32_C(1)<<candidate))==0)return 0;
+	*activeTagOut=candidate;
+	return 1;
+}
+int NativeCanonicalDriverBehavior_IsMaskGrabActive(uint8_t kind, uint8_t behaviorID, uint8_t kartState,
+	int *isMaskGrabActiveOut)
+{
+	uint32_t allowed;
+	int candidate;
+	if(isMaskGrabActiveOut==NULL||!NativeCanonicalDriverBehavior_AllowedActiveTagMask(kind,behaviorID,kartState,&allowed))return 0;
+	candidate=kind==NATIVE_CANONICAL_DRIVER_KIND_HUMAN&&
+		allowed==(UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_MASK_GRAB);
+	*isMaskGrabActiveOut=candidate;
+	return 1;
+}
 int NativeCanonicalDriverBehavior_ValidateState(uint8_t kind, uint8_t behaviorID, uint8_t kartState, uint32_t activeTag)
 {
 	uint32_t allowed;
