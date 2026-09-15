@@ -192,6 +192,14 @@ set_target_properties(ctr_native_canonical_world_counters_v1 PROPERTIES C_STANDA
 target_include_directories(ctr_native_canonical_world_counters_v1 PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_world_counters_v1 PUBLIC ctr_native_canonical_codec)
 
+# Dormant game-owned M2 WORLD counter extraction.  This deliberately remains a
+# separate static target: no unity inclusion or runtime/state/replay consumer.
+add_library(ctr_native_main_canonical_world_counters STATIC game/MAIN/MainCanonicalWorldCounters.c)
+set_target_properties(ctr_native_main_canonical_world_counters PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_main_canonical_world_counters PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_compile_definitions(ctr_native_main_canonical_world_counters PRIVATE CTR_NATIVE)
+target_link_libraries(ctr_native_main_canonical_world_counters PUBLIC ctr_native_canonical_world_counters_v1)
+
 # Fixture-only fact adapter: it intentionally has no live topology/runtime
 # dependency and can be exercised against the portable normative codec alone.
 add_library(ctr_native_canonical_topology_facts STATIC game/MAIN/MainCanonicalTopologyFacts.c)
@@ -539,6 +547,13 @@ if(BUILD_TESTING)
     add_test(NAME native_canonical_world_counters_v1_unit COMMAND $<TARGET_FILE:native_canonical_world_counters_v1_test>)
     add_test(NAME native_canonical_world_counters_v1_source_contract
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_canonical_world_counters_v1_source_contract_test.cmake")
+
+    add_executable(main_canonical_world_counters_test tests/main_canonical_world_counters_test.c)
+    set_target_properties(main_canonical_world_counters_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_include_directories(main_canonical_world_counters_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
+    target_compile_definitions(main_canonical_world_counters_test PRIVATE CTR_NATIVE)
+    target_link_libraries(main_canonical_world_counters_test PRIVATE ctr_native_main_canonical_world_counters)
+    add_test(NAME main_canonical_world_counters_unit COMMAND $<TARGET_FILE:main_canonical_world_counters_test>)
 
     add_executable(main_canonical_topology_facts_test tests/main_canonical_topology_facts_test.c)
     set_target_properties(main_canonical_topology_facts_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
