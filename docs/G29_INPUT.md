@@ -29,8 +29,8 @@ active-low PS1 pad snapshot used by replay and canonical input:
 | G29 control | SDL input | PS1 control |
 | --- | --- | --- |
 | Steering | axis 0, left negative | left stick X |
-| Throttle | axis 2, rest `+32767`, pressed `-32768` | Cross |
-| Brake | axis 3, rest `+32767`, pressed `-32768` | Square |
+| Throttle | axis 1, rest `+32767`, pressed `-32768` | Cross |
+| Brake | axis 2, rest `+32767`, pressed `-32768` | Square |
 | Cross / Square / Circle / Triangle | buttons 0 / 1 / 2 / 3 | same |
 | R2 / L2 | buttons 4 / 5 | R2 / L2 |
 | Right / left paddle | buttons 6 / 7 | R1 + Circle/item / L1 |
@@ -50,7 +50,8 @@ For a hardware check, launch with `CTR_NATIVE_G29_DIAGNOSTICS=1`.  The direct
 G29 path then logs its complete reported axis count and up to the first sixteen
 axis values when the wheel opens, and again only after a material axis change
 (2,048 counts), pedal wake/press transition, or mapped PS1 button change.  Each
-line includes the configured throttle/brake raw values, awake/pressed flags,
+line includes the configured throttle (axis 1)/brake (axis 2) raw values,
+awake/pressed flags,
 and the resulting active-low PS1 button word.  The variable is off by default;
 it changes neither mapping nor saved/replay input state.
 

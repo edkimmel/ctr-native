@@ -53,6 +53,9 @@ int main(void)
 	CHECK(NativeG29Input_ShapeSteering(-32768) == -32768);
 	CHECK(NativeG29Input_ShapeSteering(16000) > 15000);
 	CHECK(NativeG29Input_ShapeSteering(-16000) < -15000);
+	CHECK(NATIVE_G29_STEERING_AXIS == 0);
+	CHECK(NATIVE_G29_THROTTLE_AXIS == 1);
+	CHECK(NATIVE_G29_BRAKE_AXIS == 2);
 
 	memset(&raw, 0, sizeof(raw));
 	memset(&state, 0, sizeof(state));
@@ -62,32 +65,32 @@ int main(void)
 
 	/* The G29 reports zero until its pedal axes wake. Zero must never create
 	 * phantom half-pressed gas/brake inputs. Rest is +32767; press is -32768. */
+	raw.axes[1] = 32767;
 	raw.axes[2] = 32767;
-	raw.axes[3] = 32767;
 	Map(&raw, &state, &mapped);
 	CHECK(state.throttleAwake == 1 && state.brakeAwake == 1);
 	CHECK(mapped.buttons == 0xffffu);
 
-	raw.axes[2] = 22000;
+	raw.axes[1] = 22000;
 	Map(&raw, &state, &mapped);
 	CHECK((mapped.buttons & 0x4000u) == 0 && state.throttlePressed == 1);
-	raw.axes[2] = 24000;
+	raw.axes[1] = 24000;
 	Map(&raw, &state, &mapped);
 	CHECK((mapped.buttons & 0x4000u) == 0); /* hysteresis hold */
-	raw.axes[2] = 27000;
+	raw.axes[1] = 27000;
 	Map(&raw, &state, &mapped);
 	CHECK((mapped.buttons & 0x4000u) != 0 && state.throttlePressed == 0);
 
-	raw.axes[3] = -32768;
+	raw.axes[2] = -32768;
 	Map(&raw, &state, &mapped);
 	CHECK((mapped.buttons & 0x8000u) == 0 && state.brakePressed == 1);
-	raw.axes[3] = 32767;
+	raw.axes[2] = 32767;
 	Map(&raw, &state, &mapped);
 	CHECK((mapped.buttons & 0x8000u) != 0 && state.brakePressed == 0);
 
 	memset(&raw, 0, sizeof(raw));
+	raw.axes[1] = 32767;
 	raw.axes[2] = 32767;
-	raw.axes[3] = 32767;
 	/* CAB1's direct SDL enumeration reserves button 24 for Options.  This is
 	 * the menu-start control; button 9 is Share/Select, not Start. */
 	raw.buttons[NATIVE_G29_BUTTON_OPTIONS] = 1;
@@ -144,8 +147,8 @@ int main(void)
 
 	memset(&raw, 0, sizeof(raw));
 	raw.axes[0] = 12000;
+	raw.axes[1] = 32767;
 	raw.axes[2] = 32767;
-	raw.axes[3] = 32767;
 	Map(&raw, &state, &mapped);
 	CHECK(mapped.steering > 0 && mapped.buttons == 0xffffu && mapped.active == 1);
 

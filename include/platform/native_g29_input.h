@@ -19,8 +19,9 @@
 #define NATIVE_G29_BUTTON_SHARE              9
 #define NATIVE_G29_BUTTON_OPTIONS            24
 #define NATIVE_G29_STEERING_AXIS             0
-#define NATIVE_G29_THROTTLE_AXIS             2
-#define NATIVE_G29_BRAKE_AXIS                3
+/* CAB1 live diagnostic: gas is axis 1, brake is axis 2 (active-low). */
+#define NATIVE_G29_THROTTLE_AXIS             1
+#define NATIVE_G29_BRAKE_AXIS                2
 #define NATIVE_G29_STEERING_DEADZONE         512
 #define NATIVE_G29_PEDAL_WAKE_THRESHOLD      30000
 #define NATIVE_G29_PEDAL_PRESS_THRESHOLD     22500
