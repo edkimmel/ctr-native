@@ -24,8 +24,7 @@ int NativeCanonicalWorldCountersV1_FromFacts(struct NativeCanonicalWorldCounters
 	if (!counters || !facts || (facts->flags & ~NATIVE_CANONICAL_WORLD_COUNTERS_V1_FLAG_AVAILABLE) != 0) return 0;
 	NativeCanonicalWorldCountersV1_Init(&candidate);
 	if (facts->flags == 0) {
-		struct NativeCanonicalWorldCountersV1Facts exact = {0};
-		if (memcmp(facts, &exact, sizeof(exact)) != 0) return 0;
+		if (facts->activeBombMissileCount != 0) return 0;
 	} else {
 		candidate.flags = facts->flags;
 		candidate.activeBombMissileCount = facts->activeBombMissileCount;

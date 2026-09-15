@@ -81,7 +81,7 @@ static int TestMutationsMalformedAndTransactional(void)
 
 static int TestUnavailableExact(void)
 {
-	struct NativeCanonicalWorldCountersV1Facts facts = {0};
+	struct NativeCanonicalWorldCountersV1Facts facts = {0}, differentlyInitializedFacts;
 	struct NativeCanonicalWorldCountersV1 value, exact;
 	uint8_t bytes[NATIVE_CANONICAL_WORLD_COUNTERS_V1_ENCODED_BYTES];
 	struct NativeCodecWriter writer;
@@ -91,8 +91,15 @@ static int TestUnavailableExact(void)
 	NativeCodecWriter_Init(&writer, bytes, sizeof(bytes), NULL);
 	CHECK(NativeCanonicalWorldCountersV1_Encode(&writer, &value));
 	CHECK(memcmp(bytes, (const uint8_t[]){1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, sizeof(bytes)) == 0);
+	/* Fieldwise validation must not depend on an unavailable fact object's padding. */
+	memset(&differentlyInitializedFacts, 0xa5, sizeof(differentlyInitializedFacts));
+	differentlyInitializedFacts.flags = 0;
+	differentlyInitializedFacts.activeBombMissileCount = 0;
+	CHECK(NativeCanonicalWorldCountersV1_FromFacts(&value, &differentlyInitializedFacts));
 	facts.activeBombMissileCount = 1;
 	CHECK(!NativeCanonicalWorldCountersV1_FromFacts(&value, &facts));
+	differentlyInitializedFacts.activeBombMissileCount = 1;
+	CHECK(!NativeCanonicalWorldCountersV1_FromFacts(&value, &differentlyInitializedFacts));
 	return 0;
 }
 
