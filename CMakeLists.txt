@@ -341,6 +341,12 @@ set_target_properties(ctr_native_replay_v4 PROPERTIES C_STANDARD 17 C_STANDARD_R
 target_include_directories(ctr_native_replay_v4 PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_replay_v4 PUBLIC ctr_native_canonical_state_v4 ctr_native_match_config)
 
+# Isolated CRV4 file transaction/reader; no runtime consumer.
+add_library(ctr_native_replay_v4_file STATIC platform/native_replay_v4_file.c)
+set_target_properties(ctr_native_replay_v4_file PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_replay_v4_file PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_replay_v4_file PUBLIC ctr_native_replay_v4)
+
 add_library(ctr_native_replay_v2_file STATIC platform/native_replay_v2_file.c)
 set_target_properties(ctr_native_replay_v2_file PROPERTIES
     C_STANDARD 17
@@ -728,6 +734,12 @@ if(BUILD_TESTING)
     target_link_libraries(native_replay_v4_test PRIVATE ctr_native_replay_v4)
     add_test(NAME native_replay_v4_unit COMMAND $<TARGET_FILE:native_replay_v4_test>)
     set_tests_properties(native_replay_v4_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+    add_executable(native_replay_v4_file_test tests/native_replay_v4_file_test.c)
+    set_target_properties(native_replay_v4_file_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_link_libraries(native_replay_v4_file_test PRIVATE ctr_native_replay_v4_file)
+    add_test(NAME native_replay_v4_file_unit COMMAND $<TARGET_FILE:native_replay_v4_file_test>)
+    set_tests_properties(native_replay_v4_file_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
     add_executable(native_replay_v2_file_test tests/native_replay_v2_file_test.c)
     set_target_properties(native_replay_v2_file_test PROPERTIES
