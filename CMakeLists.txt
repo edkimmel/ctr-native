@@ -171,6 +171,13 @@ set_target_properties(ctr_native_canonical_drivers PROPERTIES
 target_include_directories(ctr_native_canonical_drivers PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_drivers PUBLIC ctr_native_canonical_codec)
 
+# Standalone pointer-free M2 topology summary.  It has no game ownership,
+# projector, scheduler, replay, or state-schema dependency.
+add_library(ctr_native_canonical_topology_v1 STATIC platform/native_canonical_topology.c)
+set_target_properties(ctr_native_canonical_topology_v1 PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_canonical_topology_v1 PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_canonical_topology_v1 PUBLIC ctr_native_canonical_codec)
+
 add_library(ctr_native_canonical_driver_behavior STATIC platform/native_canonical_driver_behavior.c)
 set_target_properties(ctr_native_canonical_driver_behavior PROPERTIES
     C_STANDARD 17
@@ -494,6 +501,11 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_canonical_drivers_test PRIVATE ctr_native_canonical_drivers)
     add_test(NAME native_canonical_drivers_unit COMMAND $<TARGET_FILE:native_canonical_drivers_test>)
+
+    add_executable(native_canonical_topology_v1_test tests/native_canonical_topology_v1_test.c)
+    set_target_properties(native_canonical_topology_v1_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_link_libraries(native_canonical_topology_v1_test PRIVATE ctr_native_canonical_topology_v1)
+    add_test(NAME native_canonical_topology_v1_unit COMMAND $<TARGET_FILE:native_canonical_topology_v1_test>)
 
     add_executable(native_canonical_drivers_detailed_test tests/native_canonical_drivers_detailed_test.c)
     set_target_properties(native_canonical_drivers_detailed_test PROPERTIES
