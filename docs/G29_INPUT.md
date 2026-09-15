@@ -32,8 +32,8 @@ active-low PS1 pad snapshot used by replay and canonical input:
 | Throttle | axis 1, rest `+32767`, pressed `-32768` | Cross |
 | Brake | axis 2, rest `+32767`, pressed `-32768` | Square |
 | Cross / Square / Circle / Triangle | buttons 0 / 1 / 2 / 3 | same |
-| R2 / L2 | buttons 4 / 5 | R2 / L2 |
-| Right / left paddle | buttons 6 / 7 | R1 + Circle/item / L1 |
+| Right paddle | button 4 | Circle/item only |
+| Left paddle | button 5 | R1 drift/powerslide only |
 | Share / Options | buttons 9 / 24 | Select / Start |
 | D-pad | hat 0 | D-pad |
 
@@ -69,7 +69,9 @@ After a fresh Release build, verify the startup log contains exactly one
 2. Check D-pad navigation, Cross confirm, Square/Triangle back, Options Start,
    and Share Select.
 3. In a solo race, check steering direction and center, throttle acceleration,
-   brake/reverse, both paddles for hopping/powersliding, and face buttons.
+   brake/reverse, the right paddle for item use, the left paddle for
+   drift/powerslide, and face buttons.  Confirm the right paddle does not
+   activate rear view.
 4. Finish a race, exit normally, cold-launch, and repeat a short control check.
 
 The SDL3 hardware IDs, axis polarity, threshold feel, and exact menu semantics

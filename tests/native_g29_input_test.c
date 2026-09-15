@@ -107,23 +107,32 @@ int main(void)
 	static const int mappedButtons[] = {
 		NATIVE_G29_BUTTON_CROSS, NATIVE_G29_BUTTON_SQUARE,
 		NATIVE_G29_BUTTON_CIRCLE, NATIVE_G29_BUTTON_TRIANGLE,
-		NATIVE_G29_BUTTON_R2, NATIVE_G29_BUTTON_L2,
-		NATIVE_G29_BUTTON_R1, NATIVE_G29_BUTTON_L1
+		NATIVE_G29_BUTTON_PHYSICAL_RIGHT_PADDLE,
+		NATIVE_G29_BUTTON_PHYSICAL_LEFT_PADDLE
 	};
 	static const uint16_t mappedMasks[] = {
 		0x4000u, 0x8000u, 0x2000u, 0x1000u,
-		0x0200u, 0x0100u, 0x2800u, 0x0400u
+		0x2000u, 0x0800u
 	};
-	/* CAB1's measured right paddle is button 6.  It retains R1 while also
-	 * aliasing Circle/item; either physical source must produce Circle. */
+	/* CAB1's physical paddles are raw buttons 4/5.  The right paddle is item
+	 * only (not R2/rear view); the left paddle is drift only (not L2). */
 	memset(raw.buttons, 0, sizeof(raw.buttons));
-	raw.buttons[NATIVE_G29_BUTTON_R1] = 1;
+	raw.buttons[NATIVE_G29_BUTTON_PHYSICAL_RIGHT_PADDLE] = 1;
 	Map(&raw, &state, &mapped);
-	CHECK(mapped.buttons == 0xd7ffu && mapped.active == 1);
+	CHECK(mapped.buttons == 0xdfffu && mapped.active == 1);
 	memset(raw.buttons, 0, sizeof(raw.buttons));
 	raw.buttons[NATIVE_G29_BUTTON_CIRCLE] = 1;
 	Map(&raw, &state, &mapped);
 	CHECK(mapped.buttons == 0xdfffu && mapped.active == 1);
+	memset(raw.buttons, 0, sizeof(raw.buttons));
+	raw.buttons[NATIVE_G29_BUTTON_PHYSICAL_LEFT_PADDLE] = 1;
+	Map(&raw, &state, &mapped);
+	CHECK(mapped.buttons == 0xf7ffu && mapped.active == 1);
+	memset(raw.buttons, 0, sizeof(raw.buttons));
+	raw.buttons[6] = 1;
+	raw.buttons[7] = 1;
+	Map(&raw, &state, &mapped);
+	CHECK(mapped.buttons == 0xffffu && mapped.active == 0);
 	for (int index = 0; index < (int)(sizeof(mappedButtons) / sizeof(mappedButtons[0])); index++)
 	{
 		memset(raw.buttons, 0, sizeof(raw.buttons));
@@ -143,7 +152,7 @@ int main(void)
 	memset(raw.buttons, 1, sizeof(raw.buttons));
 	raw.hat = 0x0fu;
 	Map(&raw, &state, &mapped);
-	CHECK(mapped.buttons == 0x0006u && mapped.active == 1);
+	CHECK(mapped.buttons == 0x0706u && mapped.active == 1);
 
 	memset(&raw, 0, sizeof(raw));
 	raw.axes[0] = 12000;

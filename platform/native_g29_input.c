@@ -162,16 +162,14 @@ void NativeG29Input_Map(
 	 * Share/Select, not Start.  The PS1 pad packet remains active-low. */
 	if ((state->throttlePressed != 0u) || (raw->buttons[NATIVE_G29_BUTTON_CROSS] != 0u)) buttons &= (uint16_t)~NATIVE_G29_PSX_CROSS;
 	if ((state->brakePressed != 0u) || (raw->buttons[NATIVE_G29_BUTTON_SQUARE] != 0u)) buttons &= (uint16_t)~NATIVE_G29_PSX_SQUARE;
-	/* The CAB1 right paddle is button 6.  It remains R1 and also serves as
-	 * Circle so a wheel-only player can use items without moving to the face
-	 * buttons.  The native PS1 packet stays active-low. */
+	/* CAB1's physical right paddle is raw button 4 and is item only.  It must
+	 * not pass through as R2, because CTR assigns R2 to rear view. */
 	if ((raw->buttons[NATIVE_G29_BUTTON_CIRCLE] != 0u) ||
-	    (raw->buttons[NATIVE_G29_BUTTON_R1] != 0u)) buttons &= (uint16_t)~NATIVE_G29_PSX_CIRCLE;
+	    (raw->buttons[NATIVE_G29_BUTTON_PHYSICAL_RIGHT_PADDLE] != 0u)) buttons &= (uint16_t)~NATIVE_G29_PSX_CIRCLE;
 	if (raw->buttons[NATIVE_G29_BUTTON_TRIANGLE] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_TRIANGLE;
-	if (raw->buttons[NATIVE_G29_BUTTON_R2] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_R2;
-	if (raw->buttons[NATIVE_G29_BUTTON_L2] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_L2;
-	if (raw->buttons[NATIVE_G29_BUTTON_R1] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_R1;
-	if (raw->buttons[NATIVE_G29_BUTTON_L1] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_L1;
+	/* CAB1's physical left paddle is raw button 5 and is drift/powerslide
+	 * only.  It must not pass through as L2. */
+	if (raw->buttons[NATIVE_G29_BUTTON_PHYSICAL_LEFT_PADDLE] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_R1;
 	if (raw->buttons[NATIVE_G29_BUTTON_SHARE] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_SELECT;
 	if (raw->buttons[NATIVE_G29_BUTTON_OPTIONS] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_START;
 

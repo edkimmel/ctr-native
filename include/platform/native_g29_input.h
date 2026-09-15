@@ -11,11 +11,11 @@
 #define NATIVE_G29_BUTTON_SQUARE             1
 #define NATIVE_G29_BUTTON_CIRCLE             2
 #define NATIVE_G29_BUTTON_TRIANGLE           3
-#define NATIVE_G29_BUTTON_R2                 4
-#define NATIVE_G29_BUTTON_L2                 5
-/* CAB1 measured the physical right/left paddles at buttons 6/7. */
-#define NATIVE_G29_BUTTON_R1                 6
-#define NATIVE_G29_BUTTON_L1                 7
+/* CAB1 physical report: the right/left paddles enumerate as 4/5.  Keep
+ * these physical names so their kiosk mappings cannot be mistaken for PSX
+ * shoulder-button passthrough. */
+#define NATIVE_G29_BUTTON_PHYSICAL_RIGHT_PADDLE 4
+#define NATIVE_G29_BUTTON_PHYSICAL_LEFT_PADDLE  5
 #define NATIVE_G29_BUTTON_SHARE              9
 #define NATIVE_G29_BUTTON_OPTIONS            24
 #define NATIVE_G29_STEERING_AXIS             0
