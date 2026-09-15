@@ -427,11 +427,13 @@ void Platform_PollHostEvents(void)
 	{
 		switch (event.type)
 		{
+		case SDL_EVENT_JOYSTICK_ADDED:
 		case SDL_EVENT_GAMEPAD_ADDED:
-			Platform_InputControllerAdded(event.gdevice.which);
+			Platform_InputControllerAdded(event.jdevice.which);
 			break;
+		case SDL_EVENT_JOYSTICK_REMOVED:
 		case SDL_EVENT_GAMEPAD_REMOVED:
-			Platform_InputControllerRemoved(event.gdevice.which);
+			Platform_InputControllerRemoved(event.jdevice.which);
 			break;
 		case SDL_EVENT_QUIT:
 			exit(0);

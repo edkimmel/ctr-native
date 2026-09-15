@@ -1,4 +1,5 @@
 #include <platform/native_input.h>
+#include <platform/native_g29_input.h>
 
 #include <macros.h>
 #include "psx/libpad.h"
@@ -22,7 +23,7 @@
 #define NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT 0
 // NOTE(aalhendi): Little-endian tag `CTRI` = CTR native Input snapshot.
 #define NATIVE_INPUT_STATE_MAGIC           0x49525443
-#define NATIVE_INPUT_STATE_VERSION         1
+#define NATIVE_INPUT_STATE_VERSION         2
 
 // NOTE(aalhendi): Native input preserves behavior from PsyCross's
 // MIT-licensed pad implementation while moving host ownership into ctr-native.
@@ -63,6 +64,8 @@ struct NativeInputController
 {
 	SDL_JoystickID instanceId;
 	SDL_Gamepad *controller;
+	SDL_Joystick *joystick;
+	struct NativeG29MappingState g29State;
 	s32 analogEnabled;
 	s32 switchingAnalog;
 	struct PlatformInputPadSnapshot snapshot;
@@ -71,6 +74,7 @@ struct NativeInputController
 struct NativeInputControllerStateSnapshot
 {
 	struct PlatformInputPadSnapshot snapshot;
+	struct NativeG29MappingState g29State;
 	s32 analogEnabled;
 	s32 switchingAnalog;
 	s32 controllerToSlotMapping;
@@ -329,6 +333,11 @@ internal s32 NativeInput_ControllerButtonState(SDL_Gamepad *controller, s32 butt
 	return SDL_GetGamepadButton(controller, (SDL_GamepadButton)buttonOrAxis) * 32767;
 }
 
+internal s32 NativeInput_HasDevice(const struct NativeInputController *controller)
+{
+	return (controller->controller != NULL) || (controller->joystick != NULL);
+}
+
 internal u8 NativeInput_AxisToByte(s32 axis)
 {
 	s32 value = (axis / 256) + 128;
@@ -465,6 +474,46 @@ internal void NativeInput_ApplyController(s32 slot)
 	snapshot->analog[3] = NativeInput_AxisToByte(leftY);
 }
 
+internal void NativeInput_ApplyG29(s32 slot)
+{
+	struct NativeInputController *nativeController = &s_controllers[slot];
+	struct PlatformInputPadSnapshot *snapshot = &nativeController->snapshot;
+	struct NativeG29RawInput raw;
+	struct NativeG29MappedInput mapped;
+	SDL_Joystick *joystick = nativeController->joystick;
+
+	if ((joystick == NULL) || (SDL_JoystickConnected(joystick) == false))
+	{
+		return;
+	}
+
+	memset(&raw, 0, sizeof(raw));
+	for (s32 axis = 0; axis < NATIVE_G29_AXIS_COUNT; axis++)
+	{
+		raw.axes[axis] = SDL_GetJoystickAxis(joystick, axis);
+	}
+	for (s32 button = 0; button < NATIVE_G29_BUTTON_COUNT; button++)
+	{
+		raw.buttons[button] = SDL_GetJoystickButton(joystick, button) ? 1u : 0u;
+	}
+	raw.hat = SDL_GetJoystickHat(joystick, 0);
+
+	NativeG29Input_Map(&raw, &nativeController->g29State, &mapped);
+	snapshot->connected = 1;
+	snapshot->status = 0;
+	snapshot->id = NATIVE_INPUT_PAD_ANALOG;
+	NativeInput_SetSnapshotButtons(snapshot, mapped.buttons);
+	snapshot->analog[0] = 0x80;
+	snapshot->analog[1] = 0x80;
+	snapshot->analog[2] = NativeInput_AxisToByte(mapped.steering);
+	snapshot->analog[3] = 0x80;
+
+	if (mapped.active != 0u)
+	{
+		s_lastActiveControllerSlot = slot;
+	}
+}
+
 internal u16 NativeInput_ReadKeyboard(void)
 {
 	const struct NativeInputKeyboardMapping *mapping = &s_keyboardMapping;
@@ -575,14 +624,14 @@ internal void NativeInput_ApplyKeyboard(s32 slot, u16 keyboardButtons)
 
 internal s32 NativeInput_FindActiveControllerSlot(void)
 {
-	if (NativeInput_IsValidControllerSlot(s_lastActiveControllerSlot) && (s_controllers[s_lastActiveControllerSlot].controller != NULL))
+	if (NativeInput_IsValidControllerSlot(s_lastActiveControllerSlot) && NativeInput_HasDevice(&s_controllers[s_lastActiveControllerSlot]))
 	{
 		return s_lastActiveControllerSlot;
 	}
 
 	for (s32 slot = 0; slot < NATIVE_INPUT_MAX_CONTROLLERS; slot++)
 	{
-		if (s_controllers[slot].controller != NULL)
+		if (NativeInput_HasDevice(&s_controllers[slot]))
 		{
 			return slot;
 		}
@@ -630,7 +679,7 @@ internal s32 NativeInput_FindSlotForDeviceIndex(Sint32 deviceIndex)
 
 	for (slot = 0; slot < NATIVE_INPUT_MAX_CONTROLLERS; slot++)
 	{
-		if ((s_controllerToSlotMapping[slot] < 0) && (s_controllers[slot].controller == NULL))
+		if ((s_controllerToSlotMapping[slot] < 0) && !NativeInput_HasDevice(&s_controllers[slot]))
 		{
 			return slot;
 		}
@@ -651,11 +700,18 @@ internal void NativeInput_CloseController(s32 slot)
 	{
 		SDL_CloseGamepad(controller->controller);
 	}
+	if (controller->joystick != NULL)
+	{
+		SDL_CloseJoystick(controller->joystick);
+	}
 
 	controller->controller = NULL;
+	controller->joystick = NULL;
 	controller->instanceId = -1;
+	memset(&controller->g29State, 0, sizeof(controller->g29State));
 	controller->analogEnabled = 0;
 	controller->switchingAnalog = 0;
+	s_controllerToSlotMapping[slot] = -1;
 
 	if (s_lastActiveControllerSlot == slot)
 	{
@@ -665,40 +721,82 @@ internal void NativeInput_CloseController(s32 slot)
 
 internal void NativeInput_OpenController(SDL_JoystickID instanceId, s32 slot)
 {
+	struct NativeInputController *controller;
 	if ((slot < 0) || (slot >= NATIVE_INPUT_MAX_CONTROLLERS))
 	{
 		return;
 	}
 
-	if (SDL_IsGamepad(instanceId) == 0)
+	controller = &s_controllers[slot];
+	if (NativeInput_HasDevice(controller))
 	{
 		return;
 	}
 
-	struct NativeInputController *controller = &s_controllers[slot];
-	if (controller->controller != NULL)
+	if (SDL_IsGamepad(instanceId))
+	{
+		controller->controller = SDL_OpenGamepad(instanceId);
+		if (controller->controller == NULL)
+		{
+			fprintf(stderr, "[CTR Native] SDL Gamepad open failed for instance %u: %s\n", (unsigned int)instanceId, SDL_GetError());
+			return;
+		}
+
+		SDL_Joystick *joystick = SDL_GetGamepadJoystick(controller->controller);
+		controller->instanceId = joystick != NULL ? SDL_GetJoystickID(joystick) : instanceId;
+		controller->analogEnabled = 1;
+		controller->switchingAnalog = 0;
+		s_controllerToSlotMapping[slot] = (s32)controller->instanceId;
+		NativeInput_MoveKeyboardOffControllerSlot(slot);
+		fprintf(stderr, "[CTR Native] Input slot %d opened SDL Gamepad instance %u\n", slot + 1, (unsigned int)controller->instanceId);
+		return;
+	}
+
+	Uint16 vendor = SDL_GetJoystickVendorForID(instanceId);
+	Uint16 product = SDL_GetJoystickProductForID(instanceId);
+	enum NativeG29DeviceMatch match = NativeG29Input_MatchDevice(vendor, product, SDL_GetJoystickNameForID(instanceId));
+	if (match == NATIVE_G29_DEVICE_NO_MATCH)
 	{
 		return;
 	}
 
-	controller->controller = SDL_OpenGamepad(instanceId);
-	if (controller->controller == NULL)
+	controller->joystick = SDL_OpenJoystick(instanceId);
+	if (controller->joystick == NULL)
 	{
+		fprintf(stderr, "[CTR Native] G29 joystick open failed for instance %u: %s\n", (unsigned int)instanceId, SDL_GetError());
 		return;
 	}
 
-	SDL_Joystick *joystick = SDL_GetGamepadJoystick(controller->controller);
-	controller->instanceId = joystick != NULL ? SDL_GetJoystickID(joystick) : instanceId;
+	if ((SDL_GetNumJoystickAxes(controller->joystick) < NATIVE_G29_AXIS_COUNT) ||
+	    (SDL_GetNumJoystickButtons(controller->joystick) < NATIVE_G29_BUTTON_COUNT) ||
+	    (SDL_GetNumJoystickHats(controller->joystick) < 1))
+	{
+		fprintf(stderr, "[CTR Native] G29 instance %u rejected: insufficient axes/buttons/hats\n", (unsigned int)instanceId);
+		SDL_CloseJoystick(controller->joystick);
+		controller->joystick = NULL;
+		return;
+	}
+
+	controller->instanceId = SDL_GetJoystickID(controller->joystick);
+	memset(&controller->g29State, 0, sizeof(controller->g29State));
 	controller->analogEnabled = 1;
 	controller->switchingAnalog = 0;
+	s_controllerToSlotMapping[slot] = (s32)controller->instanceId;
 	NativeInput_MoveKeyboardOffControllerSlot(slot);
+	fprintf(stderr,
+	        "[CTR Native] Input slot %d opened Logitech G29 instance %u (VID=%04x PID=%04x match=%s)\n",
+	        slot + 1,
+	        (unsigned int)controller->instanceId,
+	        (unsigned int)vendor,
+	        (unsigned int)product,
+	        match == NATIVE_G29_DEVICE_VID_PID ? "VID/PID" : "name-fallback");
 }
 
 internal void NativeInput_OpenKnownControllers(void)
 {
 	s32 count = 0;
 
-	SDL_JoystickID *gamepads = SDL_GetGamepads(&count);
+	SDL_JoystickID *gamepads = SDL_GetJoysticks(&count);
 	for (s32 i = 0; i < count; i++)
 	{
 		s32 slot = NativeInput_FindSlotForDeviceIndex(gamepads[i]);
@@ -723,6 +821,7 @@ int Platform_InputInit(void)
 	for (s32 slot = 0; slot < NATIVE_INPUT_MAX_CONTROLLERS; slot++)
 	{
 		s_controllers[slot].instanceId = -1;
+		s_controllerToSlotMapping[slot] = -1;
 		NativeInput_ResetSnapshot(slot);
 		s_installedSnapshots[slot] = s_controllers[slot].snapshot;
 	}
@@ -733,7 +832,7 @@ int Platform_InputInit(void)
 	s_installedSnapshotsActive = 0;
 	s_keyboardState = SDL_GetKeyboardState(NULL);
 
-	if (SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC) == 0)
+	if (SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC) == 0)
 	{
 		fprintf(stderr, "[CTR Native] Failed to initialise SDL input subsystem: %s\n", SDL_GetError());
 		return 0;
@@ -755,7 +854,7 @@ void Platform_InputShutdown(void)
 
 	if (s_inputInitialized != 0)
 	{
-		SDL_QuitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC);
+		SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC);
 	}
 
 	s_inputInitialized = 0;
@@ -793,6 +892,7 @@ void Platform_InputUpdate(void)
 	{
 		NativeInput_ResetSnapshot(slot);
 		NativeInput_ApplyController(slot);
+		NativeInput_ApplyG29(slot);
 		NativeInput_ApplyKeyboard(slot, keyboardButtons);
 	}
 	NativeInput_WritePadBus();
@@ -950,6 +1050,7 @@ int Platform_InputCaptureState(void *dst, int dstSize)
 	{
 		snapshot->installedSnapshots[slot] = s_installedSnapshots[slot];
 		snapshot->controllers[slot].snapshot = s_controllers[slot].snapshot;
+		snapshot->controllers[slot].g29State = s_controllers[slot].g29State;
 		snapshot->controllers[slot].analogEnabled = s_controllers[slot].analogEnabled;
 		snapshot->controllers[slot].switchingAnalog = s_controllers[slot].switchingAnalog;
 		snapshot->controllers[slot].controllerToSlotMapping = s_controllerToSlotMapping[slot];
@@ -993,6 +1094,13 @@ int Platform_InputRestoreState(const void *src, int srcSize)
 		{
 			return 0;
 		}
+		if ((snapshot->controllers[slot].g29State.throttleAwake > 1u) ||
+		    (snapshot->controllers[slot].g29State.brakeAwake > 1u) ||
+		    (snapshot->controllers[slot].g29State.throttlePressed > 1u) ||
+		    (snapshot->controllers[slot].g29State.brakePressed > 1u))
+		{
+			return 0;
+		}
 		if (snapshot->controllers[slot].controllerToSlotMapping < -1)
 		{
 			return 0;
@@ -1007,6 +1115,7 @@ int Platform_InputRestoreState(const void *src, int srcSize)
 	{
 		s_installedSnapshots[slot] = snapshot->installedSnapshots[slot];
 		s_controllers[slot].snapshot = snapshot->controllers[slot].snapshot;
+		s_controllers[slot].g29State = snapshot->controllers[slot].g29State;
 		s_controllers[slot].analogEnabled = snapshot->controllers[slot].analogEnabled;
 		s_controllers[slot].switchingAnalog = snapshot->controllers[slot].switchingAnalog;
 		s_controllerToSlotMapping[slot] = snapshot->controllers[slot].controllerToSlotMapping;
@@ -1045,7 +1154,7 @@ void Platform_InputPadVibrate(int port, unsigned char *table, int len)
 	}
 
 	struct NativeInputController *controller = &s_controllers[slot];
-	if (controller->controller == NULL)
+	if (!NativeInput_HasDevice(controller))
 	{
 		return;
 	}
@@ -1063,5 +1172,9 @@ void Platform_InputPadVibrate(int port, unsigned char *table, int len)
 		freqHigh = 4096;
 	}
 
-	SDL_RumbleGamepad(controller->controller, freqLow, freqHigh, 200);
+	if (controller->controller != NULL)
+	{
+		SDL_RumbleGamepad(controller->controller, freqLow, freqHigh, 200);
+	}
+	/* Direct G29 force feedback remains a separate M6 hardware gate. */
 }

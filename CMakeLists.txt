@@ -120,6 +120,17 @@ set_target_properties(ctr_native_deterministic_rng PROPERTIES
 target_include_directories(ctr_native_deterministic_rng PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_deterministic_rng PUBLIC ctr_native_canonical_codec ctr_native_sha256)
 
+# Pure CAB1-measured Logitech G29 device matching and input conversion.  SDL
+# ownership remains in native_input.c; this target keeps the hardware mapping
+# deterministic and unit-testable without a connected wheel.
+add_library(ctr_native_g29_input STATIC platform/native_g29_input.c)
+set_target_properties(ctr_native_g29_input PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_g29_input PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -357,7 +368,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -438,6 +449,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_deterministic_rng_test PRIVATE ctr_native_deterministic_rng)
     add_test(NAME native_deterministic_rng_unit COMMAND $<TARGET_FILE:native_deterministic_rng_test>)
+
+    add_executable(native_g29_input_test tests/native_g29_input_test.c)
+    set_target_properties(native_g29_input_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_g29_input_test PRIVATE ctr_native_g29_input)
+    add_test(NAME native_g29_input_unit COMMAND $<TARGET_FILE:native_g29_input_test>)
 
     add_executable(main_arcade_roster_test tests/main_arcade_roster_test.c)
     set_target_properties(main_arcade_roster_test PROPERTIES
