@@ -185,6 +185,13 @@ set_target_properties(ctr_native_canonical_world_mine_registry_v1 PROPERTIES C_S
 target_include_directories(ctr_native_canonical_world_mine_registry_v1 PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_world_mine_registry_v1 PUBLIC ctr_native_canonical_codec)
 
+# Standalone, source-only M2 WORLD counter facts.  No game source adapter or
+# canonical-state/replay/runtime link consumes this dormant foundation.
+add_library(ctr_native_canonical_world_counters_v1 STATIC platform/native_canonical_world_counters.c)
+set_target_properties(ctr_native_canonical_world_counters_v1 PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_canonical_world_counters_v1 PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_canonical_world_counters_v1 PUBLIC ctr_native_canonical_codec)
+
 # Fixture-only fact adapter: it intentionally has no live topology/runtime
 # dependency and can be exercised against the portable normative codec alone.
 add_library(ctr_native_canonical_topology_facts STATIC game/MAIN/MainCanonicalTopologyFacts.c)
@@ -525,6 +532,11 @@ if(BUILD_TESTING)
     set_target_properties(native_canonical_world_mine_registry_v1_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_link_libraries(native_canonical_world_mine_registry_v1_test PRIVATE ctr_native_canonical_world_mine_registry_v1)
     add_test(NAME native_canonical_world_mine_registry_v1_unit COMMAND $<TARGET_FILE:native_canonical_world_mine_registry_v1_test>)
+
+    add_executable(native_canonical_world_counters_v1_test tests/native_canonical_world_counters_v1_test.c)
+    set_target_properties(native_canonical_world_counters_v1_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_link_libraries(native_canonical_world_counters_v1_test PRIVATE ctr_native_canonical_world_counters_v1)
+    add_test(NAME native_canonical_world_counters_v1_unit COMMAND $<TARGET_FILE:native_canonical_world_counters_v1_test>)
 
     add_executable(main_canonical_topology_facts_test tests/main_canonical_topology_facts_test.c)
     set_target_properties(main_canonical_topology_facts_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
