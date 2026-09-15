@@ -738,7 +738,15 @@ internal void NativeInput_OpenController(SDL_JoystickID instanceId, s32 slot)
 		return;
 	}
 
-	if (SDL_IsGamepad(instanceId))
+	/* SDL's CAB1 controller database may classify the G29 as a Gamepad.  The
+	 * G29 nevertheless needs the measured raw-joystick path: its Options
+	 * control is direct button 24, outside the ordinary gamepad assumption.
+	 * Identify and claim the one supported wheel before accepting generic SDL
+	 * gamepads, while every non-G29 retains the existing path. */
+	Uint16 vendor = SDL_GetJoystickVendorForID(instanceId);
+	Uint16 product = SDL_GetJoystickProductForID(instanceId);
+	enum NativeG29DeviceMatch match = NativeG29Input_MatchDevice(vendor, product, SDL_GetJoystickNameForID(instanceId));
+	if (!NativeG29Input_ShouldUseDirect(match, SDL_IsGamepad(instanceId)) && SDL_IsGamepad(instanceId))
 	{
 		controller->controller = SDL_OpenGamepad(instanceId);
 		if (controller->controller == NULL)
@@ -757,9 +765,6 @@ internal void NativeInput_OpenController(SDL_JoystickID instanceId, s32 slot)
 		return;
 	}
 
-	Uint16 vendor = SDL_GetJoystickVendorForID(instanceId);
-	Uint16 product = SDL_GetJoystickProductForID(instanceId);
-	enum NativeG29DeviceMatch match = NativeG29Input_MatchDevice(vendor, product, SDL_GetJoystickNameForID(instanceId));
 	if (match == NATIVE_G29_DEVICE_NO_MATCH)
 	{
 		return;

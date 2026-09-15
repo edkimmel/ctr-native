@@ -20,11 +20,6 @@ int main(void)
 	struct NativeG29RawInput raw;
 	struct NativeG29MappingState state;
 	struct NativeG29MappedInput mapped;
-	static const uint16_t buttonMasks[NATIVE_G29_BUTTON_COUNT] = {
-		0x4000u, 0x8000u, 0x2000u, 0x1000u,
-		0x0800u, 0x0400u, 0x0200u, 0x0100u,
-		0x0001u, 0x0008u, 0x0004u, 0x0002u
-	};
 	static const uint16_t hatMasks[4] = {0x0010u, 0x0020u, 0x0040u, 0x0080u};
 
 	CHECK(NativeG29Input_MatchDevice(0x046d, 0xc24f, NULL) == NATIVE_G29_DEVICE_VID_PID);
@@ -39,6 +34,10 @@ int main(void)
 	CHECK(NativeG29Input_CheckClaim(-1, 17) == NATIVE_G29_DEVICE_CLAIM_AVAILABLE);
 	CHECK(NativeG29Input_CheckClaim(17, 17) == NATIVE_G29_DEVICE_CLAIM_SAME_INSTANCE);
 	CHECK(NativeG29Input_CheckClaim(17, 23) == NATIVE_G29_DEVICE_CLAIM_DUPLICATE);
+	CHECK(NativeG29Input_ShouldUseDirect(NATIVE_G29_DEVICE_VID_PID, 0));
+	CHECK(NativeG29Input_ShouldUseDirect(NATIVE_G29_DEVICE_VID_PID, 1));
+	CHECK(NativeG29Input_ShouldUseDirect(NATIVE_G29_DEVICE_NAME_FALLBACK, 1));
+	CHECK(!NativeG29Input_ShouldUseDirect(NATIVE_G29_DEVICE_NO_MATCH, 1));
 
 	memset(&state, 0, sizeof(state));
 	CHECK(NativeG29Input_ValidateMappingState(&state));
@@ -89,13 +88,36 @@ int main(void)
 	memset(&raw, 0, sizeof(raw));
 	raw.axes[2] = 32767;
 	raw.axes[3] = 32767;
-	for (int button = 0; button < NATIVE_G29_BUTTON_COUNT; button++)
+	/* CAB1's direct SDL enumeration reserves button 24 for Options.  This is
+	 * the menu-start control; button 9 is Share/Select, not Start. */
+	raw.buttons[NATIVE_G29_BUTTON_OPTIONS] = 1;
+	Map(&raw, &state, &mapped);
+	CHECK(mapped.buttons == 0xfff7u && mapped.active == 1);
+	memset(raw.buttons, 0, sizeof(raw.buttons));
+	raw.buttons[NATIVE_G29_BUTTON_SHARE] = 1;
+	Map(&raw, &state, &mapped);
+	CHECK(mapped.buttons == 0xfffeu && mapped.active == 1);
+	memset(raw.buttons, 0, sizeof(raw.buttons));
+	raw.buttons[10] = 1;
+	Map(&raw, &state, &mapped);
+	CHECK(mapped.buttons == 0xffffu && mapped.active == 0);
+	static const int mappedButtons[] = {
+		NATIVE_G29_BUTTON_CROSS, NATIVE_G29_BUTTON_SQUARE,
+		NATIVE_G29_BUTTON_CIRCLE, NATIVE_G29_BUTTON_TRIANGLE,
+		NATIVE_G29_BUTTON_R2, NATIVE_G29_BUTTON_L2,
+		NATIVE_G29_BUTTON_R1, NATIVE_G29_BUTTON_L1
+	};
+	static const uint16_t mappedMasks[] = {
+		0x4000u, 0x8000u, 0x2000u, 0x1000u,
+		0x0200u, 0x0100u, 0x0800u, 0x0400u
+	};
+	for (int index = 0; index < (int)(sizeof(mappedButtons) / sizeof(mappedButtons[0])); index++)
 	{
 		memset(raw.buttons, 0, sizeof(raw.buttons));
-		raw.buttons[button] = 1;
+		raw.buttons[mappedButtons[index]] = 1;
 		raw.hat = 0;
 		Map(&raw, &state, &mapped);
-		CHECK(mapped.buttons == (uint16_t)(0xffffu & ~buttonMasks[button]));
+		CHECK(mapped.buttons == (uint16_t)(0xffffu & ~mappedMasks[index]));
 	}
 	memset(raw.buttons, 0, sizeof(raw.buttons));
 	for (int direction = 0; direction < 4; direction++)
@@ -108,7 +130,7 @@ int main(void)
 	memset(raw.buttons, 1, sizeof(raw.buttons));
 	raw.hat = 0x0fu;
 	Map(&raw, &state, &mapped);
-	CHECK(mapped.buttons == 0x0000u && mapped.active == 1);
+	CHECK(mapped.buttons == 0x0006u && mapped.active == 1);
 
 	memset(&raw, 0, sizeof(raw));
 	raw.axes[0] = 12000;

@@ -9,9 +9,13 @@ fallback instead of a virtual Xbox controller.
 The fallback accepts Logitech VID `046d`, G29 PID `c24f`.  A case-insensitive
 `G29` name is accepted only when SDL omits either hardware ID and every nonzero
 ID SDL does provide matches the G29.  It rejects any explicitly different VID
-or PID and requires at least four axes, twelve buttons, and one hat.  Other
+or PID and requires at least four axes, twenty-five buttons, and one hat.  Other
 joysticks remain ignored; SDL Gamepads and the keyboard retain their existing
 paths.
+
+A matched G29 is always opened through this direct path, even if SDL's
+controller database also classifies it as a Gamepad.  CAB1's Options control is
+direct joystick button 24 and would otherwise be lost to the generic mapping.
 
 Only one direct G29 may be bound on a process.  Enumeration order claims the
 first matching physical G29; later matching instances are logged and ignored
@@ -28,10 +32,9 @@ active-low PS1 pad snapshot used by replay and canonical input:
 | Throttle | axis 2, rest `+32767`, pressed `-32768` | Cross |
 | Brake | axis 3, rest `+32767`, pressed `-32768` | Square |
 | Cross / Square / Circle / Triangle | buttons 0 / 1 / 2 / 3 | same |
-| Right / left paddle | buttons 4 / 5 | R1 / L1 |
-| R2 / L2 | buttons 6 / 7 | R2 / L2 |
-| Share / Options | buttons 8 / 9 | Select / Start |
-| R3 / L3 | buttons 10 / 11 | R3 / L3 |
+| R2 / L2 | buttons 4 / 5 | R2 / L2 |
+| Right / left paddle | buttons 6 / 7 | R1 / L1 |
+| Share / Options | buttons 9 / 24 | Select / Start |
 | D-pad | hat 0 | D-pad |
 
 Steering has a 512-count center deadzone, re-anchored to preserve full range.

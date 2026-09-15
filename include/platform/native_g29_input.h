@@ -6,7 +6,17 @@
 #define NATIVE_G29_VENDOR_ID                 0x046du
 #define NATIVE_G29_PRODUCT_ID                0xc24fu
 #define NATIVE_G29_AXIS_COUNT                4
-#define NATIVE_G29_BUTTON_COUNT              12
+#define NATIVE_G29_BUTTON_COUNT              25
+#define NATIVE_G29_BUTTON_CROSS              0
+#define NATIVE_G29_BUTTON_SQUARE             1
+#define NATIVE_G29_BUTTON_CIRCLE             2
+#define NATIVE_G29_BUTTON_TRIANGLE           3
+#define NATIVE_G29_BUTTON_R2                 4
+#define NATIVE_G29_BUTTON_L2                 5
+#define NATIVE_G29_BUTTON_R1                 6
+#define NATIVE_G29_BUTTON_L1                 7
+#define NATIVE_G29_BUTTON_SHARE              9
+#define NATIVE_G29_BUTTON_OPTIONS            24
 #define NATIVE_G29_STEERING_AXIS             0
 #define NATIVE_G29_THROTTLE_AXIS             2
 #define NATIVE_G29_BRAKE_AXIS                3
@@ -53,6 +63,7 @@ struct NativeG29MappedInput
 
 enum NativeG29DeviceMatch NativeG29Input_MatchDevice(uint16_t vendor, uint16_t product, const char *name);
 enum NativeG29DeviceClaim NativeG29Input_CheckClaim(int32_t selectedInstanceId, int32_t candidateInstanceId);
+int NativeG29Input_ShouldUseDirect(enum NativeG29DeviceMatch match, int isSdlGamepad);
 int NativeG29Input_ValidateMappingState(const struct NativeG29MappingState *state);
 int16_t NativeG29Input_ShapeSteering(int16_t raw);
 void NativeG29Input_Map(

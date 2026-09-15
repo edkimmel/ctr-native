@@ -86,6 +86,14 @@ enum NativeG29DeviceClaim NativeG29Input_CheckClaim(int32_t selectedInstanceId, 
 	return NATIVE_G29_DEVICE_CLAIM_DUPLICATE;
 }
 
+int NativeG29Input_ShouldUseDirect(enum NativeG29DeviceMatch match, int isSdlGamepad)
+{
+	/* A matched G29 always uses its direct layout.  SDL's Gamepad database
+	 * classification does not describe CAB1's Options-at-24 enumeration. */
+	(void)isSdlGamepad;
+	return match != NATIVE_G29_DEVICE_NO_MATCH;
+}
+
 int NativeG29Input_ValidateMappingState(const struct NativeG29MappingState *state)
 {
 	return (state != NULL) &&
@@ -150,20 +158,18 @@ void NativeG29Input_Map(
 	NativeG29Input_UpdatePedal(raw->axes[NATIVE_G29_THROTTLE_AXIS], &state->throttleAwake, &state->throttlePressed);
 	NativeG29Input_UpdatePedal(raw->axes[NATIVE_G29_BRAKE_AXIS], &state->brakeAwake, &state->brakePressed);
 
-	/* CAB1-measured SDL button order: Cross, Square, Circle, Triangle,
-	 * right paddle, left paddle, R2, L2, Share, Options, R3, L3. */
-	if ((state->throttlePressed != 0u) || (raw->buttons[0] != 0u)) buttons &= (uint16_t)~NATIVE_G29_PSX_CROSS;
-	if ((state->brakePressed != 0u) || (raw->buttons[1] != 0u)) buttons &= (uint16_t)~NATIVE_G29_PSX_SQUARE;
-	if (raw->buttons[2] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_CIRCLE;
-	if (raw->buttons[3] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_TRIANGLE;
-	if (raw->buttons[4] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_R1;
-	if (raw->buttons[5] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_L1;
-	if (raw->buttons[6] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_R2;
-	if (raw->buttons[7] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_L2;
-	if (raw->buttons[8] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_SELECT;
-	if (raw->buttons[9] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_START;
-	if (raw->buttons[10] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_R3;
-	if (raw->buttons[11] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_L3;
+	/* CAB1's SDL mapping enumerates Options at button 24.  Button 9 is
+	 * Share/Select, not Start.  The PS1 pad packet remains active-low. */
+	if ((state->throttlePressed != 0u) || (raw->buttons[NATIVE_G29_BUTTON_CROSS] != 0u)) buttons &= (uint16_t)~NATIVE_G29_PSX_CROSS;
+	if ((state->brakePressed != 0u) || (raw->buttons[NATIVE_G29_BUTTON_SQUARE] != 0u)) buttons &= (uint16_t)~NATIVE_G29_PSX_SQUARE;
+	if (raw->buttons[NATIVE_G29_BUTTON_CIRCLE] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_CIRCLE;
+	if (raw->buttons[NATIVE_G29_BUTTON_TRIANGLE] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_TRIANGLE;
+	if (raw->buttons[NATIVE_G29_BUTTON_R2] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_R2;
+	if (raw->buttons[NATIVE_G29_BUTTON_L2] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_L2;
+	if (raw->buttons[NATIVE_G29_BUTTON_R1] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_R1;
+	if (raw->buttons[NATIVE_G29_BUTTON_L1] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_L1;
+	if (raw->buttons[NATIVE_G29_BUTTON_SHARE] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_SELECT;
+	if (raw->buttons[NATIVE_G29_BUTTON_OPTIONS] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_START;
 
 	if ((raw->hat & NATIVE_G29_HAT_UP) != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_UP;
 	if ((raw->hat & NATIVE_G29_HAT_RIGHT) != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_RIGHT;
