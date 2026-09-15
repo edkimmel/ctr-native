@@ -727,6 +727,7 @@ if(BUILD_TESTING)
     set_target_properties(native_replay_v4_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_link_libraries(native_replay_v4_test PRIVATE ctr_native_replay_v4)
     add_test(NAME native_replay_v4_unit COMMAND $<TARGET_FILE:native_replay_v4_test>)
+    set_tests_properties(native_replay_v4_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
     add_executable(native_replay_v2_file_test tests/native_replay_v2_file_test.c)
     set_target_properties(native_replay_v2_file_test PROPERTIES

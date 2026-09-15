@@ -1,7 +1,10 @@
 #ifndef PLATFORM_NATIVE_REPLAY_V4_H
 #define PLATFORM_NATIVE_REPLAY_V4_H
 
-/* CRV4/CRF4 is a value transport only: it has no file/session/runtime user. */
+/* CRV4/CRF4 is a value transport only: it has no file/session/runtime user.
+ * Header_Validate/Encode permit a provisional header for a future file writer.
+ * Header_Decode and Frame_Decode are playback acceptance APIs: they require FINALIZED.
+ * Frame count and replay-frame ordering remain file/session responsibilities. */
 #include "platform/native_canonical_state_v4.h"
 #include "platform/native_match_config.h"
 #include "platform/native_replay_v2.h"
