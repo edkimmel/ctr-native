@@ -44,6 +44,36 @@ static int TestBoundsAndAtomicity(void)
 	quad[1]=0xff;restart[9]=0xff;CHECK(NativeCanonicalTopologyV1_FromNormativeStreams(&out,&in));
 	return 0;
 }
+static int TestCodecFailureAtomicity(void)
+{
+	struct NativeCanonicalTopologyV1Input in;struct NativeCanonicalTopologyV1 value,out,before,invalid;uint8_t quad[2],restart[24],nav[3][88],bytes[84],buffer[84];struct NativeCodecWriter writer,writerBefore;struct NativeCodecReader reader,readerBefore;struct NativeCodecDigest64 digest,digestBefore;
+	Input(&in,quad,restart,nav);CHECK(NativeCanonicalTopologyV1_FromNormativeStreams(&value,&in));
+	/* Encode preflights both capacity and the value before touching caller output. */
+	memset(buffer,0xa5,sizeof(buffer));NativeCodecDigest64_Init(&digest);digestBefore=digest;NativeCodecWriter_Init(&writer,buffer,sizeof(buffer)-1,&digest);writerBefore=writer;CHECK(!NativeCanonicalTopologyV1_Encode(&writer,&value));CHECK(memcmp(&writer,&writerBefore,sizeof(writer))==0&&memcmp(&digest,&digestBefore,sizeof(digest))==0);for(size_t i=0;i<sizeof(buffer);i++)CHECK(buffer[i]==0xa5);
+	invalid=value;invalid.version=2;NativeCodecWriter_Init(&writer,buffer,sizeof(buffer),&digest);writerBefore=writer;CHECK(!NativeCanonicalTopologyV1_Encode(&writer,&invalid));CHECK(memcmp(&writer,&writerBefore,sizeof(writer))==0&&memcmp(&digest,&digestBefore,sizeof(digest))==0);
+	NativeCodecWriter_Init(&writer,bytes,sizeof(bytes),NULL);CHECK(NativeCanonicalTopologyV1_Encode(&writer,&value));
+	/* Decode rejects short input without advancing the reader or replacing the destination. */
+	before=value;before.levelID=99;NativeCodecReader_Init(&reader,bytes,sizeof(bytes)-1);readerBefore=reader;out=before;CHECK(!NativeCanonicalTopologyV1_Decode(&reader,&out));CHECK(memcmp(&reader,&readerBefore,sizeof(reader))==0&&Equal(&out,&before));
+	return 0;
+}
+static int RejectMalformed(const uint8_t *bytes)
+{
+	struct NativeCanonicalTopologyV1 out,before;struct NativeCodecReader reader,readerBefore;
+	NativeCanonicalTopologyV1_Init(&before);before.levelID=99;out=before;NativeCodecReader_Init(&reader,bytes,NATIVE_CANONICAL_TOPOLOGY_SUMMARY_BYTES);readerBefore=reader;
+	CHECK(!NativeCanonicalTopologyV1_Decode(&reader,&out));CHECK(memcmp(&reader,&readerBefore,sizeof(reader))==0&&Equal(&out,&before));return 0;
+}
+static int TestMalformedEncodedInput(void)
+{
+	struct NativeCanonicalTopologyV1Input in;struct NativeCanonicalTopologyV1 value;uint8_t quad[2],restart[24],nav[3][88],bytes[84],bad[84];struct NativeCodecWriter writer;
+	Input(&in,quad,restart,nav);CHECK(NativeCanonicalTopologyV1_FromNormativeStreams(&value,&in));NativeCodecWriter_Init(&writer,bytes,sizeof(bytes),NULL);CHECK(NativeCanonicalTopologyV1_Encode(&writer,&value));
+	memcpy(bad,bytes,sizeof(bad));bad[0]=2;CHECK(!RejectMalformed(bad));
+	memcpy(bad,bytes,sizeof(bad));bad[4]=2;CHECK(!RejectMalformed(bad));
+	memcpy(bad,bytes,sizeof(bad));Put16(bad+12,UINT16_C(0x7fff));CHECK(!RejectMalformed(bad));
+	memcpy(bad,bytes,sizeof(bad));Put16(bad+16,256);CHECK(!RejectMalformed(bad));
+	memcpy(bad,bytes,sizeof(bad));bad[20]=2;CHECK(!RejectMalformed(bad));
+	memcpy(bad,bytes,sizeof(bad));Put16(bad+24,UINT16_C(0x7fff));CHECK(!RejectMalformed(bad));
+	return 0;
+}
 static int TestUnavailableExact(void)
 {
 	struct NativeCanonicalTopologyV1Input in={0};struct NativeCanonicalTopologyV1 a,b;uint8_t bytes[84];struct NativeCodecWriter w;
@@ -51,4 +81,4 @@ static int TestUnavailableExact(void)
 	NativeCodecWriter_Init(&w,bytes,sizeof(bytes),NULL);CHECK(NativeCanonicalTopologyV1_Encode(&w,&a));CHECK(bytes[0]==1&&bytes[20]==3);for(size_t i=4;i<20;i++)CHECK(bytes[i]==0);for(size_t i=24;i<36;i++)CHECK(bytes[i]==0);
 	in.navStreams[0]=(const uint8_t *)"x";CHECK(!NativeCanonicalTopologyV1_FromNormativeStreams(&a,&in));return 0;
 }
-int main(void) { if(TestAvailableAndLayout()||TestBoundsAndAtomicity()||TestUnavailableExact())return 1;puts("native_canonical_topology_v1_test: passed");return 0; }
+int main(void) { if(TestAvailableAndLayout()||TestBoundsAndAtomicity()||TestCodecFailureAtomicity()||TestMalformedEncodedInput()||TestUnavailableExact())return 1;puts("native_canonical_topology_v1_test: passed");return 0; }
