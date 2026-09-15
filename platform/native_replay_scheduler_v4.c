@@ -2,7 +2,9 @@
 #include <string.h>
 
 static int EqIdentity(const struct NativeIdentityV1 *a,const struct NativeIdentityV1 *b){return a&&b&&!memcmp(a->build,b->build,32)&&!memcmp(a->content,b->content,32);}
-static int EqObs(const struct NativeReplayV2FrameObservation *a,const struct NativeReplayV2FrameObservation *b){return a&&b&&!memcmp(a,b,sizeof(*a));}
+/* The observation contract is its named scalar fields; object padding is not
+ * observed state and must not influence replay diagnostics. */
+static int EqObs(const struct NativeReplayV2FrameObservation *a,const struct NativeReplayV2FrameObservation *b){return a&&b&&a->frameTimer==b->frameTimer&&a->frameCounter==b->frameCounter&&a->timer==b->timer&&a->framesInThisLEV==b->framesInThisLEV&&a->elapsedTimeMS==b->elapsedTimeMS&&a->msInThisLEV==b->msInThisLEV&&a->elapsedEventTime==b->elapsedEventTime&&a->mainGameState==b->mainGameState&&a->loadingStage==b->loadingStage&&a->levelID==b->levelID&&a->mixRandomNumber==b->mixRandomNumber&&a->audioRNG==b->audioRNG&&a->deadcoed0==b->deadcoed0&&a->deadcoed1==b->deadcoed1&&a->advRng0==b->advRng0&&a->advRng1==b->advRng1;}
 /* Separate wire types: compare persisted fields, never object padding. */
 static int EqPad(const struct NativeReplayV2Pad *a,const struct NativeCanonicalInputPadV1 *b){return a&&b&&a->status==b->status&&a->id==b->id&&!memcmp(a->buttons,b->buttons,2)&&!memcmp(a->analog,b->analog,4)&&a->connected==b->connected;}
 static int PadsMatchCanonical(const struct NativeReplayV2Pad pads[4],const struct NativeCanonicalInputV1 *input){if(!pads||!input||input->padCount!=4)return 0;for(uint32_t i=0;i<4;i++)if(!EqPad(&pads[i],&input->pads[i]))return 0;return 1;}
