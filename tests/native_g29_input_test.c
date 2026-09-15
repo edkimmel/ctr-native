@@ -30,9 +30,22 @@ int main(void)
 	CHECK(NativeG29Input_MatchDevice(0x046d, 0xc24f, NULL) == NATIVE_G29_DEVICE_VID_PID);
 	CHECK(NativeG29Input_MatchDevice(0, 0, "Logitech G HUB G29 Driving Force Racing Wheel USB") == NATIVE_G29_DEVICE_NAME_FALLBACK);
 	CHECK(NativeG29Input_MatchDevice(0x046d, 0, "g29 Driving Force") == NATIVE_G29_DEVICE_NAME_FALLBACK);
+	CHECK(NativeG29Input_MatchDevice(0, 0xc24f, "G29 Driving Force") == NATIVE_G29_DEVICE_NAME_FALLBACK);
+	CHECK(NativeG29Input_MatchDevice(0x1234, 0, "G29 Driving Force") == NATIVE_G29_DEVICE_NO_MATCH);
+	CHECK(NativeG29Input_MatchDevice(0, 0x5678, "G29 Driving Force") == NATIVE_G29_DEVICE_NO_MATCH);
 	CHECK(NativeG29Input_MatchDevice(0x1234, 0x5678, "G29 impostor") == NATIVE_G29_DEVICE_NO_MATCH);
 	CHECK(NativeG29Input_MatchDevice(0x046d, 0xc266, "G923") == NATIVE_G29_DEVICE_NO_MATCH);
 	CHECK(NativeG29Input_MatchDevice(0, 0, NULL) == NATIVE_G29_DEVICE_NO_MATCH);
+	CHECK(NativeG29Input_CheckClaim(-1, 17) == NATIVE_G29_DEVICE_CLAIM_AVAILABLE);
+	CHECK(NativeG29Input_CheckClaim(17, 17) == NATIVE_G29_DEVICE_CLAIM_SAME_INSTANCE);
+	CHECK(NativeG29Input_CheckClaim(17, 23) == NATIVE_G29_DEVICE_CLAIM_DUPLICATE);
+
+	memset(&state, 0, sizeof(state));
+	CHECK(NativeG29Input_ValidateMappingState(&state));
+	CHECK(!NativeG29Input_ValidateMappingState(NULL));
+	state.brakePressed = 2;
+	CHECK(!NativeG29Input_ValidateMappingState(&state));
+	memset(&state, 0, sizeof(state));
 
 	CHECK(NativeG29Input_ShapeSteering(0) == 0);
 	CHECK(NativeG29Input_ShapeSteering(NATIVE_G29_STEERING_DEADZONE) == 0);

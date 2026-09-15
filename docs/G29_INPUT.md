@@ -7,10 +7,17 @@ fallback instead of a virtual Xbox controller.
 ## Selection and mapping
 
 The fallback accepts Logitech VID `046d`, G29 PID `c24f`.  A case-insensitive
-`G29` name is accepted only when SDL omits either hardware ID.  It rejects an
-explicitly different VID/PID and requires at least four axes, twelve buttons,
-and one hat.  Other joysticks remain ignored; SDL Gamepads and the keyboard
-retain their existing paths.
+`G29` name is accepted only when SDL omits either hardware ID and every nonzero
+ID SDL does provide matches the G29.  It rejects any explicitly different VID
+or PID and requires at least four axes, twelve buttons, and one hat.  Other
+joysticks remain ignored; SDL Gamepads and the keyboard retain their existing
+paths.
+
+Only one direct G29 may be bound on a process.  Enumeration order claims the
+first matching physical G29; later matching instances are logged and ignored
+instead of becoming another local PS1 pad.  A duplicate add event for the
+already-bound SDL instance is also ignored.  Disconnecting the selected wheel
+releases the claim, so a later add event may claim a wheel again.
 
 The layout below was measured on CAB1 and is converted once into the same
 active-low PS1 pad snapshot used by replay and canonical input:
@@ -33,6 +40,11 @@ They press below 22,500 and release above 26,300, providing hysteresis around
 the digital threshold.
 
 Direct G29 force feedback is intentionally not enabled by this input slice.
+
+The pedal wake/hysteresis flags are now part of native input-state snapshot
+version 2.  Pre-v2 quick states/checkpoints contain the smaller v1 input block
+and are rejected rather than guessed or partially restored.  Replay/canonical
+pad snapshots are unchanged because they already store the converted PS1 bytes.
 
 ## CAB1 acceptance
 

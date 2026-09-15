@@ -60,14 +60,39 @@ enum NativeG29DeviceMatch NativeG29Input_MatchDevice(uint16_t vendor, uint16_t p
 	}
 
 	/* Some Windows HID stacks omit VID/PID from SDL's device record.  Permit
-	 * the measured G29 name only when one of those IDs is absent; do not claim
-	 * an explicitly different device merely because its display name lies. */
-	if (((vendor == 0u) || (product == 0u)) && NativeG29Input_NameContainsG29(name))
+	 * the measured G29 name only when one of those IDs is absent and every ID
+	 * SDL did supply agrees; never trust the name over a mismatched ID. */
+	if (((vendor == 0u) || (vendor == NATIVE_G29_VENDOR_ID)) &&
+	    ((product == 0u) || (product == NATIVE_G29_PRODUCT_ID)) &&
+	    ((vendor == 0u) || (product == 0u)) &&
+	    NativeG29Input_NameContainsG29(name))
 	{
 		return NATIVE_G29_DEVICE_NAME_FALLBACK;
 	}
 
 	return NATIVE_G29_DEVICE_NO_MATCH;
+}
+
+enum NativeG29DeviceClaim NativeG29Input_CheckClaim(int32_t selectedInstanceId, int32_t candidateInstanceId)
+{
+	if (selectedInstanceId < 0)
+	{
+		return NATIVE_G29_DEVICE_CLAIM_AVAILABLE;
+	}
+	if (selectedInstanceId == candidateInstanceId)
+	{
+		return NATIVE_G29_DEVICE_CLAIM_SAME_INSTANCE;
+	}
+	return NATIVE_G29_DEVICE_CLAIM_DUPLICATE;
+}
+
+int NativeG29Input_ValidateMappingState(const struct NativeG29MappingState *state)
+{
+	return (state != NULL) &&
+	       (state->throttleAwake <= 1u) &&
+	       (state->brakeAwake <= 1u) &&
+	       (state->throttlePressed <= 1u) &&
+	       (state->brakePressed <= 1u);
 }
 
 int16_t NativeG29Input_ShapeSteering(int16_t raw)

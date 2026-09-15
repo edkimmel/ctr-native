@@ -104,6 +104,7 @@ global_variable s32 s_inputInitialized;
 global_variable s32 s_installedSnapshotsActive;
 global_variable s32 s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT;
 global_variable s32 s_lastActiveControllerSlot = -1;
+global_variable SDL_JoystickID s_directG29InstanceId = -1;
 
 extern s32 g_padCommEnable;
 
@@ -702,6 +703,10 @@ internal void NativeInput_CloseController(s32 slot)
 	}
 	if (controller->joystick != NULL)
 	{
+		if (controller->instanceId == s_directG29InstanceId)
+		{
+			s_directG29InstanceId = -1;
+		}
 		SDL_CloseJoystick(controller->joystick);
 	}
 
@@ -759,6 +764,18 @@ internal void NativeInput_OpenController(SDL_JoystickID instanceId, s32 slot)
 	{
 		return;
 	}
+	enum NativeG29DeviceClaim claim = NativeG29Input_CheckClaim((s32)s_directG29InstanceId, (s32)instanceId);
+	if (claim != NATIVE_G29_DEVICE_CLAIM_AVAILABLE)
+	{
+		if (claim == NATIVE_G29_DEVICE_CLAIM_DUPLICATE)
+		{
+			fprintf(stderr,
+			        "[CTR Native] G29 instance %u rejected: direct G29 already bound as instance %u\n",
+			        (unsigned int)instanceId,
+			        (unsigned int)s_directG29InstanceId);
+		}
+		return;
+	}
 
 	controller->joystick = SDL_OpenJoystick(instanceId);
 	if (controller->joystick == NULL)
@@ -778,6 +795,7 @@ internal void NativeInput_OpenController(SDL_JoystickID instanceId, s32 slot)
 	}
 
 	controller->instanceId = SDL_GetJoystickID(controller->joystick);
+	s_directG29InstanceId = controller->instanceId;
 	memset(&controller->g29State, 0, sizeof(controller->g29State));
 	controller->analogEnabled = 1;
 	controller->switchingAnalog = 0;
@@ -829,6 +847,7 @@ int Platform_InputInit(void)
 	NativeInput_DefaultMappings();
 	s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT;
 	s_lastActiveControllerSlot = -1;
+	s_directG29InstanceId = -1;
 	s_installedSnapshotsActive = 0;
 	s_keyboardState = SDL_GetKeyboardState(NULL);
 
@@ -861,6 +880,7 @@ void Platform_InputShutdown(void)
 	s_installedSnapshotsActive = 0;
 	s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT;
 	s_lastActiveControllerSlot = -1;
+	s_directG29InstanceId = -1;
 	memset(s_padSlotData, 0, sizeof(s_padSlotData));
 	s_keyboardState = NULL;
 }
@@ -1094,10 +1114,7 @@ int Platform_InputRestoreState(const void *src, int srcSize)
 		{
 			return 0;
 		}
-		if ((snapshot->controllers[slot].g29State.throttleAwake > 1u) ||
-		    (snapshot->controllers[slot].g29State.brakeAwake > 1u) ||
-		    (snapshot->controllers[slot].g29State.throttlePressed > 1u) ||
-		    (snapshot->controllers[slot].g29State.brakePressed > 1u))
+		if (!NativeG29Input_ValidateMappingState(&snapshot->controllers[slot].g29State))
 		{
 			return 0;
 		}

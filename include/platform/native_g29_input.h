@@ -22,6 +22,13 @@ enum NativeG29DeviceMatch
 	NATIVE_G29_DEVICE_NAME_FALLBACK = 2
 };
 
+enum NativeG29DeviceClaim
+{
+	NATIVE_G29_DEVICE_CLAIM_AVAILABLE = 0,
+	NATIVE_G29_DEVICE_CLAIM_SAME_INSTANCE = 1,
+	NATIVE_G29_DEVICE_CLAIM_DUPLICATE = 2
+};
+
 struct NativeG29RawInput
 {
 	int16_t axes[NATIVE_G29_AXIS_COUNT];
@@ -45,6 +52,8 @@ struct NativeG29MappedInput
 };
 
 enum NativeG29DeviceMatch NativeG29Input_MatchDevice(uint16_t vendor, uint16_t product, const char *name);
+enum NativeG29DeviceClaim NativeG29Input_CheckClaim(int32_t selectedInstanceId, int32_t candidateInstanceId);
+int NativeG29Input_ValidateMappingState(const struct NativeG29MappingState *state);
 int16_t NativeG29Input_ShapeSteering(int16_t raw);
 void NativeG29Input_Map(
 	const struct NativeG29RawInput *raw,
