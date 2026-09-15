@@ -278,6 +278,16 @@ set_target_properties(ctr_native_canonical_state_v3 PROPERTIES
 target_include_directories(ctr_native_canonical_state_v3 PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_state_v3 PUBLIC ctr_native_canonical_drivers ctr_native_canonical_state)
 
+# Pure NCV4 value codec.  It deliberately has no projector, runtime, replay,
+# scheduler, file, or unity consumer in this slice.
+add_library(ctr_native_canonical_state_v4 STATIC platform/native_canonical_state_v4.c)
+set_target_properties(ctr_native_canonical_state_v4 PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_canonical_state_v4 PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_canonical_state_v4 PUBLIC
+    ctr_native_canonical_state ctr_native_canonical_drivers ctr_native_deterministic_rng
+    ctr_native_canonical_world_counters_v1 ctr_native_canonical_world_mine_registry_v1
+    ctr_native_canonical_topology_v1)
+
 # The game-owned source is also unity-included by the executable.  This small
 # standalone target makes its explicit value projection directly testable.
 add_library(ctr_native_canonical_projector STATIC game/MAIN/MainCanonicalState.c)
@@ -638,6 +648,11 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_canonical_state_v3_test PRIVATE ctr_native_canonical_state_v3)
     add_test(NAME native_canonical_state_v3_unit COMMAND $<TARGET_FILE:native_canonical_state_v3_test>)
+
+    add_executable(native_canonical_state_v4_test tests/native_canonical_state_v4_test.c)
+    set_target_properties(native_canonical_state_v4_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_link_libraries(native_canonical_state_v4_test PRIVATE ctr_native_canonical_state_v4)
+    add_test(NAME native_canonical_state_v4_unit COMMAND $<TARGET_FILE:native_canonical_state_v4_test>)
 
     add_executable(native_canonical_projector_test tests/native_canonical_projector_test.c)
     set_target_properties(native_canonical_projector_test PROPERTIES
