@@ -200,6 +200,14 @@ target_include_directories(ctr_native_main_canonical_world_counters PUBLIC ${CMA
 target_compile_definitions(ctr_native_main_canonical_world_counters PRIVATE CTR_NATIVE)
 target_link_libraries(ctr_native_main_canonical_world_counters PUBLIC ctr_native_canonical_world_counters_v1)
 
+# Dormant mine-pool adapter: deliberately isolated from unity and all runtime,
+# replay, canonical-state, and codec-consumer targets.
+add_library(ctr_native_main_canonical_world_mine_registry STATIC game/MAIN/MainCanonicalWorldMineRegistry.c)
+set_target_properties(ctr_native_main_canonical_world_mine_registry PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_main_canonical_world_mine_registry PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_compile_definitions(ctr_native_main_canonical_world_mine_registry PRIVATE CTR_NATIVE)
+target_link_libraries(ctr_native_main_canonical_world_mine_registry PUBLIC ctr_native_canonical_world_mine_registry_v1)
+
 # Fixture-only fact adapter: it intentionally has no live topology/runtime
 # dependency and can be exercised against the portable normative codec alone.
 add_library(ctr_native_canonical_topology_facts STATIC game/MAIN/MainCanonicalTopologyFacts.c)
@@ -554,6 +562,13 @@ if(BUILD_TESTING)
     target_compile_definitions(main_canonical_world_counters_test PRIVATE CTR_NATIVE)
     target_link_libraries(main_canonical_world_counters_test PRIVATE ctr_native_main_canonical_world_counters)
     add_test(NAME main_canonical_world_counters_unit COMMAND $<TARGET_FILE:main_canonical_world_counters_test>)
+
+    add_executable(main_canonical_world_mine_registry_test tests/main_canonical_world_mine_registry_test.c)
+    set_target_properties(main_canonical_world_mine_registry_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_include_directories(main_canonical_world_mine_registry_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
+    target_compile_definitions(main_canonical_world_mine_registry_test PRIVATE CTR_NATIVE)
+    target_link_libraries(main_canonical_world_mine_registry_test PRIVATE ctr_native_main_canonical_world_mine_registry)
+    add_test(NAME main_canonical_world_mine_registry_unit COMMAND $<TARGET_FILE:main_canonical_world_mine_registry_test>)
 
     add_executable(main_canonical_topology_facts_test tests/main_canonical_topology_facts_test.c)
     set_target_properties(main_canonical_topology_facts_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
