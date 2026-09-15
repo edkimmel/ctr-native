@@ -116,6 +116,15 @@ int16_t NativeG29Input_ShapeSteering(int16_t raw)
 
 	magnitude = ((magnitude - NATIVE_G29_STEERING_DEADZONE) * maximum) /
 	            (maximum - NATIVE_G29_STEERING_DEADZONE);
+	/* Preserve the re-anchored center and full signed range, then make the
+	 * CAB1 wheel respond sooner.  Clamp rather than adding an anti-deadzone
+	 * step so movement remains continuous immediately outside center. */
+	magnitude = (magnitude * NATIVE_G29_STEERING_GAIN_NUMERATOR) /
+	            NATIVE_G29_STEERING_GAIN_DENOMINATOR;
+	if (magnitude > maximum)
+	{
+		magnitude = maximum;
+	}
 	return (int16_t)(value < 0 ? -magnitude : magnitude);
 }
 

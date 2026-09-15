@@ -23,6 +23,10 @@
 #define NATIVE_G29_THROTTLE_AXIS             1
 #define NATIVE_G29_BRAKE_AXIS                2
 #define NATIVE_G29_STEERING_DEADZONE         512
+/* CAB1 keeps the wheel's physical 270-degree operating range, but doubles
+ * post-deadzone steering response and clamps at the PS1 axis limit. */
+#define NATIVE_G29_STEERING_GAIN_NUMERATOR    2
+#define NATIVE_G29_STEERING_GAIN_DENOMINATOR  1
 #define NATIVE_G29_PEDAL_WAKE_THRESHOLD      30000
 #define NATIVE_G29_PEDAL_PRESS_THRESHOLD     22500
 #define NATIVE_G29_PEDAL_RELEASE_THRESHOLD   26300

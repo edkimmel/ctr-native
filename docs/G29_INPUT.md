@@ -37,7 +37,11 @@ active-low PS1 pad snapshot used by replay and canonical input:
 | Share / Options | buttons 9 / 24 | Select / Start |
 | D-pad | hat 0 | D-pad |
 
-Steering has a 512-count center deadzone, re-anchored to preserve full range.
+Steering has a 512-count center deadzone, re-anchored to preserve full range,
+then a continuous 2.0x gain clamped at the PS1 axis limit.  Keep the G29's
+physical operating range at 270 degrees: this produces roughly 44% virtual
+steer at 30 degrees from center and reaches virtual full lock at roughly 67.5
+degrees from center.  There is no anti-deadzone jump at the center boundary.
 Pedals ignore SDL's initial zero value until an axis crosses 30,000 magnitude.
 They press below 22,500 and release above 26,300, providing hysteresis around
 the digital threshold.

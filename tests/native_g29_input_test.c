@@ -49,10 +49,18 @@ int main(void)
 	CHECK(NativeG29Input_ShapeSteering(0) == 0);
 	CHECK(NativeG29Input_ShapeSteering(NATIVE_G29_STEERING_DEADZONE) == 0);
 	CHECK(NativeG29Input_ShapeSteering(-NATIVE_G29_STEERING_DEADZONE) == 0);
+	/* The post-deadzone 2.0x curve is continuous at center, sign-preserving,
+	 * and reaches virtual full lock at about half physical deflection. */
+	CHECK(NativeG29Input_ShapeSteering(NATIVE_G29_STEERING_DEADZONE + 1) == 2);
+	CHECK(NativeG29Input_ShapeSteering(-(NATIVE_G29_STEERING_DEADZONE + 1)) == -2);
+	CHECK(NativeG29Input_ShapeSteering(7282) == 13754);
+	CHECK(NativeG29Input_ShapeSteering(-7282) == -13754);
+	CHECK(NativeG29Input_ShapeSteering(16640) == 32767);
+	CHECK(NativeG29Input_ShapeSteering(-16640) == -32768);
 	CHECK(NativeG29Input_ShapeSteering(32767) == 32767);
 	CHECK(NativeG29Input_ShapeSteering(-32768) == -32768);
-	CHECK(NativeG29Input_ShapeSteering(16000) > 15000);
-	CHECK(NativeG29Input_ShapeSteering(-16000) < -15000);
+	CHECK(NativeG29Input_ShapeSteering(16000) > 30000);
+	CHECK(NativeG29Input_ShapeSteering(-16000) < -30000);
 	CHECK(NATIVE_G29_STEERING_AXIS == 0);
 	CHECK(NATIVE_G29_THROTTLE_AXIS == 1);
 	CHECK(NATIVE_G29_BRAKE_AXIS == 2);
