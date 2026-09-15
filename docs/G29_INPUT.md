@@ -33,7 +33,7 @@ active-low PS1 pad snapshot used by replay and canonical input:
 | Brake | axis 3, rest `+32767`, pressed `-32768` | Square |
 | Cross / Square / Circle / Triangle | buttons 0 / 1 / 2 / 3 | same |
 | R2 / L2 | buttons 4 / 5 | R2 / L2 |
-| Right / left paddle | buttons 6 / 7 | R1 / L1 |
+| Right / left paddle | buttons 6 / 7 | R1 + Circle/item / L1 |
 | Share / Options | buttons 9 / 24 | Select / Start |
 | D-pad | hat 0 | D-pad |
 

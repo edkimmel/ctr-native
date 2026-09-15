@@ -13,6 +13,7 @@
 #define NATIVE_G29_BUTTON_TRIANGLE           3
 #define NATIVE_G29_BUTTON_R2                 4
 #define NATIVE_G29_BUTTON_L2                 5
+/* CAB1 measured the physical right/left paddles at buttons 6/7. */
 #define NATIVE_G29_BUTTON_R1                 6
 #define NATIVE_G29_BUTTON_L1                 7
 #define NATIVE_G29_BUTTON_SHARE              9

@@ -109,8 +109,18 @@ int main(void)
 	};
 	static const uint16_t mappedMasks[] = {
 		0x4000u, 0x8000u, 0x2000u, 0x1000u,
-		0x0200u, 0x0100u, 0x0800u, 0x0400u
+		0x0200u, 0x0100u, 0x2800u, 0x0400u
 	};
+	/* CAB1's measured right paddle is button 6.  It retains R1 while also
+	 * aliasing Circle/item; either physical source must produce Circle. */
+	memset(raw.buttons, 0, sizeof(raw.buttons));
+	raw.buttons[NATIVE_G29_BUTTON_R1] = 1;
+	Map(&raw, &state, &mapped);
+	CHECK(mapped.buttons == 0xd7ffu && mapped.active == 1);
+	memset(raw.buttons, 0, sizeof(raw.buttons));
+	raw.buttons[NATIVE_G29_BUTTON_CIRCLE] = 1;
+	Map(&raw, &state, &mapped);
+	CHECK(mapped.buttons == 0xdfffu && mapped.active == 1);
 	for (int index = 0; index < (int)(sizeof(mappedButtons) / sizeof(mappedButtons[0])); index++)
 	{
 		memset(raw.buttons, 0, sizeof(raw.buttons));

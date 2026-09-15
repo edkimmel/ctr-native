@@ -162,7 +162,11 @@ void NativeG29Input_Map(
 	 * Share/Select, not Start.  The PS1 pad packet remains active-low. */
 	if ((state->throttlePressed != 0u) || (raw->buttons[NATIVE_G29_BUTTON_CROSS] != 0u)) buttons &= (uint16_t)~NATIVE_G29_PSX_CROSS;
 	if ((state->brakePressed != 0u) || (raw->buttons[NATIVE_G29_BUTTON_SQUARE] != 0u)) buttons &= (uint16_t)~NATIVE_G29_PSX_SQUARE;
-	if (raw->buttons[NATIVE_G29_BUTTON_CIRCLE] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_CIRCLE;
+	/* The CAB1 right paddle is button 6.  It remains R1 and also serves as
+	 * Circle so a wheel-only player can use items without moving to the face
+	 * buttons.  The native PS1 packet stays active-low. */
+	if ((raw->buttons[NATIVE_G29_BUTTON_CIRCLE] != 0u) ||
+	    (raw->buttons[NATIVE_G29_BUTTON_R1] != 0u)) buttons &= (uint16_t)~NATIVE_G29_PSX_CIRCLE;
 	if (raw->buttons[NATIVE_G29_BUTTON_TRIANGLE] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_TRIANGLE;
 	if (raw->buttons[NATIVE_G29_BUTTON_R2] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_R2;
 	if (raw->buttons[NATIVE_G29_BUTTON_L2] != 0u) buttons &= (uint16_t)~NATIVE_G29_PSX_L2;
