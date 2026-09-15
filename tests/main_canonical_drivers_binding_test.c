@@ -1071,10 +1071,26 @@ static void SourceBehavior(struct SourceFixture *fixture,uint8_t slot,uint8_t in
 	for(uint8_t n=0;n<12;n++)driver->funcPtrs[n+1]=suffixFunctions[suffix][n];
 }
 
+/* The Meta candidate is deliberately still a local source value.  This
+ * adapter exists only to verify that a source Meta mutation localizes in the
+ * already-frozen detailed-summary diagnostics. */
+static int DetailedFromMetaCandidate(const struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate *candidate,struct NativeCanonicalDriversDetailedV1 *detailed)
+{
+	NativeCanonicalDriversDetailedV1_Init(detailed);detailed->prelude=candidate->roster.prelude;
+	for(uint8_t slot=0;slot<8;slot++)if((candidate->roster.prelude.presenceMask&(UINT32_C(1)<<slot))!=0)
+	{
+		detailed->slots[slot].meta=candidate->meta[slot];detailed->slots[slot].race=candidate->race[slot];
+		detailed->slots[slot].dynamics=candidate->dynamics[slot];detailed->slots[slot].active=candidate->active[slot];
+		detailed->slots[slot].pendingDamage=candidate->pendingDamage[slot];detailed->slots[slot].bot=candidate->bot[slot];
+	}
+	return NativeCanonicalDriversDetailedV1_Validate(detailed);
+}
+
 static int MetaProjectionTest(void)
 {
 	struct SourceFixture fixture;
 	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate value,before;
+	struct NativeCanonicalDriversDetailedV1 detailed,changedDetailed;struct NativeCanonicalDriversV1 summary,changedSummary;
 	struct Driver *driver;struct Thread *root,*child;struct sData *sd=&sdata_static;
 	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);data.characterIDs[0]=15;
 	driver->actionsFlagSet=UINT32_C(0x04000011);driver->actionsFlagSetPrevFrame=UINT32_C(0x04000022);driver->heldItemID=HELD_ITEM_ROULETTE;driver->numHeldItems=3;driver->numWumpas=-1;driver->numCrystals=-2;driver->numTimeCrates=-3;driver->accelConst=-4;driver->turnConst=-5;driver->turboConst=-6;driver->lapIndex=7;driver->simpTurnState=-8;driver->currentTerrain=20;driver->forcedJumpType=2;driver->normalVecID=-9;driver->boolFirstFrameSinceRevEngine=1;driver->clockSend=10;driver->revEngineState=2;driver->collisionFlags=DRIVER_COLL_FLAG_MASK_GRAB_REQUEST|DRIVER_COLL_FLAG_GROUNDED;driver->rainCloudEffect=6;
@@ -1108,11 +1124,47 @@ static int MetaProjectionTest(void)
 	/* The actual MASK_GRAB branch owns/emits the mask fact. */
 	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,0,11);driver->kartState=KS_MASK_GRABBED;root=FLT(&fixture,0);child=FMetaChild(&fixture,3,3,3,root,RB_MaskWeapon_ThTick,STATIC_AKUAKU);root->childThread=child;driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)child->object;
 	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||(value.meta[0].externalPresenceFlags&NATIVE_CANONICAL_DRIVER_EXTERNAL_ACTIVE_MASK_GRAB_OBJECT)==0)return 0;
+	/* Selected-union poison is rejected atomically, unlike excluded branches. */
+	before=value;driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
 	/* REV_ENGINE validates its selected pointer but never emits the Meta mask bit. */
 	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,0,14);driver->kartState=KS_ENGINE_REVVING;driver->KartStates.RevEngine.boolMaskGrab=1;root=FLT(&fixture,0);child=FMetaChild(&fixture,3,3,3,root,RB_MaskWeapon_ThTick,STATIC_AKUAKU);root->childThread=child;driver->KartStates.RevEngine.maskObj=(struct MaskHeadWeapon *)child->object;
 	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.meta[0].externalPresenceFlags!=0)return 0;
 	before=value;driver->KartStates.RevEngine.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
 	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	/* Queued damage keeps the old suffix but writes NORMAL: the union is NONE
+	 * and retained branch poison is not read before publication. */
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,6,1);driver->kartState=KS_NORMAL;
+	driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.meta[0].behaviorID!=103||value.active[0].unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE)return 0;
+	/* Podium queues Driving while displaying REVVING; it must not inspect the
+	 * uninitialized RevEngine branch. */
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,1,14);driver->kartState=KS_ENGINE_REVVING;
+	driver->KartStates.RevEngine.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;driver->KartStates.RevEngine.chargeState=0xff;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.meta[0].behaviorID!=31||value.active[0].unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE)return 0;
+	/* Requeued freeze and warp retain their active behavior rather than being
+	 * inferred from a fresh init request. */
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,3,2);driver->kartState=KS_FREEZE;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.meta[0].behaviorID!=53||value.active[0].unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE)return 0;
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,4,16);driver->kartState=KS_WARP_PAD;driver->KartStates.Warp.timer=17;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.meta[0].behaviorID!=84||value.active[0].unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_WARP||value.active[0].branchBytes[0]!=17)return 0;
+	/* KS_MASK_GRABBED is suffix-ambiguous: plant/RIP inspect only the plant
+	 * branch, so a poison MaskGrab pointer must neither reject nor leak a bit. */
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,0,12);driver->kartState=KS_MASK_GRABBED;driver->KartStates.EatenByPlant.boolInited=1;driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.active[0].unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_PLANT_EATEN||value.meta[0].externalPresenceFlags!=0)return 0;
+	SourceBehavior(&fixture,0,5,13);
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.meta[0].behaviorID!=98||value.active[0].unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_PLANT_EATEN)return 0;
+	/* Conversion preserves a recognized human table but the bot callback and
+	 * ACTION_BOT are authoritative; stale human union poison is uninspected. */
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,2);SourceBehavior(&fixture,2,0,11);driver->kartState=KS_MASK_GRABBED;
+	driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;driver->KartStates.RevEngine.chargeState=0xff;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.meta[2].driverKind!=NATIVE_CANONICAL_DRIVER_KIND_BOT||value.meta[2].behaviorID!=11||value.active[2].unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE||value.meta[2].externalPresenceFlags!=0)return 0;
+	/* One Meta field changes only its slot's META+RACE digest and the full
+	 * stream; roster, other groups, and another slot remain stable. */
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);driver->clockSend=10;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||!DetailedFromMetaCandidate(&value,&detailed)||!NativeCanonicalDriversDetailedV1_BuildSummary(&detailed,&summary))return 0;
+	driver->clockSend=11;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&before)||!DetailedFromMetaCandidate(&before,&changedDetailed)||!NativeCanonicalDriversDetailedV1_BuildSummary(&changedDetailed,&changedSummary)||summary.rosterMetaDigest!=changedSummary.rosterMetaDigest||summary.slots[0].slotDigest==changedSummary.slots[0].slotDigest||summary.slots[0].metaRaceDigest==changedSummary.slots[0].metaRaceDigest||summary.slots[0].physicsDynamicsDigest!=changedSummary.slots[0].physicsDynamicsDigest||summary.slots[0].behaviorBotDigest!=changedSummary.slots[0].behaviorBotDigest||summary.slots[2].slotDigest!=changedSummary.slots[2].slotDigest||summary.fullStreamDigest==changedSummary.fullStreamDigest)return 0;
 	return 1;
 }
 
