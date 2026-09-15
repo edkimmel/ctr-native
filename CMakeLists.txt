@@ -537,6 +537,8 @@ if(BUILD_TESTING)
     set_target_properties(native_canonical_world_counters_v1_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_link_libraries(native_canonical_world_counters_v1_test PRIVATE ctr_native_canonical_world_counters_v1)
     add_test(NAME native_canonical_world_counters_v1_unit COMMAND $<TARGET_FILE:native_canonical_world_counters_v1_test>)
+    add_test(NAME native_canonical_world_counters_v1_source_contract
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_canonical_world_counters_v1_source_contract_test.cmake")
 
     add_executable(main_canonical_topology_facts_test tests/main_canonical_topology_facts_test.c)
     set_target_properties(main_canonical_topology_facts_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
