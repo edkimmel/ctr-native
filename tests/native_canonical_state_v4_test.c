@@ -38,7 +38,7 @@ int main(void)
 {
 	uint8_t bytes[NCV4_BYTES], golden[NCV4_BYTES], scratch[NCV4_BYTES], shortBuffer[NCV4_BYTES], wrongConfig[32];
 	size_t domain[6], payload[6], digest[6], cursor = 116;
-	struct NativeCanonicalStateV4 s, out, sentinel; struct NativeCodecWriter w, beforeWriter; struct NativeCodecReader r; struct NativeCodecDigest64 wd; uint64_t digestBefore;
+	struct NativeCanonicalStateV4 s, out, sentinel, expected; struct NativeCodecWriter w, beforeWriter; struct NativeCodecReader r; struct NativeCodecDigest64 wd; uint64_t digestBefore;
 	CHECK(!Fill(&s)); CHECK(NativeCanonicalStateV4_EncodedSize() == NCV4_BYTES); CHECK(ReadGolden(golden));
 	NativeCodecWriter_Init(&w, bytes, sizeof(bytes), NULL); CHECK(NativeCanonicalStateV4_Encode(&w, &s) && w.offset == sizeof(bytes));
 	/* Checked-in full fixture: byte equality makes this independent of decoding. */
@@ -50,6 +50,16 @@ int main(void)
 	/* Every truncation and every declared domain boundary is transactional. */
 	for (size_t n=0; n<sizeof(golden); ++n) CHECK(Reject(golden, n, &s.identity, s.configDigest, &sentinel));
 	for (size_t i=0; i<16; ++i) { memcpy(scratch,golden,sizeof(scratch)); scratch[i]^=1; CHECK(Reject(scratch,sizeof(scratch),&s.identity,s.configDigest,&sentinel)); }
+	/* frameNumber is header metadata: accepted, excluded from digests, and round-trips exactly. */
+	for (size_t i=16; i<20; ++i) {
+		uint32_t changed = s.frameNumber ^ (UINT32_C(1) << (8u * (uint32_t)(i - 16)));
+		memcpy(scratch,golden,sizeof(scratch)); scratch[i]^=1;
+		NativeCodecReader_Init(&r,scratch,sizeof(scratch)); CHECK(NativeCanonicalStateV4_Decode(&r,&s.identity,s.configDigest,&out));
+		expected=s; expected.frameNumber=changed;
+		CHECK(r.offset==sizeof(scratch) && memcmp(&out,&expected,sizeof(out))==0);
+		NativeCodecWriter_Init(&w,bytes,sizeof(bytes),NULL); CHECK(NativeCanonicalStateV4_Encode(&w,&out) && w.offset==sizeof(bytes));
+		CHECK(memcmp(bytes,scratch,sizeof(bytes))==0);
+	}
 	for (size_t i=20; i<116; ++i) { memcpy(scratch,golden,sizeof(scratch)); scratch[i]^=1; CHECK(Reject(scratch,sizeof(scratch),&s.identity,s.configDigest,&sentinel)); }
 	for (uint32_t i=0; i<6; ++i) {
 		memcpy(scratch,golden,sizeof(scratch)); PutU32(scratch+domain[i],99); CHECK(Reject(scratch,sizeof(scratch),&s.identity,s.configDigest,&sentinel));
