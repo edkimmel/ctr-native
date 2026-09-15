@@ -44,6 +44,16 @@ the digital threshold.
 
 Direct G29 force feedback is intentionally not enabled by this input slice.
 
+## Pedal diagnostic
+
+For a hardware check, launch with `CTR_NATIVE_G29_DIAGNOSTICS=1`.  The direct
+G29 path then logs its complete reported axis count and up to the first sixteen
+axis values when the wheel opens, and again only after a material axis change
+(2,048 counts), pedal wake/press transition, or mapped PS1 button change.  Each
+line includes the configured throttle/brake raw values, awake/pressed flags,
+and the resulting active-low PS1 button word.  The variable is off by default;
+it changes neither mapping nor saved/replay input state.
+
 The pedal wake/hysteresis flags are now part of native input-state snapshot
 version 2.  Pre-v2 quick states/checkpoints contain the smaller v1 input block
 and are rejected rather than guessed or partially restored.  Replay/canonical

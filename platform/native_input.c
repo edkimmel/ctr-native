@@ -21,6 +21,9 @@
 #define NATIVE_INPUT_MAP_FLAG_AXIS         0x4000
 #define NATIVE_INPUT_MAP_FLAG_INVERSE      0x8000
 #define NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT 0
+#define NATIVE_INPUT_G29_DIAGNOSTIC_ENV     "CTR_NATIVE_G29_DIAGNOSTICS"
+#define NATIVE_INPUT_G29_DIAGNOSTIC_AXES    16
+#define NATIVE_INPUT_G29_DIAGNOSTIC_DELTA   2048
 // NOTE(aalhendi): Little-endian tag `CTRI` = CTR native Input snapshot.
 #define NATIVE_INPUT_STATE_MAGIC           0x49525443
 #define NATIVE_INPUT_STATE_VERSION         2
@@ -71,6 +74,17 @@ struct NativeInputController
 	struct PlatformInputPadSnapshot snapshot;
 };
 
+/* This is deliberately outside NativeInputStateSnapshot: it is host-only
+ * observation state, not input state that can affect gameplay or replay. */
+struct NativeInputG29Diagnostic
+{
+	s32 valid;
+	s32 axisCount;
+	int16_t axes[NATIVE_INPUT_G29_DIAGNOSTIC_AXES];
+	struct NativeG29MappingState mappingState;
+	uint16_t buttons;
+};
+
 struct NativeInputControllerStateSnapshot
 {
 	struct PlatformInputPadSnapshot snapshot;
@@ -105,6 +119,7 @@ global_variable s32 s_installedSnapshotsActive;
 global_variable s32 s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT;
 global_variable s32 s_lastActiveControllerSlot = -1;
 global_variable SDL_JoystickID s_directG29InstanceId = -1;
+global_variable struct NativeInputG29Diagnostic s_g29Diagnostic;
 
 extern s32 g_padCommEnable;
 
@@ -475,6 +490,107 @@ internal void NativeInput_ApplyController(s32 slot)
 	snapshot->analog[3] = NativeInput_AxisToByte(leftY);
 }
 
+internal s32 NativeInput_G29DiagnosticsEnabled(void)
+{
+	const char *value = SDL_getenv(NATIVE_INPUT_G29_DIAGNOSTIC_ENV);
+	return (value != NULL) && (value[0] != '\0') && !((value[0] == '0') && (value[1] == '\0'));
+}
+
+internal s32 NativeInput_G29DiagnosticAxisChanged(s32 current, s32 previous)
+{
+	s32 difference = current - previous;
+	if (difference < 0)
+	{
+		difference = -difference;
+	}
+	return difference >= NATIVE_INPUT_G29_DIAGNOSTIC_DELTA;
+}
+
+internal void NativeInput_LogG29Diagnostic(
+	const char *reason,
+	SDL_Joystick *joystick,
+	const struct NativeG29RawInput *raw,
+	const struct NativeG29MappingState *mappingState,
+	const struct NativeG29MappedInput *mapped)
+{
+	struct NativeInputG29Diagnostic current;
+	s32 reportedAxisCount;
+	s32 capturedAxisCount;
+	s32 changed;
+
+	if (!NativeInput_G29DiagnosticsEnabled() || (joystick == NULL) || (raw == NULL) ||
+	    (mappingState == NULL) || (mapped == NULL))
+	{
+		return;
+	}
+
+	memset(&current, 0, sizeof(current));
+	reportedAxisCount = SDL_GetNumJoystickAxes(joystick);
+	current.axisCount = reportedAxisCount;
+	capturedAxisCount = reportedAxisCount;
+	if (capturedAxisCount < 0)
+	{
+		capturedAxisCount = 0;
+	}
+	if (capturedAxisCount > NATIVE_INPUT_G29_DIAGNOSTIC_AXES)
+	{
+		capturedAxisCount = NATIVE_INPUT_G29_DIAGNOSTIC_AXES;
+	}
+	for (s32 axis = 0; axis < capturedAxisCount; axis++)
+	{
+		current.axes[axis] = SDL_GetJoystickAxis(joystick, axis);
+	}
+	current.mappingState = *mappingState;
+	current.buttons = mapped->buttons;
+
+	changed = !s_g29Diagnostic.valid || (current.axisCount != s_g29Diagnostic.axisCount) ||
+	          (current.mappingState.throttleAwake != s_g29Diagnostic.mappingState.throttleAwake) ||
+	          (current.mappingState.brakeAwake != s_g29Diagnostic.mappingState.brakeAwake) ||
+	          (current.mappingState.throttlePressed != s_g29Diagnostic.mappingState.throttlePressed) ||
+	          (current.mappingState.brakePressed != s_g29Diagnostic.mappingState.brakePressed) ||
+	          (current.buttons != s_g29Diagnostic.buttons);
+	for (s32 axis = 0; axis < capturedAxisCount; axis++)
+	{
+		if (NativeInput_G29DiagnosticAxisChanged(current.axes[axis], s_g29Diagnostic.axes[axis]))
+		{
+			changed = 1;
+		}
+	}
+
+	if (!changed)
+	{
+		return;
+	}
+
+	fprintf(stderr,
+	        "[CTR Native] G29 diagnostic (%s): axes=%d captured=%d [",
+	        reason,
+	        (int)reportedAxisCount,
+	        (int)capturedAxisCount);
+	for (s32 axis = 0; axis < capturedAxisCount; axis++)
+	{
+		fprintf(stderr, "%s%d", axis == 0 ? "" : ",", (int)current.axes[axis]);
+	}
+	if (reportedAxisCount > capturedAxisCount)
+	{
+		fprintf(stderr, ",...");
+	}
+	fprintf(stderr,
+	        "] throttle(axis%d)=%d brake(axis%d)=%d awake=%u/%u pressed=%u/%u ps1=0x%04x\n",
+	        NATIVE_G29_THROTTLE_AXIS,
+	        (int)raw->axes[NATIVE_G29_THROTTLE_AXIS],
+	        NATIVE_G29_BRAKE_AXIS,
+	        (int)raw->axes[NATIVE_G29_BRAKE_AXIS],
+	        (unsigned int)current.mappingState.throttleAwake,
+	        (unsigned int)current.mappingState.brakeAwake,
+	        (unsigned int)current.mappingState.throttlePressed,
+	        (unsigned int)current.mappingState.brakePressed,
+	        (unsigned int)current.buttons);
+
+	s_g29Diagnostic = current;
+	s_g29Diagnostic.valid = 1;
+}
+
 internal void NativeInput_ApplyG29(s32 slot)
 {
 	struct NativeInputController *nativeController = &s_controllers[slot];
@@ -500,6 +616,7 @@ internal void NativeInput_ApplyG29(s32 slot)
 	raw.hat = SDL_GetJoystickHat(joystick, 0);
 
 	NativeG29Input_Map(&raw, &nativeController->g29State, &mapped);
+	NativeInput_LogG29Diagnostic("change", joystick, &raw, &nativeController->g29State, &mapped);
 	snapshot->connected = 1;
 	snapshot->status = 0;
 	snapshot->id = NATIVE_INPUT_PAD_ANALOG;
@@ -706,6 +823,7 @@ internal void NativeInput_CloseController(s32 slot)
 		if (controller->instanceId == s_directG29InstanceId)
 		{
 			s_directG29InstanceId = -1;
+			s_g29Diagnostic.valid = 0;
 		}
 		SDL_CloseJoystick(controller->joystick);
 	}
@@ -802,6 +920,26 @@ internal void NativeInput_OpenController(SDL_JoystickID instanceId, s32 slot)
 	controller->instanceId = SDL_GetJoystickID(controller->joystick);
 	s_directG29InstanceId = controller->instanceId;
 	memset(&controller->g29State, 0, sizeof(controller->g29State));
+	s_g29Diagnostic.valid = 0;
+	if (NativeInput_G29DiagnosticsEnabled())
+	{
+		struct NativeG29RawInput raw;
+		struct NativeG29MappingState mappingState = controller->g29State;
+		struct NativeG29MappedInput mapped;
+
+		memset(&raw, 0, sizeof(raw));
+		for (s32 axis = 0; axis < NATIVE_G29_AXIS_COUNT; axis++)
+		{
+			raw.axes[axis] = SDL_GetJoystickAxis(controller->joystick, axis);
+		}
+		for (s32 button = 0; button < NATIVE_G29_BUTTON_COUNT; button++)
+		{
+			raw.buttons[button] = SDL_GetJoystickButton(controller->joystick, button) ? 1u : 0u;
+		}
+		raw.hat = SDL_GetJoystickHat(controller->joystick, 0);
+		NativeG29Input_Map(&raw, &mappingState, &mapped);
+		NativeInput_LogG29Diagnostic("open", controller->joystick, &raw, &mappingState, &mapped);
+	}
 	controller->analogEnabled = 1;
 	controller->switchingAnalog = 0;
 	s_controllerToSlotMapping[slot] = (s32)controller->instanceId;
@@ -853,6 +991,7 @@ int Platform_InputInit(void)
 	s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT;
 	s_lastActiveControllerSlot = -1;
 	s_directG29InstanceId = -1;
+	memset(&s_g29Diagnostic, 0, sizeof(s_g29Diagnostic));
 	s_installedSnapshotsActive = 0;
 	s_keyboardState = SDL_GetKeyboardState(NULL);
 
@@ -886,6 +1025,7 @@ void Platform_InputShutdown(void)
 	s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT;
 	s_lastActiveControllerSlot = -1;
 	s_directG29InstanceId = -1;
+	memset(&s_g29Diagnostic, 0, sizeof(s_g29Diagnostic));
 	memset(s_padSlotData, 0, sizeof(s_padSlotData));
 	s_keyboardState = NULL;
 }
