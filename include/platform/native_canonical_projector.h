@@ -4,6 +4,8 @@
 #include "platform/native_input.h"
 #include "platform/native_canonical_state.h"
 #include "platform/native_canonical_state_v3.h"
+#include "platform/native_canonical_state_v4.h"
+#include "platform/native_match_config.h"
 
 /*
  * Game-owned projection helpers for the audited M2 core domains.  The input
@@ -39,5 +41,37 @@ int MainCanonicalState_ProjectV3InPlaceWithScratch(struct NativeCanonicalStateV3
 	const struct NativeCanonicalControlV1 *control,const struct NativeCanonicalRngV1 *rng,
 	const struct NativeCanonicalInputV1 *input,const struct NativeCanonicalDriversV1 *drivers,
 	uint8_t *scratch,size_t scratchSize);
+
+/*
+ * Dormant V4 projection is deliberately a value-only seam.  The context
+ * locks one validated match config and its locally computed SHA-256 digest;
+ * it neither owns game data nor selects a control-track policy.
+ */
+struct MainCanonicalStateV4Context
+{
+	struct NativeMatchConfigV1 config;
+	uint8_t configDigest[NATIVE_SHA256_DIGEST_BYTES];
+};
+
+/* Transactional: failure leaves context unchanged. */
+int MainCanonicalStateV4Context_Init(struct MainCanonicalStateV4Context *context,
+	const struct NativeMatchConfigV1 *config);
+
+/*
+ * Transactional explicit-value V4 projector.  Every value is supplied by
+ * the caller; this function does not call native extractors or traverse game
+ * data.  On failure, state remains unchanged.
+ */
+int MainCanonicalState_ProjectV4(struct NativeCanonicalStateV4 *state,
+	const struct MainCanonicalStateV4Context *context,
+	const struct NativeIdentityV1 *identity, uint32_t replayFrameNumber,
+	const struct NativeCanonicalControlV1 *control,
+	const struct NativeCanonicalRngV1 *retailRng,
+	const struct NativeDeterministicRngBankV1 *deterministicRng,
+	const struct NativeCanonicalInputV1 *input,
+	const struct NativeCanonicalDriversV1 *drivers,
+	const struct NativeCanonicalWorldCountersV1 *worldCounters,
+	const struct NativeCanonicalWorldMineRegistryV1 *mineRegistry,
+	const struct NativeCanonicalTopologyV1 *topology);
 
 #endif
