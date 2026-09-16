@@ -314,6 +314,13 @@ set_target_properties(ctr_native_arcade_setup_v4 PROPERTIES C_STANDARD 17 C_STAN
 target_include_directories(ctr_native_arcade_setup_v4 PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 target_link_libraries(ctr_native_arcade_setup_v4 PUBLIC ctr_native_arcade_bot_setup ctr_native_canonical_projector_v4)
 
+# Source-only bot-tick evidence: records supplied values; it has no bot
+# controller, native extraction, simulation, runtime, replay, or UI consumer.
+add_library(ctr_native_bot_tick_evidence STATIC game/MAIN/MainArcadeBotTickEvidence.c)
+set_target_properties(ctr_native_bot_tick_evidence PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_bot_tick_evidence PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_link_libraries(ctr_native_bot_tick_evidence PUBLIC ctr_native_arcade_bot_setup ctr_native_canonical_drivers_detailed ctr_native_match_config ctr_native_deterministic_rng)
+
 # Dormant, static game-owned V3 coordinator.  It is compiled for link
 # coverage but no live game path calls it in this slice.
 add_library(ctr_native_canonical_runtime STATIC game/MAIN/MainCanonicalRuntime.c)
@@ -711,6 +718,14 @@ if(BUILD_TESTING)
     add_test(NAME main_arcade_setup_v4_unit COMMAND $<TARGET_FILE:main_arcade_setup_v4_test>)
     add_test(NAME main_arcade_setup_v4_link_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_setup_v4_isolation_test.cmake")
+
+    add_executable(main_arcade_bot_tick_evidence_test tests/main_arcade_bot_tick_evidence_test.c)
+    set_target_properties(main_arcade_bot_tick_evidence_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_include_directories(main_arcade_bot_tick_evidence_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
+    target_link_libraries(main_arcade_bot_tick_evidence_test PRIVATE ctr_native_bot_tick_evidence)
+    add_test(NAME main_arcade_bot_tick_evidence_unit COMMAND $<TARGET_FILE:main_arcade_bot_tick_evidence_test>)
+    add_test(NAME main_arcade_bot_tick_evidence_link_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_bot_tick_evidence_isolation_test.cmake")
 
     add_executable(native_replay_scheduler_seam_test tests/native_replay_scheduler_seam_test.c)
     set_target_properties(native_replay_scheduler_seam_test PROPERTIES

@@ -99,4 +99,8 @@ enum MainArcadeBotSetupResult MainArcadeBotSetup_Plan(
 	struct MainArcadeBotSetupPlan *out,
 	struct NativeDeterministicRngBankV1 *rngAfter);
 
+/* Canonical, field-by-field digest of the locked portable setup plan. */
+int MainArcadeBotSetupPlan_Digest(const struct MainArcadeBotSetupPlan *plan,
+	uint8_t digest[NATIVE_SHA256_DIGEST_BYTES]);
+
 #endif

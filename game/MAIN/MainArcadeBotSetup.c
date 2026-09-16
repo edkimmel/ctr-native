@@ -2,6 +2,18 @@
 
 #include <string.h>
 
+int MainArcadeBotSetupPlan_Digest(const struct MainArcadeBotSetupPlan *plan, uint8_t digest[NATIVE_SHA256_DIGEST_BYTES])
+{
+	uint8_t bytes[4 + 4 + 1 + 1 + 2 + 32 + 32 + 32 + MAIN_ARCADE_BOT_SETUP_SLOT_COUNT * (1+1+1+1+1+1+1+1+1+3+4)];
+	struct NativeCodecWriter w; struct NativeSha256 sha;
+	if (!plan || !digest || plan->locked != 1 || plan->botCount > MAIN_ARCADE_BOT_SETUP_SLOT_COUNT ||
+		!MainArcadeBotSetup_IsZero(plan->reserved,sizeof(plan->reserved))) return 0;
+	NativeCodecWriter_Init(&w,bytes,sizeof(bytes),NULL);
+	if (!NativeCodecWriter_WriteU32(&w,plan->profile)||!NativeCodecWriter_WriteU32(&w,plan->botMask)||!NativeCodecWriter_WriteU8(&w,plan->botCount)||!NativeCodecWriter_WriteU8(&w,plan->locked)||!NativeCodecWriter_WriteBytes(&w,plan->reserved,2)||!NativeCodecWriter_WriteBytes(&w,plan->matchConfigDigest,32)||!NativeCodecWriter_WriteBytes(&w,plan->rngBeforeDigest,32)||!NativeCodecWriter_WriteBytes(&w,plan->rngAfterDigest,32)) return 0;
+	for(uint8_t i=0;i<MAIN_ARCADE_BOT_SETUP_SLOT_COUNT;i++){const struct MainArcadeBotSetupAssignment *a=&plan->assignments[i]; if(!NativeCodecWriter_WriteU8(&w,a->enabled)||!NativeCodecWriter_WriteU8(&w,a->stableSlot)||!NativeCodecWriter_WriteU8(&w,a->nativeDriverSlot)||!NativeCodecWriter_WriteU8(&w,a->characterID)||!NativeCodecWriter_WriteU8(&w,a->difficulty)||!NativeCodecWriter_WriteU8(&w,a->spawnOrder)||!NativeCodecWriter_WriteU8(&w,a->navPathIndex)||!NativeCodecWriter_WriteU8(&w,a->accelerationOrder)||!NativeCodecWriter_WriteU8(&w,a->setupSequence)||!NativeCodecWriter_WriteBytes(&w,a->reserved,3)||!NativeCodecWriter_WriteU32(&w,a->setupRandom))return 0;}
+	NativeSha256_Init(&sha); NativeSha256_Update(&sha,bytes,w.offset); NativeSha256_Final(&sha,digest); return 1;
+}
+
 static int MainArcadeBotSetup_IsZero(const uint8_t *bytes, size_t size)
 {
 	uint8_t combined = 0;
