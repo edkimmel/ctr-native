@@ -16,7 +16,20 @@ foreach(forbidden_consumer IN ITEMS ctr_native ctr_native_canonical_runtime ctr_
 endforeach()
 file(READ "${CMAKE_CURRENT_LIST_DIR}/../include/platform/native_topology_residency.h" header)
 file(READ "${CMAKE_CURRENT_LIST_DIR}/../platform/native_topology_residency.c" source)
-foreach(forbidden IN ITEMS "#include \"common.h\"" GameTracker Mempack MainMain Runtime Extract Scheduler Replay Network Socket)
+# This is a supplied-facts validator only.  Keep it free of game ownership,
+# lifecycle, and every replay/network/runtime acquisition path; the tokens are
+# intentionally narrow enough that ordinary C implementation vocabulary does
+# not make this contract noisy.
+foreach(forbidden IN ITEMS
+    "#include \"common.h\""
+    GameTracker Mempack MainMain
+    "NavHeader.last" lifecycle
+    BOTS bot "UI_" "ui/"
+    Schema schema Replay replay Scheduler scheduler
+    Network network Socket socket
+    Runtime runtime Extract extractor
+    "game/" "Game_"
+    GetActiveMempack AcquireLease ReleaseLease Mempack_Acquire Mempack_Release)
     string(FIND "${header}" "${forbidden}" at)
     if(NOT at EQUAL -1)
         message(FATAL_ERROR "topology residency: forbidden header token ${forbidden}")
