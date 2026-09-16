@@ -255,6 +255,16 @@ target_include_directories(ctr_native_canonical_topology PUBLIC ${CMAKE_SOURCE_D
 target_compile_definitions(ctr_native_canonical_topology PUBLIC CTR_NATIVE)
 target_link_libraries(ctr_native_canonical_topology PUBLIC ctr_native_canonical_fixed_array)
 
+# Compile-only layout assertions for the narrow, source-grounded topology/nav
+# surface.  This object probe has no runtime/executable dependency.
+add_library(ctr_native_main_canonical_topology_layout_contract_probe OBJECT
+    tests/main_canonical_topology_layout_contract_probe.c)
+set_target_properties(ctr_native_main_canonical_topology_layout_contract_probe PROPERTIES
+    C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_main_canonical_topology_layout_contract_probe PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_compile_definitions(ctr_native_main_canonical_topology_layout_contract_probe PRIVATE CTR_NATIVE)
+
 add_library(ctr_native_canonical_drivers_detailed STATIC platform/native_canonical_drivers_detailed.c)
 set_target_properties(ctr_native_canonical_drivers_detailed PROPERTIES
     C_STANDARD 17
@@ -689,6 +699,9 @@ if(BUILD_TESTING)
     target_compile_definitions(main_canonical_topology_test PRIVATE CTR_NATIVE)
     target_link_libraries(main_canonical_topology_test PRIVATE ctr_native_canonical_fixed_array)
     add_test(NAME main_canonical_topology_unit COMMAND $<TARGET_FILE:main_canonical_topology_test>)
+
+    add_test(NAME main_canonical_topology_layout_contract_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_topology_layout_contract_isolation_test.cmake")
 
     add_executable(native_canonical_state_v3_test tests/native_canonical_state_v3_test.c)
     set_target_properties(native_canonical_state_v3_test PROPERTIES
