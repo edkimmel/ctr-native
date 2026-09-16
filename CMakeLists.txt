@@ -215,7 +215,7 @@ set_target_properties(ctr_native_canonical_topology_facts PROPERTIES C_STANDARD 
 target_include_directories(ctr_native_canonical_topology_facts PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 target_link_libraries(ctr_native_canonical_topology_facts PUBLIC ctr_native_canonical_topology_v1)
 
-# Offline-only, hash-pinned raw MODE2/BIG/LEV/PTR topology census.  This target
+# Offline-only, hash-pinned raw MODE2/BIG/LOD1 topology census.  This target
 # has no game/runtime/emulator/network dependency and is never linked by ctr_native.
 add_library(ctr_native_topology_asset_census STATIC platform/native_topology_asset_census.c)
 set_target_properties(ctr_native_topology_asset_census PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)

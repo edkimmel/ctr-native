@@ -8,13 +8,14 @@
 #define NATIVE_TOPOLOGY_ASSET_CENSUS_VERSION 1u
 
 /* The census reports only derived facts.  It neither retains nor emits asset
- * bytes.  `stored` means the BIG entry exists; `selectorAddressable` means the
- * retail LOD1 LEV/PTR selector pair was valid and decoded. */
+ * bytes.  `stored` means the LOD1 envelope BIG entry exists;
+ * `lod1Addressable` means its LEV payload and embedded DramPointerMap were
+ * valid and decoded.  LOD2 VRAM is deliberately not parsed here. */
 struct NativeTopologyAssetCensusRecord
 {
 	uint32_t levelID;
 	uint8_t stored;
-	uint8_t selectorAddressable;
+	uint8_t lod1Addressable;
 	uint8_t restartAvailable;
 	uint8_t navAvailableMask;
 	struct NativeCanonicalTopologyV1 topology;
@@ -25,7 +26,7 @@ struct NativeTopologyAssetCensus
 	uint32_t version;
 	uint32_t corpusCount;
 	uint32_t storedCount;
-	uint32_t selectorAddressableCount;
+	uint32_t lod1AddressableCount;
 	uint32_t excludedStoredEntryCount;
 	uint64_t corpusDigest;
 	struct NativeTopologyAssetCensusRecord records[25];
