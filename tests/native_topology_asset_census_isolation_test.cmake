@@ -21,17 +21,26 @@ function(has_target_argument line name output)
     endif()
 endfunction()
 
+function(collect_target_link_calls lines name output)
+    set(matches "")
+    foreach(raw_line IN LISTS lines)
+        string(STRIP "${raw_line}" line)
+        is_target_link_call("${line}" "${name}" is_direct_link)
+        if(is_direct_link)
+            list(APPEND matches "${line}")
+        endif()
+    endforeach()
+    set(${output} "${matches}" PARENT_SCOPE)
+endfunction()
+
 # Inspect the actual one-call-per-line target declaration/link convention in
 # this CMake file.  The audit intentionally does not invent a literal that
 # joins add_library() and target_link_libraries(): they are separate calls.
+collect_target_link_calls("${cmake_lines}" "${target}" links)
 foreach(raw_line IN LISTS cmake_lines)
     string(STRIP "${raw_line}" line)
     if(line MATCHES "^add_library\\(${target} STATIC ")
         set(declaration "${line}")
-    endif()
-    is_target_link_call("${line}" "${target}" is_direct_link)
-    if(is_direct_link)
-        set(links "${line}")
     endif()
     # A dependency token must be preceded by a CMake argument separator,
     # which prevents name-substring matches such as native_*_census_test.
@@ -79,13 +88,18 @@ foreach(consumer_line IN LISTS consumers)
     endif()
 endforeach()
 
-# Self-contract fixtures prove direct-dependency and consumer detection are
-# live, so a future edit cannot silently reduce this audit to a no-op.
-set(forbidden_link_fixture "target_link_libraries(${target} PRIVATE ctr_native_replay_v4)")
-is_target_link_call("${forbidden_link_fixture}" "${target}" fixture_direct_link)
-string(FIND "${forbidden_link_fixture}" "ctr_native_replay_v4" fixture_forbidden)
-if(NOT fixture_direct_link OR fixture_forbidden EQUAL -1)
-    message(FATAL_ERROR "topology asset census direct dependency fixture was not detected")
+# Self-contract fixtures prove every direct-dependency declaration is gathered,
+# including a forbidden dependency in an earlier call followed by a clean one.
+# This prevents a future edit from silently inspecting only the final
+# direct-link declaration.
+set(multi_call_link_fixture
+    "target_link_libraries(${target} PRIVATE ctr_native_replay_v4)"
+    "target_link_libraries(${target} PUBLIC ctr_native_sha256)")
+collect_target_link_calls("${multi_call_link_fixture}" "${target}" fixture_links)
+list(LENGTH fixture_links fixture_link_count)
+string(FIND "${fixture_links}" "ctr_native_replay_v4" fixture_forbidden)
+if(NOT fixture_link_count EQUAL 2 OR fixture_forbidden EQUAL -1)
+    message(FATAL_ERROR "topology asset census multi-call direct dependency fixture was not detected")
 endif()
 set(forbidden_consumer_fixture "target_link_libraries(ctr_native_canonical_runtime PRIVATE ${target})")
 has_target_argument("${forbidden_consumer_fixture}" "${target}" fixture_consumer)
