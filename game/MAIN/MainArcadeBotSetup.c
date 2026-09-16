@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+static int MainArcadeBotSetup_IsZero(const uint8_t *bytes, size_t size);
+
 int MainArcadeBotSetupPlan_Digest(const struct MainArcadeBotSetupPlan *plan, uint8_t digest[NATIVE_SHA256_DIGEST_BYTES])
 {
 	uint8_t bytes[4 + 4 + 1 + 1 + 2 + 32 + 32 + 32 + MAIN_ARCADE_BOT_SETUP_SLOT_COUNT * (1+1+1+1+1+1+1+1+1+3+4)];
