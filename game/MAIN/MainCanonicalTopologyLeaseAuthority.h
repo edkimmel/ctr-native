@@ -45,11 +45,17 @@ struct MainCanonicalTopologyLease
 	uint8_t valid;
 };
 
-/* Init and Retire never wrap epochs.  Zero and UINT64_MAX are terminal
- * fail-closed states.  Inactive hub preload deliberately has no retire API. */
+/* Init constructs an authority once.  Retire and Activate are the matching
+ * lifecycle transition: active -> retired(reason) increments the generation
+ * exactly once, then retired(same reason) -> active at post-init does not
+ * increment it.
+ * Zero and UINT64_MAX are terminal fail-closed states.  Inactive hub preload
+ * deliberately has no retire API. */
 void MainCanonicalTopologyLeaseAuthority_Init(struct MainCanonicalTopologyLeaseAuthority *authority,
 	enum MainCanonicalTopologyLeaseInitReason reason);
 void MainCanonicalTopologyLeaseAuthority_Retire(struct MainCanonicalTopologyLeaseAuthority *authority,
+	enum MainCanonicalTopologyLeaseRetireReason reason);
+void MainCanonicalTopologyLeaseAuthority_ActivatePostInit(struct MainCanonicalTopologyLeaseAuthority *authority,
 	enum MainCanonicalTopologyLeaseRetireReason reason);
 
 /* Acquire only while the source reports an idle load stage and no in-progress

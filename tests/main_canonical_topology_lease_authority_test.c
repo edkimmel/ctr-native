@@ -77,14 +77,46 @@ static int AuthorityAndLease(void)
 	CHECK(MainCanonicalTopologyLease_Acquire(&lease,&authority,&f.tracker,&f.source));stale=lease;
 	MainCanonicalTopologyLeaseAuthority_Retire(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_CHECKPOINT_RESTORE);
 	CHECK(authority.epoch==2&&authority.retired==1&&!MainCanonicalTopologyLease_Validate(&stale,&authority,&f.tracker,&f.source));
-	/* A restore may reuse every address, but a fresh generation cannot revive the stale lease. */
-	MainCanonicalTopologyLeaseAuthority_Init(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_INIT_TEST);
-	CHECK(authority.epoch==3&&authority.retired==0&&MainCanonicalTopologyLease_Acquire(&lease,&authority,&f.tracker,&f.source)&&!MainCanonicalTopologyLease_Validate(&stale,&authority,&f.tracker,&f.source));
+	/* A restore may reuse every address, but the matching post-init activation
+	 * must not mint another generation or revive the stale lease. */
+	MainCanonicalTopologyLeaseAuthority_ActivatePostInit(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_CHECKPOINT_RESTORE);
+	CHECK(authority.epoch==2&&authority.retired==0&&MainCanonicalTopologyLease_Acquire(&lease,&authority,&f.tracker,&f.source)&&!MainCanonicalTopologyLease_Validate(&stale,&authority,&f.tracker,&f.source));
 	beforeAuthority=authority;authority.epoch=0;CHECK(!MainCanonicalTopologyLease_Acquire(&lease,&authority,&f.tracker,&f.source));authority=beforeAuthority;
 	authority.epoch=UINT64_MAX;MainCanonicalTopologyLeaseAuthority_Retire(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_ARENA_RESET);
-	CHECK(authority.epoch==UINT64_MAX&&authority.retired==1&&!MainCanonicalTopologyLease_Acquire(&lease,&authority,&f.tracker,&f.source));authority=beforeAuthority;
+	CHECK(authority.epoch==UINT64_MAX&&authority.retired==0&&!MainCanonicalTopologyLease_Acquire(&lease,&authority,&f.tracker,&f.source));authority=beforeAuthority;
 	f.tracker.gameMode2|=LEV_SWAP;f.tracker.activeMempackIndex=1;f.tracker.levID_in_each_mempack[1]=f.tracker.levelID;f.source.mempack[1]=f.source.mempack[0];
 	CHECK(MainCanonicalTopologyLease_Acquire(&lease,&authority,&f.tracker,&f.source)&&lease.mempackIndex==1);
+	return 1;
+}
+
+static int AuthorityTransitions(void)
+{
+	struct MainCanonicalTopologyLeaseAuthority authority,before;
+	memset(&authority,0,sizeof(authority));
+	MainCanonicalTopologyLeaseAuthority_Init(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_INIT_TEST);
+	CHECK(authority.epoch==1&&authority.retired==0&&authority.retireReason==0);
+	/* Construction is idempotent and cannot be used as an implicit activation. */
+	before=authority;MainCanonicalTopologyLeaseAuthority_Init(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_INIT_COLD_BOOT);
+	CHECK(memcmp(&authority,&before,sizeof(authority))==0);
+	/* Active -> retired advances once; duplicate/invalid requests are atomic. */
+	MainCanonicalTopologyLeaseAuthority_Retire(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_FULL_LOAD);
+	CHECK(authority.epoch==2&&authority.retired==1&&authority.retireReason==MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_FULL_LOAD);
+	before=authority;MainCanonicalTopologyLeaseAuthority_Retire(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_FULL_LOAD);
+	CHECK(memcmp(&authority,&before,sizeof(authority))==0);
+	MainCanonicalTopologyLeaseAuthority_ActivatePostInit(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_HUB_SWAP);
+	CHECK(memcmp(&authority,&before,sizeof(authority))==0);
+	/* The post-init match reactivates exactly the retired generation. */
+	MainCanonicalTopologyLeaseAuthority_ActivatePostInit(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_FULL_LOAD);
+	CHECK(authority.epoch==2&&authority.retired==0&&authority.retireReason==0);
+	before=authority;MainCanonicalTopologyLeaseAuthority_ActivatePostInit(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_FULL_LOAD);
+	CHECK(memcmp(&authority,&before,sizeof(authority))==0);
+	/* Terminal/corrupt epoch states are fail-closed and state-atomic. */
+	authority.epoch=0;before=authority;MainCanonicalTopologyLeaseAuthority_Retire(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_ARENA_RESET);
+	CHECK(memcmp(&authority,&before,sizeof(authority))==0);MainCanonicalTopologyLeaseAuthority_ActivatePostInit(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_ARENA_RESET);
+	CHECK(memcmp(&authority,&before,sizeof(authority))==0);
+	authority.epoch=UINT64_MAX;before=authority;MainCanonicalTopologyLeaseAuthority_Retire(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_ARENA_RESET);
+	CHECK(memcmp(&authority,&before,sizeof(authority))==0);MainCanonicalTopologyLeaseAuthority_ActivatePostInit(&authority,MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_ARENA_RESET);
+	CHECK(memcmp(&authority,&before,sizeof(authority))==0);
 	return 1;
 }
 
@@ -106,4 +138,4 @@ static int Observation(void)
 	return 1;
 }
 
-int main(void){CHECK(AuthorityAndLease());CHECK(Observation());puts("main_canonical_topology_lease_authority_test: passed");return 0;}
+int main(void){CHECK(AuthorityAndLease());CHECK(AuthorityTransitions());CHECK(Observation());puts("main_canonical_topology_lease_authority_test: passed");return 0;}

@@ -16,6 +16,15 @@ static int ValidRetireReason(enum MainCanonicalTopologyLeaseRetireReason reason)
 		reason==MAIN_CANONICAL_TOPOLOGY_LEASE_RETIRE_ARENA_RESET;
 }
 
+static int ValidAuthority(const struct MainCanonicalTopologyLeaseAuthority *authority)
+{
+	if(!authority||authority->tag!=MAIN_CANONICAL_TOPOLOGY_LEASE_AUTHORITY_TAG||
+		authority->initialized!=1||!ValidInitReason((enum MainCanonicalTopologyLeaseInitReason)authority->initReason)||
+		authority->epoch==0||authority->epoch==UINT64_MAX)return 0;
+	if(authority->retired==0)return authority->retireReason==0;
+	return authority->retired==1&&ValidRetireReason((enum MainCanonicalTopologyLeaseRetireReason)authority->retireReason);
+}
+
 static int ToAddress32(const void *pointer,uint32_t *out)
 {
 	uintptr_t value;
@@ -45,8 +54,7 @@ static int CurrentLease(struct MainCanonicalTopologyLease *candidate,
 	const struct Mempack *pack;
 	uint32_t start,firstFree,lastFree,end;
 	int packIndex;
-	if(!candidate||!authority||authority->tag!=MAIN_CANONICAL_TOPOLOGY_LEASE_AUTHORITY_TAG||authority->initialized!=1||authority->retired!=0||
-		authority->epoch==0||authority->epoch==UINT64_MAX||!gGT||!sourceData||
+	if(!candidate||!ValidAuthority(authority)||authority->retired!=0||!gGT||!sourceData||
 		sourceData->gGT!=gGT||sourceData->Loading.stage!=LOAD_IDLE||sourceData->load_inProgress!=0)return 0;
 	if((gGT->gameMode2&LEV_SWAP)!=0)
 	{
@@ -79,22 +87,24 @@ void MainCanonicalTopologyLeaseAuthority_Init(struct MainCanonicalTopologyLeaseA
 		authority->epoch=1;authority->initialized=1;authority->initReason=(uint8_t)reason;
 		return;
 	}
-	if(authority->epoch==0||authority->epoch==UINT64_MAX)return;
-	authority->epoch++;authority->retired=0;authority->initReason=(uint8_t)reason;
-	authority->retireReason=0;
+	/* Initialization is construction, not a lifecycle transition. */
 }
 
 void MainCanonicalTopologyLeaseAuthority_Retire(struct MainCanonicalTopologyLeaseAuthority *authority,
 	enum MainCanonicalTopologyLeaseRetireReason reason)
 {
-	if(!authority||!ValidRetireReason(reason)||authority->tag!=MAIN_CANONICAL_TOPOLOGY_LEASE_AUTHORITY_TAG||authority->initialized!=1)return;
-	if(authority->epoch==0||authority->epoch==UINT64_MAX)
-	{
-		authority->retired=1;authority->retireReason=(uint8_t)reason;
-		return;
-	}
+	if(!ValidRetireReason(reason)||!ValidAuthority(authority)||authority->retired!=0)return;
 	authority->epoch++;
 	authority->retired=1;authority->retireReason=(uint8_t)reason;
+}
+
+void MainCanonicalTopologyLeaseAuthority_ActivatePostInit(struct MainCanonicalTopologyLeaseAuthority *authority,
+	enum MainCanonicalTopologyLeaseRetireReason reason)
+{
+	if(!ValidRetireReason(reason)||!ValidAuthority(authority)||authority->retired!=1||
+		authority->retireReason!=(uint8_t)reason)return;
+	authority->retired=0;
+	authority->retireReason=0;
 }
 
 int MainCanonicalTopologyLease_Acquire(struct MainCanonicalTopologyLease *leaseOut,
