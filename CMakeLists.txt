@@ -273,6 +273,18 @@ target_include_directories(ctr_native_canonical_topology PUBLIC ${CMAKE_SOURCE_D
 target_compile_definitions(ctr_native_canonical_topology PUBLIC CTR_NATIVE)
 target_link_libraries(ctr_native_canonical_topology PUBLIC ctr_native_canonical_fixed_array)
 
+# Dormant, game-owned active-mempack lease authority.  It is intentionally a
+# leaf: no game executable, runtime, replay, scheduler, UI, or network target
+# consumes it until separately approved lifecycle integration exists.
+add_library(main_canonical_topology_lease_authority STATIC
+    game/MAIN/MainCanonicalTopologyLeaseAuthority.c)
+set_target_properties(main_canonical_topology_lease_authority PROPERTIES
+    C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(main_canonical_topology_lease_authority PUBLIC
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_compile_definitions(main_canonical_topology_lease_authority PUBLIC CTR_NATIVE)
+target_link_libraries(main_canonical_topology_lease_authority PUBLIC ctr_native_topology_residency)
+
 # Compile-only layout assertions for the narrow, source-grounded topology/nav
 # surface.  This object probe has no runtime/executable dependency.
 add_library(ctr_native_main_canonical_topology_layout_contract_probe OBJECT
@@ -734,6 +746,18 @@ if(BUILD_TESTING)
 
     add_test(NAME main_canonical_topology_layout_contract_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_topology_layout_contract_isolation_test.cmake")
+
+    add_executable(main_canonical_topology_lease_authority_test tests/main_canonical_topology_lease_authority_test.c)
+    set_target_properties(main_canonical_topology_lease_authority_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_include_directories(main_canonical_topology_lease_authority_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
+    target_compile_definitions(main_canonical_topology_lease_authority_test PRIVATE CTR_NATIVE)
+    # Compile the dormant source into its fixture executable, avoiding the
+    # legacy global sdata definition in the game-layout header crossing two
+    # object files.  The standalone library is built independently above.
+    target_link_libraries(main_canonical_topology_lease_authority_test PRIVATE ctr_native_topology_residency)
+    add_test(NAME main_canonical_topology_lease_authority_unit COMMAND $<TARGET_FILE:main_canonical_topology_lease_authority_test>)
+    add_test(NAME main_canonical_topology_lease_authority_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_topology_lease_authority_isolation_test.cmake")
 
     add_executable(native_canonical_state_v3_test tests/native_canonical_state_v3_test.c)
     set_target_properties(native_canonical_state_v3_test PROPERTIES
