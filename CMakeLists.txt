@@ -178,6 +178,13 @@ set_target_properties(ctr_native_canonical_topology_v1 PROPERTIES C_STANDARD 17 
 target_include_directories(ctr_native_canonical_topology_v1 PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_topology_v1 PUBLIC ctr_native_canonical_codec)
 
+# Pointer-free active-mempack topology residency/layout validator.  It is
+# intentionally standalone: no extractor, runtime, replay, or game target
+# consumes this source-only pre-dereference contract.
+add_library(ctr_native_topology_residency STATIC platform/native_topology_residency.c)
+set_target_properties(ctr_native_topology_residency PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_topology_residency PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Standalone, fixture-only M2 WORLD mine registry.  It is intentionally not
 # linked into any canonical-state, replay, scheduler, or game-runtime target.
 add_library(ctr_native_canonical_world_mine_registry_v1 STATIC platform/native_canonical_world_mine_registry.c)
@@ -624,6 +631,13 @@ if(BUILD_TESTING)
     set_target_properties(native_canonical_topology_v1_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_link_libraries(native_canonical_topology_v1_test PRIVATE ctr_native_canonical_topology_v1)
     add_test(NAME native_canonical_topology_v1_unit COMMAND $<TARGET_FILE:native_canonical_topology_v1_test>)
+
+    add_executable(native_topology_residency_test tests/native_topology_residency_test.c)
+    set_target_properties(native_topology_residency_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_link_libraries(native_topology_residency_test PRIVATE ctr_native_topology_residency)
+    add_test(NAME native_topology_residency_unit COMMAND $<TARGET_FILE:native_topology_residency_test>)
+    add_test(NAME native_topology_residency_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_topology_residency_isolation_test.cmake")
 
     add_executable(native_topology_asset_census_test tests/native_topology_asset_census_test.c)
     set_target_properties(native_topology_asset_census_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
