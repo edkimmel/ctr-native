@@ -4,6 +4,11 @@
 #include <string.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%d: %s\n", __LINE__, #x); return 1; } } while (0)
+#define CHECK_PROJECT_FAILURE(x) do { \
+	sentinel = baseline; \
+	CHECK(!(x)); \
+	CHECK(memcmp(&sentinel, &baseline, sizeof(sentinel)) == 0); \
+} while (0)
 
 struct Fixture {
 	struct NativeMatchConfigV1 config;
@@ -105,5 +110,14 @@ int main(void)
 	CHECK(!MainArcadeSetupV4Context_Init(&contextSentinel, &changed.config, &changed.rosterFacts, &changed.setupFacts, &changed.rng) &&
 		memcmp(&contextSentinel, &two.context, sizeof(contextSentinel)) == 0);
 	CHECK(!MainArcadeSetupV4_Project(NULL, &two.context, &two.identity, 1, &two.control, &two.retail, &two.input, &two.drivers, &two.counters, &two.mines, &two.topology));
+	CHECK_PROJECT_FAILURE(MainArcadeSetupV4_Project(&sentinel, NULL, &two.identity, 1, &two.control, &two.retail, &two.input, &two.drivers, &two.counters, &two.mines, &two.topology));
+	CHECK_PROJECT_FAILURE(MainArcadeSetupV4_Project(&sentinel, &two.context, NULL, 1, &two.control, &two.retail, &two.input, &two.drivers, &two.counters, &two.mines, &two.topology));
+	CHECK_PROJECT_FAILURE(MainArcadeSetupV4_Project(&sentinel, &two.context, &two.identity, 1, NULL, &two.retail, &two.input, &two.drivers, &two.counters, &two.mines, &two.topology));
+	CHECK_PROJECT_FAILURE(MainArcadeSetupV4_Project(&sentinel, &two.context, &two.identity, 1, &two.control, NULL, &two.input, &two.drivers, &two.counters, &two.mines, &two.topology));
+	CHECK_PROJECT_FAILURE(MainArcadeSetupV4_Project(&sentinel, &two.context, &two.identity, 1, &two.control, &two.retail, NULL, &two.drivers, &two.counters, &two.mines, &two.topology));
+	CHECK_PROJECT_FAILURE(MainArcadeSetupV4_Project(&sentinel, &two.context, &two.identity, 1, &two.control, &two.retail, &two.input, NULL, &two.counters, &two.mines, &two.topology));
+	CHECK_PROJECT_FAILURE(MainArcadeSetupV4_Project(&sentinel, &two.context, &two.identity, 1, &two.control, &two.retail, &two.input, &two.drivers, NULL, &two.mines, &two.topology));
+	CHECK_PROJECT_FAILURE(MainArcadeSetupV4_Project(&sentinel, &two.context, &two.identity, 1, &two.control, &two.retail, &two.input, &two.drivers, &two.counters, NULL, &two.topology));
+	CHECK_PROJECT_FAILURE(MainArcadeSetupV4_Project(&sentinel, &two.context, &two.identity, 1, &two.control, &two.retail, &two.input, &two.drivers, &two.counters, &two.mines, NULL));
 	puts("main_arcade_setup_v4_test: passed"); return 0;
 }
