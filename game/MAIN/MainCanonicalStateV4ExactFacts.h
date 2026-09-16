@@ -6,9 +6,11 @@
 #include "platform/native_canonical_projector.h"
 
 /*
- * Source-only candidate seam for the exact, pointer-free facts which feed
- * the V4 DRIVERS, WORLD, and TOPOLOGY domains.  Borrowed topology ranges are
- * consumed during this call only.  This is not a native extraction or a live
+ * Source-only candidate seam for exact facts which feed the V4 DRIVERS,
+ * WORLD, and TOPOLOGY domains.  Individual fact elements and the canonical
+ * output are pointer-free.  `topologyFacts`, however, contains read-only
+ * borrowed item/count ranges; their storage is consumed during this call
+ * only and is never retained.  This is not a native extraction or a live
  * publication API.
  *
  * `driverScratch` is caller owned, may be overwritten, and must be at least

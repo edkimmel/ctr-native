@@ -9,10 +9,53 @@ string(REGEX MATCH "target_link_libraries\\(ctr_native[ \\t][^)]*ctr_native_cano
 if(executable_hit)
     message(FATAL_ERROR "main_canonical_state_v4_exact_facts_isolation: game executable must not link the exact-facts adapter")
 endif()
-file(READ "${CMAKE_CURRENT_LIST_DIR}/../game/MAIN/MainCanonicalStateV4ExactFacts.c" source)
-foreach(forbidden IN ITEMS Extract gGT sdata D231 Level MainMain Runtime Scheduler Replay Network UI)
-    string(FIND "${source}" "${forbidden}" found)
-    if(NOT found EQUAL -1)
-        message(FATAL_ERROR "main_canonical_state_v4_exact_facts_isolation: forbidden source token ${forbidden}")
+set(adapter_header "${CMAKE_CURRENT_LIST_DIR}/../game/MAIN/MainCanonicalStateV4ExactFacts.h")
+set(adapter_source "${CMAKE_CURRENT_LIST_DIR}/../game/MAIN/MainCanonicalStateV4ExactFacts.c")
+file(READ "${adapter_header}" header_text)
+file(READ "${adapter_source}" source_text)
+
+# This is a direct-dependency audit only.  It deliberately makes no claim
+# about the transitive graphs of the approved leaf libraries.
+string(REGEX MATCH "target_link_libraries\\(ctr_native_canonical_exact_domains_v4[ \\t\\r\\n]+([^)]*)\\)" adapter_link "${cmake}")
+if(NOT adapter_link)
+    message(FATAL_ERROR "main_canonical_state_v4_exact_facts_isolation: missing adapter link declaration")
+endif()
+set(adapter_deps "${CMAKE_MATCH_1}")
+string(REGEX MATCHALL "[A-Za-z0-9_]+" adapter_deps "${adapter_deps}")
+list(REMOVE_ITEM adapter_deps "" PUBLIC PRIVATE INTERFACE)
+set(allowed_direct_deps ctr_native_canonical_projector_v4 ctr_native_canonical_drivers_detailed)
+if(NOT "${adapter_deps}" STREQUAL "${allowed_direct_deps}")
+    message(FATAL_ERROR "main_canonical_state_v4_exact_facts_isolation: unexpected direct adapter dependencies: ${adapter_deps}")
+endif()
+
+# The public header is part of the boundary.  Its direct includes are limited
+# to the exact facts/projector types required by this source-only seam.
+set(allowed_header_includes
+    MAIN/MainCanonicalTopologyFacts.h
+    platform/native_canonical_drivers_detailed.h
+    platform/native_canonical_projector.h)
+string(REGEX MATCHALL "#[ \\t]*include[ \\t]+\\\"[^\\\"]+\\\"" header_includes "${header_text}")
+foreach(include_line IN LISTS header_includes)
+    string(REGEX REPLACE ".*\\\"([^\\\"]+)\\\".*" "\\1" include_path "${include_line}")
+    list(FIND allowed_header_includes "${include_path}" include_index)
+    if(include_index EQUAL -1)
+        message(FATAL_ERROR "main_canonical_state_v4_exact_facts_isolation: forbidden public-header include ${include_path}")
     endif()
+endforeach()
+
+string(REGEX MATCHALL "#[ \\t]*include[ \\t]+\\\"[^\\\"]+\\\"" source_includes "${source_text}")
+foreach(include_line IN LISTS source_includes)
+    string(REGEX REPLACE ".*\\\"([^\\\"]+)\\\".*" "\\1" include_path "${include_line}")
+    if(NOT include_path STREQUAL "MAIN/MainCanonicalStateV4ExactFacts.h")
+        message(FATAL_ERROR "main_canonical_state_v4_exact_facts_isolation: forbidden adapter-source include ${include_path}")
+    endif()
+endforeach()
+
+foreach(adapter_unit IN ITEMS header_text source_text)
+    foreach(forbidden IN ITEMS Extract gGT sdata D231 Level MainMain Runtime Scheduler Replay Network UI Thread Socket Recv Send)
+        string(FIND "${${adapter_unit}}" "${forbidden}" found)
+        if(NOT found EQUAL -1)
+            message(FATAL_ERROR "main_canonical_state_v4_exact_facts_isolation: forbidden ${adapter_unit} token ${forbidden}")
+        endif()
+    endforeach()
 endforeach()

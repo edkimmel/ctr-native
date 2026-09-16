@@ -307,8 +307,10 @@ set_target_properties(ctr_native_canonical_projector_v4 PROPERTIES C_STANDARD 17
 target_include_directories(ctr_native_canonical_projector_v4 PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_projector_v4 PUBLIC ctr_native_canonical_state_v4 ctr_native_match_config)
 
-# Pointer-free exact-domain candidate adapter.  This source-only bridge is
-# deliberately separate from extraction and every live/replay target.
+# Exact-domain candidate adapter.  Fact elements and output are pointer-free;
+# topology item/count ranges are read-only borrowed inputs for the call only.
+# This source-only bridge is deliberately separate from extraction and every
+# live/replay target.
 add_library(ctr_native_canonical_exact_domains_v4 STATIC
     game/MAIN/MainCanonicalStateV4ExactFacts.c
     game/MAIN/MainCanonicalTopologyFacts.c)
