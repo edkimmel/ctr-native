@@ -25,7 +25,7 @@ file(READ "${contract_header}" header_text)
 file(READ "${probe_source}" probe_text)
 
 string(REGEX MATCHALL "#[ \\t]*include[ \\t]+<[^>]+>" header_includes "${header_text}")
-if(NOT "${header_includes}" STREQUAL "#include <common.h>")
+if(NOT "${header_includes}" STREQUAL "#include <common.h>;#include <platform/native_topology_asset_layout.h>")
     message(FATAL_ERROR "topology layout contract: public header include boundary changed")
 endif()
 string(REGEX MATCHALL "#[ \\t]*include[ \\t]+\"[^\"]+\"" header_quoted_includes "${header_text}")

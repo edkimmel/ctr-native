@@ -215,6 +215,17 @@ set_target_properties(ctr_native_canonical_topology_facts PROPERTIES C_STANDARD 
 target_include_directories(ctr_native_canonical_topology_facts PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 target_link_libraries(ctr_native_canonical_topology_facts PUBLIC ctr_native_canonical_topology_v1)
 
+# Offline-only, hash-pinned raw MODE2/BIG/LEV/PTR topology census.  This target
+# has no game/runtime/emulator/network dependency and is never linked by ctr_native.
+add_library(ctr_native_topology_asset_census STATIC platform/native_topology_asset_census.c)
+set_target_properties(ctr_native_topology_asset_census PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_topology_asset_census PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_topology_asset_census PUBLIC ctr_native_sha256 ctr_native_canonical_topology_v1)
+
+add_executable(ctr_native_topology_asset_census_tool tools/topology_asset_census.c)
+set_target_properties(ctr_native_topology_asset_census_tool PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_link_libraries(ctr_native_topology_asset_census_tool PRIVATE ctr_native_topology_asset_census)
+
 add_library(ctr_native_canonical_driver_behavior STATIC platform/native_canonical_driver_behavior.c)
 set_target_properties(ctr_native_canonical_driver_behavior PROPERTIES
     C_STANDARD 17
@@ -613,6 +624,13 @@ if(BUILD_TESTING)
     set_target_properties(native_canonical_topology_v1_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_link_libraries(native_canonical_topology_v1_test PRIVATE ctr_native_canonical_topology_v1)
     add_test(NAME native_canonical_topology_v1_unit COMMAND $<TARGET_FILE:native_canonical_topology_v1_test>)
+
+    add_executable(native_topology_asset_census_test tests/native_topology_asset_census_test.c)
+    set_target_properties(native_topology_asset_census_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_link_libraries(native_topology_asset_census_test PRIVATE ctr_native_topology_asset_census)
+    add_test(NAME native_topology_asset_census_unit COMMAND $<TARGET_FILE:native_topology_asset_census_test>)
+    add_test(NAME native_topology_asset_census_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_topology_asset_census_isolation_test.cmake")
 
     add_executable(native_canonical_world_mine_registry_v1_test tests/native_canonical_world_mine_registry_v1_test.c)
     set_target_properties(native_canonical_world_mine_registry_v1_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
