@@ -1,0 +1,7 @@
+file(READ "${CMAKE_CURRENT_LIST_DIR}/../CMakeLists.txt" cmake)
+foreach(forbidden ctr_native_canonical_runtime ctr_native_replay_scheduler_v4 ctr_native_replay_v4 ctr_native_replay_v4_file)
+    string(REGEX MATCH "target_link_libraries\\(${forbidden}[^)]*ctr_native_arcade_setup_v4" linked "${cmake}")
+    if(linked)
+        message(FATAL_ERROR "main_arcade_setup_v4_isolation: ${forbidden} must not link the setup adapter")
+    endif()
+endforeach()

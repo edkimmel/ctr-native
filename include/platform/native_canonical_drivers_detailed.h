@@ -12,6 +12,7 @@
 #define NATIVE_CANONICAL_DRIVERS_DETAILED_VERSION 2u
 #define NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT UINT8_C(0xff)
 #define NATIVE_CANONICAL_DRIVERS_META_BYTES 40u
+#define NATIVE_CANONICAL_DRIVERS_PRELUDE_BYTES 64u
 #define NATIVE_CANONICAL_DRIVERS_RACE_BYTES 60u
 #define NATIVE_CANONICAL_DRIVERS_PHYSICS_BYTES 148u
 #define NATIVE_CANONICAL_DRIVERS_DYNAMICS_BYTES 116u
@@ -191,6 +192,15 @@ struct NativeCanonicalDriverSlotV1
 	struct NativeCanonicalDriverPendingDamageV1 pendingDamage;
 };
 struct NativeCanonicalDriversDetailedV1 { struct NativeCanonicalDriversPreludeV1 prelude; struct NativeCanonicalDriverSlotV1 slots[8]; };
+
+/* The roster prelude is a separately useful canonical value.  Its encoding is
+ * deliberately shared with the full DRIVERS stream so setup bindings never
+ * duplicate or infer the private 64-byte layout. */
+size_t NativeCanonicalDriversPreludeV1_EncodedSize(void);
+int NativeCanonicalDriversPreludeV1_Encode(struct NativeCodecWriter *writer,
+	const struct NativeCanonicalDriversPreludeV1 *value);
+int NativeCanonicalDriversPreludeV1_Digest(const struct NativeCanonicalDriversPreludeV1 *value,
+	uint64_t *digest);
 
 /* Validates the portable 148-byte Physics group without consulting native
  * pointers.  Quad references are either UINT32_MAX (null) or a nonnegative

@@ -20,6 +20,39 @@ int NativeCanonicalDriverPhysicsV1_Validate(const struct NativeCanonicalDriverPh
 		(value->lastValidQuadIndex==UINT32_MAX||value->lastValidQuadIndex<(uint32_t)INT32_MAX);
 }
 
+static int NativeCanonicalDriversPreludeV1_ValidateWire(const struct NativeCanonicalDriversPreludeV1 *v)
+{
+	uint32_t lists = 0, present = 0;
+	if (v == NULL || v->slotCount != NATIVE_CANONICAL_DRIVERS_SLOT_COUNT ||
+		(v->presenceMask & ~UINT32_C(0xff)) != 0 || v->numLaps < 0 ||
+		v->detailedVersion != NATIVE_CANONICAL_DRIVERS_DETAILED_VERSION ||
+		v->raceOrderCount > 8 || v->winnerCount > 4 || v->playerCount > 8 ||
+		v->activeBotCount > 8) return 0;
+	for (uint32_t list = 0; list < 5; ++list)
+	{
+		const uint8_t *values = list == 0 ? v->raceOrder :
+			list == 1 ? v->winnerSlots : v->navListOrder[list - 2];
+		uint8_t count = list == 0 ? v->raceOrderCount :
+			list == 1 ? v->winnerCount : v->navListCount[list - 2];
+		uint8_t maximum = list == 1 ? 4 : 8;
+		uint32_t seen = 0;
+		if (count > maximum) return 0;
+		for (uint8_t i = 0; i < maximum; ++i)
+		{
+			uint8_t slot = values[i];
+			if (i >= count) { if (slot != NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT) return 0; continue; }
+			if (slot >= 8 || (v->presenceMask & (UINT32_C(1) << slot)) == 0 || (seen & (UINT32_C(1) << slot)) != 0) return 0;
+			seen |= UINT32_C(1) << slot;
+		}
+		lists |= seen;
+	}
+	for (uint8_t i = 0; i < 8; ++i)
+		if (i >= v->playerCount ? v->humanPlayerPositions[i] != NATIVE_CANONICAL_DRIVERS_ABSENT_SLOT : v->humanPlayerPositions[i] > 7) return 0;
+	for (uint8_t i = 0; i < 8; ++i) if ((v->presenceMask & (UINT32_C(1) << i)) != 0) present++;
+	(void)lists;
+	return (v->playerCount + v->activeBotCount) == present;
+}
+
 static int WritePrelude(struct NativeCodecWriter *w, const struct NativeCanonicalDriversPreludeV1 *v)
 {
 	return NativeCodecWriter_WriteU32(w, v->slotCount) && NativeCodecWriter_WriteU32(w, v->presenceMask) &&
@@ -29,6 +62,35 @@ static int WritePrelude(struct NativeCodecWriter *w, const struct NativeCanonica
 		NativeCodecWriter_WriteBytes(w, v->humanPlayerPositions, 8) && NativeCodecWriter_WriteBytes(w, v->navListCount, 3) &&
 		NativeCodecWriter_WriteBytes(w, v->navListOrder, 24) && NativeCodecWriter_WriteU8(w, v->raceOrderCount) &&
 		NativeCodecWriter_WriteU32(w, v->detailedVersion);
+}
+
+size_t NativeCanonicalDriversPreludeV1_EncodedSize(void) { return NATIVE_CANONICAL_DRIVERS_PRELUDE_BYTES; }
+
+int NativeCanonicalDriversPreludeV1_Encode(struct NativeCodecWriter *writer,
+	const struct NativeCanonicalDriversPreludeV1 *value)
+{
+	struct NativeCodecWriter candidate;
+	if (writer == NULL || !NativeCanonicalDriversPreludeV1_ValidateWire(value) || writer->failed ||
+		writer->offset > writer->capacity || NATIVE_CANONICAL_DRIVERS_PRELUDE_BYTES > writer->capacity - writer->offset) return 0;
+	candidate = *writer;
+	if (!WritePrelude(&candidate, value)) return 0;
+	*writer = candidate;
+	return 1;
+}
+
+int NativeCanonicalDriversPreludeV1_Digest(const struct NativeCanonicalDriversPreludeV1 *value,
+	uint64_t *digest)
+{
+	uint8_t bytes[NATIVE_CANONICAL_DRIVERS_PRELUDE_BYTES];
+	struct NativeCodecWriter writer;
+	struct NativeCodecDigest64 candidate;
+	if (digest == NULL) return 0;
+	NativeCodecWriter_Init(&writer, bytes, sizeof(bytes), NULL);
+	if (!NativeCanonicalDriversPreludeV1_Encode(&writer, value) || writer.offset != sizeof(bytes)) return 0;
+	NativeCodecDigest64_Init(&candidate);
+	NativeCodecDigest64_Update(&candidate, bytes, sizeof(bytes));
+	*digest = candidate.value;
+	return 1;
 }
 
 static int WriteMeta(struct NativeCodecWriter *w, const struct NativeCanonicalDriverMetaV1 *v)

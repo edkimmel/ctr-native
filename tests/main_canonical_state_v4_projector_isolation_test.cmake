@@ -3,7 +3,7 @@ string(REGEX MATCH "target_link_libraries\\(ctr_native_canonical_runtime[^)]*ctr
 if(runtime_link)
     message(FATAL_ERROR "main_canonical_state_v4_projector_isolation: runtime must not link the V4 projector")
 endif()
-string(REGEX MATCH "target_link_libraries\\(ctr_native[^)]*ctr_native_canonical_projector_v4" executable_link "${cmake}")
+string(REGEX MATCH "target_link_libraries\\(ctr_native[ \\t][^)]*ctr_native_canonical_projector_v4" executable_link "${cmake}")
 if(executable_link)
     message(FATAL_ERROR "main_canonical_state_v4_projector_isolation: game executable must not link the V4 projector")
 endif()
