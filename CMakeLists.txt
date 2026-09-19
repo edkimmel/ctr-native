@@ -131,6 +131,16 @@ set_target_properties(ctr_native_g29_input PROPERTIES
 )
 target_include_directories(ctr_native_g29_input PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# Pure, bounded parser for explicit local scripted keyboard capture input.
+# SDL/game/replay ownership stays in native_input.c.
+add_library(ctr_native_input_script STATIC platform/native_input_script.c)
+set_target_properties(ctr_native_input_script PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_input_script PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Local-only presentation options. This target has no match, replay, canonical
 # state, game, or network dependency by design.
 add_library(ctr_native_display_config STATIC platform/native_display_config.c)
@@ -743,6 +753,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_g29_input_test PRIVATE ctr_native_g29_input)
     add_test(NAME native_g29_input_unit COMMAND $<TARGET_FILE:native_g29_input_test>)
+
+    add_executable(native_input_script_test tests/native_input_script_test.c)
+    set_target_properties(native_input_script_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_input_script_test PRIVATE ctr_native_input_script)
+    add_test(NAME native_input_script_unit COMMAND $<TARGET_FILE:native_input_script_test>)
 
     add_executable(native_display_config_test tests/native_display_config_test.c)
     set_target_properties(native_display_config_test PROPERTIES

@@ -1,5 +1,6 @@
 #include <platform/native_input.h>
 #include <platform/native_g29_input.h>
+#include <platform/native_input_script.h>
 
 #include <macros.h>
 #include "psx/libpad.h"
@@ -22,6 +23,7 @@
 #define NATIVE_INPUT_MAP_FLAG_INVERSE      0x8000
 #define NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT 0
 #define NATIVE_INPUT_G29_DIAGNOSTIC_ENV     "CTR_NATIVE_G29_DIAGNOSTICS"
+#define NATIVE_INPUT_SCRIPT_ENV              "CTR_NATIVE_INPUT_SCRIPT"
 #define NATIVE_INPUT_G29_DIAGNOSTIC_AXES    16
 #define NATIVE_INPUT_G29_DIAGNOSTIC_DELTA   2048
 // NOTE(aalhendi): Little-endian tag `CTRI` = CTR native Input snapshot.
@@ -120,6 +122,10 @@ global_variable s32 s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLO
 global_variable s32 s_lastActiveControllerSlot = -1;
 global_variable SDL_JoystickID s_directG29InstanceId = -1;
 global_variable struct NativeInputG29Diagnostic s_g29Diagnostic;
+/* The script is a host capture aid.  It intentionally never enters an input
+ * snapshot, replay record, checkpoint, or canonical state. */
+global_variable struct NativeInputScriptSchedule s_inputScript;
+global_variable uint64_t s_inputScriptFrame;
 
 extern s32 g_padCommEnable;
 
@@ -319,6 +325,92 @@ internal void NativeInput_DefaultMappings(void)
 	s_controllerMapping.gc_axis_left_y = SDL_GAMEPAD_AXIS_LEFTY | NATIVE_INPUT_MAP_FLAG_AXIS;
 	s_controllerMapping.gc_axis_right_x = SDL_GAMEPAD_AXIS_RIGHTX | NATIVE_INPUT_MAP_FLAG_AXIS;
 	s_controllerMapping.gc_axis_right_y = SDL_GAMEPAD_AXIS_RIGHTY | NATIVE_INPUT_MAP_FLAG_AXIS;
+}
+
+internal s32 NativeInput_ScriptKeyDown(s32 scancode)
+{
+	enum NativeInputScriptKey key;
+
+	switch (scancode)
+	{
+	case SDL_SCANCODE_RETURN: key = NATIVE_INPUT_SCRIPT_KEY_RETURN; break;
+	case SDL_SCANCODE_UP: key = NATIVE_INPUT_SCRIPT_KEY_UP; break;
+	case SDL_SCANCODE_DOWN: key = NATIVE_INPUT_SCRIPT_KEY_DOWN; break;
+	case SDL_SCANCODE_LEFT: key = NATIVE_INPUT_SCRIPT_KEY_LEFT; break;
+	case SDL_SCANCODE_RIGHT: key = NATIVE_INPUT_SCRIPT_KEY_RIGHT; break;
+	case SDL_SCANCODE_X: key = NATIVE_INPUT_SCRIPT_KEY_X; break;
+	case SDL_SCANCODE_V: key = NATIVE_INPUT_SCRIPT_KEY_V; break;
+	case SDL_SCANCODE_Z: key = NATIVE_INPUT_SCRIPT_KEY_Z; break;
+	case SDL_SCANCODE_C: key = NATIVE_INPUT_SCRIPT_KEY_C; break;
+	case SDL_SCANCODE_SPACE: key = NATIVE_INPUT_SCRIPT_KEY_SPACE; break;
+	case SDL_SCANCODE_LSHIFT: key = NATIVE_INPUT_SCRIPT_KEY_LSHIFT; break;
+	case SDL_SCANCODE_RSHIFT: key = NATIVE_INPUT_SCRIPT_KEY_RSHIFT; break;
+	case SDL_SCANCODE_LCTRL: key = NATIVE_INPUT_SCRIPT_KEY_LCTRL; break;
+	case SDL_SCANCODE_RCTRL: key = NATIVE_INPUT_SCRIPT_KEY_RCTRL; break;
+	case SDL_SCANCODE_LEFTBRACKET: key = NATIVE_INPUT_SCRIPT_KEY_LBRACKET; break;
+	case SDL_SCANCODE_RIGHTBRACKET: key = NATIVE_INPUT_SCRIPT_KEY_RBRACKET; break;
+	default: return 0;
+	}
+	return NativeInputScript_IsKeyDown(&s_inputScript, s_inputScriptFrame, key);
+}
+
+internal s32 NativeInput_KeyboardKeyDown(s32 scancode)
+{
+	return ((s_keyboardState != NULL) && s_keyboardState[scancode]) ||
+		NativeInput_ScriptKeyDown(scancode);
+}
+
+internal void NativeInput_LoadScriptFromEnvironment(void)
+{
+	const char *path = SDL_getenv(NATIVE_INPUT_SCRIPT_ENV);
+	FILE *file = NULL;
+	char *bytes = NULL;
+	size_t byteCount;
+	int loaded = 0;
+
+	NativeInputScript_Init(&s_inputScript);
+	s_inputScriptFrame = 0u;
+	if ((path == NULL) || (path[0] == '\0'))
+		return;
+#if defined(_WIN32)
+	if (fopen_s(&file, path, "rb") != 0)
+		file = NULL;
+#else
+	file = fopen(path, "rb");
+#endif
+	if (file != NULL)
+	{
+		bytes = (char *)malloc((size_t)NATIVE_INPUT_SCRIPT_MAX_BYTES + 1u);
+		if (bytes != NULL)
+		{
+			byteCount = fread(bytes, 1u, (size_t)NATIVE_INPUT_SCRIPT_MAX_BYTES + 1u, file);
+			if ((ferror(file) == 0) && (byteCount <= (size_t)NATIVE_INPUT_SCRIPT_MAX_BYTES))
+				loaded = NativeInputScript_ParseText(&s_inputScript, bytes, byteCount);
+			else
+				s_inputScript.lastError = NATIVE_INPUT_SCRIPT_ERROR_CAPACITY;
+		}
+		else
+		{
+			s_inputScript.lastError = NATIVE_INPUT_SCRIPT_ERROR_IO;
+		}
+		fclose(file);
+	}
+	else
+	{
+		s_inputScript.lastError = NATIVE_INPUT_SCRIPT_ERROR_IO;
+	}
+	if (loaded != 0)
+	{
+		fprintf(stderr, "[CTR Native] Local input script enabled: %s (%u ranges)\n",
+			path, s_inputScript.entryCount);
+	}
+	else
+	{
+		fprintf(stderr, "[CTR Native] Local input script disabled (%s): %s\n",
+			NativeInputScript_ErrorString(s_inputScript.lastError), path);
+		NativeInputScript_Init(&s_inputScript);
+	}
+	free(bytes);
 }
 
 internal s32 NativeInput_ControllerButtonState(SDL_Gamepad *controller, s32 buttonOrAxis)
@@ -637,72 +729,67 @@ internal u16 NativeInput_ReadKeyboard(void)
 	const struct NativeInputKeyboardMapping *mapping = &s_keyboardMapping;
 	u16 buttons = 0xffff;
 
-	if (s_keyboardState == NULL)
-	{
-		return buttons;
-	}
-
-	if (s_keyboardState[mapping->kc_square])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_square))
 	{
 		buttons &= ~0x8000;
 	}
-	if (s_keyboardState[mapping->kc_circle])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_circle))
 	{
 		buttons &= ~0x2000;
 	}
-	if (s_keyboardState[mapping->kc_triangle])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_triangle))
 	{
 		buttons &= ~0x1000;
 	}
-	if (s_keyboardState[mapping->kc_cross])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_cross))
 	{
 		buttons &= ~0x4000;
 	}
-	if (s_keyboardState[mapping->kc_l1])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_l1))
 	{
 		buttons &= ~0x400;
 	}
-	if (s_keyboardState[mapping->kc_l2])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_l2))
 	{
 		buttons &= ~0x100;
 	}
-	if (s_keyboardState[mapping->kc_l3])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_l3))
 	{
 		buttons &= ~0x2;
 	}
-	if (s_keyboardState[mapping->kc_r1])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_r1))
 	{
 		buttons &= ~0x800;
 	}
-	if (s_keyboardState[mapping->kc_r2])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_r2))
 	{
 		buttons &= ~0x200;
 	}
-	if (s_keyboardState[mapping->kc_r3])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_r3))
 	{
 		buttons &= ~0x4;
 	}
-	if (s_keyboardState[mapping->kc_dpad_up])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_dpad_up))
 	{
 		buttons &= ~0x10;
 	}
-	if (s_keyboardState[mapping->kc_dpad_down])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_dpad_down))
 	{
 		buttons &= ~0x40;
 	}
-	if (s_keyboardState[mapping->kc_dpad_left])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_dpad_left))
 	{
 		buttons &= ~0x80;
 	}
-	if (s_keyboardState[mapping->kc_dpad_right])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_dpad_right))
 	{
 		buttons &= ~0x20;
 	}
-	if (s_keyboardState[mapping->kc_select])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_select))
 	{
 		buttons &= ~0x1;
 	}
-	if (s_keyboardState[mapping->kc_start])
+	if (NativeInput_KeyboardKeyDown(mapping->kc_start))
 	{
 		buttons &= ~0x8;
 	}
@@ -994,6 +1081,7 @@ int Platform_InputInit(void)
 	memset(&s_g29Diagnostic, 0, sizeof(s_g29Diagnostic));
 	s_installedSnapshotsActive = 0;
 	s_keyboardState = SDL_GetKeyboardState(NULL);
+	NativeInput_LoadScriptFromEnvironment();
 
 	if (SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC) == 0)
 	{
@@ -1003,6 +1091,10 @@ int Platform_InputInit(void)
 
 	SDL_AddGamepadMappingsFromFile("gamecontrollerdb.txt");
 	NativeInput_OpenKnownControllers();
+	/* A configured local capture script is intentionally P1 even if opening a
+	 * wheel used slot zero and normally moved the physical keyboard aside. */
+	if (s_inputScript.entryCount != 0u)
+		s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT;
 
 	s_inputInitialized = 1;
 	return 1;
@@ -1026,6 +1118,8 @@ void Platform_InputShutdown(void)
 	s_lastActiveControllerSlot = -1;
 	s_directG29InstanceId = -1;
 	memset(&s_g29Diagnostic, 0, sizeof(s_g29Diagnostic));
+	NativeInputScript_Init(&s_inputScript);
+	s_inputScriptFrame = 0u;
 	memset(s_padSlotData, 0, sizeof(s_padSlotData));
 	s_keyboardState = NULL;
 }
@@ -1051,6 +1145,10 @@ void Platform_InputUpdate(void)
 	}
 
 	SDL_PumpEvents();
+	/* Keep scheduled capture input on P1 across controller hotplug and the
+	 * ordinary keyboard-slot cycling command. This branch is inert by default. */
+	if (s_inputScript.entryCount != 0u)
+		s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT;
 	u16 keyboardButtons = NativeInput_KeyboardSuppressed() ? 0xffff : NativeInput_ReadKeyboard();
 
 	for (s32 slot = 0; slot < NATIVE_INPUT_MAX_CONTROLLERS; slot++)
@@ -1061,6 +1159,10 @@ void Platform_InputUpdate(void)
 		NativeInput_ApplyKeyboard(slot, keyboardButtons);
 	}
 	NativeInput_WritePadBus();
+	/* Advance after applying this host frame. Replays/install snapshots return
+	 * above, so a local script cannot perturb their recorded input stream. */
+	if (s_inputScript.entryCount != 0u)
+		++s_inputScriptFrame;
 }
 
 void Platform_InputControllerAdded(int deviceIndex)
