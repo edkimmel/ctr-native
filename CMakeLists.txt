@@ -185,6 +185,20 @@ set_target_properties(ctr_native_host_texture_asset PROPERTIES
 )
 target_include_directories(ctr_native_host_texture_asset PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# Renderer-free seam for deriving the exact manifest key and UV remap facts
+# from a retail textured primitive.  It is intentionally GL- and game-free;
+# the future renderer must still own asset upload and draw-state isolation.
+add_library(ctr_native_host_texture_binding STATIC platform/native_host_texture_binding.c)
+set_target_properties(ctr_native_host_texture_binding PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_host_texture_binding PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_host_texture_binding PUBLIC
+    ctr_native_presentation_registry
+    ctr_native_texture_override_policy)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -727,6 +741,15 @@ if(BUILD_TESTING)
     target_link_libraries(native_host_texture_asset_test PRIVATE ctr_native_host_texture_asset)
     add_test(NAME native_host_texture_asset_unit COMMAND $<TARGET_FILE:native_host_texture_asset_test>)
 
+    add_executable(native_host_texture_binding_test tests/native_host_texture_binding_test.c)
+    set_target_properties(native_host_texture_binding_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_host_texture_binding_test PRIVATE ctr_native_host_texture_binding)
+    add_test(NAME native_host_texture_binding_unit COMMAND $<TARGET_FILE:native_host_texture_binding_test>)
+
     add_executable(main_arcade_roster_test tests/main_arcade_roster_test.c)
     set_target_properties(main_arcade_roster_test PROPERTIES
         C_STANDARD 17
@@ -1086,6 +1109,20 @@ if(BUILD_TESTING)
                 -SummarizerPath "${CMAKE_SOURCE_DIR}/tools/summarize-texture-trace.ps1"
         )
         set_tests_properties(native_texture_trace_summary PROPERTIES CONFIGURATIONS Release)
+
+        add_test(NAME native_texture_trace_capture
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_SOURCE_DIR}/tests/capture_texture_trace_test.ps1"
+                -CapturePath "${CMAKE_SOURCE_DIR}/tools/capture-texture-trace.ps1"
+        )
+        set_tests_properties(native_texture_trace_capture PROPERTIES CONFIGURATIONS Release)
+
+        add_test(NAME native_texture_candidate_review
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_SOURCE_DIR}/tests/review_texture_candidates_test.ps1"
+                -ReviewerPath "${CMAKE_SOURCE_DIR}/tools/review-texture-candidates.ps1"
+        )
+        set_tests_properties(native_texture_candidate_review PROPERTIES CONFIGURATIONS Release)
     endif()
 
     add_test(NAME ctr_native_version COMMAND $<TARGET_FILE:ctr_native> --version)
