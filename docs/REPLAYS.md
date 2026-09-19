@@ -170,5 +170,28 @@ build-msvc-x86\Release\ctr_native.exe `
 An absent/malformed pack, unsafe manifest path, or invalid asset disables the
 local registry and continues on retail textures. `--presentation-overrides=off`
 and a launch with no pack arguments perform no pack file access. The current
-milestone only validates this local registry; host texture upload and drawing
-remain disabled until the trace-approved renderer slice is complete.
+runtime preloads every approved CTRH, uploads it once as a private host texture,
+and selects it only for a trace-approved font or character-sprite source key.
+The raw retail VRAM path remains the fallback for every unapproved, unsupported,
+or mutated source region.
+
+## Offline retail-asset extraction
+
+`assets\ctr-u.bin` is a raw MODE2/2352 disc image rather than a loose image
+asset tree. The small exporter below reads a bounded ISO file range into a new
+output file; it never writes the retail BIN and refuses to overwrite an output:
+
+```powershell
+.\tools\export-mode2-file.ps1 `
+  -BinPath .\assets\ctr-u.bin `
+  -Lba 276 `
+  -ByteCount 270360576 `
+  -OutputPath .\debug\offline-extract\BIGFILE.BIG
+```
+
+For this NTSC-U image the exported file is `BIGFILE.BIG`. It can be unpacked
+with the local CTR ModSDK `bigtool.exe` into a disposable directory; the shared
+VRAM payload contains the retail UI/font uploads. Offline extraction obtains
+the source pixels. A short runtime trace is still required before enabling a
+replacement: it proves the exact tpage/CLUT/rectangle binding and that the
+source has not been mutated after first use.
