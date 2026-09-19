@@ -148,7 +148,7 @@ row-level approval column is explicitly supplied.
 
 Every asset class must be explicitly supplied either as `-AssetClass font`
 (one intentional class for every row) or through `-AssetClassColumn`. Valid
-classes are `font`, `ui-icon`, and `ui-static`. Approval values are `approved`,
+classes are `font`, `ui-icon`, `ui-static`, and `character-sprite`. Approval values are `approved`,
 `reviewed`, `true`, `yes`, or `1`; an approved ineligible candidate is a hard error, not a
 silent omission. The generated manifest names prospective pack-relative CTRH
 assets but does not create them. It cannot be loaded until a separate pack

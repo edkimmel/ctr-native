@@ -81,6 +81,7 @@ int NativeHostTexturePlan_Build(const struct NativeHostTexturePlanInput *input,
 		NATIVE_PRESENTATION_ASSET_CLASS_FONT,
 		NATIVE_PRESENTATION_ASSET_CLASS_UI_ICON,
 		NATIVE_PRESENTATION_ASSET_CLASS_UI_STATIC,
+		NATIVE_PRESENTATION_ASSET_CLASS_CHARACTER_SPRITE,
 	};
 	struct NativeHostTextureBindingInput bindingInput;
 	struct NativeHostTextureBindingResult bindingResult;

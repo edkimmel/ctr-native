@@ -30,6 +30,8 @@ enum NativePresentationAssetClass
 	NATIVE_PRESENTATION_ASSET_CLASS_FONT = 1,
 	NATIVE_PRESENTATION_ASSET_CLASS_UI_ICON,
 	NATIVE_PRESENTATION_ASSET_CLASS_UI_STATIC,
+	/* Character art is deliberately distinct from generic/static UI. */
+	NATIVE_PRESENTATION_ASSET_CLASS_CHARACTER_SPRITE,
 };
 
 enum NativePresentationRegistryError

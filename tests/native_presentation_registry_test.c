@@ -90,6 +90,7 @@ int main(void)
 	struct NativePresentationRegistry registry;
 	struct NativePresentationSourceKey key = {4, 32, 64, 8, 16, 12, 14, NATIVE_PRESENTATION_ASSET_CLASS_FONT};
 	struct NativePresentationSourceKey wrongKey = {4, 32, 64, 9, 16, 12, 14, NATIVE_PRESENTATION_ASSET_CLASS_FONT};
+	struct NativePresentationSourceKey characterSpriteKey = {4, 32, 64, 20, 16, 12, 14, NATIVE_PRESENTATION_ASSET_CLASS_CHARACTER_SPRITE};
 	char duplicate[512];
 	char traversal[256];
 	char tooMany[8192];
@@ -113,6 +114,16 @@ int main(void)
 	CHECK(NativePresentationRegistry_Lookup(&registry, &key) != NULL);
 	NativePresentationRegistry_SetEnabled(&registry, 0);
 	CHECK(NativePresentationRegistry_Lookup(&registry, &key) == NULL);
+	{
+		const char *characterSpriteManifest =
+			"ctr-native-presentation-manifest\t1\n"
+			"entry\t4\t32\t64\t20\t16\t12\t14\tcharacter-sprite\tfont.rgba\n";
+		CHECK(NativePresentationRegistry_LoadManifest(&registry, s_root, characterSpriteManifest,
+			strlen(characterSpriteManifest)));
+		CHECK(NativePresentationRegistry_FindExact(&registry, &characterSpriteKey) != NULL);
+		NativePresentationRegistry_SetEnabled(&registry, 1);
+		CHECK(NativePresentationRegistry_Lookup(&registry, &characterSpriteKey) != NULL);
+	}
 
 	CHECK(!NativePresentationRegistry_LoadManifest(&registry, "missing-presentation-pack", s_validManifest, strlen(s_validManifest)));
 	CHECK(registry.entryCount == 0u && !NativePresentationRegistry_IsEnabled(&registry));
@@ -141,6 +152,11 @@ int main(void)
 		CHECK(!NativePresentationRegistry_LoadManifest(&registry, s_root, unsupportedMode, strlen(unsupportedMode)));
 	}
 	CHECK(NativePresentationRegistry_GetLastError(&registry) == NATIVE_PRESENTATION_REGISTRY_ERROR_MANIFEST_FORMAT);
+	{
+		const char *unsupportedClass = "ctr-native-presentation-manifest\t1\nentry\t4\t32\t64\t8\t16\t12\t14\tcharacter\tfont.rgba\n";
+		CHECK(!NativePresentationRegistry_LoadManifest(&registry, s_root, unsupportedClass, strlen(unsupportedClass)));
+		CHECK(NativePresentationRegistry_GetLastError(&registry) == NATIVE_PRESENTATION_REGISTRY_ERROR_MANIFEST_FORMAT);
+	}
 	{
 		const char *badBounds = "ctr-native-presentation-manifest\t1\nentry\t4\t32\t64\t1020\t16\t12\t14\tfont\tfont.rgba\n";
 		CHECK(!NativePresentationRegistry_LoadManifest(&registry, s_root, badBounds, strlen(badBounds)));

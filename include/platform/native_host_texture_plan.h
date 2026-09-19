@@ -5,7 +5,7 @@
  * GL-free, local-presentation planning for a single retail textured primitive.
  *
  * A manifest must name one, and only one, of the permitted presentation
- * classes (font, UI icon, or static UI) for the primitive's exact retail
+ * classes (font, UI icon, static UI, or character sprite) for the primitive's exact retail
  * source.  This prevents an asset-class guess from silently choosing a
  * different replacement for the same source rectangle.  The selected CTRH is
  * obtained only through an injected loader; this module does no filesystem

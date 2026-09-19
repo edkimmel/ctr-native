@@ -10,7 +10,7 @@ param(
 
     # A single intentionally chosen class for every reviewed candidate.
     [Parameter(Mandatory = $true, ParameterSetName = 'Class')]
-    [ValidateSet('font', 'ui-icon', 'ui-static')]
+    [ValidateSet('font', 'ui-icon', 'ui-static', 'character-sprite')]
     [string]$AssetClass,
 
     # Use this when each candidate was classified in a separate reviewer CSV.
@@ -32,7 +32,7 @@ $requiredColumns = @(
     'eligible', 'tex_format', 'tpage', 'clut',
     'source_x', 'source_y', 'source_w', 'source_h'
 )
-$validAssetClasses = @('font', 'ui-icon', 'ui-static')
+$validAssetClasses = @('font', 'ui-icon', 'ui-static', 'character-sprite')
 $validApprovalValues = @('approved', 'reviewed', 'true', 'yes', '1')
 $validNonApprovalValues = @('', 'pending', 'false', 'no', '0')
 
@@ -149,7 +149,7 @@ for ($index = 0; $index -lt $rows.Count; $index++) {
     $rowLabel = "row $($index + 2)"
     $class = if ($PSCmdlet.ParameterSetName -eq 'ClassColumn') { ([string]$row.$AssetClassColumn).Trim().ToLowerInvariant() } else { $AssetClass }
     if ($validAssetClasses -notcontains $class) {
-        throw "Candidate $rowLabel has missing or unsupported asset class '$class'. Use font, ui-icon, or ui-static."
+        throw "Candidate $rowLabel has missing or unsupported asset class '$class'. Use font, ui-icon, ui-static, or character-sprite."
     }
 
     $mode = Get-StrictUnsigned $row.tex_format 'tex_format' $rowLabel 16

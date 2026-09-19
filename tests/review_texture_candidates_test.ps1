@@ -14,7 +14,7 @@ $manifestPath = Join-Path $testDirectory 'fixture.manifest'
 
 $fixture = @'
 eligible,tex_format,tpage,clut,source_x,source_y,source_w,source_h,primitive_count,hazard_classes,post_use_hazard_reasons,ineligible_reasons,approval,class
-true,4,1,64,64,0,4,16,2,texture-read,,,approved,font
+true,4,1,64,64,0,4,16,2,texture-read,,,approved,character-sprite
 false,8,2,128,128,0,8,16,1,texture-read|framebuffer-feedback,,framebuffer-feedback,approved,ui-static
 true,16,3,0,192,0,32,32,1,texture-read,,,pending,ui-icon
 '@
@@ -62,8 +62,8 @@ try {
     [IO.File]::WriteAllText($candidatesPath, $safeFixture, [Text.UTF8Encoding]::new($false))
     & $resolvedReviewerPath -CandidatesPath $candidatesPath -AssetClassColumn class -ApprovalColumn approval -ReviewOutputPath $reviewPath -ManifestOutputPath $manifestPath
     $manifest = @(Get-Content -LiteralPath $manifestPath)
-    if ($manifest.Count -ne 2 -or $manifest[1] -ne "entry`t4`t1`t64`t64`t0`t4`t16`tfont`ttextures/font/mode4-tpage1-clut64-x64-y0-w4-h16.ctrh") {
-        throw 'Approved exact eligible candidate did not produce the strict expected manifest entry.'
+    if ($manifest.Count -ne 2 -or $manifest[1] -ne "entry`t4`t1`t64`t64`t0`t4`t16`tcharacter-sprite`ttextures/character-sprite/mode4-tpage1-clut64-x64-y0-w4-h16.ctrh") {
+        throw 'Approved exact eligible character sprite did not produce the strict expected manifest entry.'
     }
     $review = Get-Content -LiteralPath $reviewPath -Raw
     if ($review -notmatch 'awaiting-approval' -or $review -notmatch 'framebuffer-feedback') {
@@ -71,7 +71,7 @@ try {
     }
 
     $missingClassPath = Join-Path $testDirectory 'missing-class.csv'
-    [IO.File]::WriteAllText($missingClassPath, $safeFixture.Replace(',font', ','), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($missingClassPath, $safeFixture.Replace(',character-sprite', ','), [Text.UTF8Encoding]::new($false))
     Assert-Throws { & $resolvedReviewerPath -CandidatesPath $missingClassPath -AssetClassColumn class -ApprovalColumn approval -ReviewOutputPath (Join-Path $testDirectory 'bad.md') -ManifestOutputPath (Join-Path $testDirectory 'bad.manifest') } 'Missing class was accepted.'
 
     Write-Host '[CTR Texture Review Test] passed'

@@ -285,6 +285,11 @@ static int NativePresentationRegistry_ParseAssetClass(const char *text, size_t l
 		*assetClass = NATIVE_PRESENTATION_ASSET_CLASS_UI_STATIC;
 		return 1;
 	}
+	if ((length == 16u) && (memcmp(text, "character-sprite", 16u) == 0))
+	{
+		*assetClass = NATIVE_PRESENTATION_ASSET_CLASS_CHARACTER_SPRITE;
+		return 1;
+	}
 	return 0;
 }
 

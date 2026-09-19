@@ -20,7 +20,8 @@ static int NativeHostTextureBinding_IsAssetClass(unsigned int assetClass)
 {
 	return (assetClass == NATIVE_PRESENTATION_ASSET_CLASS_FONT) ||
 	       (assetClass == NATIVE_PRESENTATION_ASSET_CLASS_UI_ICON) ||
-	       (assetClass == NATIVE_PRESENTATION_ASSET_CLASS_UI_STATIC);
+	       (assetClass == NATIVE_PRESENTATION_ASSET_CLASS_UI_STATIC) ||
+	       (assetClass == NATIVE_PRESENTATION_ASSET_CLASS_CHARACTER_SPRITE);
 }
 
 static int NativeHostTextureBinding_TexelsPerVramWord(unsigned int textureMode)

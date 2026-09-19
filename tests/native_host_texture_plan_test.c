@@ -132,7 +132,7 @@ int main(void)
 	InitFixture(&registry, &loader);
 	input = ValidInput(&registry, &loader);
 	CHECK(AddClassEntry(&registry, &input, NATIVE_PRESENTATION_ASSET_CLASS_FONT));
-	CHECK(AddClassEntry(&registry, &input, NATIVE_PRESENTATION_ASSET_CLASS_UI_ICON));
+	CHECK(AddClassEntry(&registry, &input, NATIVE_PRESENTATION_ASSET_CLASS_CHARACTER_SPRITE));
 	NativePresentationRegistry_SetEnabled(&registry, 1);
 	NativeHostTexturePlan_Init(&plan);
 	CHECK(!NativeHostTexturePlan_Build(&input, &plan));

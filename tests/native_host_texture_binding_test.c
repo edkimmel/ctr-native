@@ -101,6 +101,9 @@ int main(void)
 	/* The native retail parser intentionally canonicalizes raw TPAGE mode 3 to 16-bit. */
 	input.source.tpage = 0x182u;
 	CHECK(NativeHostTextureBinding_BuildSourceKey(&input.source, &key, &remap, &error));
+	input.source.assetClass = NATIVE_PRESENTATION_ASSET_CLASS_CHARACTER_SPRITE;
+	CHECK(NativeHostTextureBinding_BuildSourceKey(&input.source, &key, &remap, &error));
+	CHECK(key.assetClass == NATIVE_PRESENTATION_ASSET_CLASS_CHARACTER_SPRITE);
 
 	/* Invalid primitive source facts never invoke the registry lookup. */
 	memset(&fixture, 0, sizeof(fixture));
