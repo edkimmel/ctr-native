@@ -5,7 +5,9 @@ param(
 
     [string]$BuildDirectory = (Join-Path $PSScriptRoot '..\build-msvc-x86\Release'),
 
-    [int[]]$RenderScales = @(1, 2, 3, 4, 6, 8),
+    # Work from the highest load downward so an underpowered cabinet fails
+    # fast instead of spending a full replay on the 1x recovery path first.
+    [int[]]$RenderScales = @(8, 6, 4, 3, 2, 1),
 
     [switch]$Fullscreen,
 

@@ -77,7 +77,7 @@ from PowerShell:
 ```
 
 The runner rejects a non-finalized, truncated, empty, or non-CRV2 replay
-before it starts. It launches scales `1, 2, 3, 4, 6, 8` sequentially with
+before it starts. It launches scales `8, 6, 4, 3, 2, 1` sequentially with
 `--replay-v2`, never bypassing build/content identity validation, and fails if
 any replay exits nonzero. V2 replay verification is authoritative for
 canonical state, input, frame timing, and VBlank parity; display options stay
