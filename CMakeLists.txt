@@ -305,6 +305,16 @@ target_include_directories(main_canonical_topology_lease_authority PUBLIC
 target_compile_definitions(main_canonical_topology_lease_authority PUBLIC CTR_NATIVE)
 target_link_libraries(main_canonical_topology_lease_authority PUBLIC ctr_native_topology_residency)
 
+# Dormant value-only lifecycle observation log. It has no game, authority,
+# runtime, replay, scheduler, transport, or topology-candidate consumer. A
+# later reviewed integration may use it to prove source call-site ordering.
+add_library(main_canonical_topology_lifecycle_events STATIC
+    game/MAIN/MainCanonicalTopologyLifecycleEvents.c)
+set_target_properties(main_canonical_topology_lifecycle_events PROPERTIES
+    C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(main_canonical_topology_lifecycle_events PUBLIC
+    ${CMAKE_SOURCE_DIR}/game)
+
 # Dormant active-mempack topology candidate.  This bridge streams proven
 # resident facts into a pointer-free value and emits a matching residency
 # witness, but deliberately has no runtime, replay, or executable consumer.
@@ -825,6 +835,14 @@ if(BUILD_TESTING)
     add_test(NAME main_canonical_topology_lease_authority_unit COMMAND $<TARGET_FILE:main_canonical_topology_lease_authority_test>)
     add_test(NAME main_canonical_topology_lease_authority_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_topology_lease_authority_isolation_test.cmake")
+
+    add_executable(main_canonical_topology_lifecycle_events_test tests/main_canonical_topology_lifecycle_events_test.c)
+    set_target_properties(main_canonical_topology_lifecycle_events_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_include_directories(main_canonical_topology_lifecycle_events_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
+    target_link_libraries(main_canonical_topology_lifecycle_events_test PRIVATE main_canonical_topology_lifecycle_events)
+    add_test(NAME main_canonical_topology_lifecycle_events_unit COMMAND $<TARGET_FILE:main_canonical_topology_lifecycle_events_test>)
+    add_test(NAME main_canonical_topology_lifecycle_events_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_topology_lifecycle_events_isolation_test.cmake")
 
     add_executable(main_canonical_topology_lease_adapter_test tests/main_canonical_topology_lease_adapter_test.c)
     set_target_properties(main_canonical_topology_lease_adapter_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
