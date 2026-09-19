@@ -1258,6 +1258,13 @@ if(BUILD_TESTING)
                 -ReviewerPath "${CMAKE_SOURCE_DIR}/tools/review-texture-candidates.ps1"
         )
         set_tests_properties(native_texture_candidate_review PROPERTIES CONFIGURATIONS Release)
+
+        add_test(NAME native_vrm_upload_inventory
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_SOURCE_DIR}/tests/inspect_vrm_uploads_test.ps1"
+                -InspectorPath "${CMAKE_SOURCE_DIR}/tools/inspect-vrm-uploads.ps1"
+        )
+        set_tests_properties(native_vrm_upload_inventory PROPERTIES CONFIGURATIONS Release)
     endif()
 
     add_test(NAME ctr_native_version COMMAND $<TARGET_FILE:ctr_native> --version)
