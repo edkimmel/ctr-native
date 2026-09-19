@@ -100,11 +100,20 @@ int main(void)
 	struct LoaderFixture loader;
 	struct NativeHostTexturePlanInput input;
 	struct NativeHostTexturePlan plan;
+	struct NativeHostTexturePlanSelection selection;
 
 	InitFixture(&registry, &loader);
 	input = ValidInput(&registry, &loader);
 	CHECK(AddClassEntry(&registry, &input, NATIVE_PRESENTATION_ASSET_CLASS_FONT));
 	NativePresentationRegistry_SetEnabled(&registry, 1);
+	/* Runtime selection must be allocation/I/O free and not require a loader. */
+	input.load = NULL;
+	CHECK(NativeHostTexturePlan_Select(&input, &selection));
+	CHECK(selection.error == NATIVE_HOST_TEXTURE_PLAN_ERROR_NONE);
+	CHECK(selection.entry == &registry.entries[0] && loader.calls == 0u);
+	CHECK(selection.sourceKey.assetClass == NATIVE_PRESENTATION_ASSET_CLASS_FONT);
+	CHECK(selection.uvRemap.sourceUExtent == 12u && selection.uvRemap.sourceVExtent == 14u);
+	input.load = LoadFixture;
 	NativeHostTexturePlan_Init(&plan);
 	CHECK(NativeHostTexturePlan_Build(&input, &plan));
 	CHECK(plan.error == NATIVE_HOST_TEXTURE_PLAN_ERROR_NONE);

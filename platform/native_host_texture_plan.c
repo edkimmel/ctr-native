@@ -74,8 +74,16 @@ static int NativeHostTexturePlan_ValidateUpscale(const struct NativeHostTextureA
 	return 1;
 }
 
-int NativeHostTexturePlan_Build(const struct NativeHostTexturePlanInput *input,
-	struct NativeHostTexturePlan *plan)
+static void NativeHostTexturePlan_InitSelection(struct NativeHostTexturePlanSelection *selection)
+{
+	memset(selection, 0, sizeof(*selection));
+	selection->decision.selection = NATIVE_TEXTURE_OVERRIDE_SELECTION_NATIVE;
+	selection->decision.fallbackReason = NATIVE_TEXTURE_OVERRIDE_FALLBACK_MALFORMED_OVERRIDE;
+	selection->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_ARGUMENT;
+}
+
+int NativeHostTexturePlan_Select(const struct NativeHostTexturePlanInput *input,
+	struct NativeHostTexturePlanSelection *selection)
 {
 	static const unsigned int assetClasses[] = {
 		NATIVE_PRESENTATION_ASSET_CLASS_FONT,
@@ -89,15 +97,14 @@ int NativeHostTexturePlan_Build(const struct NativeHostTexturePlanInput *input,
 	unsigned int matchCount = 0u;
 	unsigned int index;
 
-	if (plan == NULL)
+	if (selection == NULL)
 		return 0;
-	/* The public contract requires Init before Build, making reuse leak-free. */
-	NativeHostTexturePlan_Free(plan);
-	if ((input == NULL) || (input->registry == NULL) || (input->load == NULL))
+	NativeHostTexturePlan_InitSelection(selection);
+	if ((input == NULL) || (input->registry == NULL))
 		return 0;
 	if (!NativePresentationRegistry_IsEnabled(input->registry))
 	{
-		plan->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_REGISTRY_DISABLED;
+		selection->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_REGISTRY_DISABLED;
 		return 0;
 	}
 
@@ -117,7 +124,7 @@ int NativeHostTexturePlan_Build(const struct NativeHostTexturePlanInput *input,
 		if (!NativeHostTextureBinding_BuildSourceKey(&bindingInput.source, &key, &remap,
 			&bindingError))
 		{
-			plan->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_SOURCE_KEY;
+			selection->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_SOURCE_KEY;
 			return 0;
 		}
 		if (NativePresentationRegistry_Lookup(input->registry, &key) != NULL)
@@ -128,31 +135,70 @@ int NativeHostTexturePlan_Build(const struct NativeHostTexturePlanInput *input,
 	}
 	if (matchCount == 0u)
 	{
-		plan->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_NO_EXACT_MATCH;
+		selection->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_NO_EXACT_MATCH;
 		return 0;
 	}
 	if (matchCount != 1u)
 	{
-		plan->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_AMBIGUOUS_CLASS_MATCH;
+		selection->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_AMBIGUOUS_CLASS_MATCH;
 		return 0;
 	}
 
 	bindingInput.source.assetClass = matchedEntry->source.assetClass;
 	if (!NativeHostTextureBinding_Select(&bindingInput, &bindingResult))
 	{
-		plan->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_SOURCE_KEY;
+		selection->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_SOURCE_KEY;
 		return 0;
 	}
-	plan->sourceKey = bindingResult.sourceKey;
-	plan->uvRemap = bindingResult.uvRemap;
-	plan->decision = bindingResult.decision;
+	selection->sourceKey = bindingResult.sourceKey;
+	selection->uvRemap = bindingResult.uvRemap;
+	selection->decision = bindingResult.decision;
 	if (bindingResult.decision.selection != NATIVE_TEXTURE_OVERRIDE_SELECTION_OVERRIDE)
 	{
-		plan->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_POLICY;
+		selection->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_POLICY;
 		return 0;
 	}
-	plan->entry = matchedEntry;
-	if (!input->load(input->loadContext, input->registry, matchedEntry, &plan->asset))
+	selection->entry = matchedEntry;
+	selection->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_NONE;
+	return 1;
+}
+
+int NativeHostTexturePlan_ValidateAsset(const struct NativeHostTexturePlanSelection *selection,
+	const struct NativeHostTextureAsset *asset, unsigned int *upscaleOut)
+{
+	if ((selection == NULL) || (selection->entry == NULL) ||
+		(selection->decision.selection != NATIVE_TEXTURE_OVERRIDE_SELECTION_OVERRIDE) ||
+		!NativeHostTexturePlan_AssetIsValid(asset))
+	{
+		return 0;
+	}
+	return NativeHostTexturePlan_ValidateUpscale(asset, &selection->uvRemap, upscaleOut);
+}
+
+int NativeHostTexturePlan_Build(const struct NativeHostTexturePlanInput *input,
+	struct NativeHostTexturePlan *plan)
+{
+	struct NativeHostTexturePlanSelection selection;
+
+	if (plan == NULL)
+		return 0;
+	/* The public contract requires Init before Build, making reuse leak-free. */
+	NativeHostTexturePlan_Free(plan);
+	if ((input == NULL) || (input->load == NULL))
+		return 0;
+	if (!NativeHostTexturePlan_Select(input, &selection))
+	{
+		plan->sourceKey = selection.sourceKey;
+		plan->uvRemap = selection.uvRemap;
+		plan->decision = selection.decision;
+		plan->error = selection.error;
+		return 0;
+	}
+	plan->sourceKey = selection.sourceKey;
+	plan->uvRemap = selection.uvRemap;
+	plan->entry = selection.entry;
+	plan->decision = selection.decision;
+	if (!input->load(input->loadContext, input->registry, plan->entry, &plan->asset))
 	{
 		NativeHostTextureAsset_Free(&plan->asset);
 		plan->entry = NULL;
@@ -166,7 +212,7 @@ int NativeHostTexturePlan_Build(const struct NativeHostTexturePlanInput *input,
 		plan->error = NATIVE_HOST_TEXTURE_PLAN_ERROR_ASSET;
 		return 0;
 	}
-	if (!NativeHostTexturePlan_ValidateUpscale(&plan->asset, &plan->uvRemap, &plan->upscale))
+	if (!NativeHostTexturePlan_ValidateAsset(&selection, &plan->asset, &plan->upscale))
 	{
 		NativeHostTextureAsset_Free(&plan->asset);
 		plan->entry = NULL;

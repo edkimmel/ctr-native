@@ -51,6 +51,21 @@ struct NativeHostTexturePlanInput
 	void *loadContext;
 };
 
+/*
+ * The allocation-free result of selecting one primitive for a host texture.
+ * This is intentionally separate from NativeHostTexturePlan so the GPU path
+ * can select an already-preloaded asset on every draw without decoding or
+ * taking ownership of asset bytes.
+ */
+struct NativeHostTexturePlanSelection
+{
+	struct NativePresentationSourceKey sourceKey;
+	struct NativeHostTextureUvRemapFacts uvRemap;
+	const struct NativePresentationRegistryEntry *entry;
+	struct NativeTextureOverrideDecision decision;
+	enum NativeHostTexturePlanError error;
+};
+
 struct NativeHostTexturePlan
 {
 	struct NativePresentationSourceKey sourceKey;
@@ -65,6 +80,21 @@ struct NativeHostTexturePlan
 /* Initialize once before the first Build call; Free is safe after Init. */
 void NativeHostTexturePlan_Init(struct NativeHostTexturePlan *plan);
 void NativeHostTexturePlan_Free(struct NativeHostTexturePlan *plan);
+
+/*
+ * Selects an exact enabled entry and applies the primitive policy without
+ * loading or allocating. The caller may use entry to look up a preloaded
+ * asset. A zero return is fail-closed and leaves decision native.
+ */
+int NativeHostTexturePlan_Select(const struct NativeHostTexturePlanInput *input,
+	struct NativeHostTexturePlanSelection *selection);
+
+/*
+ * Checks an owned CTRH asset against a selected primitive's UV extent and
+ * returns its uniform positive integer upscale. This is GL- and I/O-free.
+ */
+int NativeHostTexturePlan_ValidateAsset(const struct NativeHostTexturePlanSelection *selection,
+	const struct NativeHostTextureAsset *asset, unsigned int *upscaleOut);
 
 /*
  * Builds one fail-closed host-texture plan.  A successful return means the

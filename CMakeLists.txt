@@ -198,6 +198,19 @@ target_link_libraries(ctr_native_presentation_asset_loader PUBLIC
     ctr_native_host_texture_asset
     ctr_native_presentation_registry)
 
+# A bounded preload cache for local presentation assets.  It performs all
+# filesystem decoding before draw time, retains only exact registry-owned
+# entries, and has no renderer or simulation linkage.
+add_library(ctr_native_host_texture_store STATIC platform/native_host_texture_store.c)
+set_target_properties(ctr_native_host_texture_store PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_host_texture_store PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_host_texture_store PUBLIC
+    ctr_native_presentation_asset_loader)
+
 # Renderer-free seam for deriving the exact manifest key and UV remap facts
 # from a retail textured primitive.  It is intentionally GL- and game-free;
 # the future renderer must still own asset upload and draw-state isolation.
@@ -211,6 +224,18 @@ target_include_directories(ctr_native_host_texture_binding PUBLIC ${CMAKE_SOURCE
 target_link_libraries(ctr_native_host_texture_binding PUBLIC
     ctr_native_presentation_registry
     ctr_native_texture_override_policy)
+
+# Bounded record of source rectangles that have actually been selected for a
+# local presentation override.  VRAM mutations invalidate those entries before
+# the future GPU path can make another host-texture selection.
+add_library(ctr_native_presentation_invalidation STATIC platform/native_presentation_invalidation.c)
+set_target_properties(ctr_native_presentation_invalidation PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_presentation_invalidation PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_presentation_invalidation PUBLIC ctr_native_presentation_registry)
 
 # Last GL-free selection gate before any eventual host upload/draw path.  It
 # chooses exactly one enabled asset class, uses an injected CTRH loader, and
@@ -795,6 +820,15 @@ if(BUILD_TESTING)
     add_test(NAME native_presentation_asset_loader_unit
         COMMAND $<TARGET_FILE:native_presentation_asset_loader_test>)
 
+    add_executable(native_host_texture_store_test tests/native_host_texture_store_test.c)
+    set_target_properties(native_host_texture_store_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_host_texture_store_test PRIVATE ctr_native_host_texture_store)
+    add_test(NAME native_host_texture_store_unit COMMAND $<TARGET_FILE:native_host_texture_store_test>)
+
     add_executable(native_host_texture_binding_test tests/native_host_texture_binding_test.c)
     set_target_properties(native_host_texture_binding_test PROPERTIES
         C_STANDARD 17
@@ -803,6 +837,16 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_host_texture_binding_test PRIVATE ctr_native_host_texture_binding)
     add_test(NAME native_host_texture_binding_unit COMMAND $<TARGET_FILE:native_host_texture_binding_test>)
+
+    add_executable(native_presentation_invalidation_test tests/native_presentation_invalidation_test.c)
+    set_target_properties(native_presentation_invalidation_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_presentation_invalidation_test PRIVATE ctr_native_presentation_invalidation)
+    add_test(NAME native_presentation_invalidation_unit
+        COMMAND $<TARGET_FILE:native_presentation_invalidation_test>)
 
     add_executable(native_host_texture_plan_test tests/native_host_texture_plan_test.c)
     set_target_properties(native_host_texture_plan_test PROPERTIES
