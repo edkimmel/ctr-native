@@ -20,6 +20,7 @@
 
 #include "platform/native_assets.h"
 #include "platform/native_display_config.h"
+#include "platform/native_gpu.h"
 #include "platform/native_log.h"
 #include "platform/native_memory.h"
 #include "platform/native_perf.h"
@@ -46,6 +47,13 @@
 #include "platform/native_presentation_override_config.c"
 #include "platform/native_presentation_registry.c"
 #include "platform/native_presentation_pack.c"
+#include "platform/native_host_texture_asset.c"
+#include "platform/native_presentation_asset_loader.c"
+#include "platform/native_host_texture_store.c"
+#include "platform/native_texture_override_policy.c"
+#include "platform/native_host_texture_binding.c"
+#include "platform/native_presentation_invalidation.c"
+#include "platform/native_host_texture_plan.c"
 #include "platform/native_assets.c"
 #include "platform/native_audio.c"
 #include "platform/native_memory.c"
@@ -216,10 +224,7 @@ int main(int argc, char *argv[])
 	}
 	else if (presentationOverrideConfig.enabled != 0)
 	{
-		/* The exact-key registry is now validated and enabled locally. The
-		 * renderer still has no host-texture consumer in this milestone, so
-		 * this cannot change retail pixels yet. */
-		printf("[CTR Native] presentation pack validated: %u entries (%s); host texture replacement pending.\n",
+		printf("[CTR Native] presentation pack validated: %u entries (%s); awaiting GL preload.\n",
 		       presentationPack.registry.entryCount,
 		       NativePresentationRegistry_GetManifestFingerprint(&presentationPack.registry));
 		fflush(stdout);
@@ -242,11 +247,16 @@ int main(int argc, char *argv[])
 	/* This is host presentation state only. The renderer applies it to its GL
 	 * attachments; no game, replay, or canonical-state code observes it. */
 	NativeRenderer_SetRenderScale(displayConfig.renderScale);
+	if (!NativeGpu_ConfigurePresentationOverrides(&presentationPack.registry))
+	{
+		fprintf(stderr, "[CTR Native] presentation overrides disabled: host preload/upload failed; using retail textures.\n");
+	}
 
 #if defined(CTR_INTERNAL)
 	if (NativePerf_ConfigureFromArgs(argc, argv) != 0)
 	{
 		Platform_LogFlush();
+		NativeGpu_ShutdownPresentationOverrides();
 		Platform_Shutdown();
 		return NativeConsole_Return(1);
 	}
@@ -259,6 +269,7 @@ int main(int argc, char *argv[])
 	if (NativeReplayScheduler_ConfigureFromArgs(argc, argv) != 0)
 	{
 		Platform_LogFlush();
+		NativeGpu_ShutdownPresentationOverrides();
 		Platform_Shutdown();
 		return NativeConsole_Return(1);
 	}
@@ -269,6 +280,7 @@ int main(int argc, char *argv[])
 
 	const int result = CTR_Main();
 
+	NativeGpu_ShutdownPresentationOverrides();
 	Platform_Shutdown();
 	return NativeConsole_Return(result);
 }

@@ -164,6 +164,7 @@ internal void NativeRenderer_SetPresentationAspect(int width, int height);
 internal void NativeRenderer_UpdatePresentationViewport(void);
 internal void NativeRenderer_ClearPresentationBars(void);
 internal void NativeRenderer_SetWireframe(int enable);
+internal void NativeRenderer_DestroyHostRgbaShader(void);
 internal void NativeRenderer_InitRenderTarget(struct NativeRenderTarget *target);
 internal void NativeRenderer_DestroyRenderTarget(struct NativeRenderTarget *target);
 internal void NativeRenderer_EnsureRenderTarget(struct NativeRenderTarget *target, int logicalWidth, int logicalHeight);
@@ -294,6 +295,7 @@ void NativeRenderer_Shutdown(void)
 
 	NativeRenderer_DestroyTexture(s_whiteTexture);
 	NativeRenderer_DestroyTexture(s_rgLutTexture);
+	NativeRenderer_DestroyHostRgbaShader();
 	glDeleteProgram(s_packShader);
 	glDeleteProgram(s_presentVramShader);
 	glDeleteVertexArrays(1, &s_vramQuadVAO);
@@ -744,6 +746,8 @@ typedef struct
 	GLint psxSemiTransPassLoc;
 	GLint psxDrawMaskSetLoc;
 	GLint psxTextureOutputStpLoc;
+	GLint sourceUvOriginLoc;
+	GLint sourceUvExtentLoc;
 } GTEShader;
 
 internal int NativeRenderer_Shader_CheckShaderStatus(GLuint shader);
@@ -763,6 +767,17 @@ global_variable GTEShader s_gteShader4;
 global_variable GTEShader s_gteShader8;
 global_variable GTEShader s_gteShader16;
 global_variable GTEShader s_gteShader32Rgba;
+/* This is deliberately not the legacy whole-texture RGBA override. */
+global_variable GTEShader s_gteShaderHostRgba;
+
+internal void NativeRenderer_DestroyHostRgbaShader(void)
+{
+	if (s_gteShaderHostRgba.shader != 0)
+	{
+		glDeleteProgram(s_gteShaderHostRgba.shader);
+		s_gteShaderHostRgba.shader = 0;
+	}
+}
 
 GLint u_projectionLoc;
 GLint u_bilinearFilterLoc;
@@ -912,6 +927,25 @@ const char *gte_shader_32_rgba = "	uniform sampler2D s_texture;\n"
                                  "		fragColor = dither(color * v_color);\n"
                                  "		fragColor.a = float(psxDrawMaskSet);\n"
                                  "	}\n";
+
+/*
+ * The old TF_32_BIT_RGBA shader assumes its complete texture maps to 0..1 and
+ * keeps transparent texels. A presentation asset instead represents one
+ * exact retail rectangle. Preserve the retail U/V coordinate system until
+ * here, map texel centres into the expanded image, and discard alpha-zero
+ * texels before applying the regular colour and dither path.
+ */
+const char *gte_shader_host_rgba = "	uniform sampler2D s_texture;\n"
+							 "	uniform vec2 sourceUvOrigin;\n"
+							 "	uniform vec2 sourceUvExtent;\n"
+							 "	uniform int psxDrawMaskSet;\n"
+							 "	void main() {\n"
+							 "		vec2 hostUv = (v_texcoord.xy - sourceUvOrigin + vec2(0.5)) / sourceUvExtent;\n"
+							 "		vec4 color = texture2D(s_texture, hostUv);\n"
+							 "		if (color.a < 0.5) { discard; }\n"
+							 "		fragColor = dither(color * v_color);\n"
+							 "		fragColor.a = (psxDrawMaskSet != 0) ? 1.0 : 0.0;\n"
+							 "	}\n";
 
 #define GTE_PERSPECTIVE_CORRECTION "	gl_Position = Projection * vec4(a_position.xy, 0.0, 1.0);\n"
 
@@ -1118,6 +1152,8 @@ internal void NativeRenderer_CompilePSXShader(GTEShader *sh, const char *source)
 	sh->psxSemiTransPassLoc = glGetUniformLocation(sh->shader, "psxSemiTransPass");
 	sh->psxDrawMaskSetLoc = glGetUniformLocation(sh->shader, "psxDrawMaskSet");
 	sh->psxTextureOutputStpLoc = glGetUniformLocation(sh->shader, "psxTextureOutputStp");
+	sh->sourceUvOriginLoc = glGetUniformLocation(sh->shader, "sourceUvOrigin");
+	sh->sourceUvExtentLoc = glGetUniformLocation(sh->shader, "sourceUvExtent");
 }
 
 internal void NativeRenderer_InitialisePSXShaders(void)
@@ -1126,6 +1162,7 @@ internal void NativeRenderer_InitialisePSXShaders(void)
 	NativeRenderer_CompilePSXShader(&s_gteShader8, gte_shader_8);
 	NativeRenderer_CompilePSXShader(&s_gteShader16, gte_shader_16);
 	NativeRenderer_CompilePSXShader(&s_gteShader32Rgba, gte_shader_32_rgba);
+	NativeRenderer_CompilePSXShader(&s_gteShaderHostRgba, gte_shader_host_rgba);
 }
 
 // NOTE(aalhendi): GPU VRAM pack. Samples an RGBA render texture and writes PS1
@@ -1481,6 +1518,124 @@ void NativeRenderer_SetTexture(TextureID texture, TexFormat texFormat)
 	glBindTexture(GL_TEXTURE_2D, texture);
 
 	s_lastBoundTexture = texture;
+}
+
+internal int NativeRenderer_HostTextureAssetIsValid(const struct NativeHostTextureAsset *asset)
+{
+	size_t expectedBytes;
+
+	if ((asset == NULL) || (asset->rgbaBytes == NULL) ||
+		(asset->width == 0u) || (asset->height == 0u) ||
+		(asset->width > NATIVE_HOST_TEXTURE_ASSET_MAX_WIDTH) ||
+		(asset->height > NATIVE_HOST_TEXTURE_ASSET_MAX_HEIGHT))
+	{
+		return 0;
+	}
+	if (((size_t)asset->width > SIZE_MAX / (size_t)asset->height) ||
+		((size_t)asset->width * (size_t)asset->height > SIZE_MAX / 4u))
+	{
+		return 0;
+	}
+	expectedBytes = (size_t)asset->width * (size_t)asset->height * 4u;
+	return (expectedBytes <= NATIVE_HOST_TEXTURE_ASSET_MAX_RGBA_BYTES) &&
+		(asset->rgbaByteCount == expectedBytes);
+}
+
+int NativeRenderer_UploadHostTexture(const struct NativeHostTextureAsset *asset, TextureID *textureOut)
+{
+	GLint previousActiveTexture;
+	GLint previousTexture;
+	TextureID texture = 0;
+
+	if (textureOut == NULL)
+	{
+		return 0;
+	}
+	*textureOut = 0;
+	if (!NativeRenderer_HostTextureAssetIsValid(asset))
+	{
+		return 0;
+	}
+
+	/*
+	 * Host assets are normally uploaded while configuring a local pack, but
+	 * preserve both the caller's active unit and unit-zero binding so this API
+	 * never disturbs the RG LUT on unit one or the regular split cache.
+	 */
+	glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
+	glActiveTexture(GL_TEXTURE0);
+	glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+
+	glGenTextures(1, &texture);
+	if (texture != 0)
+	{
+		glBindTexture(GL_TEXTURE_2D, texture);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)asset->width,
+			(GLsizei)asset->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, asset->rgbaBytes);
+	}
+
+	glBindTexture(GL_TEXTURE_2D, (GLuint)previousTexture);
+	glActiveTexture((GLenum)previousActiveTexture);
+	if (texture == 0)
+	{
+		return 0;
+	}
+	*textureOut = texture;
+	return 1;
+}
+
+void NativeRenderer_DestroyHostTexture(TextureID *texture)
+{
+	if (texture == NULL)
+	{
+		return;
+	}
+	if ((*texture != 0) && (*texture != (TextureID)-1))
+	{
+		glDeleteTextures(1, texture);
+		if (s_lastBoundTexture == *texture)
+		{
+			s_lastBoundTexture = 0;
+		}
+	}
+	*texture = 0;
+}
+
+int NativeRenderer_BindHostTexture(const struct NativeRendererHostTextureBinding *binding)
+{
+	if ((binding == NULL) || (binding->texture == 0) ||
+		(binding->texture == (TextureID)-1) ||
+		(binding->sourceUExtent == 0u) || (binding->sourceVExtent == 0u) ||
+		(s_gteShaderHostRgba.shader == 0))
+	{
+		return 0;
+	}
+
+	NativeRenderer_SetShader(s_gteShaderHostRgba.shader);
+	u_bilinearFilterLoc = -1;
+	u_projectionLoc = s_gteShaderHostRgba.projectionLoc;
+	u_texelSizeLoc = -1;
+	u_psxSemiTransPassLoc = -1;
+	u_psxDrawMaskSetLoc = s_gteShaderHostRgba.psxDrawMaskSetLoc;
+	u_psxTextureOutputStpLoc = -1;
+
+	/* The shader is compiled with s_texture permanently assigned to unit zero. */
+	glUniform2f(s_gteShaderHostRgba.sourceUvOriginLoc,
+		(float)binding->sourceU, (float)binding->sourceV);
+	glUniform2f(s_gteShaderHostRgba.sourceUvExtentLoc,
+		(float)binding->sourceUExtent, (float)binding->sourceVExtent);
+
+	if (s_lastBoundTexture != binding->texture)
+	{
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, binding->texture);
+		s_lastBoundTexture = binding->texture;
+	}
+	return 1;
 }
 
 void NativeRenderer_SetOverrideTextureSize(int width, int height)

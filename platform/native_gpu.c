@@ -15,6 +15,9 @@
 #include "platform/native_perf.h"
 #include "platform/native_renderer.h"
 #include "platform/native_texture_trace.h"
+#include <platform/native_host_texture_plan.h>
+#include <platform/native_host_texture_store.h>
+#include <platform/native_presentation_invalidation.h>
 
 #include <assert.h>
 #include <stdbool.h>
@@ -281,6 +284,12 @@ typedef struct
 	u16 numVerts;
 
 	const char *debugText;
+
+	/* Local host presentation state. This is intentionally distinct from the
+	 * legacy global DR_PSYX_TEX override: it is one exact, preloaded registry
+	 * entry plus raw-UV remap facts, and participates in split equality. */
+	bool usesHostTexture;
+	struct NativeRendererHostTextureBinding hostTextureBinding;
 } GPUDrawSplit;
 
 #define MAX_DRAW_SPLITS 4096
@@ -303,6 +312,281 @@ typedef struct
 } NativeGpuState;
 
 global_variable NativeGpuState s_gpu;
+
+typedef struct
+{
+	const struct NativePresentationRegistryEntry *entry;
+	TextureID texture;
+} NativeGpuHostTextureEntry;
+
+typedef struct
+{
+	const struct NativePresentationRegistry *registry;
+	struct NativeHostTextureStore store;
+	struct NativePresentationInvalidationTracker invalidation;
+	NativeGpuHostTextureEntry entries[NATIVE_PRESENTATION_REGISTRY_MAX_ENTRIES];
+	unsigned int entryCount;
+	int enabled;
+} NativeGpuPresentationOverrides;
+
+typedef struct
+{
+	int selected;
+	struct NativeRendererHostTextureBinding binding;
+} NativeGpuHostTextureSelection;
+
+global_variable NativeGpuPresentationOverrides s_gpuPresentationOverrides;
+
+internal void NativeGpu_PrepareFramebufferFeedback(int tpage);
+
+internal unsigned int NativeGpu_PresentationTextureMode(int tpage)
+{
+	switch (GetTPageFormat(tpage))
+	{
+	case TF_4_BIT: return NATIVE_PRESENTATION_TEXTURE_MODE_4_BIT;
+	case TF_8_BIT: return NATIVE_PRESENTATION_TEXTURE_MODE_8_BIT;
+	case TF_16_BIT: return NATIVE_PRESENTATION_TEXTURE_MODE_16_BIT;
+	default: return 0u;
+	}
+}
+
+internal void NativeGpu_ClearPresentationOverrides(void)
+{
+	unsigned int index;
+
+	for (index = 0u; index < s_gpuPresentationOverrides.entryCount; ++index)
+	{
+		NativeRenderer_DestroyHostTexture(&s_gpuPresentationOverrides.entries[index].texture);
+	}
+	NativeHostTextureStore_Free(&s_gpuPresentationOverrides.store);
+	memset(&s_gpuPresentationOverrides, 0, sizeof(s_gpuPresentationOverrides));
+	NativeHostTextureStore_Init(&s_gpuPresentationOverrides.store);
+	NativePresentationInvalidationTracker_Init(&s_gpuPresentationOverrides.invalidation);
+}
+
+int NativeGpu_ConfigurePresentationOverrides(const struct NativePresentationRegistry *registry)
+{
+	unsigned int index;
+
+	NativeGpu_ClearPresentationOverrides();
+	if ((registry == NULL) || !NativePresentationRegistry_IsEnabled(registry))
+	{
+		return 1;
+	}
+	if (!NativeHostTextureStore_Preload(&s_gpuPresentationOverrides.store, registry))
+	{
+		NATIVE_GPU_ERROR("presentation preload failed: %s\n",
+			NativeHostTextureStore_ErrorString(s_gpuPresentationOverrides.store.lastError));
+		NativeGpu_ClearPresentationOverrides();
+		return 0;
+	}
+	for (index = 0u; index < registry->entryCount; ++index)
+	{
+		const struct NativePresentationRegistryEntry *entry = &registry->entries[index];
+		const struct NativeHostTextureAsset *asset =
+			NativeHostTextureStore_FindOwned(&s_gpuPresentationOverrides.store, entry);
+
+		if ((asset == NULL) || !NativeRenderer_UploadHostTexture(asset,
+			&s_gpuPresentationOverrides.entries[index].texture))
+		{
+			NATIVE_GPU_ERROR("presentation upload failed for entry %u\n", index);
+			NativeGpu_ClearPresentationOverrides();
+			return 0;
+		}
+		s_gpuPresentationOverrides.entries[index].entry = entry;
+	}
+	s_gpuPresentationOverrides.registry = registry;
+	s_gpuPresentationOverrides.entryCount = registry->entryCount;
+	s_gpuPresentationOverrides.enabled = 1;
+	NATIVE_GPU_LOG("presentation overrides ready: %u preloaded host textures\n",
+		s_gpuPresentationOverrides.entryCount);
+	return 1;
+}
+
+void NativeGpu_ShutdownPresentationOverrides(void)
+{
+	NativeGpu_ClearPresentationOverrides();
+}
+
+internal int NativeGpu_MakePresentationVramRect(int x, int y, int width, int height,
+	struct NativePresentationVramRect *rect)
+{
+	if ((rect == NULL) || (x < 0) || (y < 0) || (width <= 0) || (height <= 0))
+		return 0;
+	rect->x = (unsigned int)x;
+	rect->y = (unsigned int)y;
+	rect->width = (unsigned int)width;
+	rect->height = (unsigned int)height;
+	return 1;
+}
+
+void NativeGpu_NotifyPresentationVramWrite(int x, int y, int width, int height)
+{
+	struct NativePresentationVramRect rect;
+
+	if (!NativeGpu_MakePresentationVramRect(x, y, width, height, &rect))
+	{
+		(void)NativePresentationInvalidationTracker_NotifyVramWrite(
+			&s_gpuPresentationOverrides.invalidation, NULL);
+		return;
+	}
+	(void)NativePresentationInvalidationTracker_NotifyVramWrite(
+		&s_gpuPresentationOverrides.invalidation, &rect);
+}
+
+void NativeGpu_NotifyPresentationVramCopy(int sourceX, int sourceY, int width, int height,
+	int destinationX, int destinationY)
+{
+	struct NativePresentationVramRect source;
+	struct NativePresentationVramRect destination;
+
+	if (!NativeGpu_MakePresentationVramRect(sourceX, sourceY, width, height, &source) ||
+		!NativeGpu_MakePresentationVramRect(destinationX, destinationY, width, height, &destination))
+	{
+		(void)NativePresentationInvalidationTracker_NotifyVramCopy(
+			&s_gpuPresentationOverrides.invalidation, NULL, NULL);
+		return;
+	}
+	(void)NativePresentationInvalidationTracker_NotifyVramCopy(
+		&s_gpuPresentationOverrides.invalidation, &source, &destination);
+}
+
+void NativeGpu_NotifyPresentationVramReadback(int x, int y, int width, int height)
+{
+	struct NativePresentationVramRect rect;
+
+	if (!NativeGpu_MakePresentationVramRect(x, y, width, height, &rect))
+	{
+		(void)NativePresentationInvalidationTracker_NotifyVramReadback(
+			&s_gpuPresentationOverrides.invalidation, NULL);
+		return;
+	}
+	(void)NativePresentationInvalidationTracker_NotifyVramReadback(
+		&s_gpuPresentationOverrides.invalidation, &rect);
+}
+
+internal TextureID NativeGpu_FindHostTexture(
+	const struct NativePresentationRegistryEntry *entry)
+{
+	unsigned int index;
+
+	if (entry == NULL)
+		return 0;
+	for (index = 0u; index < s_gpuPresentationOverrides.entryCount; ++index)
+	{
+		if (s_gpuPresentationOverrides.entries[index].entry == entry)
+			return s_gpuPresentationOverrides.entries[index].texture;
+	}
+	return 0;
+}
+
+internal int NativeGpu_TrySelectHostTexture(s16 tpage, s16 clut, const u8 *const *uvs,
+	int uvCount, enum NativeTextureOverridePrimitive primitive, int semiTrans,
+	int framebufferFeedback, NativeGpuHostTextureSelection *selection)
+{
+	struct NativeHostTexturePlanInput input;
+	struct NativeHostTexturePlanSelection plan;
+	const struct NativeHostTextureAsset *asset;
+	unsigned int upscale;
+	unsigned int index;
+	TextureID texture;
+
+	if (selection == NULL)
+		return 0;
+	memset(selection, 0, sizeof(*selection));
+	if (!s_gpuPresentationOverrides.enabled || (s_gpu.overrideTexture != 0) ||
+		(uvs == NULL) || (uvCount < 3))
+	{
+		return 0;
+	}
+	/* Selection must occur only after the same feedback barrier as the retail
+	 * split. The following AddSplit repeats this idempotently for its batching
+	 * transition. */
+	if (framebufferFeedback)
+	{
+		NativeGpu_PrepareFramebufferFeedback(tpage);
+	}
+	memset(&input, 0, sizeof(input));
+	input.registry = s_gpuPresentationOverrides.registry;
+	input.source.textureMode = NativeGpu_PresentationTextureMode(tpage);
+	input.source.tpage = (unsigned int)(u16)tpage;
+	input.source.clut = (unsigned int)(u16)clut;
+	input.source.uvMinU = uvs[0][0];
+	input.source.uvMaxU = uvs[0][0];
+	input.source.uvMinV = uvs[0][1];
+	input.source.uvMaxV = uvs[0][1];
+	for (index = 1u; index < (unsigned int)uvCount; ++index)
+	{
+		if (uvs[index][0] < input.source.uvMinU) input.source.uvMinU = uvs[index][0];
+		if (uvs[index][0] > input.source.uvMaxU) input.source.uvMaxU = uvs[index][0];
+		if (uvs[index][1] < input.source.uvMinV) input.source.uvMinV = uvs[index][1];
+		if (uvs[index][1] > input.source.uvMaxV) input.source.uvMaxV = uvs[index][1];
+	}
+	input.flags.primitive = primitive;
+	input.flags.mode = NATIVE_TEXTURE_OVERRIDE_MODE_OPAQUE;
+	input.flags.semitransparent = semiTrans != 0;
+	input.flags.activeDrawPageOverlap = framebufferFeedback != 0;
+	input.flags.overrideIsWellFormed = 1;
+	if (!NativeHostTexturePlan_Select(&input, &plan))
+		return 0;
+	/* This sprint intentionally permits only approved font and character art. */
+	if ((plan.entry->source.assetClass != NATIVE_PRESENTATION_ASSET_CLASS_FONT) &&
+		(plan.entry->source.assetClass != NATIVE_PRESENTATION_ASSET_CLASS_CHARACTER_SPRITE))
+	{
+		return 0;
+	}
+	asset = NativeHostTextureStore_FindOwned(&s_gpuPresentationOverrides.store, plan.entry);
+	if (!NativeHostTexturePlan_ValidateAsset(&plan, asset, &upscale) ||
+		!NativePresentationInvalidationTracker_ObserveEnabledEntry(
+			&s_gpuPresentationOverrides.invalidation, input.registry, plan.entry))
+	{
+		return 0;
+	}
+	texture = NativeGpu_FindHostTexture(plan.entry);
+	if (texture == 0)
+		return 0;
+	selection->binding.texture = texture;
+	selection->binding.sourceU = plan.uvRemap.sourceU;
+	selection->binding.sourceV = plan.uvRemap.sourceV;
+	selection->binding.sourceUExtent = plan.uvRemap.sourceUExtent;
+	selection->binding.sourceVExtent = plan.uvRemap.sourceVExtent;
+	selection->selected = 1;
+	(void)upscale;
+	return 1;
+}
+
+internal int NativeGpu_TrySelectHostTextureRect(s16 tpage, s16 clut, const u8 *uv,
+	s16 width, s16 height, int semiTrans, int framebufferFeedback,
+	NativeGpuHostTextureSelection *selection)
+{
+	u8 rectUvs[4][2];
+	const u8 *uvs[] = {rectUvs[0], rectUvs[1], rectUvs[2], rectUvs[3]};
+	int clippedWidth = width;
+	int clippedHeight = height;
+
+	if ((uv == NULL) || (clippedWidth <= 0) || (clippedHeight <= 0))
+		return 0;
+	if ((int)uv[0] + clippedWidth > 255)
+		clippedWidth = 255 - (int)uv[0];
+	if ((int)uv[1] + clippedHeight > 255)
+		clippedHeight = 255 - (int)uv[1];
+	if ((clippedWidth <= 0) || (clippedHeight <= 0))
+		return 0;
+	/* Plan identity uses the actual inclusive texels. MakeTexcoordRect uses the
+	 * next coordinate at the edge, which the host shader clamps to that final
+	 * texel just as the native texture path does. */
+	rectUvs[0][0] = uv[0];
+	rectUvs[0][1] = uv[1];
+	rectUvs[1][0] = (u8)((int)uv[0] + clippedWidth - 1);
+	rectUvs[1][1] = uv[1];
+	rectUvs[2][0] = (u8)((int)uv[0] + clippedWidth - 1);
+	rectUvs[2][1] = (u8)((int)uv[1] + clippedHeight - 1);
+	rectUvs[3][0] = uv[0];
+	rectUvs[3][1] = (u8)((int)uv[1] + clippedHeight - 1);
+	return NativeGpu_TrySelectHostTexture(tpage, clut, uvs, 4,
+		NATIVE_TEXTURE_OVERRIDE_PRIMITIVE_TEXTURED_QUAD, semiTrans,
+		framebufferFeedback, selection);
+}
 
 struct NativeGpuSnapshot
 {
@@ -330,6 +614,7 @@ void ClearSplits(void)
 	s_gpu.splits[0].psxTexturedSemiTrans = false;
 	s_gpu.splits[0].psxTextureOutputSTP = false;
 	s_gpu.splits[0].psxDrawMaskSet = false;
+	s_gpu.splits[0].usesHostTexture = false;
 	s_gpu.framebufferFeedbackRunActive = false;
 }
 
@@ -1018,13 +1303,23 @@ internal void NativeGpu_PrepareFramebufferFeedback(int tpage)
 	}
 
 	NativeRenderer_StoreFrameBuffer(activeDrawEnv.clip.x, activeDrawEnv.clip.y, activeDrawEnv.clip.w, activeDrawEnv.clip.h);
+	{
+		const struct NativePresentationVramRect feedbackRect = {
+			(unsigned int)activeDrawEnv.clip.x, (unsigned int)activeDrawEnv.clip.y,
+			(unsigned int)activeDrawEnv.clip.w, (unsigned int)activeDrawEnv.clip.h};
+		(void)NativePresentationInvalidationTracker_NotifyFramebufferFeedback(
+			&s_gpuPresentationOverrides.invalidation, &feedbackRect);
+	}
 	NativeTextureTrace_FramebufferFeedbackPrepared(activeDrawEnv.clip.x, activeDrawEnv.clip.y, activeDrawEnv.clip.w, activeDrawEnv.clip.h);
 	s_gpu.framebufferFeedbackRunActive = true;
 }
 
-internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
+internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback,
+	const NativeGpuHostTextureSelection *hostSelection)
 {
 	int tpage = activeDrawEnv.tpage;
+	const bool usesHostTexture = textured && (hostSelection != NULL) &&
+		hostSelection->selected != 0;
 
 	if (framebufferFeedback)
 	{
@@ -1039,14 +1334,15 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 
 	BlendMode blendMode = semiTrans ? GET_TPAGE_BLEND(tpage) : BM_NONE;
 	TexFormat texFormat = GetTPageFormat(tpage);
-	TextureID textureId = textured ? NativeRenderer_GetVRAMTexture() : NativeRenderer_GetWhiteTexture();
-	bool psxTexturedSemiTrans = semiTrans && textured && s_gpu.overrideTexture == 0;
+	TextureID textureId = usesHostTexture ? hostSelection->binding.texture :
+		(textured ? NativeRenderer_GetVRAMTexture() : NativeRenderer_GetWhiteTexture());
+	bool psxTexturedSemiTrans = semiTrans && textured && !usesHostTexture && s_gpu.overrideTexture == 0;
 	// NOTE(aalhendi): PS1 framebuffer bit 15 follows sampled texture STP for
 	// textured draws unless E6 forces it. Recursive screen-copy effects depend
 	// on this bit surviving after the blended textured pass.
-	bool psxTextureOutputSTP = textured && s_gpu.overrideTexture == 0;
+	bool psxTextureOutputSTP = textured && !usesHostTexture && s_gpu.overrideTexture == 0;
 
-	if (textured && s_gpu.overrideTexture != 0)
+	if (textured && !usesHostTexture && s_gpu.overrideTexture != 0)
 	{
 		// override texture format, zero tpage
 		texFormat = TF_32_BIT_RGBA;
@@ -1058,6 +1354,11 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 	if (!psxTexturedSemiTrans && curSplit->blendMode == blendMode && curSplit->texFormat == texFormat && curSplit->textureId == textureId &&
 	    curSplit->drawPrimMode == s_gpu.drawPrimMode && curSplit->psxTexturedSemiTrans == psxTexturedSemiTrans &&
 	    curSplit->psxTextureOutputSTP == psxTextureOutputSTP && curSplit->psxDrawMaskSet == s_gpu.psxDrawMaskSet &&
+	    curSplit->usesHostTexture == usesHostTexture &&
+	    (!usesHostTexture || (curSplit->hostTextureBinding.sourceU == hostSelection->binding.sourceU &&
+		curSplit->hostTextureBinding.sourceV == hostSelection->binding.sourceV &&
+		curSplit->hostTextureBinding.sourceUExtent == hostSelection->binding.sourceUExtent &&
+		curSplit->hostTextureBinding.sourceVExtent == hostSelection->binding.sourceVExtent)) &&
 	    curSplit->drawenv.clip.x == activeDrawEnv.clip.x && curSplit->drawenv.clip.y == activeDrawEnv.clip.y &&
 	    curSplit->drawenv.clip.w == activeDrawEnv.clip.w && curSplit->drawenv.clip.h == activeDrawEnv.clip.h && curSplit->drawenv.dfe == activeDrawEnv.dfe &&
 	    curSplit->debugText == s_gpu.currentSplitDebugText)
@@ -1081,6 +1382,15 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 	split->psxTexturedSemiTrans = psxTexturedSemiTrans;
 	split->psxTextureOutputSTP = psxTextureOutputSTP;
 	split->psxDrawMaskSet = s_gpu.psxDrawMaskSet;
+	split->usesHostTexture = usesHostTexture;
+	if (usesHostTexture)
+	{
+		split->hostTextureBinding = hostSelection->binding;
+	}
+	else
+	{
+		memset(&split->hostTextureBinding, 0, sizeof(split->hostTextureBinding));
+	}
 	split->drawenv = activeDrawEnv;
 	split->dispenv = activeDispEnv;
 	split->debugText = s_gpu.currentSplitDebugText;
@@ -1116,7 +1426,20 @@ void DrawSplit(const GPUDrawSplit *split)
 
 	NativeRenderer_SetStencilMode(split->drawPrimMode); // draw with mask 0x16
 
-	NativeRenderer_SetTexture(split->textureId, split->texFormat);
+	if (split->usesHostTexture)
+	{
+		if (!NativeRenderer_BindHostTexture(&split->hostTextureBinding))
+		{
+			NATIVE_GPU_ERROR("%s\n", "host texture binding became unavailable");
+			/* The batch retains raw retail UVs and texFormat, so a late local GL
+			 * failure can still safely draw the native VRAM source. */
+			NativeRenderer_SetTexture(NativeRenderer_GetVRAMTexture(), split->texFormat);
+		}
+	}
+	else
+	{
+		NativeRenderer_SetTexture(split->textureId, split->texFormat);
+	}
 
 	if (split->texFormat == TF_32_BIT_RGBA)
 	{
@@ -1421,7 +1744,7 @@ internal int ProcessFlatLines(P_TAG *polyTag)
 	{
 		LINE_F2 *poly = (LINE_F2 *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		VERTTYPE *p0 = &poly->x0;
 		VERTTYPE *p1 = &poly->x1;
@@ -1444,7 +1767,7 @@ internal int ProcessFlatLines(P_TAG *polyTag)
 	{
 		LINE_F3 *poly = (LINE_F3 *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		{
 			VERTTYPE *p0 = &poly->x0;
@@ -1486,7 +1809,7 @@ internal int ProcessFlatLines(P_TAG *polyTag)
 	{
 		LINE_F4 *poly = (LINE_F4 *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		{
 			VERTTYPE *p0 = &poly->x0;
@@ -1557,7 +1880,7 @@ internal int ProcessGouraudLines(P_TAG *polyTag)
 	{
 		LINE_G2 *poly = (LINE_G2 *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		VERTTYPE *p0 = &poly->x0;
 		VERTTYPE *p1 = &poly->x1;
@@ -1602,7 +1925,7 @@ internal int ProcessFlatPoly(P_TAG *polyTag)
 	{
 		POLY_F3 *poly = (POLY_F3 *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexTriangle(firstVertex, &poly->x0, &poly->x1, &poly->x2);
@@ -1621,7 +1944,13 @@ internal int ProcessFlatPoly(P_TAG *polyTag)
 		// It is an official hack from SCE devs to not use DR_TPAGE and instead use null polygon
 		if (!IsNull(poly))
 		{
-			AddSplit(semiTrans, true, NativeGpu_TPageOverlapsActiveDrawPage(poly->tpage));
+			const u8 *uvs[] = {&poly->u0, &poly->u1, &poly->u2};
+			const bool framebufferFeedback = NativeGpu_TPageOverlapsActiveDrawPage(poly->tpage);
+			NativeGpuHostTextureSelection hostSelection;
+			NativeGpu_TrySelectHostTexture(poly->tpage, poly->clut, uvs, 3,
+				NATIVE_TEXTURE_OVERRIDE_PRIMITIVE_TEXTURED_TRIANGLE, semiTrans,
+				framebufferFeedback, &hostSelection);
+			AddSplit(semiTrans, true, framebufferFeedback, &hostSelection);
 
 			GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 			MakeVertexTriangle(firstVertex, &poly->x0, &poly->x1, &poly->x2);
@@ -1637,7 +1966,7 @@ internal int ProcessFlatPoly(P_TAG *polyTag)
 	{
 		POLY_F4 *poly = (POLY_F4 *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexQuad(firstVertex, &poly->x0, &poly->x1, &poly->x3, &poly->x2);
@@ -1654,7 +1983,13 @@ internal int ProcessFlatPoly(P_TAG *polyTag)
 		POLY_FT4 *poly = (POLY_FT4 *)polyTag;
 		activeDrawEnv.tpage = poly->tpage;
 
-		AddSplit(semiTrans, true, NativeGpu_TPageOverlapsActiveDrawPage(poly->tpage));
+		const u8 *uvs[] = {&poly->u0, &poly->u1, &poly->u2, &poly->u3};
+		const bool framebufferFeedback = NativeGpu_TPageOverlapsActiveDrawPage(poly->tpage);
+		NativeGpuHostTextureSelection hostSelection;
+		NativeGpu_TrySelectHostTexture(poly->tpage, poly->clut, uvs, 4,
+			NATIVE_TEXTURE_OVERRIDE_PRIMITIVE_TEXTURED_QUAD, semiTrans,
+			framebufferFeedback, &hostSelection);
+		AddSplit(semiTrans, true, framebufferFeedback, &hostSelection);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexQuad(firstVertex, &poly->x0, &poly->x1, &poly->x3, &poly->x2);
@@ -1684,7 +2019,7 @@ internal int ProcessGouraudPoly(P_TAG *polyTag)
 	{
 		POLY_G3 *poly = (POLY_G3 *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexTriangle(firstVertex, &poly->x0, &poly->x1, &poly->x2);
@@ -1700,7 +2035,13 @@ internal int ProcessGouraudPoly(P_TAG *polyTag)
 		POLY_GT3 *poly = (POLY_GT3 *)polyTag;
 		activeDrawEnv.tpage = poly->tpage;
 
-		AddSplit(semiTrans, true, NativeGpu_TPageOverlapsActiveDrawPage(poly->tpage));
+		const u8 *uvs[] = {&poly->u0, &poly->u1, &poly->u2};
+		const bool framebufferFeedback = NativeGpu_TPageOverlapsActiveDrawPage(poly->tpage);
+		NativeGpuHostTextureSelection hostSelection;
+		NativeGpu_TrySelectHostTexture(poly->tpage, poly->clut, uvs, 3,
+			NATIVE_TEXTURE_OVERRIDE_PRIMITIVE_TEXTURED_TRIANGLE, semiTrans,
+			framebufferFeedback, &hostSelection);
+		AddSplit(semiTrans, true, framebufferFeedback, &hostSelection);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexTriangle(firstVertex, &poly->x0, &poly->x1, &poly->x2);
@@ -1715,7 +2056,7 @@ internal int ProcessGouraudPoly(P_TAG *polyTag)
 	{
 		POLY_G4 *poly = (POLY_G4 *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexQuad(firstVertex, &poly->x0, &poly->x1, &poly->x3, &poly->x2);
@@ -1733,7 +2074,13 @@ internal int ProcessGouraudPoly(P_TAG *polyTag)
 		POLY_GT4 *poly = (POLY_GT4 *)polyTag;
 		activeDrawEnv.tpage = poly->tpage;
 
-		AddSplit(semiTrans, true, NativeGpu_TPageOverlapsActiveDrawPage(poly->tpage));
+		const u8 *uvs[] = {&poly->u0, &poly->u1, &poly->u2, &poly->u3};
+		const bool framebufferFeedback = NativeGpu_TPageOverlapsActiveDrawPage(poly->tpage);
+		NativeGpuHostTextureSelection hostSelection;
+		NativeGpu_TrySelectHostTexture(poly->tpage, poly->clut, uvs, 4,
+			NATIVE_TEXTURE_OVERRIDE_PRIMITIVE_TEXTURED_QUAD, semiTrans,
+			framebufferFeedback, &hostSelection);
+		AddSplit(semiTrans, true, framebufferFeedback, &hostSelection);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexQuad(firstVertex, &poly->x0, &poly->x1, &poly->x3, &poly->x2);
@@ -1763,7 +2110,7 @@ internal int ProcessTileAndSprt(P_TAG *polyTag)
 	{
 		TILE *poly = (TILE *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexRect(firstVertex, &poly->x0, poly->w, poly->h);
@@ -1779,8 +2126,12 @@ internal int ProcessTileAndSprt(P_TAG *polyTag)
 	case 0x64:
 	{
 		SPRT *poly = (SPRT *)polyTag;
+		const bool framebufferFeedback = NativeGpu_TPageOverlapsActiveDrawPage(activeDrawEnv.tpage);
+		NativeGpuHostTextureSelection hostSelection;
 
-		AddSplit(semiTrans, true, NativeGpu_TPageOverlapsActiveDrawPage(activeDrawEnv.tpage));
+		NativeGpu_TrySelectHostTextureRect(activeDrawEnv.tpage, poly->clut, &poly->u0,
+			poly->w, poly->h, semiTrans, framebufferFeedback, &hostSelection);
+		AddSplit(semiTrans, true, framebufferFeedback, &hostSelection);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexRect(firstVertex, &poly->x0, poly->w, poly->h);
@@ -1797,7 +2148,7 @@ internal int ProcessTileAndSprt(P_TAG *polyTag)
 	{
 		TILE_1 *poly = (TILE_1 *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexRect(firstVertex, &poly->x0, 1, 1);
@@ -1814,7 +2165,7 @@ internal int ProcessTileAndSprt(P_TAG *polyTag)
 	{
 		TILE_8 *poly = (TILE_8 *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexRect(firstVertex, &poly->x0, 8, 8);
@@ -1830,8 +2181,12 @@ internal int ProcessTileAndSprt(P_TAG *polyTag)
 	case 0x74:
 	{
 		SPRT_8 *poly = (SPRT_8 *)polyTag;
+		const bool framebufferFeedback = NativeGpu_TPageOverlapsActiveDrawPage(activeDrawEnv.tpage);
+		NativeGpuHostTextureSelection hostSelection;
 
-		AddSplit(semiTrans, true, NativeGpu_TPageOverlapsActiveDrawPage(activeDrawEnv.tpage));
+		NativeGpu_TrySelectHostTextureRect(activeDrawEnv.tpage, poly->clut, &poly->u0,
+			8, 8, semiTrans, framebufferFeedback, &hostSelection);
+		AddSplit(semiTrans, true, framebufferFeedback, &hostSelection);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexRect(firstVertex, &poly->x0, 8, 8);
@@ -1848,7 +2203,7 @@ internal int ProcessTileAndSprt(P_TAG *polyTag)
 	{
 		TILE_16 *poly = (TILE_16 *)polyTag;
 
-		AddSplit(semiTrans, false, false);
+		AddSplit(semiTrans, false, false, NULL);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexRect(firstVertex, &poly->x0, 16, 16);
@@ -1864,8 +2219,12 @@ internal int ProcessTileAndSprt(P_TAG *polyTag)
 	case 0x7C:
 	{
 		SPRT_16 *poly = (SPRT_16 *)polyTag;
+		const bool framebufferFeedback = NativeGpu_TPageOverlapsActiveDrawPage(activeDrawEnv.tpage);
+		NativeGpuHostTextureSelection hostSelection;
 
-		AddSplit(semiTrans, true, NativeGpu_TPageOverlapsActiveDrawPage(activeDrawEnv.tpage));
+		NativeGpu_TrySelectHostTextureRect(activeDrawEnv.tpage, poly->clut, &poly->u0,
+			16, 16, semiTrans, framebufferFeedback, &hostSelection);
+		AddSplit(semiTrans, true, framebufferFeedback, &hostSelection);
 
 		GrVertex *firstVertex = &s_gpu.vertexBuffer[s_gpu.vertexIndex];
 		MakeVertexRect(firstVertex, &poly->x0, 16, 16);
