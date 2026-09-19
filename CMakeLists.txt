@@ -163,6 +163,28 @@ set_target_properties(ctr_native_presentation_registry PROPERTIES
 )
 target_include_directories(ctr_native_presentation_registry PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# Explicit command-line ownership for a local presentation pack.  This target
+# parses no simulation-owned options and remains separate from replay/match
+# configuration.
+add_library(ctr_native_presentation_override_config STATIC platform/native_presentation_override_config.c)
+set_target_properties(ctr_native_presentation_override_config PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_presentation_override_config PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
+# Bounded decoder for local CTRH RGBA presentation assets.  It performs no GL
+# upload and is not linked into the game until an explicitly reviewed host
+# texture path exists.
+add_library(ctr_native_host_texture_asset STATIC platform/native_host_texture_asset.c)
+set_target_properties(ctr_native_host_texture_asset PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_host_texture_asset PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -683,6 +705,27 @@ if(BUILD_TESTING)
         ctr_native_texture_override_policy)
     add_test(NAME native_presentation_override_policy_integration
         COMMAND $<TARGET_FILE:native_presentation_override_policy_integration_test>)
+
+    add_executable(native_presentation_override_config_test
+        tests/native_presentation_override_config_test.c)
+    set_target_properties(native_presentation_override_config_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_presentation_override_config_test PRIVATE
+        ctr_native_presentation_override_config)
+    add_test(NAME native_presentation_override_config_unit
+        COMMAND $<TARGET_FILE:native_presentation_override_config_test>)
+
+    add_executable(native_host_texture_asset_test tests/native_host_texture_asset_test.c)
+    set_target_properties(native_host_texture_asset_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_host_texture_asset_test PRIVATE ctr_native_host_texture_asset)
+    add_test(NAME native_host_texture_asset_unit COMMAND $<TARGET_FILE:native_host_texture_asset_test>)
 
     add_executable(main_arcade_roster_test tests/main_arcade_roster_test.c)
     set_target_properties(main_arcade_roster_test PROPERTIES
