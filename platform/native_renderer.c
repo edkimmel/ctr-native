@@ -13,6 +13,7 @@
 #include "platform/native_log.h"
 #include "platform/native_perf.h"
 #include "platform/native_renderer.h"
+#include "platform/native_texture_trace.h"
 
 #include <assert.h>
 #include <limits.h>
@@ -281,6 +282,7 @@ int NativeRenderer_InitialiseRender(char *windowName, int width, int height, int
 
 void NativeRenderer_Shutdown(void)
 {
+	NativeTextureTrace_Shutdown();
 	glDeleteVertexArrays(2, s_glVertexArray);
 	glDeleteBuffers(2, s_glVertexBuffer);
 
@@ -334,6 +336,7 @@ void NativeRenderer_UpdateSwapIntervalState(int swapInterval)
 
 void NativeRenderer_BeginScene(void)
 {
+	NativeTextureTrace_BeginFrame();
 #if defined(CTR_INTERNAL)
 	NativeRenderer_ResolveGpuMeasurements(false);
 	const u32 gpuFrameIndex = s_gpuTimerFrameIndex++;
@@ -1695,6 +1698,8 @@ void NativeRenderer_ClearVRAM(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 		h = VRAM_HEIGHT - y;
 	}
 
+	NativeTextureTrace_VramClear(x, y, w, h);
+
 	// clear VRAM region with given color
 	for (int i = 0; i < h; i++)
 	{
@@ -2048,6 +2053,7 @@ internal void NativeRenderer_GpuPackTextureToVRAM(TextureID sourceTexture, int x
 void NativeRenderer_StoreFrameBuffer(int x, int y, int w, int h)
 {
 	NativePerf_BeginScope(NATIVE_PERF_BUCKET_FRAMEBUFFER_STORE);
+	NativeTextureTrace_FramebufferStore(x, y, w, h);
 
 	NativeRenderer_GpuPackTextureToVRAM(s_mainRenderTarget.texture, x, y, w, h, true);
 
@@ -2056,6 +2062,7 @@ void NativeRenderer_StoreFrameBuffer(int x, int y, int w, int h)
 
 void NativeRenderer_CopyVRAM(u16 *src, int x, int y, int w, int h, int dst_x, int dst_y)
 {
+	NativeTextureTrace_VramCopy(x, y, w, h, dst_x, dst_y, src == NULL);
 	int stride = w;
 
 	if (!src)
@@ -2083,6 +2090,7 @@ void NativeRenderer_CopyVRAM(u16 *src, int x, int y, int w, int h, int dst_x, in
 
 void NativeRenderer_ReadVRAM(u16 *dst, int x, int y, int dst_w, int dst_h)
 {
+	NativeTextureTrace_VramRead(x, y, dst_w, dst_h);
 	NativeRenderer_ResolveVRAMRead(x, y, dst_w, dst_h);
 
 	u16 *src = s_vram.cpuPixels + x + VRAM_WIDTH * y;

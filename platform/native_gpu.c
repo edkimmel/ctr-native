@@ -14,6 +14,7 @@
 #include "platform/native_log.h"
 #include "platform/native_perf.h"
 #include "platform/native_renderer.h"
+#include "platform/native_texture_trace.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -39,6 +40,198 @@ extern int g_dbg_polygonSelected;
 
 #define GET_CLUT_X(clut)           ((clut & 0x3F) << 4)
 #define GET_CLUT_Y(clut)           (clut >> 6)
+
+// This trace intentionally lives in the native GPU translation unit so the
+// unity build needs no build-system entry.  The renderer calls its public
+// declarations after this file has supplied their implementation.
+global_variable FILE *s_nativeTextureTraceFile;
+global_variable unsigned long long s_nativeTextureTraceSequence;
+global_variable unsigned long long s_nativeTextureTraceFrame;
+global_variable int s_nativeTextureTraceConfigured;
+global_variable int s_nativeTextureTraceEnabled;
+
+internal void NativeTextureTrace_AppendHazard(char *buffer, size_t bufferSize, const char *hazard)
+{
+	const size_t used = strlen(buffer);
+	if (used >= bufferSize)
+	{
+		return;
+	}
+
+	(void)snprintf(buffer + used, bufferSize - used, "%s%s", used == 0 ? "" : "|", hazard);
+}
+
+internal const char *NativeTextureTrace_HazardNames(unsigned hazards, char *buffer, size_t bufferSize)
+{
+	buffer[0] = '\0';
+	if (hazards & NATIVE_TEXTURE_TRACE_HAZARD_TEXTURE_READ) NativeTextureTrace_AppendHazard(buffer, bufferSize, "texture-read");
+	if (hazards & NATIVE_TEXTURE_TRACE_HAZARD_CLUT_READ) NativeTextureTrace_AppendHazard(buffer, bufferSize, "clut-read");
+	if (hazards & NATIVE_TEXTURE_TRACE_HAZARD_DRAW_PAGE_WRITE) NativeTextureTrace_AppendHazard(buffer, bufferSize, "draw-page-write");
+	if (hazards & NATIVE_TEXTURE_TRACE_HAZARD_FRAMEBUFFER_OVERLAP) NativeTextureTrace_AppendHazard(buffer, bufferSize, "framebuffer-overlap");
+	if (hazards & NATIVE_TEXTURE_TRACE_HAZARD_FRAMEBUFFER_FEEDBACK) NativeTextureTrace_AppendHazard(buffer, bufferSize, "framebuffer-feedback");
+	if (hazards & NATIVE_TEXTURE_TRACE_HAZARD_MOVE_IMAGE) NativeTextureTrace_AppendHazard(buffer, bufferSize, "move-image");
+	if (hazards & NATIVE_TEXTURE_TRACE_HAZARD_STORE_IMAGE) NativeTextureTrace_AppendHazard(buffer, bufferSize, "store-image");
+	if (hazards & NATIVE_TEXTURE_TRACE_HAZARD_LOAD_IMAGE) NativeTextureTrace_AppendHazard(buffer, bufferSize, "load-image");
+	if (hazards & NATIVE_TEXTURE_TRACE_HAZARD_CLEAR_IMAGE) NativeTextureTrace_AppendHazard(buffer, bufferSize, "clear-image");
+	if (hazards & NATIVE_TEXTURE_TRACE_HAZARD_FRAMEBUFFER_STORE) NativeTextureTrace_AppendHazard(buffer, bufferSize, "framebuffer-store");
+	return buffer;
+}
+
+internal void NativeTextureTrace_Configure(void)
+{
+	const char *enabled;
+	const char *path;
+
+	if (s_nativeTextureTraceConfigured)
+	{
+		return;
+	}
+	s_nativeTextureTraceConfigured = 1;
+	enabled = getenv("CTR_NATIVE_TEXTURE_TRACE");
+	if ((enabled == NULL) || (enabled[0] == '\0') || ((enabled[0] == '0') && (enabled[1] == '\0')))
+	{
+		return;
+	}
+
+	path = getenv("CTR_NATIVE_TEXTURE_TRACE_PATH");
+	if ((path == NULL) || (path[0] == '\0'))
+	{
+		path = "texture-trace.csv";
+	}
+
+	s_nativeTextureTraceFile = fopen(path, "wb");
+	if (s_nativeTextureTraceFile == NULL)
+	{
+		fprintf(stderr, "[CTR Texture Trace] failed to open CSV: %s\n", path);
+		return;
+	}
+
+	fprintf(s_nativeTextureTraceFile,
+	        "sequence,frame,event,hazard_mask,hazards,tpage,tex_format,page_x,page_y,page_w,page_h,clut,clut_x,clut_y,uv_min_u,uv_min_v,uv_max_u,uv_max_v,source_x,source_y,source_w,source_h,destination_x,destination_y,destination_w,destination_h\n");
+	fflush(s_nativeTextureTraceFile);
+	s_nativeTextureTraceEnabled = 1;
+	fprintf(stderr, "[CTR Texture Trace] capturing texture/VRAM hazards: %s\n", path);
+}
+
+internal void NativeTextureTrace_Write(const char *event, unsigned hazards, int tpage, int texFormat, int pageX, int pageY, int pageW, int pageH,
+	                                   int clut, int clutX, int clutY, int uvMinU, int uvMinV, int uvMaxU, int uvMaxV, int sourceX, int sourceY,
+	                                   int sourceW, int sourceH, int destinationX, int destinationY, int destinationW, int destinationH)
+{
+	char hazardNames[256];
+
+	NativeTextureTrace_Configure();
+	if (!s_nativeTextureTraceEnabled)
+	{
+		return;
+	}
+
+	fprintf(s_nativeTextureTraceFile, "%llu,%llu,%s,0x%X,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n", ++s_nativeTextureTraceSequence,
+	        s_nativeTextureTraceFrame, event, hazards, NativeTextureTrace_HazardNames(hazards, hazardNames, sizeof(hazardNames)), tpage, texFormat,
+	        pageX, pageY, pageW, pageH, clut, clutX, clutY, uvMinU, uvMinV, uvMaxU, uvMaxV, sourceX, sourceY, sourceW, sourceH, destinationX,
+	        destinationY, destinationW, destinationH);
+	// A complete race emits many primitives.  Periodic flushes keep the trace
+	// inspectable without forcing a host I/O sync for every retail draw.
+	if ((s_nativeTextureTraceSequence & 0xfffu) == 0)
+	{
+		fflush(s_nativeTextureTraceFile);
+	}
+}
+
+void NativeTextureTrace_BeginFrame(void)
+{
+	NativeTextureTrace_Configure();
+	if (s_nativeTextureTraceEnabled)
+	{
+		s_nativeTextureTraceFrame++;
+	}
+}
+
+void NativeTextureTrace_Shutdown(void)
+{
+	if (s_nativeTextureTraceFile != NULL)
+	{
+		fflush(s_nativeTextureTraceFile);
+		fclose(s_nativeTextureTraceFile);
+		s_nativeTextureTraceFile = NULL;
+	}
+	s_nativeTextureTraceEnabled = 0;
+}
+
+void NativeTextureTrace_TexturePrimitive(int tpage, int clut, int texFormat, int uvMinU, int uvMinV, int uvMaxU, int uvMaxV, int drawX, int drawY,
+	                                     int drawW, int drawH, int framebufferOverlap)
+{
+	const int indexed = texFormat == TF_4_BIT || texFormat == TF_8_BIT;
+	const int textureBitDepth = texFormat == TF_4_BIT ? 4 : (texFormat == TF_8_BIT ? 8 : 16);
+	const int texelsPerVramWord = texFormat == TF_4_BIT ? 4 : (texFormat == TF_8_BIT ? 2 : 1);
+	const int pageWidth = 256 / texelsPerVramWord;
+	const int pageX = (tpage & 0xf) << 6;
+	const int pageY = (tpage & 0x10) ? 0x100 : 0;
+	const int sourceX = pageX + uvMinU / texelsPerVramWord;
+	const int sourceY = pageY + uvMinV;
+	const int sourceW = uvMaxU / texelsPerVramWord - uvMinU / texelsPerVramWord + 1;
+	const int sourceH = uvMaxV - uvMinV + 1;
+	unsigned hazards = NATIVE_TEXTURE_TRACE_HAZARD_TEXTURE_READ | NATIVE_TEXTURE_TRACE_HAZARD_DRAW_PAGE_WRITE;
+
+	if (indexed)
+	{
+		hazards |= NATIVE_TEXTURE_TRACE_HAZARD_CLUT_READ;
+	}
+	if (framebufferOverlap)
+	{
+		hazards |= NATIVE_TEXTURE_TRACE_HAZARD_FRAMEBUFFER_OVERLAP | NATIVE_TEXTURE_TRACE_HAZARD_FRAMEBUFFER_FEEDBACK;
+	}
+
+	NativeTextureTrace_Write("texture-primitive", hazards, tpage, textureBitDepth, pageX, pageY, pageWidth, 256, indexed ? clut : -1,
+	                             indexed ? GET_CLUT_X(clut) : -1, indexed ? GET_CLUT_Y(clut) : -1, uvMinU, uvMinV, uvMaxU, uvMaxV, sourceX, sourceY,
+	                             sourceW, sourceH, drawX, drawY, drawW, drawH);
+}
+
+void NativeTextureTrace_VramCopy(int sourceX, int sourceY, int width, int height, int destinationX, int destinationY, int isMoveImage)
+{
+	NativeTextureTrace_Write(isMoveImage ? "move-image" : "load-image", NATIVE_TEXTURE_TRACE_HAZARD_DRAW_PAGE_WRITE |
+	                                                                  (isMoveImage ? NATIVE_TEXTURE_TRACE_HAZARD_MOVE_IMAGE : NATIVE_TEXTURE_TRACE_HAZARD_LOAD_IMAGE),
+	                             -1, -1, -1, -1, -1, -1, /* tpage, format, and page */
+	                             -1, -1, -1,             /* CLUT */
+	                             -1, -1, -1, -1,         /* UV bounds */
+	                             sourceX, sourceY, width, height, destinationX, destinationY, width, height);
+}
+
+void NativeTextureTrace_VramRead(int sourceX, int sourceY, int width, int height)
+{
+	NativeTextureTrace_Write("store-image", NATIVE_TEXTURE_TRACE_HAZARD_STORE_IMAGE,
+	                             -1, -1, -1, -1, -1, -1, /* tpage, format, and page */
+	                             -1, -1, -1,             /* CLUT */
+	                             -1, -1, -1, -1,         /* UV bounds */
+	                             sourceX, sourceY, width, height, -1, -1, -1, -1);
+}
+
+void NativeTextureTrace_VramClear(int x, int y, int width, int height)
+{
+	NativeTextureTrace_Write("clear-image", NATIVE_TEXTURE_TRACE_HAZARD_DRAW_PAGE_WRITE | NATIVE_TEXTURE_TRACE_HAZARD_CLEAR_IMAGE,
+	                             -1, -1, -1, -1, -1, -1, /* tpage, format, and page */
+	                             -1, -1, -1,             /* CLUT */
+	                             -1, -1, -1, -1,         /* UV bounds */
+	                             -1, -1, -1, -1, x, y, width, height);
+}
+
+void NativeTextureTrace_FramebufferStore(int x, int y, int width, int height)
+{
+	NativeTextureTrace_Write("framebuffer-store", NATIVE_TEXTURE_TRACE_HAZARD_FRAMEBUFFER_STORE,
+	                             -1, -1, -1, -1, -1, -1, /* tpage, format, and page */
+	                             -1, -1, -1,             /* CLUT */
+	                             -1, -1, -1, -1,         /* UV bounds */
+	                             x, y, width, height, x, y, width, height);
+}
+
+void NativeTextureTrace_FramebufferFeedbackPrepared(int x, int y, int width, int height)
+{
+	NativeTextureTrace_Write("framebuffer-feedback-prepared", NATIVE_TEXTURE_TRACE_HAZARD_FRAMEBUFFER_OVERLAP |
+	                                                          NATIVE_TEXTURE_TRACE_HAZARD_FRAMEBUFFER_FEEDBACK,
+	                             -1, -1, -1, -1, -1, -1, /* tpage, format, and page */
+	                             -1, -1, -1,             /* CLUT */
+	                             -1, -1, -1, -1,         /* UV bounds */
+	                             x, y, width, height, x, y, width, height);
+}
 
 internal TexFormat GetTPageFormat(int tpage)
 {
@@ -364,12 +557,37 @@ void MakeVertexRect(GrVertex *vertex, VERTTYPE *p0, s16 w, s16 h)
 	vertex[3].y = vertex[0].y;
 }
 
+internal bool NativeGpu_TPageOverlapsActiveDrawPage(int tpage);
+
+internal void NativeGpu_TraceTexturePrimitiveFromUVs(s16 page, s16 clut, const u8 *const *uvs, int uvCount)
+{
+	int uvMinU = uvs[0][0];
+	int uvMinV = uvs[0][1];
+	int uvMaxU = uvMinU;
+	int uvMaxV = uvMinV;
+
+	for (int i = 1; i < uvCount; i++)
+	{
+		if (uvs[i][0] < uvMinU) uvMinU = uvs[i][0];
+		if (uvs[i][1] < uvMinV) uvMinV = uvs[i][1];
+		if (uvs[i][0] > uvMaxU) uvMaxU = uvs[i][0];
+		if (uvs[i][1] > uvMaxV) uvMaxV = uvs[i][1];
+	}
+
+	NativeTextureTrace_TexturePrimitive(page, clut, GetTPageFormat(page), uvMinU, uvMinV, uvMaxU, uvMaxV, activeDrawEnv.clip.x, activeDrawEnv.clip.y,
+	                                     activeDrawEnv.clip.w, activeDrawEnv.clip.h, NativeGpu_TPageOverlapsActiveDrawPage(page));
+}
+
 void MakeTexcoordQuad(GrVertex *vertex, u8 *uv0, u8 *uv1, u8 *uv2, u8 *uv3, s16 page, s16 clut, u8 dither)
 {
 	assert(uv0);
 	assert(uv1);
 	assert(uv2);
 	assert(uv3);
+	{
+		const u8 *uvs[] = {uv0, uv1, uv2, uv3};
+		NativeGpu_TraceTexturePrimitiveFromUVs(page, clut, uvs, 4);
+	}
 
 	const u8 bright = 2;
 	const short texPage = GetTPageBase(page);
@@ -423,6 +641,10 @@ void MakeTexcoordTriangle(GrVertex *vertex, u8 *uv0, u8 *uv1, u8 *uv2, s16 page,
 	assert(uv0);
 	assert(uv1);
 	assert(uv2);
+	{
+		const u8 *uvs[] = {uv0, uv1, uv2};
+		NativeGpu_TraceTexturePrimitiveFromUVs(page, clut, uvs, 3);
+	}
 
 	const u8 bright = 2;
 	const short texPage = GetTPageBase(page);
@@ -477,6 +699,9 @@ void MakeTexcoordRect(GrVertex *vertex, u8 *uv, s16 page, s16 clut, s16 w, s16 h
 	{
 		h = 255 - uv[1];
 	}
+	NativeTextureTrace_TexturePrimitive(page, clut, GetTPageFormat(page), uv[0], uv[1], uv[0] + w - 1, uv[1] + h - 1, activeDrawEnv.clip.x,
+	                                     activeDrawEnv.clip.y, activeDrawEnv.clip.w, activeDrawEnv.clip.h,
+	                                     NativeGpu_TPageOverlapsActiveDrawPage(page));
 
 	const u8 bright = 2;
 	const u8 dither = 0;
@@ -793,6 +1018,7 @@ internal void NativeGpu_PrepareFramebufferFeedback(int tpage)
 	}
 
 	NativeRenderer_StoreFrameBuffer(activeDrawEnv.clip.x, activeDrawEnv.clip.y, activeDrawEnv.clip.w, activeDrawEnv.clip.h);
+	NativeTextureTrace_FramebufferFeedbackPrepared(activeDrawEnv.clip.x, activeDrawEnv.clip.y, activeDrawEnv.clip.w, activeDrawEnv.clip.h);
 	s_gpu.framebufferFeedbackRunActive = true;
 }
 

@@ -84,3 +84,23 @@ canonical state, input, frame timing, and VBlank parity; display options stay
 cabinet-local. `-PerfOutputDirectory` creates one performance capture per
 scale for the M4 race budget; use `-Fullscreen` only for a native-panel
 presentation pass.
+
+## Texture-trace candidates
+
+The opt-in `CTR_NATIVE_TEXTURE_TRACE=1` renderer trace records local
+presentation observations only. Summarize a completed CSV into exact
+texture-source candidates with:
+
+```powershell
+.\tools\summarize-texture-trace.ps1 `
+  -TracePath .\debug\texture-trace.csv
+```
+
+The default output is next to the input with `.candidates.csv` appended.
+It aggregates the page, PS1 bit-depth texture mode (`4`, `8`, or `16`), CLUT,
+UV bounds, and mode-aware source rectangle,
+reports observed masks/classes, and marks a candidate eligible only when no
+direct feedback/overlap is present and no later overlapping VRAM
+write/transfer/readback occurs after its first observed use. A primitive's
+ordinary destination draw-page write is not treated as a mutation of its
+sampled source. Existing output is preserved unless `-Force` is supplied.
