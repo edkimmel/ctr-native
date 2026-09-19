@@ -43,6 +43,102 @@ global_variable int s_pinnedVramDisplayH = 0;
 global_variable int s_fpsFrameCount = 0;
 global_variable u64 s_fpsLastCounter = 0;
 
+/*
+ * Opt-in capture aid for texture-authoring traces.  Set both variables before
+ * launch:
+ *   CTR_NATIVE_VRAM_DUMP_FRAME=<positive one-based Platform_EndFrame number>
+ *   CTR_NATIVE_VRAM_DUMP_OUTPUT_PATH=<destination .tga path>
+ *
+ * The dump is a renderer readback after the selected host frame has been
+ * presented.  It neither supplies input nor changes the canonical simulation
+ * or replay state.  Missing or malformed configuration remains disabled.
+ */
+global_variable u64 s_vramDumpTargetFrame = 0;
+global_variable u64 s_vramDumpHostFrame = 0;
+global_variable const char *s_vramDumpOutputPath = NULL;
+global_variable int s_vramDumpFired = 0;
+
+internal int NativePlatform_ParsePositiveFrameNumber(const char *value, u64 *frameOut)
+{
+	u64 frame = 0;
+	const char *cursor;
+
+	if ((value == NULL) || (value[0] == '\0') || (frameOut == NULL))
+	{
+		return 0;
+	}
+
+	for (cursor = value; *cursor != '\0'; cursor++)
+	{
+		u64 digit;
+
+		if ((*cursor < '0') || (*cursor > '9'))
+		{
+			return 0;
+		}
+
+		digit = (u64)(*cursor - '0');
+		if (frame > ((UINT64_MAX - digit) / 10))
+		{
+			return 0;
+		}
+		frame = (frame * 10) + digit;
+	}
+
+	if (frame == 0)
+	{
+		return 0;
+	}
+
+	*frameOut = frame;
+	return 1;
+}
+
+internal void NativePlatform_ConfigureVramDump(void)
+{
+	const char *frameValue = getenv("CTR_NATIVE_VRAM_DUMP_FRAME");
+	const char *outputPath = getenv("CTR_NATIVE_VRAM_DUMP_OUTPUT_PATH");
+	u64 targetFrame = 0;
+
+	s_vramDumpTargetFrame = 0;
+	s_vramDumpHostFrame = 0;
+	s_vramDumpOutputPath = NULL;
+	s_vramDumpFired = 0;
+
+	if ((frameValue == NULL) && (outputPath == NULL))
+	{
+		return;
+	}
+
+	if (!NativePlatform_ParsePositiveFrameNumber(frameValue, &targetFrame) || (outputPath == NULL) || (outputPath[0] == '\0'))
+	{
+		Platform_LogWarn("[CTR Native] ignoring malformed VRAM dump configuration\n");
+		return;
+	}
+
+	s_vramDumpTargetFrame = targetFrame;
+	s_vramDumpOutputPath = outputPath;
+	Platform_Log("[CTR Native] scheduled VRAM dump at host frame %llu\n", (unsigned long long)targetFrame);
+}
+
+internal void NativePlatform_MaybeDumpVRAM(void)
+{
+	if ((s_vramDumpTargetFrame == 0) || (s_vramDumpFired != 0))
+	{
+		return;
+	}
+
+	s_vramDumpHostFrame++;
+	if (s_vramDumpHostFrame != s_vramDumpTargetFrame)
+	{
+		return;
+	}
+
+	s_vramDumpFired = 1;
+	Platform_Log("[CTR Native] saving scheduled VRAM dump to %s\n", s_vramDumpOutputPath);
+	NativeRenderer_SaveVRAM(s_vramDumpOutputPath, 0, 0, VRAM_WIDTH, VRAM_HEIGHT, 1);
+}
+
 internal void Platform_CalcFPS(void)
 {
 #if defined(CTR_INTERNAL)
@@ -256,6 +352,7 @@ void Platform_Init(const char *title, int width, int height, int fullscreen)
 	Platform_GetWindowName(title, windowName, sizeof(windowName));
 
 	Platform_Log("[CTR Native] Initialising platform\n");
+	NativePlatform_ConfigureVramDump();
 
 	if (SDL_Init(SDL_INIT_VIDEO) == 0)
 	{
@@ -416,6 +513,7 @@ void Platform_EndFrame(void)
 {
 	NativePerf_BeginScope(NATIVE_PERF_BUCKET_PLATFORM_END_FRAME);
 	Platform_EndScene();
+	NativePlatform_MaybeDumpVRAM();
 	Platform_CalcFPS();
 	NativePerf_EndScope(NATIVE_PERF_BUCKET_PLATFORM_END_FRAME);
 }
