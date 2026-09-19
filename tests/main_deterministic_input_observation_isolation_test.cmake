@@ -1,0 +1,53 @@
+file(READ "${CMAKE_CURRENT_LIST_DIR}/../CMakeLists.txt" cmake)
+foreach(forbidden IN ITEMS
+    ctr_native ctr_native_canonical_runtime ctr_native_replay_scheduler_seam
+    ctr_native_replay_scheduler_v3 ctr_native_replay_scheduler_v4
+    ctr_native_replay_v2 ctr_native_replay_v2_file ctr_native_replay_v3 ctr_native_replay_v3_file
+    ctr_native_replay_v4 ctr_native_replay_v4_file)
+    string(REGEX MATCH "target_link_libraries\\(${forbidden}[^)]*ctr_native_deterministic_input_observation" hit "${cmake}")
+    if(hit)
+        message(FATAL_ERROR "main_deterministic_input_observation_isolation: ${forbidden} must not link the observation adapter")
+    endif()
+endforeach()
+
+string(REGEX MATCH "target_link_libraries\\(ctr_native_deterministic_input_observation[ \\t\\r\\n]+([^)]*)\\)" adapter_link "${cmake}")
+if(NOT adapter_link)
+    message(FATAL_ERROR "main_deterministic_input_observation_isolation: missing adapter link declaration")
+endif()
+set(adapter_deps "${CMAKE_MATCH_1}")
+string(REGEX MATCHALL "[A-Za-z0-9_]+" adapter_deps "${adapter_deps}")
+list(REMOVE_ITEM adapter_deps "" PUBLIC PRIVATE INTERFACE)
+set(allowed_direct_deps ctr_native_canonical_projector)
+if(NOT "${adapter_deps}" STREQUAL "${allowed_direct_deps}")
+    message(FATAL_ERROR "main_deterministic_input_observation_isolation: unexpected direct adapter dependencies: ${adapter_deps}")
+endif()
+
+set(adapter_header "${CMAKE_CURRENT_LIST_DIR}/../game/MAIN/MainDeterministicInputObservation.h")
+set(adapter_source "${CMAKE_CURRENT_LIST_DIR}/../game/MAIN/MainDeterministicInputObservation.c")
+file(READ "${adapter_header}" header_text)
+file(READ "${adapter_source}" source_text)
+
+string(REGEX MATCHALL "#[ \\t]*include[ \\t]+\\\"[^\\\"]+\\\"" header_includes "${header_text}")
+foreach(include_line IN LISTS header_includes)
+    string(REGEX REPLACE ".*\\\"([^\\\"]+)\\\".*" "\\1" include_path "${include_line}")
+    if(NOT include_path STREQUAL "platform/native_canonical_projector.h")
+        message(FATAL_ERROR "main_deterministic_input_observation_isolation: forbidden public-header include ${include_path}")
+    endif()
+endforeach()
+
+string(REGEX MATCHALL "#[ \\t]*include[ \\t]+\\\"[^\\\"]+\\\"" source_includes "${source_text}")
+foreach(include_line IN LISTS source_includes)
+    string(REGEX REPLACE ".*\\\"([^\\\"]+)\\\".*" "\\1" include_path "${include_line}")
+    if(NOT include_path STREQUAL "MAIN/MainDeterministicInputObservation.h")
+        message(FATAL_ERROR "main_deterministic_input_observation_isolation: forbidden adapter-source include ${include_path}")
+    endif()
+endforeach()
+
+foreach(adapter_unit IN ITEMS header_text source_text)
+    foreach(forbidden IN ITEMS Extract gGT sdata MainMain Runtime Replay Scheduler Network Socket Recv Send Protocol Serialize VSync GamepadSystem)
+        string(FIND "${${adapter_unit}}" "${forbidden}" found)
+        if(NOT found EQUAL -1)
+            message(FATAL_ERROR "main_deterministic_input_observation_isolation: forbidden ${adapter_unit} token ${forbidden}")
+        endif()
+    endforeach()
+endforeach()

@@ -373,6 +373,14 @@ target_include_directories(ctr_native_canonical_projector PUBLIC ${CMAKE_SOURCE_
 target_compile_definitions(ctr_native_canonical_projector PUBLIC CTR_NATIVE)
 target_link_libraries(ctr_native_canonical_projector PUBLIC ctr_native_canonical_state ctr_native_canonical_state_v3)
 
+# Source-only raw-ingress observation.  It accepts only caller-provided
+# snapshots and remains isolated from the runtime, replay, transport, and
+# game-loop targets until tick and input ownership are explicitly decided.
+add_library(ctr_native_deterministic_input_observation STATIC game/MAIN/MainDeterministicInputObservation.c)
+set_target_properties(ctr_native_deterministic_input_observation PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_deterministic_input_observation PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_link_libraries(ctr_native_deterministic_input_observation PUBLIC ctr_native_canonical_projector)
+
 # Isolated V4 explicit-value projector.  It is not linked by the runtime,
 # scheduler, replay, file, or game executable targets.
 add_library(ctr_native_canonical_projector_v4 STATIC game/MAIN/MainCanonicalStateV4.c)
@@ -853,6 +861,14 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_canonical_projector_test PRIVATE ctr_native_canonical_projector ctr_native_replay_v3)
     add_test(NAME native_canonical_projector_unit COMMAND $<TARGET_FILE:native_canonical_projector_test>)
+
+    add_executable(main_deterministic_input_observation_test tests/main_deterministic_input_observation_test.c)
+    set_target_properties(main_deterministic_input_observation_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_include_directories(main_deterministic_input_observation_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
+    target_link_libraries(main_deterministic_input_observation_test PRIVATE ctr_native_deterministic_input_observation)
+    add_test(NAME main_deterministic_input_observation_unit COMMAND $<TARGET_FILE:main_deterministic_input_observation_test>)
+    add_test(NAME main_deterministic_input_observation_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_deterministic_input_observation_isolation_test.cmake")
 
     add_executable(main_canonical_state_v4_projector_test tests/main_canonical_state_v4_projector_test.c)
     set_target_properties(main_canonical_state_v4_projector_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
