@@ -19,9 +19,11 @@
 #define ExitCriticalSection()
 
 #include "platform/native_assets.h"
+#include "platform/native_display_config.h"
 #include "platform/native_log.h"
 #include "platform/native_memory.h"
 #include "platform/native_perf.h"
+#include "platform/native_renderer.h"
 #include "platform/native_replay_scheduler.h"
 #include "platform/native_savestate.h"
 
@@ -37,6 +39,7 @@
 
 #include "platform/native_sha256.c"
 #include "platform/native_disc_image.c"
+#include "platform/native_display_config.c"
 #include "platform/native_identity.c"
 #include "platform/native_assets.c"
 #include "platform/native_audio.c"
@@ -139,6 +142,8 @@ static int NativeArg_IsVersion(const char *arg)
 
 int main(int argc, char *argv[])
 {
+	struct NativeDisplayConfig displayConfig;
+
 	for (int argIndex = 1; argIndex < argc; argIndex++)
 	{
 		if (NativeArg_IsVersion(argv[argIndex]))
@@ -148,7 +153,19 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	NativeDisplayConfig_SetDefaults(&displayConfig);
+	if (!NativeDisplayConfig_ApplyArgs(argc, argv, &displayConfig))
+	{
+		/* A malformed cabinet-local preference must never prevent the recovery
+		 * launch path. Fall back to 1x/windowed; it remains intentionally
+		 * outside game, replay, and canonical-state configuration. */
+		fprintf(stderr, "[CTR Native] invalid local display option; falling back to 1x windowed (supported render scales: 1, 2, 3, 4, 6, 8).\n");
+		NativeDisplayConfig_SetDefaults(&displayConfig);
+	}
+
 	printf("[CTR Native] Starting...\n");
+	printf("[CTR Native] Local render scale: %dx\n", displayConfig.renderScale);
+	printf("[CTR Native] Local window mode: %s\n", displayConfig.fullscreen ? "fullscreen" : "windowed");
 	fflush(stdout);
 
 	const char *sdlBasePath = SDL_GetBasePath();
@@ -187,11 +204,14 @@ int main(int argc, char *argv[])
 
 #ifdef USE_16BY9
 	printf("[CTR Native] Widescreen\n");
-	Platform_Init("Crash Team Racing", 1280, 720);
+	Platform_Init("Crash Team Racing", 1280, 720, displayConfig.fullscreen);
 #else
 	printf("[CTR Native] 4:3\n");
-	Platform_Init("Crash Team Racing", 800, 600);
+	Platform_Init("Crash Team Racing", 800, 600, displayConfig.fullscreen);
 #endif
+	/* This is host presentation state only. The renderer applies it to its GL
+	 * attachments; no game, replay, or canonical-state code observes it. */
+	NativeRenderer_SetRenderScale(displayConfig.renderScale);
 
 #if defined(CTR_INTERNAL)
 	if (NativePerf_ConfigureFromArgs(argc, argv) != 0)

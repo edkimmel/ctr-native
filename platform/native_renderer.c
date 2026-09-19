@@ -15,6 +15,7 @@
 #include "platform/native_renderer.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -101,12 +102,22 @@ struct NativeRenderTarget
 	TextureID texture;
 	GLuint framebuffer;
 	GLuint stencilBuffer;
+	// The game addresses the target in PS1 pixels. The backing FBO can be an
+	// integer multiple of that logical size, but VRAM transfers retain these
+	// dimensions.
+	s32 logicalWidth;
+	s32 logicalHeight;
+	// Physical OpenGL attachment size.
 	s32 width;
 	s32 height;
 };
 
 global_variable struct NativeRenderTarget s_mainRenderTarget;
 global_variable struct NativeRenderTarget s_offscreenRenderTarget;
+
+// Presentation configuration will select this later. Keep the default PS1
+// path exactly as before until a cabinet-local setting asks for a larger FBO.
+global_variable s32 s_renderScale = 1;
 
 global_variable TextureID s_whiteTexture = (TextureID)-1;
 global_variable TextureID s_lastBoundTexture = (TextureID)-1;
@@ -154,10 +165,10 @@ internal void NativeRenderer_ClearPresentationBars(void);
 internal void NativeRenderer_SetWireframe(int enable);
 internal void NativeRenderer_InitRenderTarget(struct NativeRenderTarget *target);
 internal void NativeRenderer_DestroyRenderTarget(struct NativeRenderTarget *target);
-internal void NativeRenderer_EnsureRenderTarget(struct NativeRenderTarget *target, int width, int height);
+internal void NativeRenderer_EnsureRenderTarget(struct NativeRenderTarget *target, int logicalWidth, int logicalHeight);
 internal void NativeRenderer_BindMainRenderTarget(void);
 internal void NativeRenderer_DrawVRAMRegion(int x, int y, int width, int height);
-internal void NativeRenderer_LoadRenderTargetFromVRAM(struct NativeRenderTarget *target, int x, int y);
+internal void NativeRenderer_LoadRenderTargetFromVRAM(struct NativeRenderTarget *target, int x, int y, int sourceWidth, int sourceHeight);
 #if defined(CTR_INTERNAL)
 internal void NativeRenderer_ResolveGpuMeasurements(b32 waitForResults);
 #endif
@@ -172,7 +183,10 @@ global_variable GLuint s_glVramFramebuffer;
 
 internal int NativeRenderer_InitialiseGLContext(char *windowName, int fullscreen)
 {
-	SDL_WindowFlags windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
+	/* The presentation viewport/blit is calculated in physical framebuffer
+	 * pixels. Request the panel's native drawable density, rather than a
+	 * DPI-scaled logical surface, for 1080p/4K fullscreen output. */
+	SDL_WindowFlags windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
 	if (fullscreen)
 	{
@@ -347,7 +361,8 @@ void NativeRenderer_BeginScene(void)
 	NativeRenderer_UpdateVRAM();
 	if (!activeDrawEnv.isbg)
 	{
-		NativeRenderer_LoadRenderTargetFromVRAM(&s_mainRenderTarget, activeDispEnv.disp.x, activeDispEnv.disp.y);
+		NativeRenderer_LoadRenderTargetFromVRAM(&s_mainRenderTarget, activeDispEnv.disp.x, activeDispEnv.disp.y,
+		                                        s_mainRenderTarget.logicalWidth, s_mainRenderTarget.logicalHeight);
 	}
 	else
 	{
@@ -517,18 +532,63 @@ internal void NativeRenderer_DestroyRenderTarget(struct NativeRenderTarget *targ
 	target->texture = (TextureID)-1;
 }
 
-internal void NativeRenderer_EnsureRenderTarget(struct NativeRenderTarget *target, int width, int height)
+internal int NativeRenderer_IsSupportedRenderScale(int scale)
 {
-	if (width < 1)
+	return scale == 1 || scale == 2 || scale == 3 || scale == 4 || scale == 6 || scale == 8;
+}
+
+void NativeRenderer_SetRenderScale(int scale)
+{
+	if (!NativeRenderer_IsSupportedRenderScale(scale))
 	{
-		width = 1;
-	}
-	if (height < 1)
-	{
-		height = 1;
+		NATIVE_RENDERER_ERROR("unsupported integer render scale: %d\n", scale);
+		return;
 	}
 
-	if ((target->width == width) && (target->height == height))
+	if (s_renderScale == scale)
+	{
+		return;
+	}
+
+	s_renderScale = scale;
+	// The GL attachment contents are presentation-only. Force both targets to
+	// be reallocated on their next bind, leaving PS1 VRAM and simulation state
+	// untouched.
+	s_mainRenderTarget.width = 0;
+	s_mainRenderTarget.height = 0;
+	s_mainRenderTarget.logicalWidth = 0;
+	s_mainRenderTarget.logicalHeight = 0;
+	s_offscreenRenderTarget.width = 0;
+	s_offscreenRenderTarget.height = 0;
+	s_offscreenRenderTarget.logicalWidth = 0;
+	s_offscreenRenderTarget.logicalHeight = 0;
+}
+
+int NativeRenderer_GetRenderScale(void)
+{
+	return s_renderScale;
+}
+
+internal void NativeRenderer_EnsureRenderTarget(struct NativeRenderTarget *target, int logicalWidth, int logicalHeight)
+{
+	if (logicalWidth < 1)
+	{
+		logicalWidth = 1;
+	}
+	if (logicalHeight < 1)
+	{
+		logicalHeight = 1;
+	}
+
+	if ((logicalWidth > INT_MAX / s_renderScale) || (logicalHeight > INT_MAX / s_renderScale))
+	{
+		NATIVE_RENDERER_ERROR("render target size overflow: %dx%d at scale %d\n", logicalWidth, logicalHeight, s_renderScale);
+		return;
+	}
+
+	const int width = logicalWidth * s_renderScale;
+	const int height = logicalHeight * s_renderScale;
+	if ((target->logicalWidth == logicalWidth) && (target->logicalHeight == logicalHeight) && (target->width == width) && (target->height == height))
 	{
 		return;
 	}
@@ -543,6 +603,8 @@ internal void NativeRenderer_EnsureRenderTarget(struct NativeRenderTarget *targe
 
 	target->width = width;
 	target->height = height;
+	target->logicalWidth = logicalWidth;
+	target->logicalHeight = logicalHeight;
 	s_lastBoundTexture = (TextureID)-1;
 }
 
@@ -570,7 +632,7 @@ internal void NativeRenderer_DrawVRAMRegion(int x, int y, int width, int height)
 	NativeRenderer_DrawTriangles(0, 2);
 }
 
-internal void NativeRenderer_LoadRenderTargetFromVRAM(struct NativeRenderTarget *target, int x, int y)
+internal void NativeRenderer_LoadRenderTargetFromVRAM(struct NativeRenderTarget *target, int x, int y, int sourceWidth, int sourceHeight)
 {
 	const ShaderID previousShader = s_previousShader;
 	const TextureID previousTexture = s_lastBoundTexture;
@@ -583,7 +645,7 @@ internal void NativeRenderer_LoadRenderTargetFromVRAM(struct NativeRenderTarget 
 	glDisable(GL_SCISSOR_TEST);
 	glDisable(GL_STENCIL_TEST);
 	glViewport(0, 0, target->width, target->height);
-	NativeRenderer_DrawVRAMRegion(x, y, target->width, target->height);
+	NativeRenderer_DrawVRAMRegion(x, y, sourceWidth, sourceHeight);
 	glClear(GL_STENCIL_BUFFER_BIT);
 	glEnable(GL_STENCIL_TEST);
 
@@ -1335,7 +1397,8 @@ void NativeRenderer_SetupClipMode(const RECT16 *rect, const DISPENV *displayEnv,
 	const float crw = clipRectW * viewportW;
 	const float crh = clipRectH * viewportH;
 
-	glScissor(crx, flipOffset - cry, crw, crh);
+	glScissor((int)(crx * s_renderScale), (int)((flipOffset - cry) * s_renderScale), (int)(crw * s_renderScale),
+	          (int)(crh * s_renderScale));
 }
 
 internal void NativeRenderer_SetShader(const ShaderID shader)
@@ -1705,7 +1768,7 @@ void NativeRenderer_Clear(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 	glGetIntegerv(GL_SCISSOR_BOX, previousScissorBox);
 
 	glEnable(GL_SCISSOR_TEST);
-	glScissor(scissorX, scissorY, scissorW, scissorH);
+	glScissor(scissorX * s_renderScale, scissorY * s_renderScale, scissorW * s_renderScale, scissorH * s_renderScale);
 	glClearColor(NativeRenderer_PSXColorComponentFloat(r), NativeRenderer_PSXColorComponentFloat(g), NativeRenderer_PSXColorComponentFloat(b), 0.0f);
 	glClear(GL_COLOR_BUFFER_BIT);
 
@@ -1895,7 +1958,8 @@ void NativeRenderer_SetOffscreenState(const RECT16 *offscreenRect, int enable)
 		s_previousOffscreenState = 1;
 		NativeRenderer_EnsureRenderTarget(&s_offscreenRenderTarget, offscreenRect->w, offscreenRect->h);
 		s_previousOffscreen = *offscreenRect;
-		NativeRenderer_LoadRenderTargetFromVRAM(&s_offscreenRenderTarget, offscreenRect->x, offscreenRect->y);
+		NativeRenderer_LoadRenderTargetFromVRAM(&s_offscreenRenderTarget, offscreenRect->x, offscreenRect->y, offscreenRect->w,
+		                                        offscreenRect->h);
 	}
 	else
 	{
@@ -2132,6 +2196,29 @@ void NativeRenderer_PresentVRAMDisplay(void)
 	// OpenGL backend otherwise swaps the current framebuffer and never shows
 	// those VRAM-only copies.
 	NativeRenderer_PresentVRAMRect(activeDispEnv.disp.x, activeDispEnv.disp.y, activeDispEnv.disp.w, activeDispEnv.disp.h);
+}
+
+void NativeRenderer_PresentMainRenderTarget(void)
+{
+	if ((s_mainRenderTarget.width <= 0) || (s_mainRenderTarget.height <= 0))
+	{
+		return;
+	}
+
+	// Normal frames present the high-resolution RGBA target directly. The
+	// caller packs it into native 1024x512 VRAM first, so framebuffer feedback
+	// and CPU VRAM reads retain their PS1 contract.
+	NativeRenderer_SetScissorState(0);
+	NativeRenderer_EnableDepth(0);
+	NativeRenderer_SetBlendMode(BM_NONE);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, s_mainRenderTarget.framebuffer);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	glBlitFramebuffer(0, 0, s_mainRenderTarget.width, s_mainRenderTarget.height, s_presentViewport.x, s_presentViewport.y,
+	                  s_presentViewport.x + s_presentViewport.w, s_presentViewport.y + s_presentViewport.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+	s_previousShader = (ShaderID)-1;
+	s_lastBoundTexture = (TextureID)-1;
 }
 
 void NativeRenderer_SwapWindow(void)

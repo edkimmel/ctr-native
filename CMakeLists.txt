@@ -131,6 +131,16 @@ set_target_properties(ctr_native_g29_input PROPERTIES
 )
 target_include_directories(ctr_native_g29_input PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# Local-only presentation options. This target has no match, replay, canonical
+# state, game, or network dependency by design.
+add_library(ctr_native_display_config STATIC platform/native_display_config.c)
+set_target_properties(ctr_native_display_config PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_display_config PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -585,6 +595,12 @@ if(BUILD_TESTING)
     target_link_libraries(native_match_config_test PRIVATE ctr_native_match_config)
     add_test(NAME native_match_config_unit COMMAND $<TARGET_FILE:native_match_config_test>)
 
+    # Presentation settings are deliberately cabinet-local.  Keep them out of
+    # the match, canonical-state, and replay transport boundaries so changing
+    # an integer render scale cannot alter lockstep/replay identity.
+    add_test(NAME native_render_scale_determinism_contract
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_render_scale_determinism_contract_test.cmake")
+
     add_executable(native_deterministic_rng_test tests/native_deterministic_rng_test.c)
     set_target_properties(native_deterministic_rng_test PROPERTIES
         C_STANDARD 17
@@ -602,6 +618,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_g29_input_test PRIVATE ctr_native_g29_input)
     add_test(NAME native_g29_input_unit COMMAND $<TARGET_FILE:native_g29_input_test>)
+
+    add_executable(native_display_config_test tests/native_display_config_test.c)
+    set_target_properties(native_display_config_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_display_config_test PRIVATE ctr_native_display_config)
+    add_test(NAME native_display_config_unit COMMAND $<TARGET_FILE:native_display_config_test>)
 
     add_executable(main_arcade_roster_test tests/main_arcade_roster_test.c)
     set_target_properties(main_arcade_roster_test PROPERTIES

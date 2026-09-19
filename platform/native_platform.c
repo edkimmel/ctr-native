@@ -89,8 +89,19 @@ internal void Platform_GetWindowName(const char *appName, char *buffer, size_t b
 #endif
 }
 
-internal void Platform_HandleWindowResize(int width, int height)
+/* OpenGL operates in drawable pixels, which can differ from logical window
+ * points on a high-DPI 4K desktop. Keep the presentation viewport, blit, and
+ * screenshot dimensions in that same pixel space. */
+internal void Platform_RefreshDrawableSize(void)
 {
+	int width = 0;
+	int height = 0;
+
+	if ((g_window == NULL) || !SDL_GetWindowSizeInPixels(g_window, &width, &height) || (width <= 0) || (height <= 0))
+	{
+		return;
+	}
+
 	g_windowWidth = width;
 	g_windowHeight = height;
 	NativeRenderer_ResetDevice();
@@ -117,10 +128,16 @@ internal void Platform_HandleFullscreenToggle(void)
 {
 	int fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0;
 
-	SDL_SetWindowFullscreen(g_window, fullscreen == 0);
-	SDL_GetWindowSize(g_window, &g_windowWidth, &g_windowHeight);
+	if (!SDL_SetWindowFullscreen(g_window, fullscreen == 0))
+	{
+		Platform_LogWarn("[CTR Native] failed to toggle fullscreen: %s\n", SDL_GetError());
+		return;
+	}
+	/* Fullscreen changes can be asynchronous on some backends. Synchronize so
+	 * the very next presentation uses the real desktop drawable extent. */
+	SDL_SyncWindow(g_window);
+	Platform_RefreshDrawableSize();
 	Platform_UpdateCursorVisibility();
-	NativeRenderer_ResetDevice();
 }
 
 internal void Platform_UpdateHostAltKeyState(const s32 key, const s8 down)
@@ -231,7 +248,7 @@ internal void Platform_HandleKey(int key, char down)
 #endif
 }
 
-void Platform_Init(const char *title, int width, int height)
+void Platform_Init(const char *title, int width, int height, int fullscreen)
 {
 	char windowName[128];
 
@@ -249,12 +266,17 @@ void Platform_Init(const char *title, int width, int height)
 
 	s_platformInitialized = 1;
 
-	if (!NativeRenderer_InitialiseRender(windowName, width, height, 0))
+	if (!NativeRenderer_InitialiseRender(windowName, width, height, fullscreen != 0))
 	{
 		Platform_LogError("[CTR Native] Failed to initialise window\n");
 		Platform_Shutdown();
 		return;
 	}
+
+	/* SDL fullscreen uses the desktop resolution. Preserve the renderer's
+	 * fixed 4:3 presentation aspect (set from the logical 800x600 window),
+	 * but update its drawable bounds before any PSX render target is created. */
+	Platform_RefreshDrawableSize();
 
 	if (!NativeRenderer_InitialisePSX())
 	{
@@ -370,9 +392,19 @@ void Platform_EndScene(void)
 	}
 
 	// NOTE(aalhendi): Keep the displayed VRAM region current for screen-copy
-	// effects without forcing a CPU readback.
+	// effects without forcing a CPU readback. Preserve the original packed-VRAM
+	// presentation at 1x; higher scales present the high-resolution render
+	// target after this pack. Pinned and VRAM-only paths above always use the
+	// native VRAM presenter.
 	NativeRenderer_StoreFrameBuffer(activeDispEnv.disp.x, activeDispEnv.disp.y, activeDispEnv.disp.w, activeDispEnv.disp.h);
-	NativeRenderer_PresentVRAMRect(activeDispEnv.disp.x, activeDispEnv.disp.y, activeDispEnv.disp.w, activeDispEnv.disp.h);
+	if (NativeRenderer_GetRenderScale() > 1)
+	{
+		NativeRenderer_PresentMainRenderTarget();
+	}
+	else
+	{
+		NativeRenderer_PresentVRAMRect(activeDispEnv.disp.x, activeDispEnv.disp.y, activeDispEnv.disp.w, activeDispEnv.disp.h);
+	}
 	NativeRenderer_EndGpuFrame();
 	NativeRenderer_SwapWindow();
 	NativePerf_EndScope(NATIVE_PERF_BUCKET_PLATFORM_END_SCENE);
@@ -439,7 +471,8 @@ void Platform_PollHostEvents(void)
 			exit(0);
 			break;
 		case SDL_EVENT_WINDOW_RESIZED:
-			Platform_HandleWindowResize(event.window.data1, event.window.data2);
+		case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+			Platform_RefreshDrawableSize();
 			break;
 		case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
 		case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
