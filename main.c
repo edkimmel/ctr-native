@@ -23,6 +23,8 @@
 #include "platform/native_log.h"
 #include "platform/native_memory.h"
 #include "platform/native_perf.h"
+#include "platform/native_presentation_override_config.h"
+#include "platform/native_presentation_pack.h"
 #include "platform/native_renderer.h"
 #include "platform/native_replay_scheduler.h"
 #include "platform/native_savestate.h"
@@ -41,6 +43,9 @@
 #include "platform/native_disc_image.c"
 #include "platform/native_display_config.c"
 #include "platform/native_identity.c"
+#include "platform/native_presentation_override_config.c"
+#include "platform/native_presentation_registry.c"
+#include "platform/native_presentation_pack.c"
 #include "platform/native_assets.c"
 #include "platform/native_audio.c"
 #include "platform/native_memory.c"
@@ -143,6 +148,8 @@ static int NativeArg_IsVersion(const char *arg)
 int main(int argc, char *argv[])
 {
 	struct NativeDisplayConfig displayConfig;
+	struct NativePresentationOverrideConfig presentationOverrideConfig;
+	struct NativePresentationPack presentationPack;
 
 	for (int argIndex = 1; argIndex < argc; argIndex++)
 	{
@@ -161,6 +168,14 @@ int main(int argc, char *argv[])
 		 * outside game, replay, and canonical-state configuration. */
 		fprintf(stderr, "[CTR Native] invalid local display option; falling back to 1x windowed (supported render scales: 1, 2, 3, 4, 6, 8).\n");
 		NativeDisplayConfig_SetDefaults(&displayConfig);
+	}
+	NativePresentationOverrideConfig_SetDefaults(&presentationOverrideConfig);
+	if (!NativePresentationOverrideConfig_ApplyArgs(argc, argv, &presentationOverrideConfig))
+	{
+		/* A malformed local pack setting is recoverable: do not let a cabinet
+		 * presentation preference prevent a normal retail-texture launch. */
+		fprintf(stderr, "[CTR Native] invalid local presentation option; presentation overrides disabled.\n");
+		NativePresentationOverrideConfig_SetDefaults(&presentationOverrideConfig);
 	}
 
 	printf("[CTR Native] Starting...\n");
@@ -193,6 +208,21 @@ int main(int argc, char *argv[])
 	if (!NativeAssets_Validate())
 	{
 		return NativeConsole_Return(1);
+	}
+	if (!NativePresentationPack_Load(&presentationOverrideConfig, &presentationPack))
+	{
+		fprintf(stderr, "[CTR Native] presentation pack disabled: %s.\n",
+		        NativePresentationPack_ErrorString(NativePresentationPack_GetLastError(&presentationPack)));
+	}
+	else if (presentationOverrideConfig.enabled != 0)
+	{
+		/* The exact-key registry is now validated and enabled locally. The
+		 * renderer still has no host-texture consumer in this milestone, so
+		 * this cannot change retail pixels yet. */
+		printf("[CTR Native] presentation pack validated: %u entries (%s); host texture replacement pending.\n",
+		       presentationPack.registry.entryCount,
+		       NativePresentationRegistry_GetManifestFingerprint(&presentationPack.registry));
+		fflush(stdout);
 	}
 
 #if defined(CTR_INTERNAL)

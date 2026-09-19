@@ -199,6 +199,20 @@ target_link_libraries(ctr_native_host_texture_binding PUBLIC
     ctr_native_presentation_registry
     ctr_native_texture_override_policy)
 
+# Runtime lifecycle for a local presentation pack. It only validates and
+# exposes the explicitly enabled exact-key registry; host asset upload and
+# draw replacement remain a later renderer-owned slice.
+add_library(ctr_native_presentation_pack STATIC platform/native_presentation_pack.c)
+set_target_properties(ctr_native_presentation_pack PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_presentation_pack PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_presentation_pack PUBLIC
+    ctr_native_presentation_override_config
+    ctr_native_presentation_registry)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -749,6 +763,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_host_texture_binding_test PRIVATE ctr_native_host_texture_binding)
     add_test(NAME native_host_texture_binding_unit COMMAND $<TARGET_FILE:native_host_texture_binding_test>)
+
+    add_executable(native_presentation_pack_test tests/native_presentation_pack_test.c)
+    set_target_properties(native_presentation_pack_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_presentation_pack_test PRIVATE ctr_native_presentation_pack)
+    add_test(NAME native_presentation_pack_unit COMMAND $<TARGET_FILE:native_presentation_pack_test>)
 
     add_executable(main_arcade_roster_test tests/main_arcade_roster_test.c)
     set_target_properties(main_arcade_roster_test PROPERTIES

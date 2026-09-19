@@ -153,3 +153,22 @@ classes are `font`, `ui-icon`, and `ui-static`. Approval values are `approved`,
 silent omission. The generated manifest names prospective pack-relative CTRH
 assets but does not create them. It cannot be loaded until a separate pack
 provides every named file.
+
+## Local presentation-pack contract
+
+The first runtime pack contract is intentionally fixed: an explicitly enabled
+`--presentation-pack DIRECTORY` reads only
+`DIRECTORY\presentation.manifest`. The manifest and every referenced asset are
+validated under that root before the exact-key registry is enabled:
+
+```powershell
+build-msvc-x86\Release\ctr_native.exe `
+  --presentation-pack .\packs\example `
+  --presentation-overrides
+```
+
+An absent/malformed pack, unsafe manifest path, or invalid asset disables the
+local registry and continues on retail textures. `--presentation-overrides=off`
+and a launch with no pack arguments perform no pack file access. The current
+milestone only validates this local registry; host texture upload and drawing
+remain disabled until the trace-approved renderer slice is complete.
