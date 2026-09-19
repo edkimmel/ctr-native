@@ -305,6 +305,19 @@ target_include_directories(main_canonical_topology_lease_authority PUBLIC
 target_compile_definitions(main_canonical_topology_lease_authority PUBLIC CTR_NATIVE)
 target_link_libraries(main_canonical_topology_lease_authority PUBLIC ctr_native_topology_residency)
 
+# Dormant active-mempack topology candidate.  This bridge streams proven
+# resident facts into a pointer-free value and emits a matching residency
+# witness, but deliberately has no runtime, replay, or executable consumer.
+add_library(main_canonical_topology_lease_adapter STATIC
+    game/MAIN/MainCanonicalTopologyLeaseAdapter.c)
+set_target_properties(main_canonical_topology_lease_adapter PROPERTIES
+    C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(main_canonical_topology_lease_adapter PUBLIC
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_compile_definitions(main_canonical_topology_lease_adapter PUBLIC CTR_NATIVE)
+target_link_libraries(main_canonical_topology_lease_adapter PUBLIC
+    main_canonical_topology_lease_authority ctr_native_canonical_topology_facts)
+
 # Compile-only layout assertions for the narrow, source-grounded topology/nav
 # surface.  This object probe has no runtime/executable dependency.
 add_library(ctr_native_main_canonical_topology_layout_contract_probe OBJECT
@@ -804,6 +817,17 @@ if(BUILD_TESTING)
     add_test(NAME main_canonical_topology_lease_authority_unit COMMAND $<TARGET_FILE:main_canonical_topology_lease_authority_test>)
     add_test(NAME main_canonical_topology_lease_authority_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_topology_lease_authority_isolation_test.cmake")
+
+    add_executable(main_canonical_topology_lease_adapter_test tests/main_canonical_topology_lease_adapter_test.c)
+    set_target_properties(main_canonical_topology_lease_adapter_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_include_directories(main_canonical_topology_lease_adapter_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
+    target_compile_definitions(main_canonical_topology_lease_adapter_test PRIVATE CTR_NATIVE)
+    # The fixture includes the three game-owned sources in one translation
+    # unit, avoiding the legacy game-layout global crossing object files.
+    target_link_libraries(main_canonical_topology_lease_adapter_test PRIVATE ctr_native_topology_residency ctr_native_canonical_topology_v1)
+    add_test(NAME main_canonical_topology_lease_adapter_unit COMMAND $<TARGET_FILE:main_canonical_topology_lease_adapter_test>)
+    add_test(NAME main_canonical_topology_lease_adapter_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_topology_lease_adapter_isolation_test.cmake")
 
     add_executable(native_canonical_state_v3_test tests/native_canonical_state_v3_test.c)
     set_target_properties(native_canonical_state_v3_test PROPERTIES
