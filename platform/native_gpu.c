@@ -317,6 +317,9 @@ typedef struct
 {
 	const struct NativePresentationRegistryEntry *entry;
 	TextureID texture;
+	/* Host-only validation telemetry. A successful source-key selection logs
+	 * once, making an offline capture prove that the matching asset was used. */
+	int selectionLogged;
 } NativeGpuHostTextureEntry;
 
 typedef struct
@@ -480,6 +483,31 @@ internal TextureID NativeGpu_FindHostTexture(
 	return 0;
 }
 
+internal void NativeGpu_LogFirstPresentationOverrideSelection(
+	const struct NativePresentationRegistryEntry *entry)
+{
+	unsigned int index;
+
+	if (entry == NULL)
+		return;
+	for (index = 0u; index < s_gpuPresentationOverrides.entryCount; ++index)
+	{
+		NativeGpuHostTextureEntry *hostEntry = &s_gpuPresentationOverrides.entries[index];
+
+		if (hostEntry->entry != entry)
+			continue;
+		if (hostEntry->selectionLogged != 0)
+			return;
+		hostEntry->selectionLogged = 1;
+		NATIVE_GPU_LOG("presentation override selected: entry %u mode %u tpage %u clut %u rect %u,%u %ux%u class %u\n",
+			index, (unsigned int)entry->source.textureMode, (unsigned int)entry->source.tpage,
+			(unsigned int)entry->source.clut, (unsigned int)entry->source.x,
+			(unsigned int)entry->source.y, (unsigned int)entry->source.width,
+			(unsigned int)entry->source.height, (unsigned int)entry->source.assetClass);
+		return;
+	}
+}
+
 internal int NativeGpu_TrySelectHostTexture(s16 tpage, s16 clut, const u8 *const *uvs,
 	int uvCount, enum NativeTextureOverridePrimitive primitive, int semiTrans,
 	int framebufferFeedback, NativeGpuHostTextureSelection *selection)
@@ -551,6 +579,7 @@ internal int NativeGpu_TrySelectHostTexture(s16 tpage, s16 clut, const u8 *const
 	selection->binding.sourceUExtent = plan.uvRemap.sourceUExtent;
 	selection->binding.sourceVExtent = plan.uvRemap.sourceVExtent;
 	selection->selected = 1;
+	NativeGpu_LogFirstPresentationOverrideSelection(plan.entry);
 	(void)upscale;
 	return 1;
 }

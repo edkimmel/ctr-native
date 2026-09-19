@@ -1272,6 +1272,13 @@ if(BUILD_TESTING)
                 -ExporterPath "${CMAKE_SOURCE_DIR}/tools/export-vrm-rectangle.ps1"
         )
         set_tests_properties(native_vrm_rectangle_export PROPERTIES CONFIGURATIONS Release)
+
+        add_test(NAME native_png_to_ctrh_scale2x
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_SOURCE_DIR}/tests/convert_png_to_ctrh_test.ps1"
+                -ConverterPath "${CMAKE_SOURCE_DIR}/tools/convert-png-to-ctrh.ps1"
+        )
+        set_tests_properties(native_png_to_ctrh_scale2x PROPERTIES CONFIGURATIONS Release)
     endif()
 
     add_test(NAME ctr_native_version COMMAND $<TARGET_FILE:ctr_native> --version)

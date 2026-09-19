@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 SDL_Window *g_window = NULL;
 int g_dbg_polygonSelected = 0;
@@ -57,6 +58,25 @@ global_variable u64 s_vramDumpTargetFrame = 0;
 global_variable u64 s_vramDumpHostFrame = 0;
 global_variable const char *s_vramDumpOutputPath = NULL;
 global_variable int s_vramDumpFired = 0;
+
+/*
+ * Opt-in screen capture for validating presentation-only host assets.  Set
+ * both variables before launch:
+ *   CTR_NATIVE_SCREENSHOT_FRAME=<positive one-based Platform_EndFrame number>
+ *   CTR_NATIVE_SCREENSHOT_OUTPUT_PATH=<destination .bmp path>
+ *
+ * This reads the selected rendered host frame before it is presented. Like
+ * the VRAM dump, it is host-only diagnostic output and never
+ * feeds simulation, input, or replay state.
+ */
+global_variable u64 s_screenshotTargetFrame = 0;
+global_variable u64 s_screenshotHostFrame = 0;
+global_variable const char *s_screenshotOutputPath = NULL;
+global_variable int s_screenshotFired = 0;
+
+#if defined(CTR_INTERNAL)
+internal void Platform_TakeScreenshot(const char *outputPath);
+#endif
 
 internal int NativePlatform_ParsePositiveFrameNumber(const char *value, u64 *frameOut)
 {
@@ -137,6 +157,55 @@ internal void NativePlatform_MaybeDumpVRAM(void)
 	s_vramDumpFired = 1;
 	Platform_Log("[CTR Native] saving scheduled VRAM dump to %s\n", s_vramDumpOutputPath);
 	NativeRenderer_SaveVRAM(s_vramDumpOutputPath, 0, 0, VRAM_WIDTH, VRAM_HEIGHT, 1);
+}
+
+internal void NativePlatform_ConfigureScreenshot(void)
+{
+	const char *frameValue = getenv("CTR_NATIVE_SCREENSHOT_FRAME");
+	const char *outputPath = getenv("CTR_NATIVE_SCREENSHOT_OUTPUT_PATH");
+	u64 targetFrame = 0;
+
+	s_screenshotTargetFrame = 0;
+	s_screenshotHostFrame = 0;
+	s_screenshotOutputPath = NULL;
+	s_screenshotFired = 0;
+
+	if ((frameValue == NULL) && (outputPath == NULL))
+	{
+		return;
+	}
+
+	if (!NativePlatform_ParsePositiveFrameNumber(frameValue, &targetFrame) || (outputPath == NULL) || (outputPath[0] == '\0'))
+	{
+		Platform_LogWarn("[CTR Native] ignoring malformed screenshot configuration\n");
+		return;
+	}
+
+	s_screenshotTargetFrame = targetFrame;
+	s_screenshotOutputPath = outputPath;
+	Platform_Log("[CTR Native] scheduled screenshot before host frame %llu\n", (unsigned long long)targetFrame);
+}
+
+internal void NativePlatform_MaybeTakeScreenshot(void)
+{
+	if ((s_screenshotTargetFrame == 0) || (s_screenshotFired != 0))
+	{
+		return;
+	}
+
+	s_screenshotHostFrame++;
+	if (s_screenshotHostFrame != s_screenshotTargetFrame)
+	{
+		return;
+	}
+
+	s_screenshotFired = 1;
+#if defined(CTR_INTERNAL)
+	Platform_Log("[CTR Native] saving scheduled screenshot to %s\n", s_screenshotOutputPath);
+	Platform_TakeScreenshot(s_screenshotOutputPath);
+#else
+	Platform_LogWarn("[CTR Native] scheduled screenshot is unavailable in this build\n");
+#endif
 }
 
 internal void Platform_CalcFPS(void)
@@ -265,16 +334,78 @@ internal void Platform_UpdateHostAltKeyState(const s32 key, const s8 down)
 }
 
 #if defined(CTR_INTERNAL)
-internal void Platform_TakeScreenshot(void)
+internal void Platform_FlipScreenshotRows(u8 *pixels, size_t rowBytes, int height)
 {
-	u8 *pixels = (u8 *)malloc(g_windowWidth * g_windowHeight * 4);
+	u8 *scratch;
+	int top;
+	int bottom;
+
+	if ((pixels == NULL) || (rowBytes == 0) || (height <= 1))
+		return;
+	scratch = (u8 *)malloc(rowBytes);
+	if (scratch == NULL)
+	{
+		Platform_LogWarn("[CTR Native] screenshot rows could not be flipped: allocation failed\n");
+		return;
+	}
+	for (top = 0, bottom = height - 1; top < bottom; ++top, --bottom)
+	{
+		u8 *topRow = pixels + ((size_t)top * rowBytes);
+		u8 *bottomRow = pixels + ((size_t)bottom * rowBytes);
+
+		memcpy(scratch, topRow, rowBytes);
+		memcpy(topRow, bottomRow, rowBytes);
+		memcpy(bottomRow, scratch, rowBytes);
+	}
+	free(scratch);
+}
+
+internal void Platform_TakeScreenshot(const char *outputPath)
+{
+	size_t pixelBytes;
+	u8 *pixels;
+	SDL_Surface *surface;
+
+	if ((outputPath == NULL) || (outputPath[0] == '\0') || (g_windowWidth <= 0) || (g_windowHeight <= 0))
+	{
+		Platform_LogWarn("[CTR Native] failed to save screenshot: invalid output path or drawable size\n");
+		return;
+	}
+
+	pixelBytes = (size_t)g_windowWidth * (size_t)g_windowHeight * 4;
+	if ((pixelBytes / 4) != ((size_t)g_windowWidth * (size_t)g_windowHeight))
+	{
+		Platform_LogWarn("[CTR Native] failed to save screenshot: drawable size overflow\n");
+		return;
+	}
+
+	pixels = (u8 *)malloc(pixelBytes);
+	if (pixels == NULL)
+	{
+		Platform_LogWarn("[CTR Native] failed to save screenshot: allocation failed\n");
+		return;
+	}
 
 	glReadPixels(0, 0, g_windowWidth, g_windowHeight, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+	/* glReadPixels starts at the lower-left; BMP viewers start at the top-left. */
+	Platform_FlipScreenshotRows(pixels, (size_t)g_windowWidth * 4, g_windowHeight);
 
-	SDL_Surface *surface = SDL_CreateSurfaceFrom(g_windowWidth, g_windowHeight, SDL_PIXELFORMAT_BGRA8888, pixels, g_windowWidth * 4);
-
-	SDL_SaveBMP(surface, "SCREENSHOT.BMP");
-	SDL_DestroySurface(surface);
+	/* GL_BGRA yields a B,G,R,A byte array.  Use SDL's byte-array alias, not
+	 * the endian-sensitive packed BGRA8888 enum (whose little-endian memory
+	 * order differs), or SDL_SaveBMP will reinterpret the colour channels. */
+	surface = SDL_CreateSurfaceFrom(g_windowWidth, g_windowHeight, SDL_PIXELFORMAT_BGRA32, pixels, g_windowWidth * 4);
+	if (surface == NULL)
+	{
+		Platform_LogWarn("[CTR Native] failed to save screenshot: %s\n", SDL_GetError());
+	}
+	else
+	{
+		if (!SDL_SaveBMP(surface, outputPath))
+		{
+			Platform_LogWarn("[CTR Native] failed to save screenshot: %s\n", SDL_GetError());
+		}
+		SDL_DestroySurface(surface);
+	}
 
 	free(pixels);
 }
@@ -327,7 +458,7 @@ internal void Platform_HandleKey(int key, char down)
 			break;
 		case SDL_SCANCODE_F12:
 			Platform_LogWarn("[CTR Native] Saving screenshot...\n");
-			Platform_TakeScreenshot();
+			Platform_TakeScreenshot("SCREENSHOT.BMP");
 			break;
 		case SDL_SCANCODE_F3:
 			g_cfg_bilinearFiltering ^= 1;
@@ -353,6 +484,7 @@ void Platform_Init(const char *title, int width, int height, int fullscreen)
 
 	Platform_Log("[CTR Native] Initialising platform\n");
 	NativePlatform_ConfigureVramDump();
+	NativePlatform_ConfigureScreenshot();
 
 	if (SDL_Init(SDL_INIT_VIDEO) == 0)
 	{
@@ -503,6 +635,9 @@ void Platform_EndScene(void)
 		NativeRenderer_PresentVRAMRect(activeDispEnv.disp.x, activeDispEnv.disp.y, activeDispEnv.disp.w, activeDispEnv.disp.h);
 	}
 	NativeRenderer_EndGpuFrame();
+	/* Capture the rendered back buffer before SDL presents it. Reading before
+	 * the draw or after the swap can legitimately return an undefined buffer. */
+	NativePlatform_MaybeTakeScreenshot();
 	NativeRenderer_SwapWindow();
 	NativePerf_EndScope(NATIVE_PERF_BUCKET_PLATFORM_END_SCENE);
 }

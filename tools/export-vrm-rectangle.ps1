@@ -1,8 +1,15 @@
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Vrm')]
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = 'Vrm')]
     [ValidateNotNullOrEmpty()]
     [string[]]$VrmPath,
+
+    # A full 1024x512 16-bit VRAM snapshot written by NativeRenderer_SaveVRAM.
+    # Unlike a retail .vrm upload, this captures dynamic texture data and CLUTs
+    # at the exact frame being inspected.
+    [Parameter(Mandatory = $true, ParameterSetName = 'Tga')]
+    [ValidateNotNullOrEmpty()]
+    [string]$TgaPath,
 
     # SourceX/SourceY/Width/Height are PSX VRAM *words*, as recorded by the
     # presentation trace and manifest.  The output width is expanded to texels.
@@ -125,6 +132,49 @@ function Import-VrmPayload {
     }
 }
 
+function Import-NativeVramTga {
+    param([string]$Path, [uint16[]]$Vram)
+
+    $resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    $bytes = [IO.File]::ReadAllBytes($resolvedPath)
+    $expectedPixels = [long]$vramWidth * [long]$vramHeight
+    $headerBytes = 18
+
+    if ($bytes.LongLength -lt $headerBytes) {
+        throw "VRAM TGA is shorter than its 18-byte header: $resolvedPath"
+    }
+    [int]$idLength = $bytes[0]
+    [int]$colorMapType = $bytes[1]
+    [int]$imageType = $bytes[2]
+    [int]$imageWidth = ([int]$bytes[12]) -bor (([int]$bytes[13]) -shl 8)
+    [int]$imageHeight = ([int]$bytes[14]) -bor (([int]$bytes[15]) -shl 8)
+    [int]$pixelDepth = $bytes[16]
+    [int]$descriptor = $bytes[17]
+    [long]$pixelOffset = $headerBytes + $idLength
+    [long]$pixelBytes = $expectedPixels * 2
+
+    # NativeRenderer_SaveVRAM intentionally writes a simple, uncompressed,
+    # bottom-origin 16-bit image. Reject other TGA variants instead of silently
+    # treating BGR(A), RLE, or a colour map as raw PS1 words.
+    if (($colorMapType -ne 0) -or ($imageType -ne 2) -or
+        ($imageWidth -ne $vramWidth) -or ($imageHeight -ne $vramHeight) -or
+        ($pixelDepth -ne 16) -or (($descriptor -band 0x20) -ne 0) -or
+        ($bytes.LongLength -ne ($pixelOffset + $pixelBytes))) {
+        throw "TGA is not a 1024x512 uncompressed 16-bit NativeRenderer_SaveVRAM snapshot: $resolvedPath"
+    }
+
+    for ([int]$fileRow = 0; $fileRow -lt $vramHeight; $fileRow++) {
+        [int]$vramRow = $vramHeight - $fileRow - 1
+        [long]$sourceOffset = $pixelOffset + ([long]$fileRow * $vramWidth * 2)
+        [long]$destinationOffset = [long]$vramRow * $vramWidth
+        for ([int]$column = 0; $column -lt $vramWidth; $column++) {
+            [long]$byteOffset = $sourceOffset + ([long]$column * 2)
+            $Vram[$destinationOffset + $column] = [uint16](([uint16]$bytes[$byteOffset]) -bor
+                (([uint16]$bytes[$byteOffset + 1]) -shl 8))
+        }
+    }
+}
+
 function Get-PsxRgba {
     param([uint16]$Color, [int]$PaletteIndex = -1)
     [int]$rgb = $Color -band 0x7fff
@@ -173,8 +223,13 @@ if ((Test-Path -LiteralPath $fullOutputPath) -and -not $Force) {
 }
 
 $vram = [uint16[]]::new($vramWidth * $vramHeight)
-foreach ($path in $VrmPath) {
-    Import-VrmPayload -Path $path -Vram $vram
+if ($PSCmdlet.ParameterSetName -eq 'Tga') {
+    Import-NativeVramTga -Path $TgaPath -Vram $vram
+}
+else {
+    foreach ($path in $VrmPath) {
+        Import-VrmPayload -Path $path -Vram $vram
+    }
 }
 
 [int]$outputWidth = $Width * $texelsPerWord

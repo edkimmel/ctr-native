@@ -175,6 +175,44 @@ and selects it only for a trace-approved font or character-sprite source key.
 The raw retail VRAM path remains the fallback for every unapproved, unsupported,
 or mutated source region.
 
+### Decode, scale, and inspect an approved texture
+
+Retail VRAM is indexed PS1 texture data, so do not inspect the raw VRAM dump
+as though it were RGB. Decode the exact trace-approved rectangle using its
+mode, source rectangle, and CLUT first. For example, this extracts a 4-bit
+font glyph from the shared retail upload:
+
+```powershell
+.\tools\export-vrm-rectangle.ps1 `
+  -VrmPath .\debug\offline-extract\bigfile\packs\shared.vrm `
+  -Mode 4 -SourceX 992 -SourceY 176 -Width 4 -Height 16 `
+  -ClutX 64 -ClutY 250 `
+  -OutputPath .\debug\offline-extract\glyph.png
+```
+
+`convert-png-to-ctrh.ps1` applies edge-aware Scale2x once per factor-of-two
+step and writes the validated RGBA host-asset format. It accepts only 1x, 2x,
+4x, or 8x; an 8x 16x16 source glyph becomes a 128x128 CTRH asset:
+
+```powershell
+.\tools\convert-png-to-ctrh.ps1 `
+  -InputPngPath .\debug\offline-extract\glyph.png `
+  -UpscaleFactor 8 `
+  -OutputCtrhPath .\debug\packs\font-scale8\textures\font\glyph.ctrh
+```
+
+To inspect real host presentation rather than raw VRAM, set both variables
+for a one-shot capture before launch. The internal build captures the rendered
+back buffer immediately before the selected SDL frame is presented. It does
+not affect canonical simulation, input, or replay data:
+
+```powershell
+$env:CTR_NATIVE_SCREENSHOT_FRAME = '700'
+$env:CTR_NATIVE_SCREENSHOT_OUTPUT_PATH = (Resolve-Path .\debug\packs\font-scale8).Path + '\\frame-700.bmp'
+build-msvc-x86\Release\ctr_native.exe --render-scale 8 `
+  --presentation-overrides --presentation-pack .\debug\packs\font-scale8
+```
+
 ## Offline retail-asset extraction
 
 `assets\ctr-u.bin` is a raw MODE2/2352 disc image rather than a loose image
