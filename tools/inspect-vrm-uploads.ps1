@@ -42,16 +42,18 @@ function Assert-Range {
 function Read-UInt32LE {
     param([byte[]]$Bytes, [long]$Offset, [string]$What)
     Assert-Range -Bytes $Bytes -Offset $Offset -Length 4 -What $What
-    return [uint32](($Bytes[$Offset]) -bor
-                    (($Bytes[($Offset + 1)]) -shl 8) -bor
-                    (($Bytes[($Offset + 2)]) -shl 16) -bor
-                    (($Bytes[($Offset + 3)]) -shl 24))
+    # PowerShell preserves a [byte]'s width for shifts, so cast before shifting
+    # rather than silently losing every high byte.
+    return [uint32](([uint32]$Bytes[$Offset]) -bor
+                    (([uint32]$Bytes[($Offset + 1)]) -shl 8) -bor
+                    (([uint32]$Bytes[($Offset + 2)]) -shl 16) -bor
+                    (([uint32]$Bytes[($Offset + 3)]) -shl 24))
 }
 
 function Read-Int16LE {
     param([byte[]]$Bytes, [long]$Offset, [string]$What)
     Assert-Range -Bytes $Bytes -Offset $Offset -Length 2 -What $What
-    [int]$value = $Bytes[$Offset] -bor (($Bytes[($Offset + 1)]) -shl 8)
+    [int]$value = ([int]$Bytes[$Offset]) -bor (([int]$Bytes[($Offset + 1)]) -shl 8)
     if ($value -ge 32768) {
         $value -= 65536
     }

@@ -1265,6 +1265,13 @@ if(BUILD_TESTING)
                 -InspectorPath "${CMAKE_SOURCE_DIR}/tools/inspect-vrm-uploads.ps1"
         )
         set_tests_properties(native_vrm_upload_inventory PROPERTIES CONFIGURATIONS Release)
+
+        add_test(NAME native_vrm_rectangle_export
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_SOURCE_DIR}/tests/export_vrm_rectangle_test.ps1"
+                -ExporterPath "${CMAKE_SOURCE_DIR}/tools/export-vrm-rectangle.ps1"
+        )
+        set_tests_properties(native_vrm_rectangle_export PROPERTIES CONFIGURATIONS Release)
     endif()
 
     add_test(NAME ctr_native_version COMMAND $<TARGET_FILE:ctr_native> --version)
