@@ -185,6 +185,19 @@ set_target_properties(ctr_native_host_texture_asset PROPERTIES
 )
 target_include_directories(ctr_native_host_texture_asset PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# The production, GL-free callback joins an enabled exact registry entry to
+# the bounded CTRH decoder.  Renderer/main code still does not link it.
+add_library(ctr_native_presentation_asset_loader STATIC platform/native_presentation_asset_loader.c)
+set_target_properties(ctr_native_presentation_asset_loader PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_presentation_asset_loader PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_presentation_asset_loader PUBLIC
+    ctr_native_host_texture_asset
+    ctr_native_presentation_registry)
+
 # Renderer-free seam for deriving the exact manifest key and UV remap facts
 # from a retail textured primitive.  It is intentionally GL- and game-free;
 # the future renderer must still own asset upload and draw-state isolation.
@@ -769,6 +782,18 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_host_texture_asset_test PRIVATE ctr_native_host_texture_asset)
     add_test(NAME native_host_texture_asset_unit COMMAND $<TARGET_FILE:native_host_texture_asset_test>)
+
+    add_executable(native_presentation_asset_loader_test tests/native_presentation_asset_loader_test.c)
+    set_target_properties(native_presentation_asset_loader_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_presentation_asset_loader_test PRIVATE
+        ctr_native_presentation_asset_loader
+        ctr_native_host_texture_plan)
+    add_test(NAME native_presentation_asset_loader_unit
+        COMMAND $<TARGET_FILE:native_presentation_asset_loader_test>)
 
     add_executable(native_host_texture_binding_test tests/native_host_texture_binding_test.c)
     set_target_properties(native_host_texture_binding_test PROPERTIES

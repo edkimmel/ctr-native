@@ -73,6 +73,28 @@ static int NativePresentationRegistry_IsRegularFile(const char *path)
 
 static int NativePresentationRegistry_Copy(char *destination, size_t destinationSize, const char *source, size_t sourceSize);
 
+/* Registry storage is public for the small pure-test harnesses, so resolution
+ * must not trust that a caller left a terminating NUL in a mutable field. */
+static int NativePresentationRegistry_BoundedStringLength(const char *text, size_t maximum,
+	                                                       size_t *lengthOut)
+{
+	size_t length;
+
+	if ((text == NULL) || (lengthOut == NULL))
+	{
+		return 0;
+	}
+	for (length = 0u; length < maximum; ++length)
+	{
+		if (text[length] == '\0')
+		{
+			*lengthOut = length;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 /* Reject links even when their final target would remain below the pack root:
  * presentation pack files are expected to be a self-contained, ordinary tree. */
 static int NativePresentationRegistry_HasReparsePoint(const char *root, const char *relativePath)
@@ -571,6 +593,57 @@ const struct NativePresentationRegistryEntry *NativePresentationRegistry_Lookup(
 	const struct NativePresentationRegistry *registry, const struct NativePresentationSourceKey *source)
 {
 	return NativePresentationRegistry_IsEnabled(registry) ? NativePresentationRegistry_FindExact(registry, source) : NULL;
+}
+
+int NativePresentationRegistry_ResolveEnabledAssetPath(
+	const struct NativePresentationRegistry *registry,
+	const struct NativePresentationRegistryEntry *entry,
+	char *destination, size_t destinationSize)
+{
+	char root[NATIVE_PRESENTATION_REGISTRY_MAX_ASSET_ROOT];
+	char relativePath[NATIVE_PRESENTATION_REGISTRY_MAX_ASSET_PATH];
+	char fullAssetPath[NATIVE_PRESENTATION_REGISTRY_MAX_RESOLVED_ASSET_PATH];
+	size_t rootLength;
+	size_t relativeLength;
+
+	if ((destination != NULL) && (destinationSize != 0u))
+	{
+		destination[0] = '\0';
+	}
+	if ((registry == NULL) || (entry == NULL) || (destination == NULL) ||
+		(destinationSize < NATIVE_PRESENTATION_REGISTRY_MAX_RESOLVED_ASSET_PATH) ||
+		!NativePresentationRegistry_IsEnabled(registry))
+	{
+		return 0;
+	}
+
+	/* An arbitrary copy of an entry is not authority to open a file. */
+	if (NativePresentationRegistry_FindExact(registry, &entry->source) != entry)
+	{
+		return 0;
+	}
+	if (!NativePresentationRegistry_BoundedStringLength(registry->assetRoot,
+		sizeof(registry->assetRoot), &rootLength) || (rootLength == 0u) ||
+		!NativePresentationRegistry_BoundedStringLength(entry->assetPath,
+		sizeof(entry->assetPath), &relativeLength) ||
+		!NativePresentationRegistry_Copy(root, sizeof(root), registry->assetRoot, rootLength) ||
+		!NativePresentationRegistry_Copy(relativePath, sizeof(relativePath), entry->assetPath, relativeLength))
+	{
+		return 0;
+	}
+	if (!NativePresentationRegistry_IsDirectory(root) ||
+		NativePresentationRegistry_HasReparsePoint(root, "") ||
+		!NativePresentationRegistry_IsSafeRelativeAssetPath(relativePath, relativeLength) ||
+		!NativePresentationRegistry_BuildAssetPath(fullAssetPath, sizeof(fullAssetPath), root, relativePath) ||
+		!NativePresentationRegistry_IsRegularFile(fullAssetPath) ||
+		NativePresentationRegistry_HasReparsePoint(root, relativePath) ||
+		!NativePresentationRegistry_IsResolvedBelowRoot(root, fullAssetPath))
+	{
+		return 0;
+	}
+
+	return NativePresentationRegistry_Copy(destination, destinationSize, fullAssetPath,
+		strlen(fullAssetPath));
 }
 
 enum NativePresentationRegistryError NativePresentationRegistry_GetLastError(const struct NativePresentationRegistry *registry)

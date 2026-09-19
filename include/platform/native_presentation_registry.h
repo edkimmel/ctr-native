@@ -15,6 +15,9 @@
 #define NATIVE_PRESENTATION_REGISTRY_MAX_ENTRIES        64u
 #define NATIVE_PRESENTATION_REGISTRY_MAX_ASSET_PATH     260u
 #define NATIVE_PRESENTATION_REGISTRY_MAX_ASSET_ROOT     512u
+/* Includes the optional separator between root and relative asset path. */
+#define NATIVE_PRESENTATION_REGISTRY_MAX_RESOLVED_ASSET_PATH \
+	(NATIVE_PRESENTATION_REGISTRY_MAX_ASSET_ROOT + NATIVE_PRESENTATION_REGISTRY_MAX_ASSET_PATH)
 #define NATIVE_PRESENTATION_REGISTRY_MAX_MANIFEST_BYTES (64u * 1024u)
 #define NATIVE_PRESENTATION_REGISTRY_FINGERPRINT_BYTES  17u
 
@@ -104,6 +107,22 @@ const struct NativePresentationRegistryEntry *NativePresentationRegistry_FindExa
 /* Returns NULL unless presentation overrides have explicitly been enabled. */
 const struct NativePresentationRegistryEntry *NativePresentationRegistry_Lookup(
 	const struct NativePresentationRegistry *registry, const struct NativePresentationSourceKey *source);
+
+/*
+ * Resolves one already-registered asset for a local host-presentation caller.
+ * This is deliberately stricter than FindExact: it accepts only the exact
+ * entry object owned by an explicitly enabled registry, then repeats the
+ * regular-file, no-reparse-point, and canonical-below-root checks at use
+ * time.  This closes the time-of-check/time-of-use window between manifest
+ * parsing and a future host asset load.  It never changes the registry.
+ *
+ * `destination` is cleared on failure.  Its capacity must be at least
+ * NATIVE_PRESENTATION_REGISTRY_MAX_RESOLVED_ASSET_PATH.
+ */
+int NativePresentationRegistry_ResolveEnabledAssetPath(
+	const struct NativePresentationRegistry *registry,
+	const struct NativePresentationRegistryEntry *entry,
+	char *destination, size_t destinationSize);
 
 enum NativePresentationRegistryError NativePresentationRegistry_GetLastError(const struct NativePresentationRegistry *registry);
 const char *NativePresentationRegistry_ErrorString(enum NativePresentationRegistryError error);
