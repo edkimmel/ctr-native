@@ -293,9 +293,9 @@ target_include_directories(ctr_native_canonical_topology PUBLIC ${CMAKE_SOURCE_D
 target_compile_definitions(ctr_native_canonical_topology PUBLIC CTR_NATIVE)
 target_link_libraries(ctr_native_canonical_topology PUBLIC ctr_native_canonical_fixed_array)
 
-# Dormant, game-owned active-mempack lease authority.  It is intentionally a
-# leaf: no game executable, runtime, replay, scheduler, UI, or network target
-# consumes it until separately approved lifecycle integration exists.
+# Game-owned active-mempack lease authority. The executable's private owner
+# may retire it at audited destructive boundaries, but no executable path can
+# acquire, activate, capture, publish, serialize, replay, or network it.
 add_library(main_canonical_topology_lease_authority STATIC
     game/MAIN/MainCanonicalTopologyLeaseAuthority.c)
 set_target_properties(main_canonical_topology_lease_authority PROPERTIES
@@ -305,9 +305,9 @@ target_include_directories(main_canonical_topology_lease_authority PUBLIC
 target_compile_definitions(main_canonical_topology_lease_authority PUBLIC CTR_NATIVE)
 target_link_libraries(main_canonical_topology_lease_authority PUBLIC ctr_native_topology_residency)
 
-# Dormant value-only lifecycle observation log. It has no game, authority,
-# runtime, replay, scheduler, transport, or topology-candidate consumer. A
-# later reviewed integration may use it to prove source call-site ordering.
+# Value-only lifecycle observation log. Its only executable consumer is the
+# private retirement owner; it still has no canonical-state, replay,
+# scheduler, transport, topology-candidate, or network consumer.
 add_library(main_canonical_topology_lifecycle_events STATIC
     game/MAIN/MainCanonicalTopologyLifecycleEvents.c)
 set_target_properties(main_canonical_topology_lifecycle_events PROPERTIES
@@ -563,7 +563,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_topology_residency main_canonical_topology_lifecycle_events)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -854,6 +854,15 @@ if(BUILD_TESTING)
     add_test(NAME main_canonical_topology_lease_adapter_unit COMMAND $<TARGET_FILE:main_canonical_topology_lease_adapter_test>)
     add_test(NAME main_canonical_topology_lease_adapter_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_topology_lease_adapter_isolation_test.cmake")
+
+    add_executable(main_canonical_topology_lease_runtime_test tests/main_canonical_topology_lease_runtime_test.c)
+    set_target_properties(main_canonical_topology_lease_runtime_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_include_directories(main_canonical_topology_lease_runtime_test PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+    target_compile_definitions(main_canonical_topology_lease_runtime_test PRIVATE CTR_NATIVE)
+    target_link_libraries(main_canonical_topology_lease_runtime_test PRIVATE ctr_native_topology_residency main_canonical_topology_lifecycle_events)
+    add_test(NAME main_canonical_topology_lease_runtime_unit COMMAND $<TARGET_FILE:main_canonical_topology_lease_runtime_test>)
+    add_test(NAME main_canonical_topology_lease_runtime_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_topology_lease_runtime_isolation_test.cmake")
 
     add_executable(native_canonical_state_v3_test tests/native_canonical_state_v3_test.c)
     set_target_properties(native_canonical_state_v3_test PROPERTIES

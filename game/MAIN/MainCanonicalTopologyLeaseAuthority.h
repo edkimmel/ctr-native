@@ -5,9 +5,10 @@
 #include "platform/native_topology_residency.h"
 
 /*
- * Dormant ownership authority for a future active-mempack topology reader.
- * This module owns no hook and is not live authority until the call sites in
- * docs/TOPOLOGY_LEASE_AUTHORITY.md have been deliberately installed.
+ * Ownership authority for a future active-mempack topology reader. This
+ * module owns no lifecycle hook. A private retire-only owner may invalidate
+ * it at audited mutation boundaries, but it remains non-live: no game path
+ * acquires, observes, captures, activates, or publishes a topology lease.
  */
 enum MainCanonicalTopologyLeaseInitReason
 {

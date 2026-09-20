@@ -1,4 +1,5 @@
 #include <common.h>
+#include "../MAIN/MainCanonicalTopologyLeaseRuntime.h"
 
 // Dont get confused, packID is LOAD_GetAdvPackIndex(),
 // which gives the pack of the hub you're NOT on, because the
@@ -29,6 +30,9 @@ void LOAD_TalkingMask(int packID, int maskID)
 void LOAD_LevelFile(int levelID)
 {
 	struct GameTracker *gGT = sdata->gGT;
+
+	/* This is the normal full-load entry, before any level/load mutation. */
+	MainCanonicalTopologyLeaseRuntime_BeforeFullLoad();
 
 	// why here?
 	sdata->modelMaskHints3D = 0;

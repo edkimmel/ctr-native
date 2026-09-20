@@ -7,6 +7,7 @@
 #include "ctr_scratchpad.h"
 #include "platform/native_memory.h"
 #include "platform/native_state.h"
+#include "platform/native_topology_lease_runtime.h"
 
 #include <string.h>
 
@@ -2153,6 +2154,9 @@ int NativeCheckpoint_Restore(const void *src, int srcSize)
 	{
 		return 0;
 	}
+	/* Header is valid; retire the private non-checkpointed lease owner before
+	 * any resident game state or overlay image is overwritten. */
+	NativeTopologyLeaseRuntime_BeforeCheckpointRestore();
 	if (!NativeCheckpoint_InitHeader(&liveHeader))
 	{
 		return 0;

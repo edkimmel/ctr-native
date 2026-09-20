@@ -119,6 +119,8 @@
 #include "MAIN/MainCanonicalTopology.c"
 #include "MAIN/MainCanonicalState.c"
 #include "MAIN/MainCanonicalRuntime.c"
+#include "MAIN/MainCanonicalTopologyLeaseAuthority.c"
+#include "MAIN/MainCanonicalTopologyLeaseRuntime.c"
 #include "MAIN/MainMain.c"
 #include "MAIN/MainDB.c"
 #include "MAIN/MainDrawCb.c"

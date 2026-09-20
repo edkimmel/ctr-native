@@ -597,7 +597,12 @@ void StateZero()
 	struct GamepadSystem *gGS;
 	gGS = sdata->gGamepads;
 
+	/* A subsequent StateZero can clobber source state from a prior lifetime. */
+	MainCanonicalTopologyLeaseRuntime_BeforeGameTrackerZero();
 	memset(gGT, 0, sizeof(*gGT));
+	/* Keep the private retirement owner outside gGT/checkpoints; construct it
+	 * only on first boot after this retail-owned state has been cleared. */
+	MainCanonicalTopologyLeaseRuntime_ResetAfterGameTrackerZero();
 
 	// Set Video Mode to NTSC
 	SetVideoMode(0);
@@ -605,6 +610,8 @@ void StateZero()
 
 #define MEMPACK_SIZE 0x200000 // 2mb
 
+	/* Platform_InitMempackArena clears the resident arena inside MEMPACK_Init. */
+	MainCanonicalTopologyLeaseRuntime_BeforeArenaReset();
 	MEMPACK_Init(MEMPACK_SIZE);
 	LOAD_InitCD();
 	RaceFlag_SetFullyOffScreen();
@@ -764,6 +771,9 @@ void StateZero()
 
 	sdata->mainGameState = 3;
 
+	/* Cold boot enters the ten-stage loader directly, not through
+	 * LOAD_LevelFile; record this full-load boundary before the stage mutates. */
+	MainCanonicalTopologyLeaseRuntime_BeforeFullLoad();
 	// start loading
 	sdata->Loading.stage = LOAD_TEN_STAGES_0;
 

@@ -11,7 +11,7 @@ if(recorder_link)
 endif()
 
 foreach(forbidden IN ITEMS
-    ctr_native ctr_native_canonical_runtime ctr_native_replay_scheduler_seam
+    ctr_native_canonical_runtime ctr_native_replay_scheduler_seam
     ctr_native_replay_scheduler_v3 ctr_native_replay_scheduler_v4
     ctr_native_replay_v2 ctr_native_replay_v2_file ctr_native_replay_v3 ctr_native_replay_v3_file
     ctr_native_replay_v4 ctr_native_replay_v4_file main_canonical_topology_lease_authority

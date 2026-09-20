@@ -1,4 +1,5 @@
 #include <common.h>
+#include "../MAIN/MainCanonicalTopologyLeaseRuntime.h"
 
 // packID will always be 3-gGT->activeMempackIndex
 void LOAD_Hub_ReadFile(struct BigHeader *bigfile, int levID, int packID)
@@ -41,6 +42,8 @@ void LOAD_Hub_SwapNow()
 		VSync(0);
 	}
 
+	/* Active-pack swap only. LOAD_Hub_ReadFile remains an inactive preload. */
+	MainCanonicalTopologyLeaseRuntime_BeforeHubSwap();
 	LevInstDef_RePack(gGT->level1->ptr_mesh_info, 1);
 
 	LOAD_HubSwapPtrs(gGT);

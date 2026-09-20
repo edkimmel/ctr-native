@@ -4,13 +4,13 @@
 #include <stdint.h>
 
 /*
- * Dormant, value-only lifecycle observation log. This is deliberately not
- * connected to the game: it does not own lifecycle state, read game state,
- * activate or capture topology, publish a value, or establish any network or
- * simulation-time boundary.
+ * Value-only lifecycle observation log. The private retirement owner may
+ * append audited source-boundary observations, but this module itself does
+ * not own lifecycle state, read game state, activate or capture topology,
+ * publish a value, or establish any network or simulation-time boundary.
  *
- * A future, separately-approved integration may record source observations in
- * their encountered order. In particular, this module deliberately neither
+ * The owner records source observations in their encountered order. In
+ * particular, this module deliberately neither
  * coalesces nor rejects an ARENA_RESET followed by FULL_LOAD; the cold-load
  * coalescing policy remains an integration decision to be proved at real
  * source call sites. opaqueSourceStep is caller-provided provenance only. It
@@ -38,7 +38,9 @@ enum MainCanonicalTopologyLifecycleMutationReason
 	MAIN_CANONICAL_TOPOLOGY_LIFECYCLE_REASON_FULL_LOAD = 3,
 	MAIN_CANONICAL_TOPOLOGY_LIFECYCLE_REASON_HUB_SWAP = 4,
 	MAIN_CANONICAL_TOPOLOGY_LIFECYCLE_REASON_CHECKPOINT_RESTORE = 5,
-	MAIN_CANONICAL_TOPOLOGY_LIFECYCLE_REASON_ARENA_RESET = 6
+	MAIN_CANONICAL_TOPOLOGY_LIFECYCLE_REASON_ARENA_RESET = 6,
+	/* StateZero destroys the game tracker before the later physical arena wipe. */
+	MAIN_CANONICAL_TOPOLOGY_LIFECYCLE_REASON_GAME_TRACKER_ZERO = 7
 };
 
 struct MainCanonicalTopologyLifecycleEventV1

@@ -8,7 +8,10 @@ string(REGEX MATCH "target_link_libraries\\([ \\t\\r\\n]*${target}[^)]*\\)" link
 if(links)
     message(FATAL_ERROR "topology residency: target must not link game/runtime dependencies")
 endif()
-foreach(forbidden_consumer IN ITEMS ctr_native ctr_native_canonical_runtime ctr_native_replay_scheduler_v4 ctr_native_replay_v4 ctr_native_replay_v4_file ctr_native_canonical_topology ctr_native_canonical_projector_v4)
+# ctr_native may link this validator only because the unity-owned authority
+# retains its dormant observe implementation. The retire-only owner never
+# calls acquire or observe; its dedicated isolation test locks that boundary.
+foreach(forbidden_consumer IN ITEMS ctr_native_canonical_runtime ctr_native_replay_scheduler_v4 ctr_native_replay_v4 ctr_native_replay_v4_file ctr_native_canonical_topology ctr_native_canonical_projector_v4)
     string(REGEX MATCH "target_link_libraries\\([ \\t\\r\\n]*${forbidden_consumer}[^)]*${target}" bad "${cmake}")
     if(bad)
         message(FATAL_ERROR "topology residency: ${forbidden_consumer} must not consume validator")
