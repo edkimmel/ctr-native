@@ -10,6 +10,11 @@ A native PC port of Crash Team Racing (PS1, 1999), built on top of the [CTR-ModS
 - **No build system nonsense.** Just `build.bat` / `build.sh`.
 - **Fully static build.** Single executable, zero dependencies. SDL3 is compiled from vendored source and linked statically.
 
+## Current State
+
+For a current snapshot of the project and the next work, see
+[docs/HANDOFF.md](docs/HANDOFF.md). Keep it up to date as truth.
+
 ## Directory Layout
 
 ```
