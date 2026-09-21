@@ -949,67 +949,76 @@ GLint u_psxTextureOutputStpLoc;
 
 #define GPU_ARRAY_FUNC "	float _idx2(vec2 array, int idx) { return array[idx]; }\n"
 
-#define GPU_FRAGMENT_SAMPLE_SHADER(bit)                                                                                                               \
-	GPU_FETCH_VRAM_FUNC                                                                                                                               \
-	GPU_ARRAY_FUNC                                                                                                                                    \
-	GPU_SAMPLE_TEXTURE_##bit##BIT_FUNC                                                                                                                \
-	    "	uniform sampler2D s_rgLut;\n"                                                                                                               \
-	    "	uniform int textureFilter;\n"                                                                                                               \
-	    "	uniform int psxSemiTransPass;\n"                                                                                                            \
-	    "	uniform int psxDrawMaskSet;\n"                                                                                                              \
-	    "	uniform int psxTextureOutputStp;\n"                                                                                                         \
-	    "	float sampledStp = 0.0;\n"                                                                                                                  \
-	    "	const vec2 c_LUTTexel = vec2(1.0 / 256.0, 1.0 / 256.0);\n"                                                                                  \
-	    "	vec4 lut(vec2 rg) { return texture2D(s_rgLut, rg - c_LUTTexel * 0.0001); }\n" GPU_STP_PASS_FUNC "	vec4 bilinearTextureSample(vec2 P) {\n" \
-	    "		vec2 frac = fract(P);\n"                                                                                                                   \
-	    "		vec2 pixel = floor(P);\n"                                                                                                                  \
-	    "		vec2 C11 = samplePSX(pixel);\n"                                                                                                            \
-	    "		vec2 C21 = samplePSX(pixel + vec2(1.0, 0.0));\n"                                                                                           \
-	    "		vec2 C12 = samplePSX(pixel + vec2(0.0, 1.0));\n"                                                                                           \
-	    "		vec2 C22 = samplePSX(pixel + vec2(1.0, 1.0));\n"                                                                                           \
-	    "		float v11 = texelVisible(C11);\n"                                                                                                          \
-	    "		float v21 = texelVisible(C21);\n"                                                                                                          \
-	    "		float v12 = texelVisible(C12);\n"                                                                                                          \
-	    "		float v22 = texelVisible(C22);\n"                                                                                                          \
-	    "		float s11 = v11 * stpWeight(C11);\n"                                                                                                       \
-	    "		float s21 = v21 * stpWeight(C21);\n"                                                                                                       \
-	    "		float s12 = v12 * stpWeight(C12);\n"                                                                                                       \
-	    "		float s22 = v22 * stpWeight(C22);\n"                                                                                                       \
-	    "		float n11 = v11 - s11;\n"                                                                                                                  \
-	    "		float n21 = v21 - s21;\n"                                                                                                                  \
-	    "		float n12 = v12 - s12;\n"                                                                                                                  \
-	    "		float n22 = v22 - s22;\n"                                                                                                                  \
-	    "		float ax1 = mix(v11, v21, frac.x);\n"                                                                                                      \
-	    "		float ax2 = mix(v12, v22, frac.x);\n"                                                                                                      \
-	    "		float axm = mix(ax1, ax2, frac.y);\n"                                                                                                      \
-	    "		float sx1 = mix(s11, s21, frac.x);\n"                                                                                                      \
-	    "		float sx2 = mix(s12, s22, frac.x);\n"                                                                                                      \
-	    "		float stp = mix(sx1, sx2, frac.y);\n"                                                                                                      \
-	    "		float nx1 = mix(n11, n21, frac.x);\n"                                                                                                      \
-	    "		float nx2 = mix(n12, n22, frac.x);\n"                                                                                                      \
-	    "		float nonStp = mix(nx1, nx2, frac.y);\n"                                                                                                   \
-	    "		vec2 rg = mix(mix(C11, C21, frac.x), mix(C12, C22, frac.x), frac.y);\n"                                                                    \
-	    "		sampledStp = stp;\n"                                                                                                                       \
-	    "		if(discardForSemiTransPass(axm, stp, nonStp)) { discard; }\n"                                                                              \
-	    "		vec4 x1 = mix(lut(C11), lut(C21), frac.x);\n"                                                                                              \
-	    "		vec4 x2 = mix(lut(C12), lut(C22), frac.x);\n"                                                                                              \
-	    "		vec4 t = mix(x1, x2, frac.y);\n"                                                                                                           \
-	    "		t.w = 1.0 - t.w;\n"                                                                                                                        \
-	    "		return t;\n"                                                                                                                               \
-	    "	}\n"                                                                                                                                        \
-	    "	vec4 nearestTextureSample(vec2 P) {\n"                                                                                                      \
-	    "		vec2 rg = samplePSX(P);\n"                                                                                                                 \
-	    "		float visible = texelVisible(rg);\n"                                                                                                       \
-	    "		sampledStp = visible * stpWeight(rg);\n"                                                                                                   \
-	    "		if(discardForSemiTransPass(visible, sampledStp, visible - sampledStp)) { discard; }\n"                                                     \
-	    "		vec4 t = lut(rg);\n"                                                                                                                       \
-	    "		t.w = 1.0 - t.w;\n"                                                                                                                        \
-	    "		return t;\n"                                                                                                                               \
-	    "	}\n"                                                                                                                                        \
-	    "	void main() {\n"                                                                                                                            \
-	    "		vec4 color = (textureFilter > 0) ? bilinearTextureSample(v_texcoord.xy) : nearestTextureSample(v_texcoord.xy);\n"                          \
-	    "		fragColor = dither(color * v_color);\n"                                                                                                    \
-	    "		fragColor.a = (psxDrawMaskSet != 0 || (psxTextureOutputStp != 0 && sampledStp >= 0.5)) ? 1.0 : 0.0;\n"                                     \
+// Texture filtering contract (presentation-only). The VRAM sampler stays
+// GL_NEAREST and is never touched; all filtering is done with manual taps here.
+// In bilinear mode the visibility, STP and mask decisions (sampledStp,
+// discardForSemiTransPass, and therefore fragColor.a / VRAM bit 15) come from
+// the nearest texel exactly as nearestTextureSample decides them, so the
+// discard edge and the two semi-transparency passes are identical to nearest
+// mode. Only the colour differs: a post-CLUT blend of the 2x2 neighbourhood
+// around the texel centre (P - 0.5), weighted by the bilinear factor, by
+// texelVisible (transparent texels add neither colour nor weight, no dark
+// fringes) and by passWeight (opaque and STP texel classes never mix across
+// passes, no holes). Every tap is wrapped mod 256 within the page so no tap
+// reads the neighbouring page column. Taps are fetched at texel centres (+0.5)
+// because the page origin carries only a c_UVFudge margin above the boundary;
+// rgN uses the unfloored P so the classification is the same expression as
+// nearest mode. Falls back to the nearest texel colour when no tap carries
+// weight.
+#define GPU_FRAGMENT_SAMPLE_SHADER(bit)                                                                                                        \
+	GPU_FETCH_VRAM_FUNC                                                                                                                        \
+	GPU_ARRAY_FUNC                                                                                                                             \
+	GPU_SAMPLE_TEXTURE_##bit##BIT_FUNC                                                                                                         \
+	    "	uniform sampler2D s_rgLut;\n"                                                                                                      \
+	    "	uniform int textureFilter;\n"                                                                                                      \
+	    "	uniform int psxSemiTransPass;\n"                                                                                                   \
+	    "	uniform int psxDrawMaskSet;\n"                                                                                                     \
+	    "	uniform int psxTextureOutputStp;\n"                                                                                                \
+	    "	float sampledStp = 0.0;\n"                                                                                                         \
+	    "	const vec2 c_LUTTexel = vec2(1.0 / 256.0, 1.0 / 256.0);\n"                                                                         \
+	    "	vec4 lut(vec2 rg) { return texture2D(s_rgLut, rg - c_LUTTexel * 0.0001); }\n" GPU_STP_PASS_FUNC "	float passWeight(vec2 rg) {\n" \
+	    "		float stp = stpWeight(rg);\n"                                                                                                  \
+	    "		if(psxSemiTransPass == 1) { return 1.0 - stp; }\n"                                                                             \
+	    "		if(psxSemiTransPass == 2) { return stp; }\n"                                                                                   \
+	    "		return 1.0;\n"                                                                                                                 \
+	    "	}\n"                                                                                                                               \
+	    "	void bilinearTap(vec2 tap, float w, inout vec4 sum, inout float wsum) {\n"                                                         \
+	    "		vec2 rg = samplePSX(mod(tap, 256.0) + 0.5);\n"                                                                                 \
+	    "		w *= texelVisible(rg) * passWeight(rg);\n"                                                                                     \
+	    "		sum += w * lut(rg);\n"                                                                                                         \
+	    "		wsum += w;\n"                                                                                                                  \
+	    "	}\n"                                                                                                                               \
+	    "	vec4 bilinearTextureSample(vec2 P) {\n"                                                                                            \
+	    "		vec2 rgN = samplePSX(mod(P, 256.0));\n"                                                                                        \
+	    "		float visible = texelVisible(rgN);\n"                                                                                          \
+	    "		sampledStp = visible * stpWeight(rgN);\n"                                                                                      \
+	    "		if(discardForSemiTransPass(visible, sampledStp, visible - sampledStp)) { discard; }\n"                                         \
+	    "		vec2 C = P - 0.5;\n"                                                                                                           \
+	    "		vec2 base = floor(C);\n"                                                                                                       \
+	    "		vec2 f = fract(C);\n"                                                                                                          \
+	    "		vec4 sum = vec4(0.0);\n"                                                                                                       \
+	    "		float wsum = 0.0;\n"                                                                                                           \
+	    "		bilinearTap(base, (1.0 - f.x) * (1.0 - f.y), sum, wsum);\n"                                                                    \
+	    "		bilinearTap(base + vec2(1.0, 0.0), f.x * (1.0 - f.y), sum, wsum);\n"                                                           \
+	    "		bilinearTap(base + vec2(0.0, 1.0), (1.0 - f.x) * f.y, sum, wsum);\n"                                                           \
+	    "		bilinearTap(base + vec2(1.0, 1.0), f.x * f.y, sum, wsum);\n"                                                                   \
+	    "		vec4 t = (wsum > 0.0) ? sum / wsum : lut(rgN);\n"                                                                              \
+	    "		t.w = 1.0 - t.w;\n"                                                                                                            \
+	    "		return t;\n"                                                                                                                   \
+	    "	}\n"                                                                                                                               \
+	    "	vec4 nearestTextureSample(vec2 P) {\n"                                                                                             \
+	    "		vec2 rg = samplePSX(P);\n"                                                                                                     \
+	    "		float visible = texelVisible(rg);\n"                                                                                           \
+	    "		sampledStp = visible * stpWeight(rg);\n"                                                                                       \
+	    "		if(discardForSemiTransPass(visible, sampledStp, visible - sampledStp)) { discard; }\n"                                         \
+	    "		vec4 t = lut(rg);\n"                                                                                                           \
+	    "		t.w = 1.0 - t.w;\n"                                                                                                            \
+	    "		return t;\n"                                                                                                                   \
+	    "	}\n"                                                                                                                               \
+	    "	void main() {\n"                                                                                                                   \
+	    "		vec4 color = (textureFilter > 0) ? bilinearTextureSample(v_texcoord.xy) : nearestTextureSample(v_texcoord.xy);\n"              \
+	    "		fragColor = dither(color * v_color);\n"                                                                                        \
+	    "		fragColor.a = (psxDrawMaskSet != 0 || (psxTextureOutputStp != 0 && sampledStp >= 0.5)) ? 1.0 : 0.0;\n"                         \
 	    "	}\n"
 
 global_variable const char *gpu_shader_common = "	varying vec4 v_texcoord;\n"
