@@ -77,12 +77,35 @@ static uint32_t ChangedDomains(const struct NativeCanonicalStateV4 *a, const str
 int main(void)
 {
 	struct Fixture f, changed;
-	struct NativeCanonicalStateV4 state, baseline, sentinel, decoded;
+	struct NativeCanonicalStateV4 state, baseline, sentinel, decoded, inPlace;
 	struct NativeCodecWriter writer;
 	struct NativeCodecReader reader;
 	uint8_t bytes[1432];
+	uint8_t scratch[NATIVE_CANONICAL_STATE_V4_MAX_DOMAIN_BYTES];
 
 	memset(&f, 0, sizeof(f)); CHECK(InitFixture(&f)); CHECK(Project(&state, &f)); baseline = state;
+	/* The bounded in-place projector is byte-identical to the transactional
+	 * form, and rejects missing/short scratch and null or mismatched inputs. */
+	memset(&inPlace, 0xa5, sizeof(inPlace));
+	CHECK(MainCanonicalState_ProjectV4InPlaceWithScratch(&inPlace, &f.context, &f.identity, 41, &f.control, &f.retailRng,
+		&f.deterministicRng, &f.input, &f.drivers, &f.counters, &f.mines, &f.topology, scratch, sizeof(scratch)));
+	CHECK(memcmp(&inPlace, &state, sizeof(inPlace)) == 0);
+	CHECK(!MainCanonicalState_ProjectV4InPlaceWithScratch(&inPlace, &f.context, &f.identity, 41, &f.control, &f.retailRng,
+		&f.deterministicRng, &f.input, &f.drivers, &f.counters, &f.mines, &f.topology, scratch, NATIVE_CANONICAL_STATE_V4_MAX_DOMAIN_BYTES - 1u));
+	CHECK(!MainCanonicalState_ProjectV4InPlaceWithScratch(&inPlace, &f.context, &f.identity, 41, &f.control, &f.retailRng,
+		&f.deterministicRng, &f.input, &f.drivers, &f.counters, &f.mines, &f.topology, NULL, sizeof(scratch)));
+	CHECK(!MainCanonicalState_ProjectV4InPlaceWithScratch(NULL, &f.context, &f.identity, 41, &f.control, &f.retailRng,
+		&f.deterministicRng, &f.input, &f.drivers, &f.counters, &f.mines, &f.topology, scratch, sizeof(scratch)));
+	CHECK(!MainCanonicalState_ProjectV4InPlaceWithScratch(&inPlace, NULL, &f.identity, 41, &f.control, &f.retailRng,
+		&f.deterministicRng, &f.input, &f.drivers, &f.counters, &f.mines, &f.topology, scratch, sizeof(scratch)));
+	changed = f; changed.identity.build[0]++;
+	CHECK(!MainCanonicalState_ProjectV4InPlaceWithScratch(&inPlace, &changed.context, &changed.identity, 41, &changed.control,
+		&changed.retailRng, &changed.deterministicRng, &changed.input, &changed.drivers, &changed.counters, &changed.mines,
+		&changed.topology, scratch, sizeof(scratch)));
+	changed = f; changed.deterministicRng.masterSeed++;
+	CHECK(!MainCanonicalState_ProjectV4InPlaceWithScratch(&inPlace, &changed.context, &changed.identity, 41, &changed.control,
+		&changed.retailRng, &changed.deterministicRng, &changed.input, &changed.drivers, &changed.counters, &changed.mines,
+		&changed.topology, scratch, sizeof(scratch)));
 	CHECK(memcmp(state.configDigest, f.context.configDigest, 32) == 0);
 	CHECK(state.frameNumber == 41 && state.control.levelID == -9 && state.control.gameMode1 == 99);
 	/* frame is metadata, not a canonical-domain value. */

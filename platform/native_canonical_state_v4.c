@@ -3,7 +3,7 @@
 
 #define V4_CONTROL_BYTES 48u
 #define V4_RETAIL_RNG_BYTES 20u
-#define V4_RNG_BYTES (4u + V4_RETAIL_RNG_BYTES + NATIVE_DETERMINISTIC_RNG_BANK_V1_ENCODED_BYTES)
+#define V4_RNG_BYTES NATIVE_CANONICAL_STATE_V4_MAX_DOMAIN_BYTES
 #define V4_INPUT_BYTES 40u
 #define V4_WORLD_BYTES (8u + 8u + NATIVE_CANONICAL_WORLD_COUNTERS_V1_ENCODED_BYTES + 8u + NATIVE_CANONICAL_WORLD_V1_MINE_SLOT_BYTES)
 #define V4_HEADER_BYTES 116u
@@ -29,6 +29,18 @@ static int Identity(const struct NativeIdentityV1 *a,const struct NativeIdentity
 void NativeCanonicalStateV4_Init(struct NativeCanonicalStateV4 *s) { if(!s)return;memset(s,0,sizeof(*s));s->schemaVersion=5;s->replayFormatVersion=4;s->domainCount=6;s->input.padCount=4;NativeCanonicalDriversV1_Init(&s->drivers);NativeCanonicalWorldCountersV1_Init(&s->worldCounters);NativeCanonicalWorldMineRegistryV1_Init(&s->mineRegistry);NativeCanonicalTopologyV1_Init(&s->topology);(void)NativeDeterministicRngBankV1_Init(&s->deterministicRng,0,1);(void)NativeCanonicalStateV4_ComputeDigests(s); }
 int NativeCanonicalStateV4_Validate(const struct NativeCanonicalStateV4 *s) { return s&&s->schemaVersion==5&&s->replayFormatVersion==4&&s->domainCount==6&&s->input.padCount==4&&NativeCanonicalDriversV1_Validate(&s->drivers)&&NativeDeterministicRngBankV1_Validate(&s->deterministicRng)&&NativeCanonicalWorldCountersV1_Validate(&s->worldCounters)&&NativeCanonicalWorldMineRegistryV1_Validate(&s->mineRegistry)&&NativeCanonicalTopologyV1_Validate(&s->topology); }
 int NativeCanonicalStateV4_ComputeDigests(struct NativeCanonicalStateV4 *s) { struct NativeCanonicalStateV4 c;uint8_t b[V4_RNG_BYTES];if(!NativeCanonicalStateV4_Validate(s))return 0;c=*s;for(uint32_t i=0;i<6;i++){size_t n=Size(NativeCanonicalDomainOrder[i]);if(!Payload(s,NativeCanonicalDomainOrder[i],b,n))return 0;c.domainDigests[i]=Digest(b,n);}c.combinedDigest=Combined(c.domainDigests);*s=c;return 1; }
+int NativeCanonicalStateV4_ComputeDigestsInPlaceWithScratch(struct NativeCanonicalStateV4 *s,uint8_t *b,size_t scratchSize)
+{
+	if(!NativeCanonicalStateV4_Validate(s)||!b||scratchSize<NATIVE_CANONICAL_STATE_V4_MAX_DOMAIN_BYTES)return 0;
+	for(uint32_t i=0;i<6;i++)
+	{
+		size_t n=Size(NativeCanonicalDomainOrder[i]);
+		if(n==SIZE_MAX||n>scratchSize||!Payload(s,NativeCanonicalDomainOrder[i],b,n))return 0;
+		s->domainDigests[i]=Digest(b,n);
+	}
+	s->combinedDigest=Combined(s->domainDigests);
+	return 1;
+}
 size_t NativeCanonicalStateV4_EncodedSize(void) { return V4_STATE_BYTES; }
 int NativeCanonicalStateV4_Encode(struct NativeCodecWriter *w,const struct NativeCanonicalStateV4 *s) { struct NativeCanonicalStateV4 c;struct NativeCodecWriter e;uint8_t b[V4_RNG_BYTES];if(!w||!NativeCanonicalStateV4_Validate(s)||w->failed||w->offset>w->capacity||V4_STATE_BYTES>w->capacity-w->offset)return 0;c=*s;if(!NativeCanonicalStateV4_ComputeDigests(&c)||memcmp(c.domainDigests,s->domainDigests,sizeof(c.domainDigests))||c.combinedDigest!=s->combinedDigest)return 0;e=*w;if(!NativeCodecWriter_WriteU32(&e,NATIVE_CANONICAL_STATE_V4_MAGIC)||!NativeCodecWriter_WriteU32(&e,s->schemaVersion)||!NativeCodecWriter_WriteU32(&e,s->replayFormatVersion)||!NativeCodecWriter_WriteU32(&e,s->domainCount)||!NativeCodecWriter_WriteU32(&e,s->frameNumber)||!NativeCodecWriter_WriteBytes(&e,s->identity.build,32)||!NativeCodecWriter_WriteBytes(&e,s->identity.content,32)||!NativeCodecWriter_WriteBytes(&e,s->configDigest,32))return 0;for(uint32_t i=0;i<6;i++){uint32_t id=NativeCanonicalDomainOrder[i];size_t n=Size(id);if(!Payload(s,id,b,n)||!NativeCodecWriter_WriteU32(&e,id)||!NativeCodecWriter_WriteU32(&e,(uint32_t)n)||!NativeCodecWriter_WriteBytes(&e,b,n)||!NativeCodecWriter_WriteU64(&e,s->domainDigests[i]))return 0;}if(!NativeCodecWriter_WriteU64(&e,s->combinedDigest))return 0;*w=e;return 1; }
 int NativeCanonicalStateV4_Decode(struct NativeCodecReader *r,const struct NativeIdentityV1 *id,const uint8_t cfg[32],struct NativeCanonicalStateV4 *s) { struct NativeCodecReader e;struct NativeCanonicalStateV4 d,c;uint8_t b[V4_RNG_BYTES];uint32_t v;if(!r||!id||!cfg||!s||r->failed||r->offset>r->size)return 0;e=*r;NativeCanonicalStateV4_Init(&d);if(!NativeCodecReader_ReadU32(&e,&v)||v!=NATIVE_CANONICAL_STATE_V4_MAGIC||!NativeCodecReader_ReadU32(&e,&d.schemaVersion)||!NativeCodecReader_ReadU32(&e,&d.replayFormatVersion)||!NativeCodecReader_ReadU32(&e,&d.domainCount)||!NativeCodecReader_ReadU32(&e,&d.frameNumber)||!NativeCodecReader_ReadBytes(&e,d.identity.build,32)||!NativeCodecReader_ReadBytes(&e,d.identity.content,32)||!NativeCodecReader_ReadBytes(&e,d.configDigest,32)||!Identity(&d.identity,id)||memcmp(d.configDigest,cfg,32)||!NativeCanonicalStateV4_Validate(&d))return 0;for(uint32_t i=0;i<6;i++){uint32_t got,n,wantId=NativeCanonicalDomainOrder[i];size_t want=Size(wantId);struct NativeCodecReader payload;if(!NativeCodecReader_ReadU32(&e,&got)||!NativeCodecReader_ReadU32(&e,&n)||got!=wantId||n!=want||NativeCodecReader_Remaining(&e)<n)return 0;/* A domain decoder is never allowed to borrow the following digest/domain. */NativeCodecReader_Init(&payload,e.data+e.offset,n);if(!PayloadR(&payload,&d,wantId)||!NativeCodecReader_Ok(&payload)||payload.offset!=n||!Payload(&d,wantId,b,want))return 0;e.offset+=n;if(!NativeCodecReader_ReadU64(&e,&d.domainDigests[i])||d.domainDigests[i]!=Digest(b,want))return 0;}if(!NativeCodecReader_ReadU64(&e,&d.combinedDigest)||NativeCodecReader_Remaining(&e)!=0)return 0;c=d;if(!NativeCanonicalStateV4_ComputeDigests(&c)||memcmp(c.domainDigests,d.domainDigests,sizeof(c.domainDigests))||c.combinedDigest!=d.combinedDigest)return 0;*r=e;*s=d;return 1; }

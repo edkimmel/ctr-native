@@ -164,6 +164,30 @@ int NativeDeterministicRngBankV1_Init(struct NativeDeterministicRngBankV1 *bank,
 	return 1;
 }
 
+int NativeDeterministicRngBankV1_InitInPlace(struct NativeDeterministicRngBankV1 *bank, uint64_t masterSeed,
+	                                         uint32_t derivationVersion)
+{
+	if ((bank == NULL) || (derivationVersion != NATIVE_DETERMINISTIC_RNG_DERIVATION_VERSION))
+	{
+		return 0;
+	}
+	memset(bank, 0, sizeof(*bank));
+	bank->bankVersion = NATIVE_DETERMINISTIC_RNG_BANK_V1_VERSION;
+	bank->derivationVersion = derivationVersion;
+	bank->masterSeed = masterSeed;
+	for (uint8_t i = 0; i < NATIVE_DETERMINISTIC_RNG_STREAM_COUNT; i++)
+	{
+		struct NativeDeterministicRngStreamV1 *stream = &bank->streams[i];
+		if (!NativeDeterministicRng_ExpectedDescriptor(i, &stream->tag, &stream->stableSlot))
+		{
+			return 0;
+		}
+		stream->streamIndex = i;
+		NativeDeterministicRng_Derive(masterSeed, derivationVersion, stream->tag, stream->stableSlot, stream->state);
+	}
+	return 1;
+}
+
 int NativeDeterministicRngBankV1_Validate(const struct NativeDeterministicRngBankV1 *bank)
 {
 	if ((bank == NULL) || (bank->bankVersion != NATIVE_DETERMINISTIC_RNG_BANK_V1_VERSION) ||

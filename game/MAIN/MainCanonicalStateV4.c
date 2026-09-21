@@ -84,3 +84,50 @@ int MainCanonicalState_ProjectV4(struct NativeCanonicalStateV4 *state,
 	*state = candidate;
 	return 1;
 }
+
+int MainCanonicalState_ProjectV4InPlaceWithScratch(struct NativeCanonicalStateV4 *state,
+	const struct MainCanonicalStateV4Context *context,
+	const struct NativeIdentityV1 *identity, uint32_t replayFrameNumber,
+	const struct NativeCanonicalControlV1 *control,
+	const struct NativeCanonicalRngV1 *retailRng,
+	const struct NativeDeterministicRngBankV1 *deterministicRng,
+	const struct NativeCanonicalInputV1 *input,
+	const struct NativeCanonicalDriversV1 *drivers,
+	const struct NativeCanonicalWorldCountersV1 *worldCounters,
+	const struct NativeCanonicalWorldMineRegistryV1 *mineRegistry,
+	const struct NativeCanonicalTopologyV1 *topology,
+	uint8_t *scratch, size_t scratchSize)
+{
+	if ((state == NULL) || !MainCanonicalStateV4_ContextValid(context) || (identity == NULL) ||
+	    (control == NULL) || (retailRng == NULL) || (deterministicRng == NULL) || (input == NULL) ||
+	    (drivers == NULL) || (worldCounters == NULL) || (mineRegistry == NULL) || (topology == NULL) ||
+	    !MainCanonicalStateV4_IdentityMatchesConfig(identity, &context->config) ||
+	    (input->padCount != NATIVE_CANONICAL_INPUT_PAD_COUNT) ||
+	    !NativeDeterministicRngBankV1_Validate(deterministicRng) ||
+	    (deterministicRng->masterSeed != context->config.masterSeed) ||
+	    (deterministicRng->derivationVersion != context->config.rngDerivationVersion) ||
+	    !NativeCanonicalDriversV1_Validate(drivers) ||
+	    !NativeCanonicalWorldCountersV1_Validate(worldCounters) ||
+	    !NativeCanonicalWorldMineRegistryV1_Validate(mineRegistry) ||
+	    !NativeCanonicalTopologyV1_Validate(topology))
+	{
+		return 0;
+	}
+
+	memset(state, 0, sizeof(*state));
+	state->schemaVersion = NATIVE_CANONICAL_STATE_V4_SCHEMA_VERSION;
+	state->replayFormatVersion = NATIVE_CANONICAL_REPLAY_V4_FORMAT_VERSION;
+	state->domainCount = NATIVE_CANONICAL_DOMAIN_COUNT;
+	state->frameNumber = replayFrameNumber;
+	state->identity = *identity;
+	memcpy(state->configDigest, context->configDigest, sizeof(state->configDigest));
+	state->control = *control;
+	state->retailRng = *retailRng;
+	state->deterministicRng = *deterministicRng;
+	state->input = *input;
+	state->drivers = *drivers;
+	state->worldCounters = *worldCounters;
+	state->mineRegistry = *mineRegistry;
+	state->topology = *topology;
+	return NativeCanonicalStateV4_ComputeDigestsInPlaceWithScratch(state, scratch, scratchSize);
+}

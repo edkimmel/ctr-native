@@ -18,6 +18,7 @@ void RB_RainCloud_ThTick(struct Thread*t){(void)t;rain_tick_calls++;} void RB_Ra
 #include "../game/MAIN/MainCanonicalTopology.c"
 #include "../game/MAIN/MainCanonicalDrivers.c"
 #include "../game/MAIN/MainCanonicalState.c"
+#include "../game/MAIN/MainCanonicalStateV4.c"
 #define MAIN_CANONICAL_RUNTIME_TESTING 1
 #include "../game/MAIN/MainCanonicalRuntime.c"
 static int ProjectPreludeTest(void){struct NativeCanonicalDriversRosterInput in;struct NativeCanonicalDriversRosterCandidate out,before;DriverFunc tables[8][13]={{0}};void(*threads[8])(struct Thread*)={0};memset(&in,0,sizeof(in));memset(in.raceOrder,0xff,sizeof(in.raceOrder));memset(in.winnerDriverIDs,0xff,sizeof(in.winnerDriverIDs));memset(in.ranks,0xff,sizeof(in.ranks));memset(in.navOrder,0xff,sizeof(in.navOrder));in.slots[3].present=1;in.slots[3].driverID=3;in.slots[3].kind=NATIVE_CANONICAL_DRIVER_KIND_HUMAN;in.playerCount=1;in.raceOrderCount=1;in.raceOrder[0]=3;in.ranks[0]=7;tables[3][1]=VehPhysProc_Driving_Update;tables[3][2]=VehPhysProc_Driving_PhysLinear;tables[3][3]=VehPhysProc_Driving_Audio;tables[3][4]=VehPhysGeneral_PhysAngular;tables[3][5]=VehPhysForce_OnApplyForces;tables[3][6]=COLL_MOVED_PlayerSearch;tables[3][7]=VehPhysForce_CollideDrivers;tables[3][8]=COLL_FIXED_PlayerSearch;tables[3][9]=VehPhysGeneral_JumpAndFriction;tables[3][10]=VehPhysForce_TranslateMatrix;tables[3][11]=VehFrameProc_Driving;tables[3][12]=VehEmitter_DriverMain;threads[3]=VehBirth_NullThread;if(!MainCanonicalDrivers_ProjectPrelude(&in,tables,threads,&out)||out.behaviorID[3]!=1||out.threadBehaviorID[3]!=1)return 0;before=out;tables[3][7]=UnknownDriver;if(MainCanonicalDrivers_ProjectPrelude(&in,tables,threads,&out)||memcmp(&out,&before,sizeof(out))!=0)return 0;return 1;}
@@ -1341,7 +1342,7 @@ static int RuntimeWorkspaceTest(void)
 	/* Rootless success is exact, request-tagged, and stage-counted once. */
 	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input));
 	RUNTIME_CHECK(workspace.stageCounts.rosterPreflight==1&&workspace.stageCounts.sourceExtract==1&&workspace.stageCounts.assembly==1&&workspace.stageCounts.project==1);
-	RUNTIME_CHECK(MainCanonicalState_ProjectV3(&expected,&request.identity,request.replayFrame,&control,&rng,&input,&workspace.drivers.summary)&&memcmp(&expected,&workspace.state,sizeof(expected))==0&&workspace.state.combinedDigest==expected.combinedDigest);
+	RUNTIME_CHECK(MainCanonicalState_ProjectV3(&expected,&request.identity,request.replayFrame,&control,&rng,&input,&workspace.drivers.summary)&&memcmp(&expected,&workspace.state.v3,sizeof(expected))==0&&workspace.state.v3.combinedDigest==expected.combinedDigest);
 	RUNTIME_CHECK(MainCanonicalRuntime_ViewV3(&workspace,&request)!=NULL);memset(&submission,0xa5,sizeof(submission));RUNTIME_CHECK(MainCanonicalRuntime_GetSubmissionV3(&workspace,&request,&submission)&&submission.kind==NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V3&&submission.state.v3==MainCanonicalRuntime_ViewV3(&workspace,&request));
 	wrong=request;wrong.restoredThisFrame=1;beforeSubmission=submission;RUNTIME_CHECK(MainCanonicalRuntime_ViewV3(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_GetSubmissionV3(&workspace,&wrong,&submission)&&!MainCanonicalRuntime_ReleaseV3(&workspace,&wrong)&&memcmp(&submission,&beforeSubmission,sizeof(submission))==0&&workspace.prepared);
 	wrong=request;wrong.replayFrame++;RUNTIME_CHECK(MainCanonicalRuntime_ViewV3(&workspace,&wrong)==NULL);wrong=request;wrong.identity.content[0]^=UINT8_C(1);RUNTIME_CHECK(MainCanonicalRuntime_ViewV3(&workspace,&wrong)==NULL);
@@ -1364,10 +1365,10 @@ static int RuntimeWorkspaceTest(void)
 	wrong=request;wrong.restoredThisFrame=0;RUNTIME_CHECK(MainCanonicalRuntime_ViewV3(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_ReleaseV3(&workspace,&wrong)&&workspace.prepared);RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV3(&workspace,&request));request.restoredThisFrame=0;
 
 	/* Stable stage failures retain the last published state and exact counts. */
-	MainCanonicalRuntime_Reset(&workspace);request.replayFrame=20u;beforeState=workspace.state;MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_ASSEMBLY);
-	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_ASSEMBLY&&workspace.stageCounts.rosterPreflight==1&&workspace.stageCounts.sourceExtract==1&&workspace.stageCounts.assembly==1&&workspace.stageCounts.project==0&&memcmp(&workspace.state,&beforeState,sizeof(beforeState))==0);
-	MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_NONE);MainCanonicalRuntime_Reset(&workspace);beforeState=workspace.state;MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT);
-	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT&&workspace.stageCounts.project==1&&memcmp(&workspace.state,&beforeState,sizeof(beforeState))==0);
+	MainCanonicalRuntime_Reset(&workspace);request.replayFrame=20u;beforeState=workspace.state.v3;MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_ASSEMBLY);
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_ASSEMBLY&&workspace.stageCounts.rosterPreflight==1&&workspace.stageCounts.sourceExtract==1&&workspace.stageCounts.assembly==1&&workspace.stageCounts.project==0&&memcmp(&workspace.state.v3,&beforeState,sizeof(beforeState))==0);
+	MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_NONE);MainCanonicalRuntime_Reset(&workspace);beforeState=workspace.state.v3;MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT);
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV3(&workspace,&request,&rootless,&rootlessSource,&control,&rng,&input)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT&&workspace.stageCounts.project==1&&memcmp(&workspace.state.v3,&beforeState,sizeof(beforeState))==0);
 	MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_NONE);MainCanonicalRuntime_Reset(&workspace);
 
 	/* Natural topology/source failures are distinguished. */
@@ -1388,4 +1389,144 @@ static int RuntimeWorkspaceTest(void)
 	#undef RUNTIME_CHECK
 	return 1;
 }
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());C(PhysicsProjectionTest());C(DetailedAssemblyTest());C(RuntimeWorkspaceTest());puts("main_canonical_drivers_binding_test: passed");return 0;}
+static int RuntimeV4TopologyInit(struct NativeCanonicalTopologyV1 *topology)
+{
+	struct NativeCanonicalTopologyV1Input input;
+	uint8_t quad[1]={0};
+	uint8_t restart[12]={0xff,0,0,0,0,0,0,0,0xff,0xff,0xff,0xff};
+	uint8_t nav[3][68]={{0}};
+	memset(&input,0,sizeof(input));
+	input.flags=NATIVE_CANONICAL_TOPOLOGY_FLAG_AVAILABLE;input.levelID=-7;input.quadCount=1;input.restartCount=1;
+	input.quadCheckpoints=quad;input.quadCheckpointSize=sizeof(quad);
+	input.restartStream=restart;input.restartStreamSize=sizeof(restart);
+	for(uint32_t path=0;path<3;path++){input.navStreams[path]=nav[path];input.navStreamSizes[path]=sizeof(nav[path]);}
+	return NativeCanonicalTopologyV1_FromNormativeStreams(topology,&input);
+}
+static int RuntimeWorkspaceV4Test(void)
+{
+	struct MainCanonicalRuntimeWorkspace workspace;
+	struct MainCanonicalRuntimeV4Request request,wrong;
+	struct NativeReplaySchedulerCanonicalSubmission submission,beforeSubmission;
+	struct NativeCanonicalControlV1 control={0};struct NativeCanonicalRngV1 retailRng={0};struct NativeCanonicalInputV1 input={0};
+	struct NativeCanonicalWorldCountersV1 counters;struct NativeCanonicalWorldMineRegistryV1 mines;struct NativeCanonicalTopologyV1 topology;
+	struct MainCanonicalStateV4Context context;
+	struct NativeDeterministicRngBankV1 deterministicRng;
+	struct NativeCanonicalStateV4 expected,beforeState;
+	struct GameTracker rootless={0};struct sData rootlessSource={0};
+	struct SourceFixture fixture;struct PhysicsTopologyFixture top;struct MainCanonicalTopologyContext unusedContext;struct MainCanonicalTopologySnapshot unusedSnapshot;
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate independent;
+	uint64_t epoch;
+	#define RUNTIME_CHECK(x) do{if(!(x)){fprintf(stderr,"runtime v4 fail %d\n",__LINE__);return 0;}}while(0)
+	NativeCanonicalWorldCountersV1_Init(&counters);counters.flags=NATIVE_CANONICAL_WORLD_COUNTERS_V1_FLAG_AVAILABLE;counters.activeBombMissileCount=2;
+	NativeCanonicalWorldMineRegistryV1_Init(&mines);mines.flags=NATIVE_CANONICAL_WORLD_MINE_REGISTRY_V1_FLAG_AVAILABLE;mines.activeCapacity=2;mines.takenCount=1;
+	mines.records[0].state=NATIVE_CANONICAL_WORLD_MINE_REGISTRY_V1_TAKEN;mines.records[0].queueRank=0;
+	mines.records[1].state=NATIVE_CANONICAL_WORLD_MINE_REGISTRY_V1_FREE;mines.records[1].queueRank=NATIVE_CANONICAL_WORLD_MINE_REGISTRY_V1_NO_RANK;
+	RUNTIME_CHECK(NativeCanonicalWorldCountersV1_Validate(&counters)&&NativeCanonicalWorldMineRegistryV1_Validate(&mines)&&
+		RuntimeV4TopologyInit(&topology)&&NativeCanonicalTopologyV1_Validate(&topology));
+	memset(&request,0,sizeof(request));
+	NativeMatchConfigV1_InitArcadeTwoCab(&request.config);
+	request.config.trackID=7;request.config.gameMode1=2;request.config.gameMode2=3;request.config.rules=4;request.config.lapCount=3;
+	request.config.tickRateNumerator=30;request.config.tickRateDenominator=1;request.config.masterSeed=UINT64_C(0x123456789abcdef0);
+	for(uint32_t index=0;index<32;index++){request.config.buildIdentity[index]=(uint8_t)(0x10u+index);request.config.contentIdentity[index]=(uint8_t)(0x80u+index);request.config.botRulesDigest[index]=(uint8_t)(0x40u+index);}
+	for(uint32_t index=0;index<6;index++){request.config.slots[index].characterID=(uint8_t)index;request.config.slots[index].difficulty=2;}
+	memcpy(request.identity.build,request.config.buildIdentity,NATIVE_IDENTITY_DIGEST_BYTES);
+	memcpy(request.identity.content,request.config.contentIdentity,NATIVE_IDENTITY_DIGEST_BYTES);
+	RUNTIME_CHECK(MainCanonicalStateV4Context_Init(&context,&request.config));
+	memcpy(request.configDigest,context.configDigest,NATIVE_SHA256_DIGEST_BYTES);
+	RUNTIME_CHECK(NativeDeterministicRngBankV1_Init(&deterministicRng,request.config.masterSeed,request.config.rngDerivationVersion));
+	request.replayFrame=7u;request.restoredThisFrame=0;input.padCount=NATIVE_CANONICAL_INPUT_PAD_COUNT;
+	RUNTIME_CHECK(MAIN_CANONICAL_RUNTIME_FAILURE_NULL_ARGUMENT==1&&MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT==12);
+	RUNTIME_CHECK(MainCanonicalRuntime_Global()==MainCanonicalRuntime_Global());RUNTIME_CHECK(MainCanonicalRuntime_WorkspaceSize()==sizeof(workspace));RUNTIME_CHECK(sizeof(workspace)<=MAIN_CANONICAL_RUNTIME_WORKSPACE_MAX_BYTES);
+	memset(&workspace,0,sizeof(workspace));MainCanonicalRuntime_Init(&workspace);epoch=workspace.topologyContext.currentEpoch;MainCanonicalRuntime_Init(&workspace);
+	RUNTIME_CHECK(workspace.topologyContext.currentEpoch==epoch&&workspace.initialized&&workspace.preparedKind==NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_NONE&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_NONE);
+	rootlessSource.gGT=&rootless;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_BeginFrame(&workspace));MainCanonicalRuntime_Reset(&workspace);
+	RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_FRAME_STATE&&workspace.stageCounts.rosterPreflight==0);
+	MainCanonicalRuntime_Reset(&workspace);
+	#define RUNTIME_NULL_V4(call) do{RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!(call)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_NULL_ARGUMENT&&workspace.stageCounts.rosterPreflight==0);MainCanonicalRuntime_Reset(&workspace);}while(0)
+	RUNTIME_NULL_V4(MainCanonicalRuntime_PrepareV4(&workspace,NULL,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology));
+	RUNTIME_NULL_V4(MainCanonicalRuntime_PrepareV4(&workspace,&request,NULL,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology));
+	RUNTIME_NULL_V4(MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,NULL,&control,&retailRng,&input,&counters,&mines,&topology));
+	RUNTIME_NULL_V4(MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,NULL,&retailRng,&input,&counters,&mines,&topology));
+	RUNTIME_NULL_V4(MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,NULL,&input,&counters,&mines,&topology));
+	RUNTIME_NULL_V4(MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,NULL,&counters,&mines,&topology));
+	RUNTIME_NULL_V4(MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,NULL,&mines,&topology));
+	RUNTIME_NULL_V4(MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,NULL,&topology));
+	RUNTIME_NULL_V4(MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,NULL));
+	#undef RUNTIME_NULL_V4
+	rootless.drivers[0]=(struct Driver *)(uintptr_t)1;rootless.level1=(struct Level *)(uintptr_t)1;
+	input.padCount=3;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_INPUT&&workspace.stageCounts.rosterPreflight==0);
+	MainCanonicalRuntime_Reset(&workspace);input.padCount=NATIVE_CANONICAL_INPUT_PAD_COUNT;wrong=request;wrong.configDigest[0]^=UINT8_C(1);
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&wrong,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_REQUEST&&workspace.stageCounts.rosterPreflight==0);
+	MainCanonicalRuntime_Reset(&workspace);wrong=request;wrong.identity.build[0]^=UINT8_C(1);
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&wrong,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_REQUEST);
+	MainCanonicalRuntime_Reset(&workspace);wrong=request;wrong.identity.content[3]^=UINT8_C(1);
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&wrong,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_REQUEST);
+	MainCanonicalRuntime_Reset(&workspace);wrong=request;wrong.restoredThisFrame=2;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&wrong,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_REQUEST);
+	MainCanonicalRuntime_Reset(&workspace);wrong=request;wrong.config.canonicalSchemaVersion--;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&wrong,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_REQUEST);
+	MainCanonicalRuntime_Reset(&workspace);
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_ROSTER_PREFLIGHT&&workspace.stageCounts.rosterPreflight==1&&workspace.stageCounts.sourceExtract==0&&!workspace.topologyContext.captureActive);
+	rootless.drivers[0]=NULL;rootless.level1=NULL;MainCanonicalRuntime_Reset(&workspace);
+
+	/* Rootless V4 success is exact, request-tagged, and stage-counted once. */
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology));
+	RUNTIME_CHECK(workspace.stageCounts.rosterPreflight==1&&workspace.stageCounts.sourceExtract==1&&workspace.stageCounts.assembly==1&&workspace.stageCounts.project==1);
+	RUNTIME_CHECK(NativeCanonicalStateV4_Validate(&workspace.state.v4)&&memcmp(workspace.state.v4.configDigest,request.configDigest,NATIVE_SHA256_DIGEST_BYTES)==0&&workspace.state.v4.frameNumber==request.replayFrame);
+	RUNTIME_CHECK(MainCanonicalState_ProjectV4(&expected,&context,&request.identity,request.replayFrame,&control,&retailRng,&deterministicRng,&input,&workspace.drivers.summary,&counters,&mines,&topology)&&memcmp(&expected,&workspace.state.v4,sizeof(expected))==0&&workspace.state.v4.combinedDigest==expected.combinedDigest);
+	RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&request)!=NULL);memset(&submission,0xa5,sizeof(submission));RUNTIME_CHECK(MainCanonicalRuntime_GetSubmissionV4(&workspace,&request,&submission)&&submission.kind==NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V4&&submission.state.v4==MainCanonicalRuntime_ViewV4(&workspace,&request));
+	RUNTIME_CHECK(MainCanonicalRuntime_ViewV3(&workspace,&(struct NativeReplaySchedulerCanonicalRequest){0})==NULL);
+	wrong=request;wrong.restoredThisFrame=1;beforeSubmission=submission;RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_GetSubmissionV4(&workspace,&wrong,&submission)&&!MainCanonicalRuntime_ReleaseV4(&workspace,&wrong)&&memcmp(&submission,&beforeSubmission,sizeof(submission))==0&&workspace.prepared);
+	wrong=request;wrong.replayFrame++;RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&wrong)==NULL);wrong=request;wrong.identity.content[0]^=UINT8_C(1);RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&wrong)==NULL);
+	/* The transaction token binds the match config and its digest, so a caller
+	 * presenting different config bytes with the same identity/frame/restored
+	 * tuple cannot view, submit, or release the prepared state. */
+	wrong=request;wrong.config.trackID++;beforeSubmission=submission;RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_GetSubmissionV4(&workspace,&wrong,&submission)&&!MainCanonicalRuntime_ReleaseV4(&workspace,&wrong)&&memcmp(&submission,&beforeSubmission,sizeof(submission))==0&&workspace.prepared);
+	wrong=request;wrong.configDigest[0]^=UINT8_C(1);beforeSubmission=submission;RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_GetSubmissionV4(&workspace,&wrong,&submission)&&!MainCanonicalRuntime_ReleaseV4(&workspace,&wrong)&&memcmp(&submission,&beforeSubmission,sizeof(submission))==0&&workspace.prepared);
+	RUNTIME_CHECK(!MainCanonicalRuntime_BeginFrame(&workspace)&&!MainCanonicalRuntime_InvalidateTopology(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV4(&workspace,&request)&&!workspace.prepared&&workspace.preparedKind==NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_NONE&&!workspace.frameActive&&!workspace.topologyContext.captureActive);
+
+	/* Rooted V4 frames reuse one topology generation across releases. */
+	SourceFixtureInit(&fixture);RUNTIME_CHECK(PhysicsTopologyInit(&fixture,&top,&unusedContext,&unusedSnapshot));for(uint8_t slot=0;slot<8;slot++)if(fixture.tracker.drivers[slot]){fixture.tracker.drivers[slot]->terrainMeta1=&data.MetaDataTerrain[0];fixture.tracker.drivers[slot]->terrainMeta2=&data.MetaDataTerrain[0];}
+	request.replayFrame=8u;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV4(&workspace,&request,&fixture.tracker,&sdata_static,&control,&retailRng,&input,&counters,&mines,&topology)&&workspace.topologyContext.captureActive&&workspace.prepared);
+	RUNTIME_CHECK(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMetaPhysics(&fixture.tracker,&sdata_static,&workspace.topologyContext,&workspace.topologySnapshot,&independent)&&memcmp(&independent,&workspace.sourceCandidate,sizeof(independent))==0);
+	epoch=workspace.topologyContext.currentEpoch;RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV4(&workspace,&request)&&workspace.topologyContext.captureActive&&workspace.topologyContext.currentEpoch==epoch);
+	request.replayFrame=9u;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV4(&workspace,&request,&fixture.tracker,&sdata_static,&control,&retailRng,&input,&counters,&mines,&topology)&&workspace.topologyContext.currentEpoch==epoch);RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV4(&workspace,&request)&&workspace.topologyContext.captureActive);
+
+	/* Rootless retirement is once, and a later rooted frame captures fresh. */
+	request.replayFrame=10u;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&workspace.topologyContext.currentEpoch==epoch+1&&!workspace.topologyContext.captureActive);RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV4(&workspace,&request));
+	request.replayFrame=11u;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV4(&workspace,&request,&fixture.tracker,&sdata_static,&control,&retailRng,&input,&counters,&mines,&topology)&&workspace.topologyContext.captureActive&&workspace.topologyContext.currentEpoch==epoch+1);RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV4(&workspace,&request));
+
+	/* A V4 restore retires before preflight/topology and permits same-address
+	 * recapture; the restore tag remains part of the transaction token. */
+	epoch=workspace.topologyContext.currentEpoch;request.replayFrame=12u;request.restoredThisFrame=1;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV4(&workspace,&request,&fixture.tracker,&sdata_static,&control,&retailRng,&input,&counters,&mines,&topology)&&workspace.topologyContext.currentEpoch==epoch+1&&workspace.topologyContext.captureActive);
+	wrong=request;wrong.restoredThisFrame=0;RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_ReleaseV4(&workspace,&wrong)&&workspace.prepared);RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV4(&workspace,&request));request.restoredThisFrame=0;
+
+	/* Stable V4 stage failures retain the last published state and exact counts. */
+	MainCanonicalRuntime_Reset(&workspace);request.replayFrame=20u;beforeState=workspace.state.v4;MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_ASSEMBLY);
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_ASSEMBLY&&workspace.stageCounts.rosterPreflight==1&&workspace.stageCounts.sourceExtract==1&&workspace.stageCounts.assembly==1&&workspace.stageCounts.project==0&&memcmp(&workspace.state.v4,&beforeState,sizeof(beforeState))==0);
+	MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_NONE);MainCanonicalRuntime_Reset(&workspace);beforeState=workspace.state.v4;MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_SOURCE_EXTRACT);
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_SOURCE_EXTRACT&&workspace.stageCounts.sourceExtract==1&&workspace.stageCounts.assembly==0&&memcmp(&workspace.state.v4,&beforeState,sizeof(beforeState))==0);
+	MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_NONE);MainCanonicalRuntime_Reset(&workspace);beforeState=workspace.state.v4;MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT);
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT&&workspace.stageCounts.project==1&&memcmp(&workspace.state.v4,&beforeState,sizeof(beforeState))==0);
+	MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_NONE);MainCanonicalRuntime_Reset(&workspace);
+
+	/* Natural V4 topology/source failures are distinguished. */
+	SourceFixtureInit(&fixture);fixture.tracker.level1=NULL;for(uint8_t slot=0;slot<8;slot++)if(fixture.tracker.drivers[slot]){fixture.tracker.drivers[slot]->terrainMeta1=&data.MetaDataTerrain[0];fixture.tracker.drivers[slot]->terrainMeta2=&data.MetaDataTerrain[0];}
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&fixture.tracker,&sdata_static,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_TOPOLOGY_CAPTURE&&workspace.stageCounts.sourceExtract==0);
+	MainCanonicalRuntime_Reset(&workspace);SourceFixtureInit(&fixture);RUNTIME_CHECK(PhysicsTopologyInit(&fixture,&top,&unusedContext,&unusedSnapshot));for(uint8_t slot=0;slot<8;slot++)if(fixture.tracker.drivers[slot]){fixture.tracker.drivers[slot]->terrainMeta1=&data.MetaDataTerrain[0];fixture.tracker.drivers[slot]->terrainMeta2=&data.MetaDataTerrain[0];}fixture.tracker.drivers[0]->currentTerrain=21;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&fixture.tracker,&sdata_static,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_SOURCE_EXTRACT&&workspace.stageCounts.sourceExtract==1&&workspace.stageCounts.assembly==0);
+	MainCanonicalRuntime_Reset(&workspace);SourceFixtureInit(&fixture);RUNTIME_CHECK(PhysicsTopologyInit(&fixture,&top,&unusedContext,&unusedSnapshot));for(uint8_t slot=0;slot<8;slot++)if(fixture.tracker.drivers[slot]){fixture.tracker.drivers[slot]->terrainMeta1=&data.MetaDataTerrain[0];fixture.tracker.drivers[slot]->terrainMeta2=&data.MetaDataTerrain[0];}
+	RUNTIME_CHECK(MainCanonicalRuntime_CaptureTopology(&workspace,&fixture.tracker,&sdata_static));fixture.tracker.level1=NULL;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&fixture.tracker,&sdata_static,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_TOPOLOGY_VALIDATE&&workspace.stageCounts.rosterPreflight==1&&workspace.stageCounts.sourceExtract==0);
+
+	/* Terminal V4 epochs fail closed at the lifecycle stage that reaches them. */
+	MainCanonicalRuntime_Reset(&workspace);workspace.topologyContext.currentEpoch=UINT64_MAX-1;workspace.topologyContext.captureActive=1;request.restoredThisFrame=1;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_RESTORE_EPOCH&&workspace.stageCounts.rosterPreflight==0&&workspace.topologyContext.currentEpoch==UINT64_MAX);
+	MainCanonicalRuntime_Reset(&workspace);workspace.topologyContext.currentEpoch=UINT64_MAX-1;workspace.topologyContext.captureActive=1;request.restoredThisFrame=0;
+	RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_TOPOLOGY_EPOCH&&workspace.stageCounts.rosterPreflight==1&&workspace.topologyContext.currentEpoch==UINT64_MAX);
+	RUNTIME_CHECK(MainCanonicalRuntime_FailureReason(NULL)==MAIN_CANONICAL_RUNTIME_FAILURE_NULL_ARGUMENT);
+	#undef RUNTIME_CHECK
+	return 1;
+}
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());C(PhysicsProjectionTest());C(DetailedAssemblyTest());C(RuntimeWorkspaceTest());C(RuntimeWorkspaceV4Test());puts("main_canonical_drivers_binding_test: passed");return 0;}

@@ -54,6 +54,14 @@ struct NativeDeterministicRngBankV1
 /* Initialization is transactional and accepts only the frozen V1 derivation. */
 int NativeDeterministicRngBankV1_Init(struct NativeDeterministicRngBankV1 *bank, uint64_t masterSeed,
 	                                  uint32_t derivationVersion);
+/*
+ * Workspace form.  It derives the bank directly into `bank` and therefore has
+ * no whole-bank automatic copy; on failure `bank` may be partially written.
+ * The caller owns the destination and must not treat a failed call as usable.
+ * Successful output is byte-identical to NativeDeterministicRngBankV1_Init.
+ */
+int NativeDeterministicRngBankV1_InitInPlace(struct NativeDeterministicRngBankV1 *bank, uint64_t masterSeed,
+	                                         uint32_t derivationVersion);
 int NativeDeterministicRngBankV1_Validate(const struct NativeDeterministicRngBankV1 *bank);
 
 /*

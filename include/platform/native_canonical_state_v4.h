@@ -18,6 +18,9 @@
 #define NATIVE_CANONICAL_WORLD_V1_COUNTERS_COMPONENT UINT32_C(1)
 #define NATIVE_CANONICAL_WORLD_V1_MINE_REGISTRY_COMPONENT UINT32_C(2)
 #define NATIVE_CANONICAL_WORLD_V1_MINE_SLOT_BYTES 116u
+/* Largest V4 domain payload: the RNG domain (retail RNG tag + retail RNG +
+ * deterministic bank).  Scratch must be at least this large. */
+#define NATIVE_CANONICAL_STATE_V4_MAX_DOMAIN_BYTES (4u + 20u + NATIVE_DETERMINISTIC_RNG_BANK_V1_ENCODED_BYTES)
 
 struct NativeCanonicalStateV4 {
 	uint32_t schemaVersion, replayFormatVersion, domainCount, frameNumber;
@@ -37,6 +40,10 @@ struct NativeCanonicalStateV4 {
 void NativeCanonicalStateV4_Init(struct NativeCanonicalStateV4 *state);
 int NativeCanonicalStateV4_Validate(const struct NativeCanonicalStateV4 *state);
 int NativeCanonicalStateV4_ComputeDigests(struct NativeCanonicalStateV4 *state);
+/* Workspace form for already-private staging.  It avoids the transactional
+ * whole-state automatic copy; failure may leave digest fields modified. */
+int NativeCanonicalStateV4_ComputeDigestsInPlaceWithScratch(struct NativeCanonicalStateV4 *state,
+	uint8_t *scratch,size_t scratchSize);
 size_t NativeCanonicalStateV4_EncodedSize(void);
 int NativeCanonicalStateV4_Encode(struct NativeCodecWriter *writer, const struct NativeCanonicalStateV4 *state);
 int NativeCanonicalStateV4_Decode(struct NativeCodecReader *reader, const struct NativeIdentityV1 *expectedIdentity,

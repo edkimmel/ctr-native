@@ -36,18 +36,59 @@ struct MainCanonicalRuntimeStageCounts
 	uint32_t project;
 };
 
+/* A runtime-owned V4 transaction token.  This intentionally does not name any
+ * file-session/scheduler type.  The caller supplies the validated match config
+ * and its locally computed digest; the projector remains the sole validator. */
+struct MainCanonicalRuntimeV4Request
+{
+	struct NativeIdentityV1 identity;
+	struct NativeMatchConfigV1 config;
+	uint8_t configDigest[NATIVE_SHA256_DIGEST_BYTES];
+	uint32_t replayFrame;
+	int restoredThisFrame;
+};
+
 struct MainCanonicalRuntimeWorkspace
 {
 	struct MainCanonicalTopologyContext topologyContext;
 	struct MainCanonicalTopologySnapshot topologySnapshot;
 	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaPhysicsCandidate sourceCandidate;
 	struct MainCanonicalDriversDetailedAssembly drivers;
-	struct NativeCanonicalStateV3 stateCandidate;
-	struct NativeCanonicalStateV3 state;
-	uint8_t normativeScratch[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
-	struct NativeReplaySchedulerCanonicalRequest preparedRequest;
+	/* A frame prepares exactly one schema generation; the sealed V1/V3 bytes
+	 * and the sibling V4 bytes never coexist in one prepared state, so they
+	 * share storage to remain inside the fixed workspace ceiling. */
+	union
+	{
+		struct NativeCanonicalStateV3 v3;
+		struct NativeCanonicalStateV4 v4;
+	} stateCandidate;
+	union
+	{
+		struct NativeCanonicalStateV3 v3;
+		struct NativeCanonicalStateV4 v4;
+	} state;
+	/* Bounded V4 staging reuses the drivers assembly scratch for the derived
+	 * RNG bank and one 600-byte domain payload: assembly has completed before
+	 * the projector runs.  The projector context is validated before the source
+	 * stages and must survive them, so it lives in the request slot instead. */
+	union
+	{
+		uint8_t normativeScratch[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
+		struct
+		{
+			struct NativeDeterministicRngBankV1 deterministicRng;
+			uint8_t projectorScratch[NATIVE_CANONICAL_STATE_V4_MAX_DOMAIN_BYTES];
+		} v4Scratch;
+	};
+	union
+	{
+		struct NativeReplaySchedulerCanonicalRequest v3;
+		struct MainCanonicalRuntimeV4Request v4;
+		struct MainCanonicalStateV4Context v4Context;
+	} preparedRequest;
 	struct MainCanonicalRuntimeStageCounts stageCounts;
 	enum MainCanonicalRuntimeFailureReason failureReason;
+	enum NativeReplaySchedulerCanonicalKind preparedKind;
 	uint8_t initialized;
 	uint8_t frameActive;
 	uint8_t prepared;
@@ -92,6 +133,27 @@ int MainCanonicalRuntime_GetSubmissionV3(const struct MainCanonicalRuntimeWorksp
 	struct NativeReplaySchedulerCanonicalSubmission *submission);
 int MainCanonicalRuntime_ReleaseV3(struct MainCanonicalRuntimeWorkspace *workspace,
 	const struct NativeReplaySchedulerCanonicalRequest *request);
+
+/* V4 mirrors the V3 lifecycle but consumes a runtime-owned request.  WORLD and
+ * TOPOLOGY are caller-supplied canonical domain values: this coordinator never
+ * runs the isolated mine/counter extractors, reads D231, dereferences
+ * NavHeader.last, or acquires/activates/publishes a topology lease. */
+int MainCanonicalRuntime_PrepareV4(struct MainCanonicalRuntimeWorkspace *workspace,
+	const struct MainCanonicalRuntimeV4Request *request,
+	const struct GameTracker *gGT,const struct sData *sourceData,
+	const struct NativeCanonicalControlV1 *control,const struct NativeCanonicalRngV1 *retailRng,
+	const struct NativeCanonicalInputV1 *input,
+	const struct NativeCanonicalWorldCountersV1 *worldCounters,
+	const struct NativeCanonicalWorldMineRegistryV1 *mineRegistry,
+	const struct NativeCanonicalTopologyV1 *topology);
+const struct NativeCanonicalStateV4 *MainCanonicalRuntime_ViewV4(
+	const struct MainCanonicalRuntimeWorkspace *workspace,
+	const struct MainCanonicalRuntimeV4Request *request);
+int MainCanonicalRuntime_GetSubmissionV4(const struct MainCanonicalRuntimeWorkspace *workspace,
+	const struct MainCanonicalRuntimeV4Request *request,
+	struct NativeReplaySchedulerCanonicalSubmission *submission);
+int MainCanonicalRuntime_ReleaseV4(struct MainCanonicalRuntimeWorkspace *workspace,
+	const struct MainCanonicalRuntimeV4Request *request);
 
 #ifdef MAIN_CANONICAL_RUNTIME_TESTING
 void MainCanonicalRuntime_TestForceFailure(enum MainCanonicalRuntimeFailureReason reason);

@@ -418,13 +418,41 @@ static int TestNonzeroOffsetAndEncodeFailures(void)
 	return 0;
 }
 
+static int TestInitInPlaceMatchesTransactional(void)
+{
+	static const uint64_t seeds[] = {0, 1, UINT64_MAX, UINT64_C(0x0123456789abcdef)};
+	struct NativeDeterministicRngBankV1 transactional;
+	struct NativeDeterministicRngBankV1 inPlace;
+	struct NativeDeterministicRngBankV1 sentinel;
+	struct NativeDeterministicRngBankV1 untouched;
+
+	for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); i++)
+	{
+		CHECK(NativeDeterministicRngBankV1_Init(&transactional, seeds[i], NATIVE_DETERMINISTIC_RNG_DERIVATION_VERSION));
+		memset(&inPlace, 0x5a, sizeof(inPlace));
+		CHECK(NativeDeterministicRngBankV1_InitInPlace(&inPlace, seeds[i], NATIVE_DETERMINISTIC_RNG_DERIVATION_VERSION));
+		CHECK(BankBytesEqual(&transactional, &inPlace));
+	}
+	CHECK(!NativeDeterministicRngBankV1_InitInPlace(NULL, 1, NATIVE_DETERMINISTIC_RNG_DERIVATION_VERSION));
+	/* The frozen derivation rejects an unknown version without committing. */
+	memset(&untouched, 0x5a, sizeof(untouched));
+	sentinel = untouched;
+	CHECK(!NativeDeterministicRngBankV1_InitInPlace(&untouched, 1, 2));
+	CHECK(memcmp(&untouched, &sentinel, sizeof(untouched)) == 0);
+	/* The transactional form still never touches a rejected destination. */
+	untouched = sentinel;
+	CHECK(!NativeDeterministicRngBankV1_Init(&untouched, 1, 2));
+	CHECK(memcmp(&untouched, &sentinel, sizeof(untouched)) == 0);
+	return 0;
+}
+
 int main(void)
 {
 	if (TestGoldenDerivationDrawsAndDigest() != 0 || TestStreamIsolationAndOrderInvariance() != 0 ||
 	    TestSeedSlotAndTagPerturbations() != 0 || TestBoundedDraws() != 0 || TestBoundedDrawRejectionBranch() != 0 ||
 	    TestOwnershipAndFailureAtomicity() != 0 ||
 	    TestCheckpointRoundTrip() != 0 || TestDecodeFailuresAreTransactional() != 0 ||
-	    TestNonzeroOffsetAndEncodeFailures() != 0)
+	    TestNonzeroOffsetAndEncodeFailures() != 0 || TestInitInPlaceMatchesTransactional() != 0)
 	{
 		return 1;
 	}

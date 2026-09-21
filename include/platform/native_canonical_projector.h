@@ -74,4 +74,23 @@ int MainCanonicalState_ProjectV4(struct NativeCanonicalStateV4 *state,
 	const struct NativeCanonicalWorldMineRegistryV1 *mineRegistry,
 	const struct NativeCanonicalTopologyV1 *topology);
 
+/*
+ * Runtime-workspace form.  The caller owns unpublished staging and scratch.
+ * It performs the same input validation as ProjectV4, then writes the state
+ * and its digests in place; unlike ProjectV4, failure may leave `state`
+ * modified.  It never materializes a whole NativeCanonicalStateV4 local.
+ */
+int MainCanonicalState_ProjectV4InPlaceWithScratch(struct NativeCanonicalStateV4 *state,
+	const struct MainCanonicalStateV4Context *context,
+	const struct NativeIdentityV1 *identity, uint32_t replayFrameNumber,
+	const struct NativeCanonicalControlV1 *control,
+	const struct NativeCanonicalRngV1 *retailRng,
+	const struct NativeDeterministicRngBankV1 *deterministicRng,
+	const struct NativeCanonicalInputV1 *input,
+	const struct NativeCanonicalDriversV1 *drivers,
+	const struct NativeCanonicalWorldCountersV1 *worldCounters,
+	const struct NativeCanonicalWorldMineRegistryV1 *mineRegistry,
+	const struct NativeCanonicalTopologyV1 *topology,
+	uint8_t *scratch, size_t scratchSize);
+
 #endif

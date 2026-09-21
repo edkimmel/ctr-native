@@ -46,6 +46,25 @@ static int MakeStateV3(struct NativeCanonicalStateV3 *state)
 	return NativeCanonicalStateV3_ComputeDigests(state);
 }
 
+static int MakeStateV4(struct NativeCanonicalStateV4 *state)
+{
+	uint8_t stream[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES] = {0};
+	NativeCanonicalStateV4_Init(state);
+	state->frameNumber = 77u;
+	for (uint32_t i = 0; i < NATIVE_IDENTITY_DIGEST_BYTES; i++)
+	{
+		state->identity.build[i] = (uint8_t)i;
+		state->identity.content[i] = (uint8_t)(0x80u + i);
+	}
+	for (uint32_t i = 0; i < NATIVE_SHA256_DIGEST_BYTES; i++) state->configDigest[i] = (uint8_t)(0x40u + i);
+	state->control.gameMode1 = 1;
+	state->retailRng.advRng1 = 2;
+	state->input.pads[0].connected = 1;
+	stream[NATIVE_CANONICAL_DRIVERS_ROSTER_BYTES] = 1;
+	if (!NativeCanonicalDriversV1_FromNormativeStream(&state->drivers, 1u, stream, sizeof(stream))) return 0;
+	return NativeCanonicalStateV4_ComputeDigests(state);
+}
+
 static int TestRequirementModes(void)
 {
 	CHECK(!NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_NONE));
@@ -58,6 +77,9 @@ static int TestRequirementModes(void)
 	CHECK(!NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_ARMED_V3));
 	CHECK(NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V3));
 	CHECK(NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V3));
+	CHECK(!NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_ARMED_V4));
+	CHECK(NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V4));
+	CHECK(NativeReplayScheduler_ModeRequiresCanonicalState(NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V4));
 	return 0;
 }
 
@@ -87,6 +109,8 @@ static int TestCliMatrix(void)
 	char *v3Detailed[] = { "ctr_native", "--record-v3", "--detailed" };
 	char *v3Bypass[] = { "ctr_native", "--replay-v3", "x", "--replay-bypass-header" };
 	char *v3Conflict[] = { "ctr_native", "--record-v3", "--record-v2" };
+	char *recordV4[] = { "ctr_native", "--record-v4" };
+	char *replayV4[] = { "ctr_native", "--replay-v4", "x" };
 
 	CHECK(Parse(1, normal, &args));
 	CHECK(args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_NONE && args.replayPath == NULL);
@@ -110,6 +134,10 @@ static int TestCliMatrix(void)
 	CHECK(!Parse(3, v3Detailed, &args));
 	CHECK(!Parse(4, v3Bypass, &args));
 	CHECK(!Parse(3, v3Conflict, &args));
+	/* ParseArgs intentionally has no V4 switch: the dormant CLI is ignored and
+	 * the selector stays NONE even when a V4 flag is presented. */
+	CHECK(Parse(2, recordV4, &args) && args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_NONE && args.replayPath == NULL);
+	CHECK(Parse(3, replayV4, &args) && args.selector == NATIVE_REPLAY_SCHEDULER_SELECTOR_NONE && args.replayPath == NULL);
 	return 0;
 }
 
@@ -134,6 +162,49 @@ static int TestAtomicV3CopyGate(void)
 	source.domainDigests[NATIVE_CANONICAL_DOMAIN_DRIVERS - 1u] ^= 1u;
 	CHECK(NativeReplayScheduler_CopyCanonicalEndStateV3(77u, &source.identity, &source, &destination));
 	CHECK(destination.frameNumber == 77u && destination.domainDigests[NATIVE_CANONICAL_DOMAIN_DRIVERS - 1u] == source.domainDigests[NATIVE_CANONICAL_DOMAIN_DRIVERS - 1u]);
+	source.drivers.fullStreamDigest ^= 1u;
+	CHECK(destination.drivers.fullStreamDigest != source.drivers.fullStreamDigest);
+	return 0;
+}
+
+static int TestAtomicV4CopyGate(void)
+{
+	struct NativeCanonicalStateV4 source, destination, before;
+	struct NativeIdentityV1 wrong;
+	uint8_t wrongConfigDigest[NATIVE_SHA256_DIGEST_BYTES];
+
+	CHECK(MakeStateV4(&source));
+	memset(&destination, 0xa5, sizeof(destination));
+	before = destination;
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndStateV4(77u, NULL, source.configDigest, &source, &destination));
+	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndStateV4(77u, &source.identity, NULL, &source, &destination));
+	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndStateV4(77u, &source.identity, source.configDigest, NULL, &destination));
+	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndStateV4(77u, &source.identity, source.configDigest, &source, NULL));
+	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
+	wrong = source.identity;
+	wrong.build[0] ^= 1u;
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndStateV4(77u, &wrong, source.configDigest, &source, &destination));
+	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
+	memcpy(wrongConfigDigest, source.configDigest, sizeof(wrongConfigDigest));
+	wrongConfigDigest[0] ^= 1u;
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndStateV4(77u, &source.identity, wrongConfigDigest, &source, &destination));
+	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
+	source.frameNumber = 76u;
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndStateV4(77u, &source.identity, source.configDigest, &source, &destination));
+	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
+	source.frameNumber = 77u;
+	source.domainDigests[NATIVE_CANONICAL_DOMAIN_DRIVERS - 1u] ^= 1u;
+	CHECK(!NativeReplayScheduler_CopyCanonicalEndStateV4(77u, &source.identity, source.configDigest, &source, &destination));
+	CHECK(memcmp(&destination, &before, sizeof(destination)) == 0);
+	source.domainDigests[NATIVE_CANONICAL_DOMAIN_DRIVERS - 1u] ^= 1u;
+	CHECK(NativeReplayScheduler_CopyCanonicalEndStateV4(77u, &source.identity, source.configDigest, &source, &destination));
+	CHECK(destination.frameNumber == 77u &&
+	      destination.domainDigests[NATIVE_CANONICAL_DOMAIN_DRIVERS - 1u] == source.domainDigests[NATIVE_CANONICAL_DOMAIN_DRIVERS - 1u] &&
+	      destination.combinedDigest == source.combinedDigest &&
+	      memcmp(destination.configDigest, source.configDigest, NATIVE_SHA256_DIGEST_BYTES) == 0);
 	source.drivers.fullStreamDigest ^= 1u;
 	CHECK(destination.drivers.fullStreamDigest != source.drivers.fullStreamDigest);
 	return 0;
@@ -266,7 +337,7 @@ static int TestV3MismatchReport(void)
 int main(void)
 {
 	if ((TestRequirementModes() != 0) || (TestCliMatrix() != 0) || (TestAtomicCopyGate() != 0) || (TestAtomicV3CopyGate() != 0) ||
-	    (TestV2LifecycleGates() != 0) || (TestV3MismatchReport() != 0)) return 1;
+	    (TestAtomicV4CopyGate() != 0) || (TestV2LifecycleGates() != 0) || (TestV3MismatchReport() != 0)) return 1;
 	puts("native_replay_scheduler_seam_test: passed");
 	return 0;
 }

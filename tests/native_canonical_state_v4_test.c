@@ -37,6 +37,7 @@ static void PutU32(uint8_t *p, uint32_t v) { p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>
 int main(void)
 {
 	uint8_t bytes[NCV4_BYTES], golden[NCV4_BYTES], scratch[NCV4_BYTES], shortBuffer[NCV4_BYTES], wrongConfig[32];
+	uint8_t exactScratch[NATIVE_CANONICAL_STATE_V4_MAX_DOMAIN_BYTES];
 	size_t domain[6], payload[6], digest[6], cursor = 116;
 	struct NativeCanonicalStateV4 s, out, sentinel, expected; struct NativeCodecWriter w, beforeWriter; struct NativeCodecReader r; struct NativeCodecDigest64 wd; uint64_t digestBefore;
 	CHECK(!Fill(&s)); CHECK(NativeCanonicalStateV4_EncodedSize() == NCV4_BYTES); CHECK(ReadGolden(golden));
@@ -45,6 +46,21 @@ int main(void)
 	CHECK(memcmp(bytes, golden, sizeof(bytes)) == 0);
 	NativeCodecReader_Init(&r, golden, sizeof(golden)); CHECK(NativeCanonicalStateV4_Decode(&r, &s.identity, s.configDigest, &out)); CHECK(r.offset == sizeof(golden) && memcmp(&s, &out, sizeof(s)) == 0);
 	NativeCodecWriter_Init(&w, scratch, sizeof(scratch), NULL); CHECK(NativeCanonicalStateV4_Encode(&w, &out) && memcmp(scratch, golden, sizeof(golden)) == 0);
+	/* The bounded in-place digest path is byte-identical to the transactional
+	 * one and rejects a short, null, or absent scratch. */
+	CHECK(NATIVE_CANONICAL_STATE_V4_MAX_DOMAIN_BYTES == 600u);
+	out = s; out.domainDigests[0] ^= UINT64_MAX; out.combinedDigest ^= UINT64_MAX;
+	CHECK(NativeCanonicalStateV4_ComputeDigestsInPlaceWithScratch(&out, exactScratch, sizeof(exactScratch)));
+	CHECK(memcmp(&out, &s, sizeof(out)) == 0);
+	out = s; out.domainDigests[5] ^= UINT64_MAX;
+	CHECK(NativeCanonicalStateV4_ComputeDigestsInPlaceWithScratch(&out, scratch, sizeof(scratch)));
+	CHECK(memcmp(&out, &s, sizeof(out)) == 0);
+	out = s; CHECK(!NativeCanonicalStateV4_ComputeDigestsInPlaceWithScratch(&out, exactScratch, NATIVE_CANONICAL_STATE_V4_MAX_DOMAIN_BYTES - 1u));
+	CHECK(memcmp(&out, &s, sizeof(out)) == 0);
+	out = s; CHECK(!NativeCanonicalStateV4_ComputeDigestsInPlaceWithScratch(&out, NULL, sizeof(exactScratch)));
+	CHECK(memcmp(&out, &s, sizeof(out)) == 0);
+	CHECK(!NativeCanonicalStateV4_ComputeDigestsInPlaceWithScratch(NULL, exactScratch, sizeof(exactScratch)));
+	expected = s; expected.schemaVersion = 0; CHECK(!NativeCanonicalStateV4_ComputeDigestsInPlaceWithScratch(&expected, exactScratch, sizeof(exactScratch)));
 	for (uint32_t i=0; i<6; ++i) { domain[i]=cursor; payload[i]=cursor+8; cursor=payload[i]+(size_t)golden[domain[i]+4]+((size_t)golden[domain[i]+5]<<8)+((size_t)golden[domain[i]+6]<<16)+((size_t)golden[domain[i]+7]<<24); digest[i]=cursor; cursor+=8; }
 	CHECK(cursor + 8 == sizeof(golden)); sentinel = out;
 	/* Every truncation and every declared domain boundary is transactional. */

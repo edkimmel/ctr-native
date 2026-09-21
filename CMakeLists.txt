@@ -391,8 +391,10 @@ set_target_properties(ctr_native_deterministic_input_observation PROPERTIES C_ST
 target_include_directories(ctr_native_deterministic_input_observation PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 target_link_libraries(ctr_native_deterministic_input_observation PUBLIC ctr_native_canonical_projector)
 
-# Isolated V4 explicit-value projector.  It is not linked by the runtime,
-# scheduler, replay, file, or game executable targets.
+# Isolated V4 explicit-value projector.  It is linked by the dormant runtime
+# coordinator as an explicit dependency so the runtime's declared graph is
+# complete, but still not called from any live path; the scheduler, replay,
+# file, and game executable targets do not name it directly.
 add_library(ctr_native_canonical_projector_v4 STATIC game/MAIN/MainCanonicalStateV4.c)
 set_target_properties(ctr_native_canonical_projector_v4 PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(ctr_native_canonical_projector_v4 PUBLIC ${CMAKE_SOURCE_DIR}/include)
@@ -429,7 +431,7 @@ add_library(ctr_native_canonical_runtime STATIC game/MAIN/MainCanonicalRuntime.c
 set_target_properties(ctr_native_canonical_runtime PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(ctr_native_canonical_runtime PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 target_compile_definitions(ctr_native_canonical_runtime PUBLIC CTR_NATIVE CTR_INTERNAL)
-target_link_libraries(ctr_native_canonical_runtime PUBLIC ctr_native_canonical_projector ctr_native_canonical_drivers_roster ctr_native_canonical_topology ctr_native_replay_scheduler_seam)
+target_link_libraries(ctr_native_canonical_runtime PUBLIC ctr_native_canonical_projector ctr_native_canonical_projector_v4 ctr_native_canonical_drivers_roster ctr_native_canonical_topology ctr_native_canonical_state_v4 ctr_native_match_config ctr_native_replay_scheduler_seam)
 
 add_library(ctr_native_replay_scheduler_seam STATIC platform/native_replay_scheduler_seam.c)
 set_target_properties(ctr_native_replay_scheduler_seam PROPERTIES
@@ -438,7 +440,7 @@ set_target_properties(ctr_native_replay_scheduler_seam PROPERTIES
     C_EXTENSIONS OFF
 )
 target_include_directories(ctr_native_replay_scheduler_seam PUBLIC ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(ctr_native_replay_scheduler_seam PUBLIC ctr_native_canonical_state ctr_native_canonical_state_v3)
+target_link_libraries(ctr_native_replay_scheduler_seam PUBLIC ctr_native_canonical_state ctr_native_canonical_state_v3 ctr_native_canonical_state_v4)
 
 add_library(ctr_native_replay_v2 STATIC platform/native_replay_v2.c)
 set_target_properties(ctr_native_replay_v2 PROPERTIES
@@ -563,7 +565,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_topology_residency main_canonical_topology_lifecycle_events)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -784,7 +786,7 @@ if(BUILD_TESTING)
     set_target_properties(main_canonical_drivers_binding_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_include_directories(main_canonical_drivers_binding_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
     target_compile_definitions(main_canonical_drivers_binding_test PRIVATE CTR_NATIVE CTR_INTERNAL)
-    target_link_libraries(main_canonical_drivers_binding_test PRIVATE ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_state_v3 ctr_native_replay_scheduler_seam)
+    target_link_libraries(main_canonical_drivers_binding_test PRIVATE ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_state_v3 ctr_native_canonical_state_v4 ctr_native_match_config ctr_native_replay_scheduler_seam)
     add_test(NAME main_canonical_drivers_binding_unit COMMAND $<TARGET_FILE:main_canonical_drivers_binding_test>)
 
     add_executable(native_canonical_driver_behavior_test tests/native_canonical_driver_behavior_test.c)
@@ -1055,6 +1057,13 @@ if(BUILD_TESTING)
             ctr_native_canonical_driver_behavior
             ctr_native_canonical_pool
             ctr_native_canonical_fixed_array
+            ctr_native_canonical_state_v4
+            ctr_native_canonical_world_counters_v1
+            ctr_native_canonical_world_mine_registry_v1
+            ctr_native_canonical_topology_v1
+            ctr_native_deterministic_rng
+            ctr_native_match_config
+            ctr_native_sha256
         )
             target_compile_options(${stack_target} PRIVATE
                 "$<$<CONFIG:Release>:/FAcs>"
@@ -1068,6 +1077,16 @@ if(BUILD_TESTING)
                 -BudgetBytes 1536
         )
         set_tests_properties(main_canonical_runtime_stack_budget PROPERTIES CONFIGURATIONS Release)
+        add_test(NAME main_canonical_runtime_stack_budget_v4
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                "${CMAKE_SOURCE_DIR}/tests/main_canonical_runtime_stack_budget.ps1"
+                -AsmDirectory "${CTR_NATIVE_RUNTIME_STACK_LISTING_DIR}"
+                -BudgetBytes 1536
+                -Root _MainCanonicalRuntime_PrepareV4
+        )
+        set_tests_properties(main_canonical_runtime_stack_budget_v4 PROPERTIES CONFIGURATIONS Release)
+        add_test(NAME main_canonical_runtime_isolation
+            COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_runtime_isolation_test.cmake")
     endif()
 
     add_test(NAME ctr_native_version COMMAND $<TARGET_FILE:ctr_native> --version)

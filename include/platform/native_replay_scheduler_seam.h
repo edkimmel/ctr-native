@@ -3,13 +3,15 @@
 
 #include "platform/native_canonical_state.h"
 #include "platform/native_canonical_state_v3.h"
+#include "platform/native_canonical_state_v4.h"
 #include "platform/native_replay_v3.h"
 
 enum NativeReplaySchedulerCanonicalKind
 {
 	NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_NONE = 0,
 	NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V1,
-	NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V3
+	NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V3,
+	NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_V4
 };
 
 /* Pointer-bearing post-projection input prevents a v1 caller from being
@@ -21,6 +23,7 @@ struct NativeReplaySchedulerCanonicalSubmission
 	{
 		const struct NativeCanonicalStateV1 *v1;
 		const struct NativeCanonicalStateV3 *v3;
+		const struct NativeCanonicalStateV4 *v4;
 	} state;
 };
 
@@ -77,7 +80,10 @@ enum NativeReplaySchedulerCanonicalMode
 	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V2,
 	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_ARMED_V3,
 	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V3,
-	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V3
+	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V3,
+	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_ARMED_V4,
+	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V4,
+	NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V4
 };
 
 enum NativeReplaySchedulerSelector
@@ -88,7 +94,9 @@ enum NativeReplaySchedulerSelector
 	NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V2,
 	NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V2,
 	NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V3,
-	NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V3
+	NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V3,
+	NATIVE_REPLAY_SCHEDULER_SELECTOR_RECORD_V4,
+	NATIVE_REPLAY_SCHEDULER_SELECTOR_PLAYBACK_V4
 };
 
 struct NativeReplaySchedulerArgs
@@ -115,6 +123,12 @@ int NativeReplayScheduler_CopyCanonicalEndState(int required, uint32_t expectedR
  * and commits the destination only on success. */
 int NativeReplayScheduler_CopyCanonicalEndStateV3(uint32_t expectedReplayFrame, const struct NativeIdentityV1 *expectedIdentity,
 	                                               const struct NativeCanonicalStateV3 *source, struct NativeCanonicalStateV3 *destination);
+
+/* V4 is a separately typed gate that also checks the configuration digest,
+ * validates, recomputes every domain digest, and commits only on success. */
+int NativeReplayScheduler_CopyCanonicalEndStateV4(uint32_t expectedReplayFrame, const struct NativeIdentityV1 *expectedIdentity,
+	                                               const uint8_t expectedConfigDigest[NATIVE_SHA256_DIGEST_BYTES],
+	                                               const struct NativeCanonicalStateV4 *source, struct NativeCanonicalStateV4 *destination);
 
 /* Small value-only lifecycle gates used by the live scheduler and exercised
  * headlessly: playback retains each supplied packet, and a poisoned record

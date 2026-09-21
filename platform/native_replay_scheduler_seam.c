@@ -71,7 +71,9 @@ int NativeReplayScheduler_ModeRequiresCanonicalState(enum NativeReplaySchedulerC
 	return (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V2) ||
 	       (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V2) ||
 	       (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V3) ||
-	       (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V3);
+	       (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V3) ||
+	       (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_RECORD_V4) ||
+	       (mode == NATIVE_REPLAY_SCHEDULER_CANONICAL_MODE_PLAYBACK_V4);
 }
 
 int NativeReplayScheduler_CopyCanonicalEndStateV3(uint32_t expectedReplayFrame, const struct NativeIdentityV1 *expectedIdentity,
@@ -85,6 +87,25 @@ int NativeReplayScheduler_CopyCanonicalEndStateV3(uint32_t expectedReplayFrame, 
 	    (memcmp(source->identity.content, expectedIdentity->content, NATIVE_IDENTITY_DIGEST_BYTES) != 0)) return 0;
 	candidate = *source;
 	if (!NativeCanonicalStateV3_ComputeDigests(&candidate) ||
+	    (memcmp(candidate.domainDigests, source->domainDigests, sizeof(candidate.domainDigests)) != 0) ||
+	    (candidate.combinedDigest != source->combinedDigest)) return 0;
+	*destination = candidate;
+	return 1;
+}
+
+int NativeReplayScheduler_CopyCanonicalEndStateV4(uint32_t expectedReplayFrame, const struct NativeIdentityV1 *expectedIdentity,
+	                                               const uint8_t expectedConfigDigest[NATIVE_SHA256_DIGEST_BYTES],
+	                                               const struct NativeCanonicalStateV4 *source, struct NativeCanonicalStateV4 *destination)
+{
+	struct NativeCanonicalStateV4 candidate;
+
+	if ((expectedIdentity == NULL) || (expectedConfigDigest == NULL) || (source == NULL) || (destination == NULL) ||
+	    (source->frameNumber != expectedReplayFrame) || !NativeCanonicalStateV4_Validate(source) ||
+	    (memcmp(source->identity.build, expectedIdentity->build, NATIVE_IDENTITY_DIGEST_BYTES) != 0) ||
+	    (memcmp(source->identity.content, expectedIdentity->content, NATIVE_IDENTITY_DIGEST_BYTES) != 0) ||
+	    (memcmp(source->configDigest, expectedConfigDigest, NATIVE_SHA256_DIGEST_BYTES) != 0)) return 0;
+	candidate = *source;
+	if (!NativeCanonicalStateV4_ComputeDigests(&candidate) ||
 	    (memcmp(candidate.domainDigests, source->domainDigests, sizeof(candidate.domainDigests)) != 0) ||
 	    (candidate.combinedDigest != source->combinedDigest)) return 0;
 	*destination = candidate;
