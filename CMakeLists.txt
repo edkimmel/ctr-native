@@ -141,6 +141,17 @@ set_target_properties(ctr_native_display_config PROPERTIES
 )
 target_include_directories(ctr_native_display_config PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# Host-local unattended frame-capture requests. Presentation-only: this target
+# has no match, replay, canonical state, game, renderer, GL, or SDL dependency
+# by design, so the parser and exit decision stay unit-testable standalone.
+add_library(ctr_native_frame_capture STATIC platform/native_frame_capture.c)
+set_target_properties(ctr_native_frame_capture PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_frame_capture PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Opaque virtual delivery for later lockstep fault matrices.  This leaf has no
 # packet format, clock, socket, game, replay, or executable dependency.
 add_library(ctr_native_virtual_datagram STATIC platform/native_virtual_datagram.c)
@@ -670,6 +681,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_display_config_test PRIVATE ctr_native_display_config)
     add_test(NAME native_display_config_unit COMMAND $<TARGET_FILE:native_display_config_test>)
+
+    add_executable(native_frame_capture_test tests/native_frame_capture_test.c)
+    set_target_properties(native_frame_capture_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_frame_capture_test PRIVATE ctr_native_frame_capture)
+    add_test(NAME native_frame_capture_unit COMMAND $<TARGET_FILE:native_frame_capture_test>)
 
     add_executable(native_virtual_datagram_test tests/native_virtual_datagram_test.c)
     set_target_properties(native_virtual_datagram_test PROPERTIES

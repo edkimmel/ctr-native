@@ -3,6 +3,7 @@
 #include <macros.h>
 
 #include "platform/native_audio.h"
+#include "platform/native_frame_capture.h"
 #include "platform/native_glad.h"
 #include "platform/native_gpu.h"
 #include "platform/native_input.h"
@@ -17,6 +18,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 SDL_Window *g_window = NULL;
 int g_dbg_polygonSelected = 0;
@@ -39,6 +41,12 @@ global_variable int s_pinnedVramDisplayX = 0;
 global_variable int s_pinnedVramDisplayY = 0;
 global_variable int s_pinnedVramDisplayW = 0;
 global_variable int s_pinnedVramDisplayH = 0;
+#if defined(CTR_INTERNAL)
+/* Host-local presentation state only; never observed by game/replay code. */
+global_variable struct NativeFrameCaptureConfig s_frameCaptureConfig;
+global_variable int s_frameCaptureActive = 0;
+global_variable int s_frameCaptureFrameIndex = 0;
+#endif
 #define NATIVE_FPS_REPORT_FRAME_WINDOW 2000
 global_variable int s_fpsFrameCount = 0;
 global_variable u64 s_fpsLastCounter = 0;
@@ -181,6 +189,131 @@ internal void Platform_TakeScreenshot(void)
 	SDL_DestroySurface(surface);
 
 	free(pixels);
+}
+
+/*
+ * Unattended capture path. Unlike Platform_TakeScreenshot above, which reads
+ * whatever framebuffer happens to be bound, this helper explicitly reads the
+ * default (window) framebuffer and restores the previous read binding, so the
+ * captured image is unambiguous across presentation paths. Failures are logged
+ * and ignored: a capture must never crash the host or alter frame pacing.
+ */
+internal void Platform_CaptureFrameToFile(const char *path)
+{
+	const int width = g_windowWidth;
+	const int height = g_windowHeight;
+	const size_t stride = (size_t)width * 4u;
+	GLint previousReadFramebuffer = 0;
+	u8 *pixels = NULL;
+	u8 *rowScratch = NULL;
+	SDL_Surface *surface = NULL;
+
+	if ((path == NULL) || (path[0] == '\0') || (width <= 0) || (height <= 0))
+	{
+		Platform_LogWarn("[CTR Native] frame capture skipped: invalid target or window size\n");
+		return;
+	}
+
+	pixels = (u8 *)malloc(stride * (size_t)height);
+	rowScratch = (u8 *)malloc(stride);
+	if ((pixels == NULL) || (rowScratch == NULL))
+	{
+		Platform_LogWarn("[CTR Native] frame capture failed: out of memory for %s\n", path);
+		free(pixels);
+		free(rowScratch);
+		return;
+	}
+
+	glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+	glReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)previousReadFramebuffer);
+
+	/* GL returns bottom-up rows; the BMP we want is top-down. */
+	for (int row = 0; row < (height / 2); row++)
+	{
+		u8 *top = pixels + ((size_t)row * stride);
+		u8 *bottom = pixels + ((size_t)(height - 1 - row) * stride);
+
+		memcpy(rowScratch, top, stride);
+		memcpy(top, bottom, stride);
+		memcpy(bottom, rowScratch, stride);
+	}
+
+	surface = SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_BGRA8888, pixels, (int)stride);
+	if (surface == NULL)
+	{
+		Platform_LogWarn("[CTR Native] frame capture failed to wrap pixels for %s: %s\n", path, SDL_GetError());
+	}
+	else
+	{
+		if (!SDL_SaveBMP(surface, path))
+		{
+			Platform_LogWarn("[CTR Native] frame capture failed to write %s: %s\n", path, SDL_GetError());
+		}
+		else
+		{
+			Platform_LogWarn("[CTR Native] frame capture wrote %s (%dx%d)\n", path, width, height);
+		}
+		SDL_DestroySurface(surface);
+	}
+
+	free(rowScratch);
+	free(pixels);
+}
+
+void Platform_SetFrameCaptureConfig(const struct NativeFrameCaptureConfig *config)
+{
+	if (config == NULL)
+	{
+		s_frameCaptureActive = 0;
+		return;
+	}
+
+	s_frameCaptureConfig = *config;
+	s_frameCaptureActive = ((config->requestCount > 0) || (config->exitAfterFrame > 0)) ? 1 : 0;
+}
+
+/*
+ * Called after the present call and before the window swap on every
+ * presentation path, so frame indices are comparable between runs. The fast
+ * path when nothing was requested is a single integer compare.
+ */
+internal void Platform_ServiceFrameCapture(void)
+{
+	int frame;
+	const char *path;
+
+	s_frameCaptureFrameIndex++;
+	if (!s_frameCaptureActive)
+	{
+		return;
+	}
+
+	frame = s_frameCaptureFrameIndex;
+
+	path = NativeFrameCapture_PathForFrame(&s_frameCaptureConfig, frame);
+	if (path != NULL)
+	{
+		Platform_CaptureFrameToFile(path);
+	}
+
+	if (NativeFrameCapture_ShouldExitAfterFrame(&s_frameCaptureConfig, frame))
+	{
+		/* The host has no quit flag: SDL_EVENT_QUIT and window-close are both
+		 * handled directly in Platform_PollHostEvents. Pushing SDL_EVENT_QUIT
+		 * reuses that exact shutdown path instead of calling exit() here. */
+		SDL_Event quitEvent;
+
+		Platform_LogWarn("[CTR Native] frame capture requested exit after frame %d\n", frame);
+		s_frameCaptureActive = 0;
+		SDL_zero(quitEvent);
+		quitEvent.type = SDL_EVENT_QUIT;
+		if (!SDL_PushEvent(&quitEvent))
+		{
+			Platform_LogWarn("[CTR Native] failed to queue quit after frame %d: %s\n", frame, SDL_GetError());
+		}
+	}
 }
 #endif
 
@@ -381,6 +514,9 @@ void Platform_EndScene(void)
 			NativeRenderer_PresentVRAMDisplay();
 		}
 		NativeRenderer_EndGpuFrame();
+#if defined(CTR_INTERNAL)
+		Platform_ServiceFrameCapture();
+#endif
 		NativeRenderer_SwapWindow();
 		s_pinnedVramDisplayFrames--;
 		if (s_pinnedVramDisplayFrames <= 0)
@@ -406,6 +542,9 @@ void Platform_EndScene(void)
 		NativeRenderer_PresentVRAMRect(activeDispEnv.disp.x, activeDispEnv.disp.y, activeDispEnv.disp.w, activeDispEnv.disp.h);
 	}
 	NativeRenderer_EndGpuFrame();
+#if defined(CTR_INTERNAL)
+	Platform_ServiceFrameCapture();
+#endif
 	NativeRenderer_SwapWindow();
 	NativePerf_EndScope(NATIVE_PERF_BUCKET_PLATFORM_END_SCENE);
 }

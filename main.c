@@ -20,6 +20,7 @@
 
 #include "platform/native_assets.h"
 #include "platform/native_display_config.h"
+#include "platform/native_frame_capture.h"
 #include "platform/native_log.h"
 #include "platform/native_memory.h"
 #include "platform/native_perf.h"
@@ -40,6 +41,7 @@
 #include "platform/native_sha256.c"
 #include "platform/native_disc_image.c"
 #include "platform/native_display_config.c"
+#include "platform/native_frame_capture.c"
 #include "platform/native_identity.c"
 #include "platform/native_assets.c"
 #include "platform/native_audio.c"
@@ -220,6 +222,22 @@ int main(int argc, char *argv[])
 		Platform_Shutdown();
 		return NativeConsole_Return(1);
 	}
+
+	/* Host-local, presentation-only capture requests. Unlike the display
+	 * config, a malformed request is fatal: an unattended capture run must not
+	 * silently produce nothing. Relative paths resolve against the base
+	 * directory entered above. */
+	struct NativeFrameCaptureConfig captureConfig;
+
+	NativeFrameCapture_SetDefaults(&captureConfig);
+	if (!NativeFrameCapture_ApplyArgs(argc, argv, &captureConfig))
+	{
+		fprintf(stderr, "[CTR Native] invalid frame-capture option; expected --capture-frame <frame>=<path.bmp> (frame >= 1, repeatable) and --exit-after-frame <frame>.\n");
+		Platform_LogFlush();
+		Platform_Shutdown();
+		return NativeConsole_Return(1);
+	}
+	Platform_SetFrameCaptureConfig(&captureConfig);
 #endif
 
 	Platform_InitScratchpad();

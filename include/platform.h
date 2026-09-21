@@ -27,6 +27,16 @@ void Platform_WaitUntilVBlank(int targetVBlank);
 void Platform_PollHostEvents(void);
 int Platform_PollInput(void);
 
+#if defined(CTR_INTERNAL)
+/*
+ * Host-local, presentation-only frame capture. The platform layer keeps its
+ * own copy of the config; passing NULL disables capture. No game, replay, or
+ * canonical-state code observes this.
+ */
+struct NativeFrameCaptureConfig;
+void Platform_SetFrameCaptureConfig(const struct NativeFrameCaptureConfig *config);
+#endif
+
 #if defined(CTR_NATIVE)
 int NikoGetEnterKey(void);
 #endif

@@ -3,7 +3,8 @@
 # state record.  This guard intentionally examines the public transport
 # boundary, rather than renderer implementation files: renderer code may use
 # any of these concepts, while their presence in this boundary is a protocol
-# regression.
+# regression.  Host-local frame capture is guarded by the same rule: it is a
+# presentation-side debug facility and must never reach a transport header.
 
 set(transport_headers
     "include/platform/native_match_config.h"
@@ -33,7 +34,10 @@ set(forbidden_presentation_identifiers
     "native_display_config"
     "nativedisplayconfig"
     "displayconfig"
-    "native_renderer.h")
+    "native_renderer.h"
+    "capture_frame"
+    "framecapture"
+    "native_frame_capture")
 
 foreach(relative_path IN LISTS transport_headers)
     set(path "${CMAKE_CURRENT_LIST_DIR}/../${relative_path}")
