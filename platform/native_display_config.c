@@ -11,6 +11,7 @@ void NativeDisplayConfig_SetDefaults(struct NativeDisplayConfig *config)
 	{
 		config->renderScale = NATIVE_DISPLAY_CONFIG_DEFAULT_RENDER_SCALE;
 		config->fullscreen = NATIVE_DISPLAY_CONFIG_DEFAULT_FULLSCREEN;
+		config->textureFilter = NATIVE_DISPLAY_CONFIG_DEFAULT_TEXTURE_FILTER;
 	}
 }
 
@@ -30,10 +31,36 @@ int NativeDisplayConfig_IsRenderScaleSupported(int renderScale)
 	}
 }
 
+int NativeDisplayConfig_IsTextureFilterSupported(int filter)
+{
+	switch (filter)
+	{
+	case NATIVE_TEXTURE_FILTER_NEAREST:
+	case NATIVE_TEXTURE_FILTER_BILINEAR:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+const char *NativeDisplayConfig_TextureFilterName(int filter)
+{
+	switch (filter)
+	{
+	case NATIVE_TEXTURE_FILTER_NEAREST:
+		return "nearest";
+	case NATIVE_TEXTURE_FILTER_BILINEAR:
+		return "bilinear";
+	default:
+		return "unknown";
+	}
+}
+
 static int NativeDisplayConfig_IsValid(const struct NativeDisplayConfig *config)
 {
 	return (config != NULL) &&
 	       NativeDisplayConfig_IsRenderScaleSupported(config->renderScale) &&
+	       NativeDisplayConfig_IsTextureFilterSupported(config->textureFilter) &&
 	       ((config->fullscreen == 0) || (config->fullscreen == 1));
 }
 
@@ -63,6 +90,28 @@ static int NativeDisplayConfig_ParseScale(const char *text, int *renderScale)
 	return 1;
 }
 
+int NativeDisplayConfig_ParseTextureFilter(const char *text, int *outFilter)
+{
+	if ((text == NULL) || (text[0] == '\0') || (outFilter == NULL))
+	{
+		return 0;
+	}
+
+	if (strcmp(text, "nearest") == 0)
+	{
+		*outFilter = NATIVE_TEXTURE_FILTER_NEAREST;
+		return 1;
+	}
+
+	if (strcmp(text, "bilinear") == 0)
+	{
+		*outFilter = NATIVE_TEXTURE_FILTER_BILINEAR;
+		return 1;
+	}
+
+	return 0;
+}
+
 int NativeDisplayConfig_ApplyArgs(int argc, char *argv[], struct NativeDisplayConfig *config)
 {
 	struct NativeDisplayConfig candidate;
@@ -81,7 +130,8 @@ int NativeDisplayConfig_ApplyArgs(int argc, char *argv[], struct NativeDisplayCo
 	for (int index = 1; index < argc; index++)
 	{
 		const char *arg = argv[index];
-		const char *value = NULL;
+		const char *scaleValue = NULL;
+		const char *filterValue = NULL;
 
 		if (arg == NULL)
 		{
@@ -94,11 +144,23 @@ int NativeDisplayConfig_ApplyArgs(int argc, char *argv[], struct NativeDisplayCo
 			{
 				return 0;
 			}
-			value = argv[++index];
+			scaleValue = argv[++index];
 		}
 		else if (strncmp(arg, "--render-scale=", strlen("--render-scale=")) == 0)
 		{
-			value = arg + strlen("--render-scale=");
+			scaleValue = arg + strlen("--render-scale=");
+		}
+		else if (strcmp(arg, "--texture-filter") == 0)
+		{
+			if ((index + 1 >= argc) || (argv[index + 1] == NULL) || (argv[index + 1][0] == '-'))
+			{
+				return 0;
+			}
+			filterValue = argv[++index];
+		}
+		else if (strncmp(arg, "--texture-filter=", strlen("--texture-filter=")) == 0)
+		{
+			filterValue = arg + strlen("--texture-filter=");
 		}
 		else if (strcmp(arg, "--fullscreen") == 0)
 		{
@@ -115,7 +177,14 @@ int NativeDisplayConfig_ApplyArgs(int argc, char *argv[], struct NativeDisplayCo
 			continue;
 		}
 
-		if (!NativeDisplayConfig_ParseScale(value, &candidate.renderScale))
+		if (scaleValue != NULL)
+		{
+			if (!NativeDisplayConfig_ParseScale(scaleValue, &candidate.renderScale))
+			{
+				return 0;
+			}
+		}
+		else if (!NativeDisplayConfig_ParseTextureFilter(filterValue, &candidate.textureFilter))
 		{
 			return 0;
 		}
