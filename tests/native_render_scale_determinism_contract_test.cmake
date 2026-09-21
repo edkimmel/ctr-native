@@ -1,10 +1,9 @@
-# Integer render scale is a local presentation preference.  It must not enter
-# any value transported between cabinets or persisted in a replay/canonical
-# state record.  This guard intentionally examines the public transport
-# boundary, rather than renderer implementation files: renderer code may use
-# any of these concepts, while their presence in this boundary is a protocol
-# regression.  Host-local frame capture is guarded by the same rule: it is a
-# presentation-side debug facility and must never reach a transport header.
+# Presentation options (integer render scale, the texture filter, and
+# host-local frame capture) are local preferences.  They must not enter any
+# value transported between cabinets or persisted in a replay/canonical state
+# record.  This guard intentionally examines the public transport boundary,
+# rather than renderer implementation files: renderer code may use any of these
+# concepts, while their presence in this boundary is a protocol regression.
 
 set(transport_headers
     "include/platform/native_match_config.h"
@@ -37,7 +36,13 @@ set(forbidden_presentation_identifiers
     "native_renderer.h"
     "capture_frame"
     "framecapture"
-    "native_frame_capture")
+    "native_frame_capture"
+    "texture_filter"
+    "texturefilter"
+    "texture_filtering"
+    "texturefiltering"
+    "bilinear"
+    "nativetexturefilter")
 
 foreach(relative_path IN LISTS transport_headers)
     set(path "${CMAKE_CURRENT_LIST_DIR}/../${relative_path}")
