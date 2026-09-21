@@ -182,7 +182,8 @@ internal void Platform_TakeScreenshot(void)
 
 	glReadPixels(0, 0, g_windowWidth, g_windowHeight, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
 
-	SDL_Surface *surface = SDL_CreateSurfaceFrom(g_windowWidth, g_windowHeight, SDL_PIXELFORMAT_BGRA8888, pixels, g_windowWidth * 4);
+	/* BGRA32 is the byte-order alias (B,G,R,A in memory) that matches GL_BGRA. */
+	SDL_Surface *surface = SDL_CreateSurfaceFrom(g_windowWidth, g_windowHeight, SDL_PIXELFORMAT_BGRA32, pixels, g_windowWidth * 4);
 
 	SDL_SaveBMP(surface, "SCREENSHOT.BMP");
 	SDL_DestroySurface(surface);
@@ -239,7 +240,9 @@ internal void Platform_CaptureFrameToFile(const char *path)
 		memcpy(bottom, rowScratch, stride);
 	}
 
-	surface = SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_BGRA8888, pixels, (int)stride);
+	/* BGRA32 is the byte-order alias (B,G,R,A in memory) that matches GL_BGRA;
+	 * BGRA8888 is a packed-integer order and swaps R<->G on little-endian. */
+	surface = SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_BGRA32, pixels, (int)stride);
 	if (surface == NULL)
 	{
 		Platform_LogWarn("[CTR Native] frame capture failed to wrap pixels for %s: %s\n", path, SDL_GetError());

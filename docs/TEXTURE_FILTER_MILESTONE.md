@@ -211,9 +211,12 @@ the base directory (`chdir(NativeAssets_GetBaseDir())`, `main.c:187`), so
 A drive-relative path such as an unescaped `C:\...` is written relative to the
 current directory, so prefer fully escaped absolute paths. Each BMP is the
 default framebuffer at window size (800x600 windowed, independent of
-`--render-scale`), saved 32-bit with an alpha channel; the VRAM-presented
-splash carries the PS1 mask bit, so every pixel has alpha 0 and viewers that
-honour BMP alpha show it blank. Its RGB content is correct.
+`--render-scale`), saved as a 32-bit BMP whose channel order matches the
+`GL_BGRA` readback via `SDL_PIXELFORMAT_BGRA32` (the byte-order alias; the
+packed `BGRA8888` order would swap R and G). The alpha channel is the PS1 mask
+bit from the presented framebuffer (0 for VRAM-presented frames such as the
+splash), so viewers that honour BMP alpha may show those frames blank - strip
+alpha when viewing. RGB is true colour.
 
 Repeat with `--texture-filter bilinear` for the "after" set. Store captures
 under `debug/captures/`; `.gitignore` already covers `/debug/`. Never commit
