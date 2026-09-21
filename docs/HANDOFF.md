@@ -56,9 +56,16 @@ Integration order:
   poison the session.
 - **Input observation seam** and **arcade bot setup / roster / tick evidence**
   modules under `game/MAIN/`.
-- **Render-scale independence.** A contract test freezes the sealed transport
-  width and schema and forbids presentation terms from the simulation side, so
-  integer render scale cannot alter replay or lockstep identity.
+- **Presentation independence.** Integer render scale (`--render-scale`), the
+  local texture filter (`--texture-filter nearest|bilinear`, default
+  `nearest`; bilinear is a post-palette blend inside the PSX fragment shaders
+  and the VRAM sampler stays `GL_NEAREST`) and unattended frame capture
+  (`--capture-frame <N>=<path.bmp>`, `--exit-after-frame <N>`) are host-local
+  presentation options. A contract test freezes the sealed transport width and
+  schema and forbids these presentation terms in the transport headers, and an
+  isolation test keeps the texture filter out of vertex construction,
+  savestate, checkpoint, replay, canonical-state and game code, so none of
+  them can alter replay or lockstep identity.
 
 ## Networking
 
@@ -108,6 +115,10 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
   `include/platform/native_topology_lease_runtime.h`.
 - Virtual network harness: `platform/native_virtual_datagram.c`,
   `include/platform/native_virtual_datagram.h`.
+- Presentation options (host-local): `platform/native_display_config.c`,
+  `include/platform/native_display_config.h` (render scale, texture filter),
+  `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
+  (unattended frame capture); renderer seam in `platform/native_renderer.c`.
 - Unity build chain: `game/game_unity.h` (ordered includes; add new game `.c`
   files here). Standalone libraries are declared in `CMakeLists.txt`.
 - Related docs: `docs/ARCADE_FORK.md`, `docs/TOPOLOGY_LEASE_AUTHORITY.md`,

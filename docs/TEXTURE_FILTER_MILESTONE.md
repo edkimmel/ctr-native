@@ -139,11 +139,14 @@ Defects, each verified in the code:
   (PS1 8-bit UV wrap inside the page). The CLUT index is bounded per format
   and `v_page_clut.zw` is per primitive, so the CLUT never crosses.
 - Classification comes from the nearest texel:
-  `rgN = samplePSX(mod(floor(P), 256.0))`. `visible`, `sampledStp` and the
-  `discardForSemiTransPass` decision derive from `rgN` exactly as
-  `nearestTextureSample` does. This keeps `fragColor.a` binary, keeps pass 1
-  and pass 2 coverage complementary, and keeps the discard edge identical to
-  nearest.
+  `rgN = samplePSX(mod(P, 256.0))` (the unfloored `P`, the same expression
+  `nearestTextureSample` evaluates; `samplePSX` floors internally). `visible`,
+  `sampledStp` and the `discardForSemiTransPass` decision derive from `rgN`
+  exactly as `nearestTextureSample` does. This keeps `fragColor.a` binary,
+  keeps pass 1 and pass 2 coverage complementary, and keeps the discard edge
+  identical to nearest. The four colour taps are fetched at texel centres,
+  `samplePSX(mod(tap, 256.0) + 0.5)`, because the page origin carries only the
+  `c_UVFudge` margin above the texel boundary.
 - Colour is a weighted blend of post-CLUT neighbours:
   `w_i = bilinearWeight_i * texelVisible(rg_i) * passWeight(rg_i)` where
   `passWeight` is 1 (pass 0), `1 - stp_i` (pass 1), `stp_i` (pass 2);
@@ -218,8 +221,19 @@ bit from the presented framebuffer (0 for VRAM-presented frames such as the
 splash), so viewers that honour BMP alpha may show those frames blank - strip
 alpha when viewing. RGB is true colour.
 
-Repeat with `--texture-filter bilinear` for the "after" set. Store captures
-under `debug/captures/`; `.gitignore` already covers `/debug/`. Never commit
+The "after" set is the same run with `--texture-filter bilinear`:
+
+```
+build-msvc-x86\Release\ctr_native.exe --render-scale 8 --windowed --texture-filter bilinear --capture-frame 60=C:\re-tools\ctr-native\debug\captures\splash-bilinear.bmp --capture-frame 1320=C:\re-tools\ctr-native\debug\captures\menu-bilinear.bmp --exit-after-frame 1330
+```
+
+The current reference set is the four files `splash-{nearest,bilinear}.bmp`
+(frame 60) and `menu-{nearest,bilinear}.bmp` (frame 1320) under
+`debug/captures/`. Expected relations: the two splash captures are
+byte-identical (VRAM presenter, unfiltered); the nearest menu capture is
+byte-identical to the pre-filter reference; the two menu captures differ only
+in RGB, never in the alpha (mask-bit) channel. Store captures under
+`debug/captures/`; `.gitignore` already covers `/debug/`. Never commit
 captures.
 
 What to compare: main-menu text and character portraits (glyph edges soft but
@@ -240,9 +254,15 @@ ctest --test-dir build-msvc-x86 -C Debug --output-on-failure
 cmake --build build-msvc-x86 --config Release --target ctr_native
 ```
 
-- Task 0: frame capture option, unit test, contract-test identifiers, and the
-  reference "before" captures (section 5). Reviewer: not required.
-- Task 1: `--texture-filter` parsing in `NativeDisplayConfig`
+Status: Tasks 0-5 are done on `arcade` (Task 0 `aa819aa04`, Task 1
+`036eb82e6`, Task 2 `4ad439284`, capture-colour fix `12452a0c6`, Task 3
+`a0fae248b`, Tasks 4 and 5 this change). Tasks 6 and 7 remain pending
+operator/optional work.
+
+- Task 0 (done, `aa819aa04`): frame capture option, unit test, contract-test
+  identifiers, and the reference "before" captures (section 5). Reviewer: not
+  required.
+- Task 1 (done, `036eb82e6`): `--texture-filter` parsing in `NativeDisplayConfig`
   (`include/platform/native_display_config.h`,
   `platform/native_display_config.c`): `int textureFilter` member, enum
   `NATIVE_TEXTURE_FILTER_NEAREST = 0` / `NATIVE_TEXTURE_FILTER_BILINEAR = 1`,
@@ -256,7 +276,8 @@ cmake --build build-msvc-x86 --config Release --target ctr_native
   `--texture-filter --perf`, unknown `xbr`, uppercase `Bilinear`, empty
   `--texture-filter=`); a pre-corrupted value makes `ApplyArgs` return 0.
   Reviewer: not required.
-- Task 2: plumbing. `include/platform/native_renderer.h`:
+- Task 2 (done, `4ad439284`; frame captures write true colour since
+  `12452a0c6`): plumbing. `include/platform/native_renderer.h`:
   `NativeRenderer_SetTextureFilter(int)` and
   `NativeRenderer_GetTextureFilter(void)`. `native_renderer.c`: replace
   `g_cfg_bilinearFiltering` with `s_textureFilter` plus a validated setter of
@@ -271,33 +292,34 @@ cmake --build build-msvc-x86 --config Release --target ctr_native
   fallback message (`162`). No shader semantic change in this task.
   Reviewer: required (touches `native_gpu.c` vertex construction; confirm no
   `NATIVE_GPU_STATE_*` or savestate field changes).
-- Task 3: rewrite `bilinearTextureSample` per section 4. ctest cannot
-  compile GLSL, so the implementer must run the Debug exe once with
+- Task 3 (done, `a0fae248b`): rewrite `bilinearTextureSample` per section 4.
+  ctest cannot compile GLSL, so the implementer must run the Debug exe once with
   `--render-scale 8 --texture-filter bilinear` and confirm no shader compile
   errors in the log (compile asserts at `native_renderer.c:1044` and
   `1066`), then produce the "after" captures with Task 0. Reviewer: required
   (STP/mask correctness; `fragColor.a` feeds VRAM bit 15).
-- Task 4: contract and isolation tests. Append `texture_filter`,
+- Task 4 (done, this change): contract and isolation tests. `texture_filter`,
   `texturefilter`, `texture_filtering`, `texturefiltering`, `bilinear` and
-  `nativetexturefilter` to the forbidden list in
-  `tests/native_render_scale_determinism_contract_test.cmake` (`20-36`) and
-  update its header comment. New
-  `tests/native_texture_filter_isolation_test.cmake` (model:
-  `tests/native_virtual_datagram_isolation_test.cmake`), registered in
-  `CMakeLists.txt` next to the other `-P` tests (`683`): (i)
+  `nativetexturefilter` are in the forbidden list of
+  `tests/native_render_scale_determinism_contract_test.cmake`. The Task 2
+  isolation test `tests/native_texture_filter_seam_isolation_test.cmake`
+  (registered in `CMakeLists.txt` next to the other `-P` tests) was extended
+  instead of adding a second file; it asserts: (i)
   `native_display_config.h` is included only by `main.c`,
   `platform/native_display_config.c` and
   `tests/native_display_config_test.c`; (ii) no `textureFilter`,
-  `TextureFilter`, `bilinear` or `g_cfg_bilinearFiltering` token in
-  `platform/native_gpu.c`, `platform/native_savestate.c`,
-  `platform/native_checkpoint.c`, `platform/native_replay_*.c`,
-  `platform/native_canonical_*.c` or `game/`; (iii) `GL_LINEAR` absent from
-  the VRAM texture creation block in `native_renderer.c`. Reviewer: not
-  required.
-- Task 5: `docs/HANDOFF.md`: reword the "Render-scale independence" bullet
-  (`59-61`) to "Presentation independence" covering render scale and texture
-  filter; present-state wording only; optionally list
-  `native_display_config.{h,c}` under Key files. Reviewer: not required.
+  `TextureFilter`, `texture_filter`, `bilinear` or `g_cfg_bilinearFiltering`
+  token (case-insensitive) in `platform/native_gpu.c`,
+  `platform/native_savestate.c`, `platform/native_checkpoint.c`,
+  `platform/native_replay_*.c`, `platform/native_canonical_*.c` or `game/`;
+  (iii) the VRAM texture creation block in `native_renderer.c` sets
+  `GL_NEAREST` and never `GL_LINEAR`; (iv) the section 4 shader contract
+  strings and the `NEAREST = 0` / `BILINEAR = 1` numeric contract are
+  present. Reviewer: not required.
+- Task 5 (done, this change): `docs/HANDOFF.md` "Presentation independence"
+  bullet covering render scale, texture filter and frame capture, plus the
+  presentation-option files under Key files; present-state wording only.
+  Reviewer: not required.
 - Task 6 (operator, outside the repo): `C:\Arcade\scripts\launch-ctr-native.bat`:
   add `set "CTR_NATIVE_TEXTURE_FILTER="` beside the existing overrides and
   `if not "%CTR_NATIVE_TEXTURE_FILTER%"=="" set "DISPLAY_ARGS=%DISPLAY_ARGS% --texture-filter %CTR_NATIVE_TEXTURE_FILTER%"`.
