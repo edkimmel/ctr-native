@@ -186,17 +186,35 @@ or canonical code. Add the identifiers `capture_frame`, `framecapture` and
 `tests/native_render_scale_determinism_contract_test.cmake`.
 
 Capture procedure (a subagent runs it; it needs the operator-supplied,
-gitignored `assets/ctr-u.bin`). Do not run it unattended without first
-confirming the game reaches the main menu with no input. If a press-start gate
-exists, the operator must capture manually with F12 or the milestone needs a
-scripted input; record which it is in this section once known.
+gitignored `assets/ctr-u.bin`). The boot sequence needs no input: the
+copyright splash, the Naughty Dog crate logo (about frames 540-900), the
+loading screen (about frame 1020) and the CTR title animation (about frames
+1080-1250) auto-advance, and the main menu is reached unattended. There is no
+press-start gate before the menu, so F12 and scripted input are both
+unnecessary for this milestone.
 
 ```
-build-msvc-x86\Release\ctr_native.exe --render-scale 8 --windowed --capture-frame 30=debug\captures\splash-nearest.bmp --capture-frame 600=debug\captures\menu-nearest.bmp --exit-after-frame 700
+build-msvc-x86\Release\ctr_native.exe --render-scale 8 --windowed --capture-frame 60=C:\re-tools\ctr-native\debug\captures\splash-nearest.bmp --capture-frame 1320=C:\re-tools\ctr-native\debug\captures\menu-nearest.bmp --exit-after-frame 1330
 ```
 
-First do a sweep (every 60 frames up to about 1800) to find the frame indices
-where the splash and the main menu are stable, then fix those indices here.
+Frame 60 is the splash: the blue Sony/Naughty Dog copyright text screen, which
+is pixel-identical from frame 5 through frame 480. Frame 1320 is the main
+menu: the CTR logo, the Crash-with-trophy model and the
+ADVENTURE/TIME TRIAL/ARCADE/VS./BATTLE/HIGH SCORE panel over the animated
+chequered flag. The menu panel first appears at frame 1260; 1320 keeps a
+60-frame margin after that transition. Boot timing is reproducible - the same
+index yields a byte-identical BMP across runs.
+
+Captures land where the path says. A relative capture path resolves against
+the base directory (`chdir(NativeAssets_GetBaseDir())`, `main.c:187`), so
+`debug\captures\x.bmp` lands in the repo; the runs above use absolute paths.
+A drive-relative path such as an unescaped `C:\...` is written relative to the
+current directory, so prefer fully escaped absolute paths. Each BMP is the
+default framebuffer at window size (800x600 windowed, independent of
+`--render-scale`), saved 32-bit with an alpha channel; the VRAM-presented
+splash carries the PS1 mask bit, so every pixel has alpha 0 and viewers that
+honour BMP alpha show it blank. Its RGB content is correct.
+
 Repeat with `--texture-filter bilinear` for the "after" set. Store captures
 under `debug/captures/`; `.gitignore` already covers `/debug/`. Never commit
 captures.
