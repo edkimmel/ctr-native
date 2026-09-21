@@ -115,6 +115,22 @@ struct NativeRenderTarget
 global_variable struct NativeRenderTarget s_mainRenderTarget;
 global_variable struct NativeRenderTarget s_offscreenRenderTarget;
 
+// Host presentation only. Colour-only scratch targets used to box-filter the
+// supersampled main target down to the window in successive half-size blits.
+// Nothing here is packed into VRAM or observed by game, replay, or canonical
+// state code.
+struct NativePresentScratchTarget
+{
+	TextureID texture;
+	GLuint framebuffer;
+	s32 width;
+	s32 height;
+};
+
+#define NATIVE_PRESENT_SCRATCH_COUNT 2
+#define NATIVE_PRESENT_MAX_DOWNSAMPLE_PASSES 8
+global_variable struct NativePresentScratchTarget s_presentScratchTargets[NATIVE_PRESENT_SCRATCH_COUNT];
+
 // Presentation configuration will select this later. Keep the default PS1
 // path exactly as before until a cabinet-local setting asks for a larger FBO.
 global_variable s32 s_renderScale = 1;
@@ -166,6 +182,8 @@ internal void NativeRenderer_SetWireframe(int enable);
 internal void NativeRenderer_InitRenderTarget(struct NativeRenderTarget *target);
 internal void NativeRenderer_DestroyRenderTarget(struct NativeRenderTarget *target);
 internal void NativeRenderer_EnsureRenderTarget(struct NativeRenderTarget *target, int logicalWidth, int logicalHeight);
+internal void NativeRenderer_EnsurePresentScratchTarget(struct NativePresentScratchTarget *target, int width, int height);
+internal void NativeRenderer_DestroyPresentScratchTargets(void);
 internal void NativeRenderer_BindMainRenderTarget(void);
 internal void NativeRenderer_DrawVRAMRegion(int x, int y, int width, int height);
 internal void NativeRenderer_LoadRenderTargetFromVRAM(struct NativeRenderTarget *target, int x, int y, int sourceWidth, int sourceHeight);
@@ -286,6 +304,7 @@ void NativeRenderer_Shutdown(void)
 
 	NativeRenderer_DestroyRenderTarget(&s_mainRenderTarget);
 	NativeRenderer_DestroyRenderTarget(&s_offscreenRenderTarget);
+	NativeRenderer_DestroyPresentScratchTargets();
 	glDeleteFramebuffers(1, &s_glVramFramebuffer);
 
 	NativeRenderer_DestroyTexture(s_vram.texture);
@@ -530,6 +549,79 @@ internal void NativeRenderer_DestroyRenderTarget(struct NativeRenderTarget *targ
 	NativeRenderer_DestroyTexture(target->texture);
 	SDL_memset(target, 0, sizeof(*target));
 	target->texture = (TextureID)-1;
+}
+
+// Lazily creates (and resizes only when needed) a colour-only scratch FBO for
+// the present-time downsample. Filtering is chosen per blit, so no sampler
+// state is touched on the PS1-contract render targets.
+internal void NativeRenderer_EnsurePresentScratchTarget(struct NativePresentScratchTarget *target, int width, int height)
+{
+	if (width < 1)
+	{
+		width = 1;
+	}
+	if (height < 1)
+	{
+		height = 1;
+	}
+
+	if (target->framebuffer == 0)
+	{
+		glGenTextures(1, &target->texture);
+		glBindTexture(GL_TEXTURE_2D, target->texture);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glBindTexture(GL_TEXTURE_2D, 0);
+
+		glGenFramebuffers(1, &target->framebuffer);
+		target->width = 0;
+		target->height = 0;
+	}
+
+	if ((target->width == width) && (target->height == height))
+	{
+		return;
+	}
+
+	glBindTexture(GL_TEXTURE_2D, target->texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, target->framebuffer);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target->texture, 0);
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+	{
+		NATIVE_RENDERER_ERROR("%s\n", "failed to create present scratch render target");
+		// Leave the target fully released (framebuffer == 0) so the present
+		// path skips this pass instead of blitting into an incomplete FBO.
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		glDeleteFramebuffers(1, &target->framebuffer);
+		NativeRenderer_DestroyTexture(target->texture);
+		SDL_memset(target, 0, sizeof(*target));
+		s_lastBoundTexture = (TextureID)-1;
+		return;
+	}
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+	target->width = width;
+	target->height = height;
+	s_lastBoundTexture = (TextureID)-1;
+}
+
+internal void NativeRenderer_DestroyPresentScratchTargets(void)
+{
+	for (int i = 0; i < NATIVE_PRESENT_SCRATCH_COUNT; i++)
+	{
+		struct NativePresentScratchTarget *target = &s_presentScratchTargets[i];
+		if (target->framebuffer != 0)
+		{
+			glDeleteFramebuffers(1, &target->framebuffer);
+			NativeRenderer_DestroyTexture(target->texture);
+		}
+		SDL_memset(target, 0, sizeof(*target));
+	}
 }
 
 internal int NativeRenderer_IsSupportedRenderScale(int scale)
@@ -2205,16 +2297,61 @@ void NativeRenderer_PresentMainRenderTarget(void)
 		return;
 	}
 
-	// Normal frames present the high-resolution RGBA target directly. The
-	// caller packs it into native 1024x512 VRAM first, so framebuffer feedback
-	// and CPU VRAM reads retain their PS1 contract.
+	// Normal frames present the high-resolution RGBA target. The caller packs
+	// it into native 1024x512 VRAM first, so framebuffer feedback and CPU VRAM
+	// reads retain their PS1 contract. Everything below is host presentation
+	// only: a supersampled target is resolved with a box-filter-style chain of
+	// half-size GL_LINEAR blits until both axes are within 2x of the window
+	// viewport, then blitted once more with GL_LINEAR into the unchanged
+	// letterbox rectangle. A source already within 2x (or being upscaled) takes
+	// the single final blit.
 	NativeRenderer_SetScissorState(0);
 	NativeRenderer_EnableDepth(0);
 	NativeRenderer_SetBlendMode(BM_NONE);
-	glBindFramebuffer(GL_READ_FRAMEBUFFER, s_mainRenderTarget.framebuffer);
+
+	GLuint sourceFramebuffer = s_mainRenderTarget.framebuffer;
+	int sourceWidth = s_mainRenderTarget.width;
+	int sourceHeight = s_mainRenderTarget.height;
+	const int destWidth = s_presentViewport.w;
+	const int destHeight = s_presentViewport.h;
+
+	if ((destWidth > 0) && (destHeight > 0))
+	{
+		int scratchIndex = 0;
+		int passCount = 0;
+		while (((sourceWidth > destWidth * 2) || (sourceHeight > destHeight * 2)) && (passCount < NATIVE_PRESENT_MAX_DOWNSAMPLE_PASSES))
+		{
+			// Halve only the axes that still exceed 2x so the final blit never
+			// has to upscale an axis that was already close enough.
+			const int nextWidth = (sourceWidth > destWidth * 2) ? (sourceWidth + 1) / 2 : sourceWidth;
+			const int nextHeight = (sourceHeight > destHeight * 2) ? (sourceHeight + 1) / 2 : sourceHeight;
+
+			struct NativePresentScratchTarget *scratch = &s_presentScratchTargets[scratchIndex];
+			// Each scratch target is sized to its own pass output. The pass
+			// sizes are stable frame to frame, so reallocation only happens
+			// when the render scale or window viewport changes.
+			NativeRenderer_EnsurePresentScratchTarget(scratch, nextWidth, nextHeight);
+			if (scratch->framebuffer == 0)
+			{
+				break;
+			}
+
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, sourceFramebuffer);
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, scratch->framebuffer);
+			glBlitFramebuffer(0, 0, sourceWidth, sourceHeight, 0, 0, nextWidth, nextHeight, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+			sourceFramebuffer = scratch->framebuffer;
+			sourceWidth = nextWidth;
+			sourceHeight = nextHeight;
+			scratchIndex = (scratchIndex + 1) % NATIVE_PRESENT_SCRATCH_COUNT;
+			passCount++;
+		}
+	}
+
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, sourceFramebuffer);
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-	glBlitFramebuffer(0, 0, s_mainRenderTarget.width, s_mainRenderTarget.height, s_presentViewport.x, s_presentViewport.y,
-	                  s_presentViewport.x + s_presentViewport.w, s_presentViewport.y + s_presentViewport.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+	glBlitFramebuffer(0, 0, sourceWidth, sourceHeight, s_presentViewport.x, s_presentViewport.y, s_presentViewport.x + s_presentViewport.w,
+	                  s_presentViewport.y + s_presentViewport.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 	s_previousShader = (ShaderID)-1;
