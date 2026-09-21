@@ -23,7 +23,6 @@
 SDL_Window *g_window = NULL;
 int g_dbg_polygonSelected = 0;
 
-extern int g_cfg_bilinearFiltering;
 extern int g_dbg_emulatorPaused;
 extern int g_dbg_texturelessMode;
 extern int g_dbg_wireframeMode;
@@ -367,8 +366,8 @@ internal void Platform_HandleKey(int key, char down)
 			Platform_TakeScreenshot();
 			break;
 		case SDL_SCANCODE_F3:
-			g_cfg_bilinearFiltering ^= 1;
-			Platform_LogWarn("[CTR Native] filtering mode: %d\n", g_cfg_bilinearFiltering);
+			NativeRenderer_SetTextureFilter(NativeRenderer_GetTextureFilter() != 0 ? 0 : 1);
+			Platform_LogWarn("[CTR Native] texture filter: %s\n", NativeRenderer_GetTextureFilter() != 0 ? "bilinear" : "nearest");
 			break;
 		case SDL_SCANCODE_F5:
 			NativeSaveState_RequestSave();

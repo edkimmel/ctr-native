@@ -655,6 +655,13 @@ if(BUILD_TESTING)
     add_test(NAME native_render_scale_determinism_contract
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_render_scale_determinism_contract_test.cmake")
 
+    # The host-local texture filter is owned by the renderer and reaches the
+    # GPU only through the PSX fragment-shader uniform.  Vertex construction,
+    # the VRAM sampler state, and every transport boundary stay independent of
+    # it.
+    add_test(NAME native_texture_filter_seam_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_texture_filter_seam_isolation_test.cmake")
+
     add_executable(native_deterministic_rng_test tests/native_deterministic_rng_test.c)
     set_target_properties(native_deterministic_rng_test PROPERTIES
         C_STANDARD 17

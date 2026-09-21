@@ -161,13 +161,14 @@ int main(int argc, char *argv[])
 		/* A malformed cabinet-local preference must never prevent the recovery
 		 * launch path. Fall back to 1x/windowed; it remains intentionally
 		 * outside game, replay, and canonical-state configuration. */
-		fprintf(stderr, "[CTR Native] invalid local display option; falling back to 1x windowed (supported render scales: 1, 2, 3, 4, 6, 8).\n");
+		fprintf(stderr, "[CTR Native] invalid local display option; falling back to 1x windowed (supported render scales: 1, 2, 3, 4, 6, 8; supported texture filters: nearest, bilinear).\n");
 		NativeDisplayConfig_SetDefaults(&displayConfig);
 	}
 
 	printf("[CTR Native] Starting...\n");
 	printf("[CTR Native] Local render scale: %dx\n", displayConfig.renderScale);
 	printf("[CTR Native] Local window mode: %s\n", displayConfig.fullscreen ? "fullscreen" : "windowed");
+	printf("[CTR Native] Local texture filter: %s\n", NativeDisplayConfig_TextureFilterName(displayConfig.textureFilter));
 	fflush(stdout);
 
 	const char *sdlBasePath = SDL_GetBasePath();
@@ -214,6 +215,9 @@ int main(int argc, char *argv[])
 	/* This is host presentation state only. The renderer applies it to its GL
 	 * attachments; no game, replay, or canonical-state code observes it. */
 	NativeRenderer_SetRenderScale(displayConfig.renderScale);
+	/* Host presentation state only: the sampling mode is applied to the PSX
+	 * shaders and is never observed by game, replay, or canonical-state code. */
+	NativeRenderer_SetTextureFilter(displayConfig.textureFilter);
 
 #if defined(CTR_INTERNAL)
 	if (NativePerf_ConfigureFromArgs(argc, argv) != 0)

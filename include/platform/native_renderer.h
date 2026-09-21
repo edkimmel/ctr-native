@@ -15,6 +15,18 @@ void NativeRenderer_UpdateSwapIntervalState(int swapInterval);
 void NativeRenderer_SwapWindow(void);
 void NativeRenderer_SetRenderScale(int scale);
 int NativeRenderer_GetRenderScale(void);
+
+/*
+ * Host-local texture sampling mode: 0 = nearest, 1 = bilinear.  This is
+ * presentation state only; it never reaches game, replay, or canonical-state
+ * code.  An unsupported value is rejected and leaves the current mode
+ * unchanged.  The default is 0 (nearest).
+ */
+void NativeRenderer_SetTextureFilter(int filter);
+
+/* Returns the active texture sampling mode: 0 = nearest, 1 = bilinear. */
+int NativeRenderer_GetTextureFilter(void);
+
 void NativeRenderer_StoreFrameBuffer(int x, int y, int w, int h);
 void NativeRenderer_PresentVRAMDisplay(void);
 void NativeRenderer_PresentVRAMRect(int x, int y, int w, int h);

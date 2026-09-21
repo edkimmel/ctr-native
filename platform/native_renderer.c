@@ -158,7 +158,7 @@ global_variable SDL_Rect s_presentViewport = {0, 0, 0, 0};
 int g_dbg_wireframeMode = 0;
 int g_dbg_texturelessMode = 0;
 
-int g_cfg_bilinearFiltering = 0;
+global_variable s32 s_textureFilter = 0;
 
 // NOTE(aalhendi): Pack native RGBA render targets into the persistent RG8 VRAM
 // texture on the GPU instead of a GPU-to-CPU-to-GPU round trip.
@@ -661,6 +661,35 @@ int NativeRenderer_GetRenderScale(void)
 	return s_renderScale;
 }
 
+internal int NativeRenderer_IsSupportedTextureFilter(int filter)
+{
+	return filter == 0 || filter == 1;
+}
+
+void NativeRenderer_SetTextureFilter(int filter)
+{
+	if (!NativeRenderer_IsSupportedTextureFilter(filter))
+	{
+		NATIVE_RENDERER_ERROR("unsupported texture filter: %d\n", filter);
+		return;
+	}
+
+	if (s_textureFilter == filter)
+	{
+		return;
+	}
+
+	// The sampling mode is presentation-only: it is pushed to the active PSX
+	// shader on the next texture bind. No GL attachment is reallocated, and PS1
+	// VRAM and simulation state stay untouched.
+	s_textureFilter = filter;
+}
+
+int NativeRenderer_GetTextureFilter(void)
+{
+	return s_textureFilter;
+}
+
 internal void NativeRenderer_EnsureRenderTarget(struct NativeRenderTarget *target, int logicalWidth, int logicalHeight)
 {
 	if (logicalWidth < 1)
@@ -826,7 +855,7 @@ typedef struct
 	ShaderID shader;
 
 	GLint projectionLoc;
-	GLint bilinearFilterLoc;
+	GLint textureFilterLoc;
 	GLint texelSizeLoc;
 	GLint texLoc;
 	GLint lutLoc;
@@ -854,7 +883,7 @@ global_variable GTEShader s_gteShader16;
 global_variable GTEShader s_gteShader32Rgba;
 
 GLint u_projectionLoc;
-GLint u_bilinearFilterLoc;
+GLint u_textureFilterLoc;
 GLint u_texelSizeLoc;
 GLint u_psxSemiTransPassLoc;
 GLint u_psxDrawMaskSetLoc;
@@ -925,7 +954,7 @@ GLint u_psxTextureOutputStpLoc;
 	GPU_ARRAY_FUNC                                                                                                                                    \
 	GPU_SAMPLE_TEXTURE_##bit##BIT_FUNC                                                                                                                \
 	    "	uniform sampler2D s_rgLut;\n"                                                                                                               \
-	    "	uniform int bilinearFilter;\n"                                                                                                              \
+	    "	uniform int textureFilter;\n"                                                                                                               \
 	    "	uniform int psxSemiTransPass;\n"                                                                                                            \
 	    "	uniform int psxDrawMaskSet;\n"                                                                                                              \
 	    "	uniform int psxTextureOutputStp;\n"                                                                                                         \
@@ -978,7 +1007,7 @@ GLint u_psxTextureOutputStpLoc;
 	    "		return t;\n"                                                                                                                               \
 	    "	}\n"                                                                                                                                        \
 	    "	void main() {\n"                                                                                                                            \
-	    "		vec4 color = (bilinearFilter > 0) ? bilinearTextureSample(v_texcoord.xy) : nearestTextureSample(v_texcoord.xy);\n"                         \
+	    "		vec4 color = (textureFilter > 0) ? bilinearTextureSample(v_texcoord.xy) : nearestTextureSample(v_texcoord.xy);\n"                          \
 	    "		fragColor = dither(color * v_color);\n"                                                                                                    \
 	    "		fragColor.a = (psxDrawMaskSet != 0 || (psxTextureOutputStp != 0 && sampledStp >= 0.5)) ? 1.0 : 0.0;\n"                                     \
 	    "	}\n"
@@ -1092,10 +1121,6 @@ internal ShaderID NativeRenderer_Shader_Compile(const char *source, bool isPsxSh
 
 	strcat(extra_vs_defines, "#define VERTEX\n");
 	strcat(extra_fs_defines, "#define FRAGMENT\n");
-	if (g_cfg_bilinearFiltering)
-	{
-		strcat(extra_fs_defines, "#define BILINEAR_FILTER\n");
-	}
 
 	const char *vs_list_psx[] = {GLSL_HEADER_VERT, extra_vs_defines, gpu_shader_common, GTE_VERTEX_SHADER};
 	const char *fs_list_psx[] = {GLSL_HEADER_FRAG, extra_fs_defines, gpu_shader_common, GPU_DITHERING, source};
@@ -1199,7 +1224,7 @@ internal void NativeRenderer_CompilePSXShader(GTEShader *sh, const char *source)
 {
 	sh->shader = NativeRenderer_Shader_Compile(source, true);
 
-	sh->bilinearFilterLoc = glGetUniformLocation(sh->shader, "bilinearFilter");
+	sh->textureFilterLoc = glGetUniformLocation(sh->shader, "textureFilter");
 	sh->projectionLoc = glGetUniformLocation(sh->shader, "Projection");
 	sh->texelSizeLoc = glGetUniformLocation(sh->shader, "texelSize");
 	sh->texLoc = glGetUniformLocation(sh->shader, "s_texture");
@@ -1510,7 +1535,7 @@ void NativeRenderer_SetTexture(TextureID texture, TexFormat texFormat)
 	{
 	case TF_4_BIT:
 		NativeRenderer_SetShader(s_gteShader4.shader);
-		u_bilinearFilterLoc = s_gteShader4.bilinearFilterLoc;
+		u_textureFilterLoc = s_gteShader4.textureFilterLoc;
 		u_projectionLoc = s_gteShader4.projectionLoc;
 		u_texelSizeLoc = -1;
 		u_psxSemiTransPassLoc = s_gteShader4.psxSemiTransPassLoc;
@@ -1519,7 +1544,7 @@ void NativeRenderer_SetTexture(TextureID texture, TexFormat texFormat)
 		break;
 	case TF_8_BIT:
 		NativeRenderer_SetShader(s_gteShader8.shader);
-		u_bilinearFilterLoc = s_gteShader8.bilinearFilterLoc;
+		u_textureFilterLoc = s_gteShader8.textureFilterLoc;
 		u_projectionLoc = s_gteShader8.projectionLoc;
 		u_texelSizeLoc = -1;
 		u_psxSemiTransPassLoc = s_gteShader8.psxSemiTransPassLoc;
@@ -1528,7 +1553,7 @@ void NativeRenderer_SetTexture(TextureID texture, TexFormat texFormat)
 		break;
 	case TF_16_BIT:
 		NativeRenderer_SetShader(s_gteShader16.shader);
-		u_bilinearFilterLoc = s_gteShader16.bilinearFilterLoc;
+		u_textureFilterLoc = s_gteShader16.textureFilterLoc;
 		u_projectionLoc = s_gteShader16.projectionLoc;
 		u_texelSizeLoc = -1;
 		u_psxSemiTransPassLoc = s_gteShader16.psxSemiTransPassLoc;
@@ -1537,7 +1562,7 @@ void NativeRenderer_SetTexture(TextureID texture, TexFormat texFormat)
 		break;
 	case TF_32_BIT_RGBA:
 		NativeRenderer_SetShader(s_gteShader32Rgba.shader);
-		u_bilinearFilterLoc = s_gteShader32Rgba.bilinearFilterLoc;
+		u_textureFilterLoc = s_gteShader32Rgba.textureFilterLoc;
 		u_projectionLoc = s_gteShader32Rgba.projectionLoc;
 		u_texelSizeLoc = s_gteShader32Rgba.texelSizeLoc;
 		u_psxSemiTransPassLoc = s_gteShader32Rgba.psxSemiTransPassLoc;
@@ -1554,10 +1579,11 @@ void NativeRenderer_SetTexture(TextureID texture, TexFormat texFormat)
 	// NOTE(penta3): s_texture (unit 0) and s_rgLut (unit 1) sampler bindings are baked
 	// into each program at compile time (NativeRenderer_Shader_Compile) and uniform
 	// values persist per-program, so re-setting them on every split was redundant GL
-	// churn. bilinearFilter stays here because it toggles at runtime (debug key).
-	if (u_bilinearFilterLoc >= 0)
+	// churn. textureFilter stays here because it toggles at runtime (the host-local
+	// display option and the debug key).
+	if (u_textureFilterLoc >= 0)
 	{
-		glUniform1i(u_bilinearFilterLoc, g_cfg_bilinearFiltering);
+		glUniform1i(u_textureFilterLoc, s_textureFilter);
 	}
 	NativeRenderer_SetPSXTextureSemiTransPass(0);
 
