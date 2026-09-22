@@ -162,6 +162,19 @@ set_target_properties(ctr_native_virtual_datagram PROPERTIES
 )
 target_include_directories(ctr_native_virtual_datagram PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# Fixed-delay lockstep frame-bundle wire format.  Transport-agnostic by
+# design: this leaf encodes to and decodes from caller-owned byte buffers and
+# has no socket, OS networking, SDL, clock, game, or virtual-datagram
+# dependency.  The virtual datagram harness is a test transport only.
+add_library(ctr_native_lockstep_protocol STATIC platform/native_lockstep_protocol.c)
+set_target_properties(ctr_native_lockstep_protocol PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_lockstep_protocol PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_lockstep_protocol PUBLIC ctr_native_canonical_codec)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -708,6 +721,15 @@ if(BUILD_TESTING)
     add_test(NAME native_virtual_datagram_unit COMMAND $<TARGET_FILE:native_virtual_datagram_test>)
     add_test(NAME native_virtual_datagram_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_virtual_datagram_isolation_test.cmake")
+
+    add_executable(native_lockstep_protocol_test tests/native_lockstep_protocol_test.c)
+    set_target_properties(native_lockstep_protocol_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_lockstep_protocol_test PRIVATE ctr_native_lockstep_protocol)
+    add_test(NAME native_lockstep_protocol_unit COMMAND $<TARGET_FILE:native_lockstep_protocol_test>)
 
     add_executable(main_arcade_roster_test tests/main_arcade_roster_test.c)
     set_target_properties(main_arcade_roster_test PROPERTIES
