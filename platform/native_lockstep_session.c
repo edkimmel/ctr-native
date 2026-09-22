@@ -4,13 +4,18 @@
 
 /*
  * Compile-time only: the peer array is indexed by config slot, so raising one
- * slot count without the other must fail to build, and the frame input set has
- * to hold the local pad plus every other slot's full bundle pad capacity.
+ * slot count without the other must fail to build; every delay Open's range
+ * check admits must be carriable by the independently sized peer rings, which
+ * is what makes the InputWindow_Init below unable to fail; and the frame input
+ * set has to hold the local pad plus every other slot's full bundle pad
+ * capacity.  The history depth is not asserted here: it is defined as
+ * NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 2, so an assertion against that expression
+ * could not fail, and FindDigests guards the modulus at runtime instead.
  */
 _Static_assert(NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY == NATIVE_LOCKSTEP_BUNDLE_SLOT_COUNT,
                "The lockstep peer array must be indexable by bundle sender slot.");
-_Static_assert(NATIVE_LOCKSTEP_SESSION_DIGEST_HISTORY_CAPACITY >= NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 2u,
-               "The digest history must hold NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 2 frames.");
+_Static_assert(NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 1 <= NATIVE_LOCKSTEP_RING_CAPACITY,
+               "Open's maximum input delay must fit the fixed peer input rings.");
 _Static_assert(1u + (NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY - 1u) * NATIVE_LOCKSTEP_BUNDLE_PAD_CAPACITY <=
                    NATIVE_LOCKSTEP_SESSION_FRAME_PAD_CAPACITY,
                "The frame input set must hold the local pad plus every peer's pads.");
@@ -38,6 +43,13 @@ static const struct NativeLockstepSessionDigestRecord *NativeLockstepSession_Fin
 {
 	const struct NativeLockstepSessionDigestRecord *record;
 
+	/* AcceptBundle is wire facing and its only structural precondition is a
+	 * non-IDLE mode, so the modulus is validated here rather than trusted: a
+	 * depth Open never wrote can index nothing. */
+	if ((session->historyCapacity == 0u) || (session->historyCapacity > NATIVE_LOCKSTEP_SESSION_DIGEST_HISTORY_CAPACITY))
+	{
+		return NULL;
+	}
 	if (session->recordedAny == 0)
 	{
 		return NULL;
@@ -113,11 +125,13 @@ static void NativeLockstepSession_LatchFault(struct NativeLockstepSession *sessi
 
 /*
  * Returns 1 when this record's verified digest block disagrees with the local
- * history, whether or not the latch accepted it.  A bundle with
- * verifiedPresent 0 carries no digest, which is the first inputDelay + 1 frames
- * of a session, and is never a divergence.
+ * history, whether or not the latch accepted it.  Only a record the peer window
+ * ACCEPTED reaches here: a stale, duplicate, or faulted record is not part of
+ * the match and is never digest-compared.  A bundle with verifiedPresent 0
+ * carries no digest, which is the first inputDelay + 1 frames of a session, and
+ * is never a divergence.
  */
-static int NativeLockstepSession_Verify(struct NativeLockstepSession *session, const struct NativeLockstepBundleV1 *bundle)
+static int NativeLockstepSession_Verify(struct NativeLockstepSession *session, const struct NativeLockstepBundleV1 *bundle, uint32_t slot)
 {
 	const struct NativeLockstepSessionDigestRecord *record;
 	uint32_t canonicalDomainMask = 0;
@@ -132,10 +146,22 @@ static int NativeLockstepSession_Verify(struct NativeLockstepSession *session, c
 	if (record == NULL)
 	{
 		/* Well formed, but the two simulations are no longer comparable.  This
-		 * is deliberately a divergence and never a protocol fault. */
+		 * is deliberately a divergence and never a protocol fault, and it does
+		 * not depend on the high-water mark: an incomparable frame was never
+		 * compared, so suppressing it would hide a real report on a record the
+		 * window did accept. */
 		NativeLockstepSession_LatchDivergence(session, NATIVE_LOCKSTEP_DIVERGENCE_FRAME_UNAVAILABLE, 0u, bundle, NULL);
 		return 1;
 	}
+	/* The per-peer high-water mark makes a second comparison of one verified
+	 * frame structurally impossible, whatever the window classification and the
+	 * wire ordering do. */
+	if ((session->peerVerifiedAny[slot] != 0) && (bundle->verifiedFrameIndex <= session->peerVerifiedThroughFrame[slot]))
+	{
+		return 0;
+	}
+	session->peerVerifiedThroughFrame[slot] = bundle->verifiedFrameIndex;
+	session->peerVerifiedAny[slot] = 1u;
 
 	/* Identical to platform/native_replay_scheduler_v4.c EndFrame: one bit per
 	 * differing domain digest, with the combined digest reported separately. */
@@ -255,7 +281,23 @@ int NativeLockstepSession_SubmitLocalInput(struct NativeLockstepSession *session
 		return 0;
 	}
 
+	/*
+	 * A buffered pad is the pad already put on the wire, so it is never
+	 * replaced: a consumption frame the simulation has already passed is
+	 * refused, and so is a ring slot still holding a pad for an unconsumed
+	 * frame, which covers both a re-submission for the same sample frame and a
+	 * modular collision with a different one.  Overwriting either would make the
+	 * locally consumed pad differ from the pad the peer was sent.
+	 */
+	if ((uint32_t)consumeFrame < session->consumedFrame)
+	{
+		return 0;
+	}
 	record = &session->localInputs[(uint32_t)consumeFrame % (uint32_t)NATIVE_LOCKSTEP_RING_CAPACITY];
+	if ((record->present != 0) && (record->frameIndex >= session->consumedFrame))
+	{
+		return 0;
+	}
 	memset(record, 0, sizeof(*record));
 	record->frameIndex = (uint32_t)consumeFrame;
 	record->present = 1u;
@@ -364,7 +406,6 @@ enum NativeLockstepSessionResult NativeLockstepSession_AcceptBundle(struct Nativ
 	enum NativeLockstepSessionResult result;
 	uint32_t cause = NATIVE_LOCKSTEP_FAULT_NONE;
 	uint32_t slot;
-	int diverged;
 
 	if ((session == NULL) || (bytes == NULL) || (session->mode == NATIVE_LOCKSTEP_IDLE))
 	{
@@ -394,16 +435,20 @@ enum NativeLockstepSessionResult NativeLockstepSession_AcceptBundle(struct Nativ
 		return NATIVE_LOCKSTEP_SESSION_FAULT;
 	}
 
-	/* Verification first: it concerns an already simulated frame, so a window
-	 * fault on the current one must not hide it. */
-	diverged = NativeLockstepSession_Verify(session, &bundle);
-
+	/*
+	 * The window classifies the record first, and only a record it ACCEPTED is
+	 * digest-verified.  A stale or duplicate re-delivery is a legitimate drop
+	 * from a delaying or duplicating transport, and a faulted record was not
+	 * taken into the match at all, so neither may latch a divergence against a
+	 * history that has since retired its verified frame.
+	 */
 	window = &session->peers[slot];
 	offered = NativeLockstepInputWindow_Offer(window, bytes, size, &bundle, &cause);
 	switch (offered)
 	{
 	case NATIVE_LOCKSTEP_INPUT_WINDOW_ACCEPTED:
-		result = NATIVE_LOCKSTEP_SESSION_OK;
+		result = NativeLockstepSession_Verify(session, &bundle, slot) ? NATIVE_LOCKSTEP_SESSION_DIVERGENCE
+		                                                              : NATIVE_LOCKSTEP_SESSION_OK;
 		break;
 	case NATIVE_LOCKSTEP_INPUT_WINDOW_DUPLICATE:
 		result = NATIVE_LOCKSTEP_SESSION_DUPLICATE;
@@ -420,7 +465,7 @@ enum NativeLockstepSessionResult NativeLockstepSession_AcceptBundle(struct Nativ
 		result = NATIVE_LOCKSTEP_SESSION_REJECTED;
 		break;
 	}
-	return diverged ? NATIVE_LOCKSTEP_SESSION_DIVERGENCE : result;
+	return result;
 }
 
 enum NativeLockstepSessionResult NativeLockstepSession_TakeFrameInputs(struct NativeLockstepSession *session, uint32_t frameIndex,

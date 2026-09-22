@@ -87,13 +87,16 @@ enum NativeLockstepDivergenceMask
  * FRAME_UNAVAILABLE report the local digests are zero: there was nothing to
  * compare.
  */
-struct NativeLockstepDivergenceReport {
-    uint32_t mask, canonicalDomainMask;
-    uint32_t frameIndex;
-    uint32_t senderSlot;
-    uint64_t localCombinedDigest, remoteCombinedDigest;
-    uint64_t localDomainDigests[NATIVE_CANONICAL_DOMAIN_COUNT];
-    uint64_t remoteDomainDigests[NATIVE_CANONICAL_DOMAIN_COUNT];
+struct NativeLockstepDivergenceReport
+{
+	uint32_t mask;
+	uint32_t canonicalDomainMask;
+	uint32_t frameIndex;
+	uint32_t senderSlot;
+	uint64_t localCombinedDigest;
+	uint64_t remoteCombinedDigest;
+	uint64_t localDomainDigests[NATIVE_CANONICAL_DOMAIN_COUNT];
+	uint64_t remoteDomainDigests[NATIVE_CANONICAL_DOMAIN_COUNT];
 };
 
 /*
@@ -159,6 +162,15 @@ struct NativeLockstepSession
 	uint8_t localSlot;
 	uint8_t faulted;
 	uint8_t peerActive[NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY];
+	/*
+	 * Per-peer high-water mark of the verified frames already compared against
+	 * the local history, so one verifiedFrameIndex is digest-compared at most
+	 * once ever however the transport reorders the records carrying it.
+	 * peerVerifiedAny distinguishes "nothing compared yet" from a compared
+	 * frame 0, which is a real verified frame at consumption frame D + 1.
+	 */
+	uint8_t peerVerifiedAny[NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY];
+	uint32_t peerVerifiedThroughFrame[NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY];
 	struct NativeLockstepSessionLocalInput localInputs[NATIVE_LOCKSTEP_RING_CAPACITY];
 	struct NativeLockstepSessionDigestRecord localDigests[NATIVE_LOCKSTEP_SESSION_DIGEST_HISTORY_CAPACITY];
 	struct NativeLockstepInputWindow peers[NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY];
@@ -195,6 +207,16 @@ int NativeLockstepSession_Open(struct NativeLockstepSession *session, const stru
  * inputDelay consumption frames therefore have no submitted local input and
  * consume a zero pad, which is the neutral input every peer agrees on.
  * Requires the RUNNING mode; returns 0 and changes nothing otherwise.
+ *
+ * A buffered pad is the pad already put on the wire, so a submission never
+ * replaces one: the call is refused, with the delay line untouched, when the
+ * consumption frame is below consumedFrame and so already simulated, and when
+ * the ring slot still holds a pad for a consumption frame at or above
+ * consumedFrame.  That covers both a re-submission for the same sampleFrame and
+ * a sample whose consumption frame collides modulo
+ * NATIVE_LOCKSTEP_RING_CAPACITY with an already buffered one; either would make
+ * the locally consumed pad differ from the pad the peer was sent, which is a
+ * silent desync that would only surface later as a divergence report.
  */
 int NativeLockstepSession_SubmitLocalInput(struct NativeLockstepSession *session, uint32_t sampleFrame,
                                            const struct NativeCanonicalInputPadV1 *pad);
@@ -237,18 +259,24 @@ int NativeLockstepSession_ComposeBundle(const struct NativeLockstepSession *sess
  * identity, protocol version, and input delay; a sender slot that is not a
  * known peer of this session is NATIVE_LOCKSTEP_FAULT_BAD_SLOT.
  *
- * The record's verified digest block is compared against the local digest
- * history before the record is offered to the sender's window, so a
- * transport-level window fault on the current frame cannot hide a divergence
- * already visible on a past one.  The two latches are independent and each is
- * once-only: a fault arriving after a divergence leaves the divergence report
- * byte-identical and the mode DIVERGED, and a divergence arriving after a fault
- * leaves the fault report byte-identical and raises the mode to DIVERGED.
+ * The record is offered to the sender's window first and its verified digest
+ * block is compared against the local digest history only when the window
+ * ACCEPTED it, that is only for a genuinely new in-window record.  A STALE,
+ * DUPLICATE, or faulted record is never digest-compared and can never latch a
+ * divergence: a duplicating or delaying transport legitimately re-delivers a
+ * record whose verified frame the local history has already retired, and a
+ * window fault means the record was not taken into the match at all.  A given
+ * verifiedFrameIndex is also compared at most once per peer, so a record cannot
+ * be re-verified however the transport reorders the wire.  The two latches
+ * remain independent and each is once-only: a fault arriving after a divergence
+ * leaves the divergence report byte-identical and the mode DIVERGED, and a
+ * divergence arriving after a fault leaves the fault report byte-identical and
+ * raises the mode to DIVERGED.
  *
- * The result describes this record, not the latch state: DIVERGENCE when this
- * record's verified digest disagrees with the local one, otherwise FAULT when
- * this record is a protocol fault, otherwise OK, DUPLICATE, or STALE from the
- * sender's window.  A later record of the same kind therefore still reports
+ * The result describes this record, not the latch state: FAULT when this record
+ * is a protocol fault, DUPLICATE or STALE from the sender's window, and for an
+ * accepted record DIVERGENCE when its verified digest disagrees with the local
+ * one and OK otherwise.  A later record of the same kind therefore still reports
  * itself even though the report it would have written is ignored.  Deliberately
  * usable in every non-IDLE mode, which is what lets a fault be latched after a
  * divergence has ended the match.

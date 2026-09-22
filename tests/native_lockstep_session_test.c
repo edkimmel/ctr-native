@@ -22,6 +22,13 @@
 static struct NativeLockstepSession g_a;
 static struct NativeLockstepSession g_b;
 static uint8_t g_pattern[sizeof(struct NativeLockstepSession)];
+/*
+ * The exact encoded bytes of the bundle A sent on the most recent driven frame.
+ * A delaying or duplicating transport is modelled by re-delivering that record
+ * verbatim some frames later, which is the only way to obtain a record whose
+ * verified frame the receiver's history has already retired.
+ */
+static uint8_t g_lastFromA[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
 
 static void FillConfig(struct NativeMatchConfigV1 *config, uint32_t trackID)
 {
@@ -202,6 +209,7 @@ static int RunFrame(uint32_t frame, uint32_t worldA, uint32_t worldB, struct Fra
 	CHECK(NativeLockstepSession_ComposeBundle(&g_b, frame, bytesB, sizeof(bytesB), &sizeB) == 1);
 	CHECK(sizeA == BUNDLE_BYTES);
 	CHECK(sizeB == BUNDLE_BYTES);
+	memcpy(g_lastFromA, bytesA, sizeof(g_lastFromA));
 	CHECK(DecodeBundle(&g_b, bytesA, &trace->fromA) == 0);
 	CHECK(DecodeBundle(&g_a, bytesB, &trace->fromB) == 0);
 	CHECK(trace->fromA.frameIndex == frame);
@@ -538,6 +546,189 @@ static int TestFrameUnavailableRetired(void)
 }
 
 /*
+ * A record the peer window does not accept is never digest-verified, so a
+ * delaying or duplicating transport cannot kill the match: the re-delivery of an
+ * already consumed frame is a STALE drop and an in-window re-delivery is a
+ * DUPLICATE no-op, and neither latches anything even though the receiver's
+ * D + 2 deep history has already retired the frame the record verifies.
+ */
+static int TestLateRedeliveryIsNotADivergence(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct FrameTrace trace;
+	struct NativeLockstepBundleV1 bundle;
+	uint8_t saved[BUNDLE_BYTES];
+	uint8_t bytes[BUNDLE_BYTES];
+	size_t size = 0;
+	const uint32_t captureFrame = 6u;
+	const uint32_t lastFrame = captureFrame + 2u; /* Two frames later, so the copy is stale. */
+
+	FillConfig(&config, UINT32_C(0x01020304));
+	CHECK(OpenPair(&config, &config, INPUT_DELAY, INPUT_DELAY) == 0);
+	for (uint32_t frame = 0; frame <= lastFrame; frame++)
+	{
+		CHECK(RunFrame(frame, 0u, 0u, &trace) == 0);
+		CHECK(trace.acceptedByB == NATIVE_LOCKSTEP_SESSION_OK);
+		CHECK(trace.takenByB == NATIVE_LOCKSTEP_SESSION_OK);
+		if (frame == captureFrame)
+		{
+			memcpy(saved, g_lastFromA, sizeof(saved));
+		}
+	}
+	CHECK(g_b.peers[SLOT_A].consumedFrame == lastFrame + 1u);
+	CHECK(g_b.recordedFrame == lastFrame);
+
+	/* The copy verifies a frame the receiver's history has since retired, so
+	 * digest-comparing it would report FRAME_UNAVAILABLE. */
+	CHECK(DecodeBundle(&g_b, saved, &bundle) == 0);
+	CHECK(bundle.frameIndex == captureFrame);
+	CHECK(bundle.verifiedPresent == 1u);
+	CHECK(bundle.verifiedFrameIndex == captureFrame - INPUT_DELAY - 1u);
+	CHECK((g_b.recordedFrame - bundle.verifiedFrameIndex) >= g_b.historyCapacity);
+
+	/* Below the window: a drop, not an error, and not a divergence. */
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, saved, sizeof(saved)) == NATIVE_LOCKSTEP_SESSION_STALE);
+	CHECK(g_b.peers[SLOT_A].staleDropCount == 1u);
+	CHECK(NativeLockstepSession_FirstDivergence(&g_b) == NULL);
+	CHECK(NativeLockstepSession_FirstFault(&g_b) == NULL);
+	CHECK(g_b.faulted == 0u);
+	CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_RUNNING);
+	/* A third, still later re-delivery of the same record behaves identically. */
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, saved, sizeof(saved)) == NATIVE_LOCKSTEP_SESSION_STALE);
+	CHECK(g_b.peers[SLOT_A].staleDropCount == 2u);
+	CHECK(NativeLockstepSession_FirstDivergence(&g_b) == NULL);
+	CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_RUNNING);
+
+	/* The in-window half: the same bytes twice for a frame not yet consumed. */
+	CHECK(NativeLockstepSession_ComposeBundle(&g_a, lastFrame + 1u, bytes, sizeof(bytes), &size) == 1);
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, bytes, size) == NATIVE_LOCKSTEP_SESSION_OK);
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, bytes, size) == NATIVE_LOCKSTEP_SESSION_DUPLICATE);
+	CHECK(g_b.peers[SLOT_A].duplicateAcceptCount == 1u);
+	CHECK(NativeLockstepSession_FirstDivergence(&g_b) == NULL);
+	CHECK(NativeLockstepSession_FirstFault(&g_b) == NULL);
+	CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_RUNNING);
+	return 0;
+}
+
+/*
+ * A record the window faults on is not taken into the match, so it is not
+ * digest-verified either: a peer that has run far enough ahead to overrun the
+ * ring is a clean WINDOW_OVERRUN fault with no divergence latched, even though
+ * the far-future record verifies a frame the local side never simulated.
+ */
+static int TestWindowOverrunLatchesNoDivergence(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct FrameTrace trace;
+	const struct NativeLockstepFaultReport *fault;
+	uint64_t digests[NATIVE_CANONICAL_DOMAIN_COUNT];
+	uint8_t crafted[BUNDLE_BYTES];
+	const uint32_t frames = 6u;
+	/* The window accepts [consumedFrame, consumedFrame + capacity - 1]. */
+	const uint32_t overrunFrame = frames + (uint32_t)NATIVE_LOCKSTEP_RING_CAPACITY;
+
+	FillConfig(&config, UINT32_C(0x01020304));
+	CHECK(OpenPair(&config, &config, INPUT_DELAY, INPUT_DELAY) == 0);
+	for (uint32_t frame = 0; frame < frames; frame++)
+	{
+		CHECK(RunFrame(frame, 0u, 0u, &trace) == 0);
+		CHECK(trace.takenByB == NATIVE_LOCKSTEP_SESSION_OK);
+	}
+	CHECK(g_b.peers[SLOT_A].consumedFrame == frames);
+	CHECK(g_b.recordedFrame == frames - 1u);
+
+	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+	{
+		digests[i] = UINT64_C(0x2000000000000000) + i;
+	}
+	CHECK(CraftBundle(&g_b, (uint8_t)SLOT_A, overrunFrame, overrunFrame - INPUT_DELAY - 1u, 1, digests, UINT64_C(0x0badc0de0badc0de),
+	                  crafted) == 0);
+	/* The verified frame is ahead of everything the local side has simulated. */
+	CHECK((overrunFrame - INPUT_DELAY - 1u) > g_b.recordedFrame);
+
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, crafted, sizeof(crafted)) == NATIVE_LOCKSTEP_SESSION_FAULT);
+	fault = NativeLockstepSession_FirstFault(&g_b);
+	CHECK(fault != NULL);
+	CHECK(fault->cause == NATIVE_LOCKSTEP_FAULT_WINDOW_OVERRUN);
+	CHECK(fault->frameIndex == overrunFrame);
+	CHECK(fault->senderSlot == SLOT_A);
+	/* detail is the peer window's consumedFrame, per the header contract. */
+	CHECK(fault->detail == g_b.peers[SLOT_A].consumedFrame);
+	CHECK(fault->detail == frames);
+	/* A clean fault: nothing about the digests was compared or reported. */
+	CHECK(NativeLockstepSession_FirstDivergence(&g_b) == NULL);
+	CHECK(g_b.divergence.mask == 0u);
+	CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_FAULTED);
+	/* The ring never grows and never evicts, so nothing was stored either. */
+	CHECK(g_b.peers[SLOT_A].occupancyMask == 0u);
+	CHECK(NativeLockstepInputWindow_Peek(&g_b.peers[SLOT_A], overrunFrame) == NULL);
+	return 0;
+}
+
+/*
+ * A buffered local pad is the pad already put on the wire, so a submission never
+ * replaces one: the re-submission, the modular collision, and the already
+ * consumed consumption frame are all refused with the delay line untouched.
+ */
+static int TestSubmitLocalInputRefusesReplacement(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeCanonicalInputPadV1 first;
+	struct NativeCanonicalInputPadV1 second;
+	struct NativeCanonicalStateV4 state;
+	struct NativeLockstepBundleV1 bundle;
+	struct FrameTrace trace;
+	uint8_t bytes[BUNDLE_BYTES];
+	size_t size = 0;
+	const uint32_t sampleFrame = 1u;
+	const uint32_t consumeFrame = sampleFrame + INPUT_DELAY;
+	const uint32_t slot = consumeFrame % (uint32_t)NATIVE_LOCKSTEP_RING_CAPACITY;
+
+	FillConfig(&config, UINT32_C(0x01020304));
+	NativeLockstepSession_Init(&g_a);
+	CHECK(NativeLockstepSession_Open(&g_a, &config, INPUT_DELAY, (uint8_t)SLOT_A) == 1);
+	MakePad(&first, SLOT_A, sampleFrame);
+	MakePad(&second, SLOT_A, sampleFrame + 100u);
+	CHECK(memcmp(&first, &second, sizeof(first)) != 0);
+
+	CHECK(NativeLockstepSession_SubmitLocalInput(&g_a, sampleFrame, &first) == 1);
+	CHECK(g_a.localInputs[slot].frameIndex == consumeFrame);
+	/* The same sample frame again, and a different sample frame whose
+	 * consumption frame collides modulo the ring, are both refused. */
+	CHECK(NativeLockstepSession_SubmitLocalInput(&g_a, sampleFrame, &second) == 0);
+	CHECK(NativeLockstepSession_SubmitLocalInput(&g_a, sampleFrame + (uint32_t)NATIVE_LOCKSTEP_RING_CAPACITY, &second) == 0);
+	CHECK(g_a.localInputs[slot].present == 1u);
+	CHECK(g_a.localInputs[slot].frameIndex == consumeFrame);
+	CHECK(memcmp(&g_a.localInputs[slot].pad, &first, sizeof(first)) == 0);
+	/* Not a blanket refusal: a free consumption frame still buffers. */
+	CHECK(NativeLockstepSession_SubmitLocalInput(&g_a, sampleFrame + 1u, &second) == 1);
+
+	/* And the pad the peer is sent is the pad that was kept. */
+	CHECK(MakeState(&state, 0u, 0u) == 0);
+	CHECK(NativeLockstepSession_RecordLocalDigests(&g_a, &state) == 1);
+	CHECK(NativeLockstepSession_ComposeBundle(&g_a, consumeFrame, bytes, sizeof(bytes), &size) == 1);
+	CHECK(DecodeBundle(&g_a, bytes, &bundle) == 0);
+	CHECK(bundle.frameIndex == consumeFrame);
+	CHECK(memcmp(&bundle.pads[0].pad, &first, sizeof(first)) == 0);
+
+	/* A consumption frame the simulation has already passed is refused too. */
+	CHECK(OpenPair(&config, &config, INPUT_DELAY, INPUT_DELAY) == 0);
+	for (uint32_t frame = 0; frame < consumeFrame + 1u; frame++)
+	{
+		CHECK(RunFrame(frame, 0u, 0u, &trace) == 0);
+		CHECK(trace.takenByA == NATIVE_LOCKSTEP_SESSION_OK);
+	}
+	CHECK(g_a.consumedFrame == consumeFrame + 1u);
+	CHECK(NativeLockstepSession_SubmitLocalInput(&g_a, sampleFrame, &second) == 0);
+	CHECK(g_a.localInputs[slot].frameIndex == consumeFrame);
+	CHECK(CheckDelayedPad(&g_a.localInputs[slot].pad, SLOT_A, consumeFrame) == 0);
+	CHECK(NativeLockstepSession_Mode(&g_a) == NATIVE_LOCKSTEP_RUNNING);
+	CHECK(NativeLockstepSession_FirstDivergence(&g_a) == NULL);
+	CHECK(NativeLockstepSession_FirstFault(&g_a) == NULL);
+	return 0;
+}
+
+/*
  * Acceptance 7: a mismatched inputDelay on the very first bundle is a clean
  * protocol fault with no divergence.  D is configured, not negotiated, so a
  * cabinet misconfiguration surfaces here rather than as a renegotiation.
@@ -801,6 +992,9 @@ int main(void)
 	CHECK(TestDivergence() == 0);
 	CHECK(TestFrameUnavailableNeverSimulated() == 0);
 	CHECK(TestFrameUnavailableRetired() == 0);
+	CHECK(TestLateRedeliveryIsNotADivergence() == 0);
+	CHECK(TestWindowOverrunLatchesNoDivergence() == 0);
+	CHECK(TestSubmitLocalInputRefusesReplacement() == 0);
 	CHECK(TestInputDelayMismatch() == 0);
 	CHECK(TestMatchIdentityMismatch() == 0);
 	CHECK(TestUnknownSenderSlot() == 0);
