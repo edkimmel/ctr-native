@@ -352,9 +352,9 @@ outputs, ticks the host, and draws:
   falls back to mode OFF (the link cannot reopen), the hook gives the retail
   box back in the same call, because the next frame's OFF early return
   touches nothing. RETURN_TO_TITLE off the main-menu level uses the retail
-  demo-mode exit (numPlyrNextGame 1, mainMenuState MAIN_MENU_TITLE,
-  MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL)); on the main-menu level it
-  needs nothing.
+  demo-mode exit (boolDemoMode 0, numPlyrNextGame 1, mainMenuState
+  MAIN_MENU_TITLE, MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL)); on the
+  main-menu level it needs nothing.
 - PREVIEW mode: the same ownership rule and a Tick every owned frame, never
   Enter; it draws the scripted preview screen and resets the demo countdown
   on every owned frame, so a capture holds steady.
@@ -680,6 +680,12 @@ game/MAIN/MainArcadeLink.h, and
 tests/main_arcade_link_hook_isolation_test.cmake (test
 main_arcade_link_hook_isolation). native_savestate.c and
 native_checkpoint.c are unchanged.
+Follow-up (Task 6b-5): section 2.5 now lists boolDemoMode 0 in the
+RETURN_TO_TITLE exit, the hook header comments name Tasks 6b-2 to 6b-4, and
+the isolation test now fails if NativeSaveState_RequestSave or
+NativeSaveState_RequestLoad is named in any platform/, game/, or main.c
+source other than native_platform.c (native_savestate.c, which defines
+them, is excluded).
 
 ### Task 7 -- networked race launch
 

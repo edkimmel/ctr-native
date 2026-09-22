@@ -15,8 +15,9 @@
 # scheduler parses, and configures and shuts the host down; ctr_native links
 # the host glue but not the layout library (the layout is unity-included);
 # the F5 and F8 quick-state hotkeys in native_platform.c are gated off in
-# link and preview mode; and the START_RACE abort gives the retail box back
-# when the host falls back to mode OFF. The policy's own rules are in
+# link and preview mode and no other source requests a quick state; and the
+# START_RACE abort gives the retail box back when the host falls back to mode
+# OFF. The policy's own rules are in
 # main_arcade_link_policy_isolation_test.cmake.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
@@ -399,6 +400,30 @@ foreach(pair "F5 NativeSaveState_RequestSave()" "F8 NativeSaveState_RequestLoad(
     ctr_require_order("${platform_path} (${case_label} gate)" "${gate_block}"
         "Platform_LogWarn(\"[CTR Native] quick states are disabled in arcade-link mode\\n\");"
         "break;")
+endforeach()
+
+# 10b. No other caller: outside native_platform.c (checked above) and
+#      native_savestate.c (which defines them), no platform/, game/, or
+#      main.c source names NativeSaveState_RequestSave or
+#      NativeSaveState_RequestLoad in code, so a new quick-state caller
+#      cannot bypass the host-mode gate.
+file(GLOB_RECURSE quick_state_scan_paths
+    "${repo}/platform/*.c" "${repo}/game/*.c")
+list(APPEND quick_state_scan_paths "${repo}/main.c")
+foreach(path IN LISTS quick_state_scan_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    if(relative_path STREQUAL "platform/native_platform.c" OR relative_path STREQUAL "platform/native_savestate.c")
+        continue()
+    endif()
+    file(READ "${path}" source)
+    string(FIND "${source}" "NativeSaveState_Request" quick_state_hit)
+    if(quick_state_hit EQUAL -1)
+        continue()
+    endif()
+    ctr_strip_comments("${source}" code)
+    if(code MATCHES "NativeSaveState_Request(Save|Load)([^A-Za-z0-9_]|$)")
+        message(FATAL_ERROR "arcade link hook isolation: ${relative_path} names NativeSaveState_Request${CMAKE_MATCH_1}; quick states may be requested only from the gated F5 and F8 cases in ${platform_path}")
+    endif()
 endforeach()
 
 # 11. The START_RACE branch gives the retail main-menu box back when

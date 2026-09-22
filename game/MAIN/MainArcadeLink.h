@@ -3,7 +3,7 @@
 
 /*
  * Arcade-link live hook (docs/GAME_LOOP_UI_MILESTONE.md section 2.5, Tasks
- * 6b-2 and 6b-3). Native only: game/MAIN/MainArcadeLink.c is compiled only
+ * 6b-2 to 6b-4). Native only: game/MAIN/MainArcadeLink.c is compiled only
  * with CTR_NATIVE and is dormant unless an arcade-link host option was given.
  * Its decisions live in the pure MAIN/MainArcadeLinkPolicy.h.
  */

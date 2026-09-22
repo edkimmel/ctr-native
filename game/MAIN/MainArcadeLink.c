@@ -1,6 +1,6 @@
 /*
  * Arcade-link live hook (docs/GAME_LOOP_UI_MILESTONE.md sections 2.4-2.6,
- * Tasks 6b-2 and 6b-3): the thin drawer and main-menu-level glue between the
+ * Tasks 6b-2 to 6b-4): the thin drawer and main-menu-level glue between the
  * retail title screen and the arcade-link host (include/platform/native_arcade_link_host.h,
  * the only arcade-link API game code calls). Native only, and dormant unless
  * an arcade-link host option was given: with the host mode OFF,
