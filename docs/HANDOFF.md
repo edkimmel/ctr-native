@@ -33,14 +33,18 @@ Integration order:
 3. Stable two-human-plus-bot roster and RNG ownership — in progress.
 4. Native lockstep protocol and virtual-network fault tests — protocol design
    and fault-tolerant session logic complete; a real socket transport,
-   connect/handshake protocol, and a lobby data/state layer now exist and are
+   connect/handshake protocol, and a lobby data/state layer exist and are
    tested, including live two-process, real-socket evidence (see Networking).
-   Game-loop/UI wiring and physical two-cabinet hardware validation remain
-   open before steps 6-7.
+   The arcade-link lobby, results, rematch, and exit screens, their host
+   adapter, and a dormant-by-default hook on the main-menu level exist and
+   are tested. Networked race launch and in-race lockstep driving remain
+   gated on step 3 and live V4 projection; physical two-cabinet validation
+   remains open before steps 6-7.
 5. Failure handling, results, and rematch — stall-timeout policy, peer-drop
    roster, and rematch config builder complete and fault-tested against
-   `native_virtual_datagram`; no game-loop integration or results/rematch UI
-   yet.
+   `native_virtual_datagram`; wired to the results/rematch screens through
+   the arcade-link adapter. The in-race driver that feeds it is gated
+   (`docs/GAME_LOOP_UI_MILESTONE.md` Tasks 7-8).
 6. CAB1 G29/kiosk gate.
 7. Two-cabinet fleet acceptance.
 
@@ -80,8 +84,9 @@ Integration order:
 ## Networking
 
 The native lockstep protocol is complete and transport-agnostic. A real
-socket transport, a connect/handshake protocol, and a lobby data/state layer
-now exist and are tested on top of it (see below).
+socket transport, a connect/handshake protocol, a lobby data/state layer, and
+the arcade-link screens and host adapter exist and are tested on top of it
+(see below).
 
 - **Fixed-delay lockstep, no rollback, no prediction.** Each peer buffers its
   sampled input for a configured `inputDelay` (`D`) frames; simulation frame
@@ -119,7 +124,8 @@ now exist and are tested on top of it (see below).
   build a policy layer on top of the session. `NativeLockstepMatchOutcome`
   turns an indefinitely retried stall into a latch-once, bounded
   `STALL_TIMEOUT` outcome after a configurable number of consecutive stalled
-  polls (default 180 frames / 3 s at 60 Hz, range 30-600), mirroring the
+  polls (default 180 frames, range 30-600; the arcade-link adapter defaults
+  to 90, 3 s at the 30 Hz game loop), mirroring the
   session's own DIVERGED-outranks-FAULTED priority for the two other
   terminal causes. `NativeLockstepMatchRoster` tracks each slot's current
   lifecycle in a caller-owned array, separate from `NativeMatchConfigV1`
@@ -130,9 +136,11 @@ now exist and are tested on top of it (see below).
   session left DIVERGED/FAULTED or a replay scheduler left MISMATCH/POISON —
   a rematch always opens a brand-new session and a brand-new V4 replay
   recording. This layer is fault-tested against `native_virtual_datagram` the
-  same way the protocol/window/session stack is. None of it is wired into
-  the game loop yet, there is no results/rematch UI, and it makes no change
-  to the topology lease, canonical state, or replay wire formats.
+  same way the protocol/window/session stack is. Only the arcade-link
+  adapter composes it, driving the results and rematch screens (see
+  Arcade-link wiring); the in-race driver that feeds it race results is
+  gated. It makes no change to the topology lease, canonical state, or
+  replay wire formats.
 - **Real transport, handshake, and lobby** (`native_udp_transport.c`/`.h`,
   `native_lockstep_handshake.c`/`.h`, `native_lockstep_peer_link.c`/`.h`,
   `native_lobby_state.c`/`.h`) add a real socket underneath the stack above.
@@ -156,17 +164,35 @@ now exist and are tested on top of it (see below).
   or fault. A lobby/waiting-flow policy layer cycles through a
   caller-supplied candidate peer-address list with a bounded per-candidate
   attempt budget, exposing a small state (`WAITING_FOR_PEER` /
-  `HANDSHAKING` / `READY` / `REJECTED` / `PEER_LOST`) an eventual
-  lobby/waiting UI can read; it is a data/state layer only — no menu, no
-  wheel input, no waiting/results screen — mirroring how the
-  failure-handling policy layer also has no game-loop caller.
+  `HANDSHAKING` / `READY` / `REJECTED` / `PEER_LOST`) that the arcade-link
+  adapter maps onto the lobby screens; the layer itself stays a data/state
+  layer with no menu, input, or drawing.
   `native_virtual_datagram` remains test-only and none of these new modules
   link it in production; only their fault-injection test fixtures do, the
   same posture the lockstep protocol library already established. See
   `docs/LOBBY_MILESTONE.md` for full design detail.
-- No game-loop or menu/UI wiring exists for any of this yet, and none of it
-  has been exercised over real two-cabinet LAN hardware (only two real OS
-  processes on one machine over loopback) — both remain open before step 6.
+- **Arcade-link wiring** connects both layers to a small set of screens.
+  `native_arcade_menu_input` turns one player's held buttons into
+  release-to-arm, rising-edge wheel/pad navigation; `native_arcade_flow` is
+  the pure screen state machine (lobby, match found, racing, results,
+  rematch wait, exit); `native_arcade_netplay` is the only composition of the
+  lobby, outcome, roster, and rematch layers, and agrees a rematch
+  implicitly by deriving the new seed from the previous agreed config;
+  `native_arcade_link_options` parses the host-local CLI options and builds
+  the fixed fixture; `native_arcade_link_host` is the game-facing singleton.
+  Under `game/MAIN/`, `MainArcadeLinkLayout` (pure layout),
+  `MainArcadeLinkPolicy` (pure frame-ownership policy), and `MainArcadeLink`
+  (a thin `CTR_NATIVE` hook at the RECTMENU seam in
+  `MainFrame_RenderFrame`) draw the screens with the retail menu primitives.
+  Game code names none of the lockstep or failure-handling modules, and
+  isolation tests enforce it. Everything is dormant unless `--arcade-link`
+  or `--arcade-link-preview` is given; both are rejected with any replay
+  option, and quick states are disabled while either is active. START_RACE
+  returns to the title until the networked race launch lands. See
+  `docs/GAME_LOOP_UI_MILESTONE.md`.
+- None of this has been exercised over real two-cabinet LAN hardware or with
+  a real G29 (only two real OS processes on one machine over loopback); that
+  remains open before step 6.
 
 ## Topology lease
 
@@ -227,6 +253,19 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
   integration); `platform/native_lobby_state.c`,
   `include/platform/native_lobby_state.h` (candidate-cycling lobby policy
   layer).
+- Arcade-link wiring: `platform/native_arcade_menu_input.c`,
+  `include/platform/native_arcade_menu_input.h` (menu navigation);
+  `platform/native_arcade_flow.c`, `include/platform/native_arcade_flow.h`
+  (screen state machine); `platform/native_arcade_netplay.c`,
+  `include/platform/native_arcade_netplay.h` (host adapter);
+  `platform/native_arcade_link_options.c`,
+  `include/platform/native_arcade_link_options.h` (CLI options and fixture);
+  `platform/native_arcade_link_host.c`,
+  `include/platform/native_arcade_link_host.h` (game-facing singleton);
+  `game/MAIN/MainArcadeLinkLayout.{c,h}` (screen layout),
+  `game/MAIN/MainArcadeLinkPolicy.{c,h}` (frame-ownership policy),
+  `game/MAIN/MainArcadeLink.{c,h}` (live hook, called from
+  `game/MAIN/MainFrame_RenderFrame.c`).
 - Presentation options (host-local): `platform/native_display_config.c`,
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
@@ -234,7 +273,8 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
 - Unity build chain: `game/game_unity.h` (ordered includes; add new game `.c`
   files here). Standalone libraries are declared in `CMakeLists.txt`.
 - Related docs: `docs/ARCADE_FORK.md`, `docs/TOPOLOGY_LEASE_AUTHORITY.md`,
-  `docs/REPLAYS.md`, `docs/MEMORY_MODEL.md`, `docs/G29_INPUT.md`.
+  `docs/REPLAYS.md`, `docs/MEMORY_MODEL.md`, `docs/G29_INPUT.md`,
+  `docs/GAME_LOOP_UI_MILESTONE.md`.
 
 ## Rules and constraints
 
@@ -257,25 +297,18 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
 
 ## Next work
 
-Owner direction: wire both existing, tested backend policy layers into the
-actual game loop and UI. Nothing under `game/` calls either one yet:
+The game-loop/UI milestone is tracked in `docs/GAME_LOOP_UI_MILESTONE.md`.
 
-- The failure-handling policy layer (stall-timeout outcome, peer-drop
-  roster, rematch — complete and fault-tested since the failure-handling
-  milestone).
-- The lobby/connect stack (real transport, handshake, peer-link
-  integration, and lobby state — complete and tested, see Networking).
-
-This milestone needs a menu/UI pass (lobby/waiting, results, rematch, exit
-screens) and wheel/G29 input wiring for them, following the existing
-decompiled menu code's own patterns (see `docs/OVERLAYS.md`'s Region 3 Main
-Menu overlay and the end-of-race overlays, and `docs/G29_INPUT.md`) rather
-than inventing a new UI framework. This is a design-and-build milestone with
-real UX decisions (screen layout, wheel navigation feel); the operator
-should review the resulting flow once it's built.
-
-Real two-cabinet, physical-hardware validation — actual wire, an actual LAN
-switch, actual latency/loss conditions, actual G29 wheel input — has not
-happened and cannot happen without cabinet access; this remains a separately
-gated requirement for step 6 (CAB1 G29/kiosk gate) and step 7 (two-cabinet
-fleet acceptance), independent of this milestone.
+1. Operator review of the built flow and the UX defaults UX-1 to UX-11,
+   using the "How to review the flow" subsection (section 3) of that
+   document.
+2. Re-confirm the default-path startup: `ctr_native.exe` has been seen to
+   stop during platform init with an SDL assertion in `SDL_hid.c` on this
+   machine (risk 12 there).
+3. Task 7, networked race launch, gated on step 3 live roster/bot setup.
+4. Task 8, in-race lockstep drive and failure handling, gated on Task 7 and
+   live V4 projection.
+5. Real two-cabinet and G29 validation (actual wire, LAN switch,
+   latency/loss, wheel input) needs cabinet access and is the separately
+   gated requirement for step 6 (CAB1 G29/kiosk gate) and step 7
+   (two-cabinet fleet acceptance).

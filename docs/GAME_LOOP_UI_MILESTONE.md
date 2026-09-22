@@ -8,8 +8,8 @@ AGENTS.md and docs/HANDOFF.md first. This document follows the same pattern
 as docs/LOCKSTEP_MILESTONE.md and docs/LOBBY_MILESTONE.md: a prospective plan
 with a task list, updated to record status as tasks land.
 
-It expands the docs/HANDOFF.md "Next work" section and adds no scope beyond
-it:
+It expands the docs/HANDOFF.md "Next work" section as it stood when the
+milestone was queued (commit 52976808c) and adds no scope beyond it:
 
 > Owner direction: wire both existing, tested backend policy layers into the
 > actual game loop and UI. [...] This milestone needs a menu/UI pass
@@ -481,6 +481,49 @@ for the operator to confirm or change after seeing the built flow.
     CROSS enters the lobby; the retail title scene and demo attract loop keep
     running while the screen is OFF.
 
+### How to review the flow
+
+Run these from the repository root in a Windows command prompt, with
+assets/ctr-u.bin in place (the executable finds assets/ from its own
+directory). Captures go to the gitignored debug\captures folder. Frame 1320 is
+past the title intro's menu-ready frame, so the preview screen is up. Each
+line writes one BMP and exits:
+
+```bat
+mkdir debug\captures
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview title --capture-frame 1320=debug\captures\link-title.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview lobby --capture-frame 1320=debug\captures\link-lobby.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview lobby-connecting --capture-frame 1320=debug\captures\link-lobby-connecting.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview lobby-rejected --capture-frame 1320=debug\captures\link-lobby-rejected.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview match-found --capture-frame 1320=debug\captures\link-match-found.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview results --capture-frame 1320=debug\captures\link-results.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview results-timeout --capture-frame 1320=debug\captures\link-results-timeout.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview results-desync --capture-frame 1320=debug\captures\link-results-desync.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview results-link-error --capture-frame 1320=debug\captures\link-results-link-error.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview rematch --capture-frame 1320=debug\captures\link-rematch.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview exit --capture-frame 1320=debug\captures\link-exit.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview exit-opponent-left --capture-frame 1320=debug\captures\link-exit-opponent-left.bmp --exit-after-frame 1330
+```
+
+To try the live lobby on one machine, start two instances of the same build
+in two command prompts, each on its own port and pointing at the other over
+loopback:
+
+```bat
+build-msvc-x86\Debug\ctr_native.exe --arcade-link cab1 --arcade-link-port 7001 --arcade-link-peer 127.0.0.1:7002
+build-msvc-x86\Debug\ctr_native.exe --arcade-link cab2 --arcade-link-port 7002 --arcade-link-peer 127.0.0.1:7001
+```
+
+The build must come from a clean tree, or `--arcade-link` refuses to start
+(risk 5). The screens read only player 1 (local pad 0) of their own instance,
+so the second instance needs keyboard or pad input routed to its player 1:
+focus its window, and if a connected pad has claimed player 1 and moved the
+keyboard off it, press F4 (internal builds) until the log reports "Keyboard
+assigned to player 1". The default keys are Enter for START, C for CROSS,
+and Z for TRIANGLE. Once both have entered the lobby, each should show
+OPPONENT FOUND and then return to the title, because START_RACE aborts to
+the title until Task 7.
+
 ## 4. Constraints
 
 1. The topology lease is untouched: no acquire, activate, capture, or
@@ -504,15 +547,18 @@ for the operator to confirm or change after seeing the built flow.
 ## 5. Task list
 
 Baseline before this milestone: 91 tests, 100% passing (commit 52976808c).
+Current state: 106 tests, 100% passing. Tasks 1-6b-5 are done; Tasks 7 and 8
+are gated (see their entries); this document stays open until they land.
 
 ### Task 1 -- this document
 
-Status: done.
+Status: done (d41689823).
 
 ### Task 2 -- menu input seam (native_arcade_menu_input)
 
-Status: done. Header, implementation, unit test, isolation test (pure:
-no game, socket, lockstep, clock, lease, or allocation token), C17 target.
+Status: done (079abe00e). Header, implementation, unit test, isolation test
+(pure: no game, socket, lockstep, clock, lease, or allocation token), C17
+target.
 No review required: pure input classification, no identity or replay state.
 Landed as include/platform/native_arcade_menu_input.h,
 platform/native_arcade_menu_input.c, tests/native_arcade_menu_input_test.c,
@@ -522,7 +568,7 @@ native_arcade_menu_input_isolation).
 
 ### Task 3 -- screen flow seam (native_arcade_flow)
 
-Status: done. Header, implementation, a unit test covering every
+Status: done (7c1dd8dfc). Header, implementation, a unit test covering every
 transition in section 2.2 and every timing default, an isolation test
 (pure, same token rules as task 2), C17 target. No review required.
 Landed as include/platform/native_arcade_flow.h,
@@ -533,7 +579,8 @@ native_arcade_flow_isolation).
 
 ### Task 4 -- host adapter (native_arcade_netplay)
 
-Status: done. Header, implementation, a unit test over real loopback
+Status: done (3f8ea1810, review fixes 7ccd2de04 and ffd6a8e73). Header,
+implementation, a unit test over real loopback
 sockets with two in-process adapters (lobby to READY, rematch agreement to
 READY on a new seed, one-sided rematch to OPPONENT LEFT, rejection, backing
 out), a pure test of the cause mapping and the rematch seed, a stall-timeout
@@ -564,6 +611,10 @@ port followed by recovery. The isolation test now requires exactly seven
 linked libraries (ctr_native_arcade_menu_input is linked explicitly) and
 the retransmit default of 1u.
 
+Review outcome: the Task 4 review found a blocking HELLO-cadence bug, fixed
+in Task 4b (7ccd2de04); the re-review was clean, and Task 4c (ffd6a8e73)
+closed the remaining should-fix.
+
 Task 4c (last review items): Init now rejects any retransmit interval other
 than 1, not only 0, since every other cadence reintroduces the staggered
 handshake hang. Two new loopback tests drive the race-time hook
@@ -576,7 +627,8 @@ in the roster, and one Tick to RESULTS.
 
 ### Task 5 -- screen layout builder (MainArcadeLinkScreens layout)
 
-Status: done. A pure standalone library under game/MAIN with a unit test
+Status: done (457a18f96). A pure standalone library under game/MAIN with a
+unit test
 of every screen's draw list (strings, positions, focus colour, dot
 animation), and an isolation test that it names no lockstep or
 failure-handling token and touches no game global.
@@ -588,7 +640,8 @@ main_arcade_link_layout_isolation).
 
 ### Task 6a -- host options and fixture (native_arcade_link_options)
 
-Status: done. Landed as include/platform/native_arcade_link_options.h,
+Status: done (8e49efcc7). Landed as
+include/platform/native_arcade_link_options.h,
 platform/native_arcade_link_options.c,
 tests/native_arcade_link_options_test.c, and
 tests/native_arcade_link_options_isolation_test.cmake (library
@@ -598,7 +651,8 @@ glue (Task 6b-2).
 
 ### Task 6b-1 -- host glue (native_arcade_link_host)
 
-Status: done. Landed as include/platform/native_arcade_link_host.h,
+Status: done (b06a1ca3f). Landed as
+include/platform/native_arcade_link_host.h,
 platform/native_arcade_link_host.c, tests/native_arcade_link_host_test.c,
 and tests/native_arcade_link_host_isolation_test.cmake (library
 ctr_native_arcade_link_host, tests native_arcade_link_host_unit and
@@ -606,12 +660,15 @@ native_arcade_link_host_isolation); linked into ctr_native by Task 6b-2.
 
 ### Task 6b-2 -- live hook, dormant by default
 
-Status: done. The option parser and host glue are hooked into main.c, the
+Status: done (3f89d8e39). The option parser and host glue are hooked into
+main.c, the
 host glue is linked into ctr_native, and the CTR_NATIVE-only drawer and hook
 are in the unity chain: title-screen entry into LOBBY, START_RACE aborting to
 the title until Task 7, RETURN_TO_TITLE back to the title/attract loop, and
 the internal-only preview option (section 2.5). Review required: it touches
-the game loop, even though default behaviour is unchanged.
+the game loop, even though default behaviour is unchanged. Review outcome:
+the review found a blocking bug (the retail main-menu box could slide in),
+fixed in Task 6b-3 (827b65f29); the re-review was clean.
 Landed as game/MAIN/MainArcadeLink.h, game/MAIN/MainArcadeLink.c (with
 game/MAIN/MainArcadeLinkLayout.c, both unity-included from
 game/game_unity.h after the 230 overlay), the hook in
@@ -629,7 +686,8 @@ defines their symbols; the host chain does not link ctr_native_identity.
 
 ### Task 6b-3 -- live hook review fixes
 
-Status: done. Fixes the review findings on the Task 6b-2 hook (section 2.5).
+Status: done (827b65f29). Fixes the review findings on the Task 6b-2 hook
+(section 2.5); the re-review was clean.
 The layer now owns the frame whenever the retail main-menu box could be
 visible or take input: INTRO from TITLE_INTRO_MENU_READY_FRAME on (the
 12-frame slide-in, and the intro skip to frame 1000), IN_MENU, EXITING, and
@@ -640,8 +698,9 @@ unreachable). Owned frames clear every pad's taps before the retail menu
 code runs, so cheat entry and the intro-skip tap cannot fire. If
 AbortToTitle falls back to mode OFF the hook restores the box in the same
 call. main.c rejects `--arcade-link` or `--arcade-link-preview` with any
-replay record, playback, or report option; quick-state hotkeys are
-documented as unsupported in link and preview mode. PREVIEW follows the
+replay record, playback, or report option (quick-state hotkeys, then
+documented as unsupported in link and preview mode, are disabled there by
+Task 6b-4). PREVIEW follows the
 link-mode ownership rule instead of owning every frame from boot, and resets
 the demo countdown on every owned frame. The START_RACE notice logs through
 Platform_Log. The decision logic moved into a pure, unit-tested policy.
@@ -661,7 +720,8 @@ rejection, and no stdio in the hook).
 
 ### Task 6b-4 -- quick states and hook nits
 
-Status: done. Closes the last review items on the live hook (section 2.5).
+Status: done (dbf9f942c). Closes the last review items on the live hook
+(section 2.5).
 The F5 and F8 quick-state hotkeys in platform/native_platform.c do nothing
 but log one warning per press while the host mode is not OFF, so a state
 saved in link or preview mode can no longer carry the hidden retail box
@@ -679,13 +739,19 @@ Landed as platform/native_platform.c, game/MAIN/MainArcadeLink.c,
 game/MAIN/MainArcadeLink.h, and
 tests/main_arcade_link_hook_isolation_test.cmake (test
 main_arcade_link_hook_isolation). native_savestate.c and
-native_checkpoint.c are unchanged.
-Follow-up (Task 6b-5): section 2.5 now lists boolDemoMode 0 in the
+native_checkpoint.c are unchanged. Review outcome: the reviewer's verdict
+was clean with nothing blocking; its one should-fix and two nits were fixed
+in Task 6b-5.
+
+### Task 6b-5 -- review follow-up (docs, comments, isolation test)
+
+Status: done (dd89ff9a5). Section 2.5 now lists boolDemoMode 0 in the
 RETURN_TO_TITLE exit, the hook header comments name Tasks 6b-2 to 6b-4, and
 the isolation test now fails if NativeSaveState_RequestSave or
 NativeSaveState_RequestLoad is named in any platform/, game/, or main.c
 source other than native_platform.c (native_savestate.c, which defines
-them, is excluded).
+them, is excluded). Docs, comments, and an isolation test only: verified by
+the full suite, not re-reviewed.
 
 ### Task 7 -- networked race launch
 
@@ -712,7 +778,7 @@ retail standings drawing. Review required.
 
 ### Task 9 -- docs close-out
 
-Status: planned. Update this document and docs/HANDOFF.md.
+Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-5.
 
 ## 6. Risks and open questions
 
@@ -729,3 +795,28 @@ Status: planned. Update this document and docs/HANDOFF.md.
    would halve every duration and needs these defaults revisited.
 4. The G29 menu feel (UX-1 to UX-4) is only unit tested; it is a CAB1
    live-hardware acceptance item at step 6.
+5. The arcade link needs a known build and content identity, so a build made
+   from a tree with uncommitted or untracked changes refuses `--arcade-link`
+   ("arcade link requires a known build and content identity"). This is by
+   design: both cabinets must run the identical build.
+6. botRulesDigest in the fixture is a placeholder (the SHA-256 of a fixed
+   text) until integration step 3 defines the bot rules.
+7. Link and preview mode exclude replay: `--arcade-link` or
+   `--arcade-link-preview` combined with any replay record, playback, or
+   report option is fatal at startup. The F5 and F8 quick-state hotkeys are
+   disabled in both modes; each press only logs "[CTR Native] quick states
+   are disabled in arcade-link mode".
+8. The title intro before the menu-ready frame stays retail (intro skip and
+   cheat entry both work there), so Task 7 must reset the gameMode2 cheat
+   bits from the fixture when it launches a linked race.
+9. The two-instance loopback run was driven by script on one machine with
+   the G29 hidden from SDL. No real two-cabinet or real-wheel run has
+   happened; that is the step 6/7 requirement.
+10. Stale bundles from a just-finished race arriving after a rematch opens
+    could fault the new session (detail in risk 2); Task 8 must test for
+    this.
+11. Every tick count assumes the 30 Hz game loop (see risk 3).
+12. Startup hang observed on this machine: since Task 6b-4, ctr_native.exe
+    has stopped during platform init with an SDL assertion in SDL_hid.c. The
+    same hang was also seen on the unchanged Task 6b-3 build, so it looks
+    environmental. Re-confirming the default-path run is still open.
