@@ -31,7 +31,9 @@ Integration order:
 2. Canonical state, input replay, and deterministic hashes — substantially
    complete.
 3. Stable two-human-plus-bot roster and RNG ownership — in progress.
-4. Native lockstep protocol and virtual-network fault tests — not started.
+4. Native lockstep protocol and virtual-network fault tests — protocol design
+   and fault-tolerant session logic complete; real wired-LAN transport not
+   started, separately gated (see Networking).
 5. Failure handling, results, and rematch.
 6. CAB1 G29/kiosk gate.
 7. Two-cabinet fleet acceptance.
@@ -40,9 +42,11 @@ Integration order:
 
 - **Canonical state.** V4 is current (schema 5, replay format 4) and hashes six
   domains: control, RNG, input, drivers, world counters and mine registry, and
-  topology. Domains are SHA-256 digested and folded into a combined digest;
-  encode/decode are transactional and identity-checked. V1 and V3 remain for
-  their existing consumers.
+  topology. Domains are FNV-1a 64 digested (`NativeCodecDigest64`) and folded
+  into a combined digest with the same function; encode/decode are
+  transactional and identity-checked. SHA-256 in V4 is used only for
+  `identity.build`, `identity.content`, and `configDigest`. V1 and V3 remain
+  for their existing consumers.
 - **Deterministic RNG.** A dormant xoshiro256\*\* bank derived with
   `SHA-256/CTRNRNG1`, with eleven streams (match setup, items, hazards, eight
   bots) and global versus per-bot slot ownership. It does not read or replace
@@ -69,14 +73,41 @@ Integration order:
 
 ## Networking
 
-No transport exists yet.
+The native lockstep protocol is complete and transport-agnostic; no real
+socket/OS transport exists yet.
 
-- `native_virtual_datagram` is a test-only, two-endpoint in-memory delivery
-  harness with DROP, DELIVER, and DUPLICATE and explicit reordering. It has no
-  wire encoding, OS transport, peer search, or version commitment.
-- There are no sockets (`winsock`, `AF_INET`, SDL_net) and no lobby, peer
-  discovery, or lockstep loop.
-- `NativeMatchConfigV1.protocolVersion` is a reserved field, not a wire format.
+- **Fixed-delay lockstep, no rollback, no prediction.** Each peer buffers its
+  sampled input for a configured `inputDelay` (`D`) frames; simulation frame
+  `N` consumes only inputs sampled at frame `N - D` by every peer, so the
+  simulation stays a pure function of a fully known input set and is still
+  recordable/replayable by the existing V4 scheduler unchanged (see
+  `docs/REPLAYS.md`).
+- **Frame-bundle codec** (`native_lockstep_protocol.c`/`.h`): a fixed 128-byte,
+  little-endian, self-describing wire record per peer per frame, carrying
+  match identity, frame index, input delay, per-slot pad input, and the
+  lagged verified-frame digests (`verifiedFrameIndex = frameIndex - D - 1`)
+  plus a trailing FNV-1a 64 `bundleDigest`.
+- **Delay/reorder input window** (`native_lockstep_input_window.c`/`.h`): a
+  fixed-capacity, no-allocation per-peer ring keyed by frame index that
+  accepts fresh and out-of-order in-window arrivals, treats a byte-identical
+  duplicate as a no-op, drops a stale arrival silently, and reports a protocol
+  fault if a frame arrives past the window.
+- **Session** (`native_lockstep_session.c`/`.h`): composes and accepts
+  bundles, tracks recent local digests, and latches a first-divergence report
+  (per-domain and combined digest mismatch, at the frame that actually
+  diverged) and a separate first-fault report (malformed bundle, identity or
+  delay mismatch, window overrun) with `const`-or-`NULL` accessors, mirroring
+  `NativeReplaySchedulerV4`'s latch-once mismatch report.
+- The whole protocol/window/session stack is fully covered by unit tests, a
+  fault-injection integration test that drives loss, delay, reorder, and
+  duplication over `native_virtual_datagram`, and a structural isolation test.
+- `native_virtual_datagram` remains a test-only, two-endpoint in-memory
+  delivery harness (DROP, DELIVER, DUPLICATE, explicit reordering); it has no
+  wire encoding, OS transport, peer search, or version commitment, and the
+  protocol library never links it.
+- There are still no sockets (`winsock`, `AF_INET`, SDL_net) and no lobby or
+  peer discovery. `NativeMatchConfigV1.protocolVersion` is a reserved field,
+  not a wire format, though the lockstep bundle copies and compares it.
 
 ## Topology lease
 
@@ -115,6 +146,13 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
   `include/platform/native_topology_lease_runtime.h`.
 - Virtual network harness: `platform/native_virtual_datagram.c`,
   `include/platform/native_virtual_datagram.h`.
+- Lockstep protocol: `platform/native_lockstep_protocol.c`,
+  `include/platform/native_lockstep_protocol.h` (frame-bundle codec);
+  `platform/native_lockstep_input_window.c`,
+  `include/platform/native_lockstep_input_window.h` (delay/reorder window);
+  `platform/native_lockstep_session.c`,
+  `include/platform/native_lockstep_session.h` (session, first-divergence and
+  first-fault reports).
 - Presentation options (host-local): `platform/native_display_config.c`,
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
@@ -145,9 +183,14 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
 
 ## Next work
 
-Integration step 4. Design the lockstep protocol against the existing seams:
-use `NativeMatchConfigV1` as durable match identity, `NativeCanonicalStateV4`
-digests for per-frame verification, and `native_virtual_datagram` for fault
-injection. Define the fixed-delay frame bundle and the first-divergence report,
-add unit and isolation tests, and keep the protocol transport-agnostic until a
-real wired-LAN socket layer is separately gated.
+Integration step 5: failure handling, results, and rematch. The lockstep
+session already reports a stall, a first-divergence, and a first-fault
+condition (see Networking); step 5 decides what the game does with each of
+those (how long to wait on a stall, when to drop a peer, what the results and
+rematch flow show), and, following this milestone's own pattern, that logic
+can be designed and fault-tested against `native_virtual_datagram` exactly as
+the lockstep protocol was, before a real wired-LAN socket layer exists. The
+real socket/transport layer (winsock or SDL_net, peer discovery, a lobby)
+remains a separately gated piece of work with its own live-cabinet evidence
+requirement, needed before step 6 (CAB1 G29/kiosk gate) and step 7 (two-cabinet
+fleet acceptance) can run on real hardware.

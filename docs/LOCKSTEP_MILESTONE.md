@@ -547,7 +547,16 @@ ctest --test-dir build-msvc-x86 -C Debug --output-on-failure
 Baseline at commit `dffe3e8b7`: 72 tests, 100% passed. Each task must leave the
 count at 72 plus whatever it adds.
 
+Status: Tasks 1-6 are done on `arcade` (Task 1 `ee5eb0086`, fix `27e97037f`;
+Task 2 `f9f3c2742`; Task 3 `ff6a6db66`, fixes `8ec228319`, `a67a55aad`; Task 4
+`7e7d3f8b4`; Task 5 `643787e22`; Task 6 this commit). Full suite: 77 tests,
+100% passed. The only remaining work from the milestone statement is the real
+wired-LAN socket layer, deliberately not built by this milestone (section 2.5)
+and separately gated.
+
 ### Task 1 - frame-bundle codec
+
+**Status: done.** Commit `ee5eb0086`, fix `27e97037f`.
 
 Dependencies: none.
 
@@ -598,6 +607,8 @@ Acceptance test `native_lockstep_protocol_unit` must cover:
 
 ### Task 2 - delay / reorder buffer
 
+**Status: done.** Commit `f9f3c2742`.
+
 Dependencies: Task 1 (it stores decoded bundles).
 
 Creates:
@@ -637,6 +648,8 @@ section 2.2 table:
   `D` with `D + 1 > NATIVE_LOCKSTEP_RING_CAPACITY`.
 
 ### Task 3 - lockstep session and first-divergence report
+
+**Status: done.** Commit `ff6a6db66`, fixes `8ec228319`, `a67a55aad`.
 
 Dependencies: Tasks 1 and 2.
 
@@ -687,6 +700,8 @@ Acceptance test `native_lockstep_session_unit` must:
 
 ### Task 4 - fault-injection integration test over `native_virtual_datagram`
 
+**Status: done.** Commit `7e7d3f8b4`.
+
 Dependencies: Task 3.
 
 Creates:
@@ -734,6 +749,8 @@ corruption action to `native_virtual_datagram`; that would change a frozen
 leaf and is out of scope.
 
 ### Task 5 - isolation test
+
+**Status: done.** Commit `643787e22`.
 
 Dependencies: Tasks 1-4.
 
@@ -783,6 +800,8 @@ demonstrate it *can* fail by temporarily introducing one forbidden token and
 observing the `FATAL_ERROR`.
 
 ### Task 6 - docs
+
+**Status: done (this commit).**
 
 Dependencies: Tasks 1-5.
 

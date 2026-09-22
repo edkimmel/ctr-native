@@ -84,3 +84,26 @@ canonical state, input, frame timing, and VBlank parity; display options stay
 cabinet-local. `-PerfOutputDirectory` creates one performance capture per
 scale for the M4 race budget; use `-Fullscreen` only for a native-panel
 presentation pass.
+
+## Lockstep matches are still V4 replays
+
+A two-cabinet lockstep match records exactly like a single-cabinet one: no
+replay or canonical-state format changes for lockstep. Each lockstep frame
+bundle carries the same `NativeCanonicalInputPadV1` bytes the INPUT canonical
+domain records, and the same per-domain `domainDigests` plus `combinedDigest`
+that `NativeReplaySchedulerV4` compares frame by frame. A recorded lockstep
+match is therefore a normal V4 replay: `--record-v2` and `--replay-v2` apply
+to it with no special handling.
+
+One thing not to conflate when comparing a lockstep session's diagnostics
+against a replay of the same match: the two frame numbers are offset by
+design. A lockstep peer verifies its own simulated frame against a peer's
+digest only after a fixed lag of `inputDelay + 1` frames
+(`verifiedFrameIndex = frameIndex - inputDelay - 1`), because a frame's digest
+does not exist until that frame has been simulated, and the bundle carrying it
+must already be in flight before the next frame can consume its input. So a
+lockstep divergence report's `frameIndex` names the frame that actually
+diverged, while a replay-scheduler mismatch's `expectedFrame`/`liveFrame` names
+the frame the scheduler was stepping when it noticed the mismatch. Do not
+expect these two frame numbers to land on the same value for the same
+underlying divergence.
