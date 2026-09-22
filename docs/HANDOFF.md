@@ -212,18 +212,32 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
 ## Next work
 
 Integration step 5's failure-handling policy (stall-timeout outcome,
-peer-drop roster, rematch config builder — see Networking) is designed and
+peer-drop roster, rematch config builder — see Networking) is complete and
 fault-tested against `native_virtual_datagram`, the same way the lockstep
-protocol was, but two things remain undone and neither has been touched by
-this milestone:
+protocol was. Nothing under `game/` calls it yet (no results/rematch UI), and
+that game-loop wiring is still open, but it is not the next milestone.
 
-- **Game-loop integration.** `NativeLockstepMatchOutcome`,
-  `NativeLockstepMatchRoster`, and `NativeLockstepRematch` are standalone
-  `platform/native_*` libraries; nothing under `game/` calls them yet, and
-  there is no results or rematch UI that reads their reports.
-- **The real socket/transport layer** (winsock or SDL_net, peer discovery, a
-  lobby) remains a separately gated piece of work with its own live-cabinet
-  evidence requirement.
+Owner direction: the next milestone is the real wired-LAN transport, peer
+connect/handshake, and lobby (game startup and initial sync) — and it must be
+proven in practice, not just against the virtual datagram harness. Scope, to
+be written up as `docs/LOBBY_MILESTONE.md` before work starts:
 
-Both need their own live-cabinet evidence before step 6 (CAB1 G29/kiosk gate)
-and step 7 (two-cabinet fleet acceptance) can run on real hardware.
+- A real socket/transport layer (winsock or SDL_net) actually carrying
+  lockstep bundles between two processes/machines.
+- A connect/handshake protocol. Today a mismatched `NativeMatchConfigV1` hard
+  faults on the first bundle instead of renegotiating (see
+  `docs/LOCKSTEP_MILESTONE.md`'s future-work note on this); a real lobby needs
+  to negotiate identity before the lockstep session opens, not fault on it.
+- Peer discovery and a wheel-first lobby/waiting flow (see
+  `docs/ARCADE_FORK.md` scope: "wheel-first lobby, waiting, results, rematch,
+  and exit flows"). Today the main menu boots and runs fully local/unsynced on
+  each cabinet; this milestone is what makes the two cabinets agree on a match
+  before the race starts.
+- Exit criteria include live two-cabinet (or two-machine) connect evidence —
+  actual wire, actual latency/loss conditions — not just unit tests and
+  `native_virtual_datagram` fault injection, which is necessary but not
+  sufficient here.
+
+This, plus the still-open game-loop wiring of the failure-handling policy
+above, both need live-cabinet evidence before step 6 (CAB1 G29/kiosk gate) and
+step 7 (two-cabinet fleet acceptance) can run on real hardware.
