@@ -198,6 +198,12 @@ global_variable int s_boundVertexBuffer = -1;
 
 global_variable GLuint s_glVramFramebuffer;
 
+// Host-only teardown state. s_glLoaded is set only after gladLoadGL()
+// succeeds, so a failed window/GL startup never calls through the unloaded
+// (NULL) GL entry points during shutdown. Nothing here is observed by game,
+// replay, or canonical state code.
+global_variable b32 s_glLoaded;
+global_variable SDL_GLContext s_glContext;
 
 internal int NativeRenderer_InitialiseGLContext(char *windowName, int fullscreen)
 {
@@ -230,7 +236,8 @@ internal int NativeRenderer_InitialiseGLContext(char *windowName, int fullscreen
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minor_version);
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, profile);
 
-		if (SDL_GL_CreateContext(g_window))
+		s_glContext = SDL_GL_CreateContext(g_window);
+		if (s_glContext)
 		{
 			break;
 		}
@@ -256,6 +263,7 @@ internal int NativeRenderer_InitialiseGLExt(void)
 	{
 		return 0;
 	}
+	s_glLoaded = 1;
 
 	const char *rend = (const char *)glGetString(GL_RENDERER);
 	const char *vendor = (const char *)glGetString(GL_VENDOR);
@@ -291,6 +299,9 @@ int NativeRenderer_InitialiseRender(char *windowName, int width, int height, int
 	if (!NativeRenderer_InitialiseGLExt())
 	{
 		NATIVE_RENDERER_ERROR("%s\n", "Failed to Intialise GL extensions");
+		// Nothing has used the context yet; release it before the window goes.
+		SDL_GL_DestroyContext(s_glContext);
+		s_glContext = NULL;
 		return 0;
 	}
 
@@ -299,6 +310,11 @@ int NativeRenderer_InitialiseRender(char *windowName, int width, int height, int
 
 void NativeRenderer_Shutdown(void)
 {
+	if (!s_glLoaded)
+	{
+		return;
+	}
+
 	glDeleteVertexArrays(2, s_glVertexArray);
 	glDeleteBuffers(2, s_glVertexBuffer);
 
@@ -315,6 +331,7 @@ void NativeRenderer_Shutdown(void)
 	glDeleteProgram(s_presentVramShader);
 	glDeleteVertexArrays(1, &s_vramQuadVAO);
 	glDeleteBuffers(1, &s_vramQuadVBO);
+	s_glLoaded = 0;
 }
 
 #if defined(CTR_INTERNAL)
@@ -413,6 +430,11 @@ void NativeRenderer_EndGpuFrame(void)
 void NativeRenderer_FinishGpuMeasurements(void)
 {
 #if defined(CTR_INTERNAL)
+	if (!s_glLoaded)
+	{
+		return;
+	}
+
 	NativeRenderer_EndGpuFrame();
 	if (!s_gpuTimerSupported)
 	{

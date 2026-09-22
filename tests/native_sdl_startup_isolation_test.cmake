@@ -126,6 +126,68 @@ if(main_init_call_count LESS 2 OR NOT main_init_call_count EQUAL main_checked_in
         "sdl startup: every Platform_Init( call in main.c must be 'if (!Platform_Init(...))' returning NativeConsole_Return(1) (${main_init_call_count} calls, ${main_checked_init_count} checked)")
 endif()
 
+# e. A failed window/GL startup shuts down cleanly.  Platform_Init's failure
+#    branches call Platform_Shutdown(), which reaches the renderer teardown
+#    before gladLoadGL() may have run.  s_glLoaded is set only immediately
+#    after a successful gladLoadGL(), NativeRenderer_Shutdown returns before
+#    its first gl* call when it is clear, and the flag is cleared at the end
+#    of the teardown.  NativeRenderer_FinishGpuMeasurements is guarded too.
+set(renderer_module "platform/native_renderer.c")
+ctr_read_source("${renderer_module}" renderer_source)
+
+function(ctr_function_body source signature out_var)
+    string(FIND "${source}" "${signature}" begin)
+    if(begin EQUAL -1)
+        message(FATAL_ERROR "sdl startup: cannot locate '${signature}' in ${renderer_module}")
+    endif()
+    string(SUBSTRING "${source}" "${begin}" -1 tail)
+    string(FIND "${tail}" "\n}" length)
+    if(length EQUAL -1)
+        message(FATAL_ERROR "sdl startup: cannot locate the end of '${signature}' in ${renderer_module}")
+    endif()
+    string(SUBSTRING "${tail}" 0 "${length}" body)
+    set(${out_var} "${body}" PARENT_SCOPE)
+endfunction()
+
+ctr_count("${renderer_source}" "s_glLoaded = 1;" gl_loaded_set_count)
+ctr_count("${renderer_source}" "s_glLoaded =" gl_loaded_write_count)
+if(NOT gl_loaded_set_count EQUAL 1 OR NOT gl_loaded_write_count EQUAL 2)
+    message(FATAL_ERROR
+        "sdl startup: ${renderer_module} must set s_glLoaded = 1 once and clear it once (${gl_loaded_set_count} sets, ${gl_loaded_write_count} writes)")
+endif()
+string(REGEX MATCH
+    "GLenum err = gladLoadGL\\(\\);[\r\n\t ]*if \\(err == 0\\)[\r\n\t ]*{[\r\n\t ]*return 0;[\r\n\t ]*}[\r\n\t ]*s_glLoaded = 1;"
+    gl_loaded_set "${renderer_source}")
+if("${gl_loaded_set}" STREQUAL "")
+    message(FATAL_ERROR
+        "sdl startup: s_glLoaded = 1; must immediately follow the successful gladLoadGL() check in ${renderer_module}")
+endif()
+
+ctr_function_body("${renderer_source}" "void NativeRenderer_Shutdown(void)" renderer_shutdown_body)
+string(REGEX MATCH
+    "^void NativeRenderer_Shutdown\\(void\\)[\r\n\t ]*{[\r\n\t ]*if \\(!s_glLoaded\\)[\r\n\t ]*{[\r\n\t ]*return;[\r\n\t ]*}"
+    renderer_shutdown_guard "${renderer_shutdown_body}")
+if("${renderer_shutdown_guard}" STREQUAL "")
+    message(FATAL_ERROR
+        "sdl startup: NativeRenderer_Shutdown must begin with 'if (!s_glLoaded) { return; }' before any GL call")
+endif()
+string(REGEX MATCH "(^|[^A-Za-z0-9_])gl[A-Z][A-Za-z0-9_]*\\(" renderer_shutdown_guard_gl "${renderer_shutdown_guard}")
+if(NOT "${renderer_shutdown_guard_gl}" STREQUAL "")
+    message(FATAL_ERROR "sdl startup: NativeRenderer_Shutdown issues a GL call before its s_glLoaded guard")
+endif()
+string(REGEX MATCH "s_glLoaded = 0;[\r\n\t ]*$" renderer_shutdown_clear "${renderer_shutdown_body}")
+if("${renderer_shutdown_clear}" STREQUAL "")
+    message(FATAL_ERROR "sdl startup: NativeRenderer_Shutdown must end with 's_glLoaded = 0;'")
+endif()
+
+ctr_function_body("${renderer_source}" "void NativeRenderer_FinishGpuMeasurements(void)" finish_gpu_body)
+string(FIND "${finish_gpu_body}" "if (!s_glLoaded)" finish_gpu_guard_offset)
+string(FIND "${finish_gpu_body}" "NativeRenderer_EndGpuFrame();" finish_gpu_end_offset)
+if(finish_gpu_guard_offset EQUAL -1 OR finish_gpu_end_offset EQUAL -1 OR NOT finish_gpu_guard_offset LESS finish_gpu_end_offset)
+    message(FATAL_ERROR
+        "sdl startup: NativeRenderer_FinishGpuMeasurements must check s_glLoaded before NativeRenderer_EndGpuFrame()")
+endif()
+
 # The handler returns always-ignore and delegates only to SDL's default
 # handler when an explicit override is present.
 set(assert_module "platform/native_sdl_assert.c")
