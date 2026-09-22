@@ -9,11 +9,11 @@
  * "Assertion Failed" dialog, which blocks an unattended cabinet forever (for
  * example SDL_hid.c's device-notification counter assertion when
  * SDL_Init(SDL_INIT_VIDEO) fails on a session with no display).  The installed
- * handler logs one line and ignores the assertion from then on, matching
- * Release semantics where SDL_assert compiles out.  An explicit developer
- * override through the SDL_ASSERT hint or environment variable (for example
- * "break" or "abort") is still honoured by delegating to SDL's default
- * handler. */
+ * handler logs one line and ignores the assertion from then on, at every
+ * assertion level and in every build (SDL_assert_release and SDL_assert_always
+ * still fire in Release), so no modal dialog is ever shown.  Only an explicit
+ * SDL_ASSERT hint or environment variable override (for example "break" or
+ * "abort") changes this: SDL's default handler then decides. */
 
 typedef void (*NativeSdlAssertLogFn)(const char *line);
 

@@ -111,7 +111,6 @@ static int TestHandler(void)
 	CHECK(s_captureCount == 1);
 	CHECK(strstr(s_captured, "'ignored_condition != 0'") != NULL);
 	CHECK(strstr(s_captured, "at fn (file.c:42)") != NULL);
-	CHECK(strstr(s_captured, "file.c:42") != NULL);
 	CHECK(strstr(s_captured, "triggered 1 time;") != NULL);
 	CHECK(strchr(s_captured, '\n') == s_captured + strlen(s_captured) - 1);
 	CHECK(s_ignoredRecord.always_ignore);
@@ -190,6 +189,9 @@ int main(void)
 {
 	int result;
 
+	/* A run that died mid-test may have left the capture file behind. */
+	(void)remove(STDERR_CAPTURE_PATH);
+
 	if (TestFormatter() != 0)
 	{
 		return 1;
@@ -205,18 +207,16 @@ int main(void)
 	if (result == 0)
 	{
 		result = TestStderrRouting();
-		SDL_Quit();
-		/* stderr now names the capture file; close it so it can be removed. */
-		if (s_stderrRedirected != 0)
-		{
-			(void)fclose(stderr);
-			(void)remove(STDERR_CAPTURE_PATH);
-		}
 	}
-	else
+	SDL_Quit();
+
+	/* stderr may name the capture file; close it so the file is removed on
+	 * failure as well as success. */
+	if (s_stderrRedirected != 0)
 	{
-		SDL_Quit();
+		(void)fclose(stderr);
 	}
+	(void)remove(STDERR_CAPTURE_PATH);
 
 	if (result != 0)
 	{

@@ -87,11 +87,37 @@ ctr_read_source("game/game_unity.h" game_unity_source)
 ctr_forbid("game/game_unity.h" "${game_unity_source}" "native_sdl_assert")
 
 # d. Platform initialisation failure is fatal.  Platform_Init reports success,
-#    every failure branch logs SDL_GetError() and returns 0, and main.c exits
-#    non-zero instead of running the game without SDL video.
+#    every failure branch logs the SDL error (through Platform_SdlErrorText(),
+#    which substitutes a placeholder for an empty SDL_GetError(), or directly)
+#    and returns 0, and main.c exits non-zero instead of running the game
+#    without SDL video.  SDL_Init( is preceded by SDL_ClearError() so its
+#    report cannot show a stale error.
 ctr_read_source("include/platform.h" platform_header)
 ctr_require("include/platform.h" "${platform_header}" "int Platform_Init(")
 ctr_forbid("include/platform.h" "${platform_header}" "void Platform_Init(")
+
+set(sdl_error_helper "Platform_SdlErrorText()")
+set(sdl_error_helper_begin -1)
+string(REGEX MATCH "const char[\r\n\t ]*\\*[\r\n\t ]*Platform_SdlErrorText[\r\n\t ]*\\([\r\n\t ]*(void)?[\r\n\t ]*\\)[\r\n\t ]*{"
+    sdl_error_helper_definition "${platform_source}")
+if(NOT "${sdl_error_helper_definition}" STREQUAL "")
+    string(FIND "${platform_source}" "${sdl_error_helper_definition}" sdl_error_helper_begin)
+endif()
+if(NOT sdl_error_helper_begin EQUAL -1)
+    string(SUBSTRING "${platform_source}" "${sdl_error_helper_begin}" -1 sdl_error_helper_tail)
+    string(FIND "${sdl_error_helper_tail}" "\n}" sdl_error_helper_length)
+    if(sdl_error_helper_length EQUAL -1)
+        message(FATAL_ERROR "sdl startup: cannot locate the end of ${sdl_error_helper}")
+    endif()
+    string(SUBSTRING "${sdl_error_helper_tail}" 0 "${sdl_error_helper_length}" sdl_error_helper_body)
+    ctr_require("${sdl_error_helper}" "${sdl_error_helper_body}" "SDL_GetError()")
+endif()
+
+string(SUBSTRING "${init_body}" 0 "${sdl_init_offset}" sdl_init_head)
+string(REGEX MATCH "SDL_ClearError\\(\\);[\r\n\t ]*if[\r\n\t ]*\\([\r\n\t !]*$" sdl_init_clear "${sdl_init_head}")
+if("${sdl_init_clear}" STREQUAL "")
+    message(FATAL_ERROR "sdl startup: Platform_Init must call SDL_ClearError(); immediately before the SDL_Init( check")
+endif()
 
 string(SUBSTRING "${init_body}" "${sdl_init_offset}" -1 sdl_init_tail)
 string(FIND "${sdl_init_tail}" "\n\t}" sdl_init_branch_length)
@@ -99,15 +125,24 @@ if(sdl_init_branch_length EQUAL -1)
     message(FATAL_ERROR "sdl startup: cannot locate the SDL_Init( failure branch in Platform_Init")
 endif()
 string(SUBSTRING "${sdl_init_tail}" 0 "${sdl_init_branch_length}" sdl_init_branch)
-ctr_require("Platform_Init's SDL_Init( failure branch" "${sdl_init_branch}" "SDL_GetError()")
+string(FIND "${sdl_init_branch}" "${sdl_error_helper}" sdl_init_branch_helper)
+string(FIND "${sdl_init_branch}" "SDL_GetError()" sdl_init_branch_get_error)
+if(sdl_init_branch_helper EQUAL -1 AND sdl_init_branch_get_error EQUAL -1)
+    message(FATAL_ERROR "sdl startup: Platform_Init's SDL_Init( failure branch must report ${sdl_error_helper} or SDL_GetError()")
+endif()
 ctr_require("Platform_Init's SDL_Init( failure branch" "${sdl_init_branch}" "return 0;")
 ctr_forbid("Platform_Init" "${init_body}" "return;")
 ctr_count("${init_body}" "Platform_LogError(" init_error_count)
-ctr_count("${init_body}" "SDL_GetError()" init_sdl_error_count)
+ctr_count("${init_body}" "${sdl_error_helper}" init_sdl_error_helper_count)
+ctr_count("${init_body}" "SDL_GetError()" init_sdl_get_error_count)
+math(EXPR init_sdl_error_count "${init_sdl_error_helper_count} + ${init_sdl_get_error_count}")
+if(init_sdl_error_helper_count GREATER 0 AND sdl_error_helper_begin EQUAL -1)
+    message(FATAL_ERROR "sdl startup: Platform_Init uses ${sdl_error_helper} but it is not defined in platform/native_platform.c")
+endif()
 ctr_count("${init_body}" "return 0;" init_failure_return_count)
 if(init_error_count LESS 3 OR NOT init_error_count EQUAL init_sdl_error_count OR NOT init_error_count EQUAL init_failure_return_count)
     message(FATAL_ERROR
-        "sdl startup: every Platform_Init failure must log SDL_GetError() and return 0 (${init_error_count} errors, ${init_sdl_error_count} SDL_GetError, ${init_failure_return_count} return 0)")
+        "sdl startup: every Platform_Init failure must log the SDL error and return 0 (${init_error_count} errors, ${init_sdl_error_count} SDL error reports, ${init_failure_return_count} return 0)")
 endif()
 string(REGEX MATCH "return 1;[\r\n\t ]*$" init_success_return "${init_body}")
 if("${init_success_return}" STREQUAL "")

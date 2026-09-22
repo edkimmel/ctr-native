@@ -400,11 +400,19 @@ internal void Platform_HandleKey(int key, char down)
 #endif
 }
 
-/* SDL assertions are reported through the platform log and then ignored, so a
- * Debug build never blocks on SDL's modal assertion dialog. */
+/* SDL assertions are reported through the platform log and then ignored, so
+ * no build ever blocks on SDL's modal assertion dialog. */
 internal void Platform_LogSdlAssertion(const char *line)
 {
 	Platform_LogError("%s", line);
+}
+
+/* Each init step clears the SDL error first, but a step can also fail for a
+ * non-SDL reason (gladLoadGL, GL-only PSX setup) and leave it empty. */
+internal const char *Platform_SdlErrorText(void)
+{
+	const char *error = SDL_GetError();
+	return ((error != NULL) && (error[0] != '\0')) ? error : "no SDL error reported";
 }
 
 int Platform_Init(const char *title, int width, int height, int fullscreen)
@@ -417,18 +425,23 @@ int Platform_Init(const char *title, int width, int height, int fullscreen)
 
 	Platform_Log("[CTR Native] Initialising platform\n");
 
+	SDL_ClearError();
 	if (SDL_Init(SDL_INIT_VIDEO) == 0)
 	{
-		Platform_LogError("[CTR Native] Failed to initialise SDL video: %s\n", SDL_GetError());
+		/* The ignored SDL_hid.c:258 assertion leaves SDL's device-notification
+		 * counter at -1.  That is safe only because startup stops here: never
+		 * retry SDL_Init(SDL_INIT_VIDEO) in-process. */
+		Platform_LogError("[CTR Native] Failed to initialise SDL video: %s\n", Platform_SdlErrorText());
 		Platform_LogShutdown();
 		return 0;
 	}
 
 	s_platformInitialized = 1;
 
+	SDL_ClearError();
 	if (!NativeRenderer_InitialiseRender(windowName, width, height, fullscreen != 0))
 	{
-		Platform_LogError("[CTR Native] Failed to initialise window: %s\n", SDL_GetError());
+		Platform_LogError("[CTR Native] Failed to initialise window: %s\n", Platform_SdlErrorText());
 		Platform_Shutdown();
 		return 0;
 	}
@@ -438,9 +451,10 @@ int Platform_Init(const char *title, int width, int height, int fullscreen)
 	 * but update its drawable bounds before any PSX render target is created. */
 	Platform_RefreshDrawableSize();
 
+	SDL_ClearError();
 	if (!NativeRenderer_InitialisePSX())
 	{
-		Platform_LogError("[CTR Native] Failed to initialise PSX renderer state: %s\n", SDL_GetError());
+		Platform_LogError("[CTR Native] Failed to initialise PSX renderer state: %s\n", Platform_SdlErrorText());
 		Platform_Shutdown();
 		return 0;
 	}
