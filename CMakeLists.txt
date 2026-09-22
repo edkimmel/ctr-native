@@ -175,6 +175,19 @@ set_target_properties(ctr_native_lockstep_protocol PROPERTIES
 target_include_directories(ctr_native_lockstep_protocol PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_lockstep_protocol PUBLIC ctr_native_canonical_codec)
 
+# Fixed-capacity lockstep delay / reorder window, one ring per remote peer.
+# Transport-agnostic by design: this leaf stores caller-owned bytes and decoded
+# bundles and has no wire format, socket, OS networking, SDL, clock, game, or
+# virtual-datagram dependency.  It consumes the frame-bundle codec only.
+add_library(ctr_native_lockstep_input_window STATIC platform/native_lockstep_input_window.c)
+set_target_properties(ctr_native_lockstep_input_window PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_lockstep_input_window PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_lockstep_input_window PUBLIC ctr_native_lockstep_protocol)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -730,6 +743,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_lockstep_protocol_test PRIVATE ctr_native_lockstep_protocol)
     add_test(NAME native_lockstep_protocol_unit COMMAND $<TARGET_FILE:native_lockstep_protocol_test>)
+
+    add_executable(native_lockstep_input_window_test tests/native_lockstep_input_window_test.c)
+    set_target_properties(native_lockstep_input_window_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_lockstep_input_window_test PRIVATE ctr_native_lockstep_input_window)
+    add_test(NAME native_lockstep_input_window_unit COMMAND $<TARGET_FILE:native_lockstep_input_window_test>)
 
     add_executable(main_arcade_roster_test tests/main_arcade_roster_test.c)
     set_target_properties(main_arcade_roster_test PROPERTIES
