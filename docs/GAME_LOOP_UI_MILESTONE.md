@@ -111,21 +111,26 @@ Transitions:
   of never auto-retrying a rejection); BACK in any status moves to EXIT and
   returns CLOSE_LINK.
 - MATCH_FOUND: input ignored; after matchFoundHoldTicks moves to RACING and
-  returns START_RACE; lobby LOST during the hold moves back to LOBBY and
-  returns RESTART_LOBBY.
+  returns START_RACE; any lobby status other than READY during the hold (not
+  only LOST) moves back to LOBBY and returns RESTART_LOBBY.
 - RACING: input ignored (race input belongs to the game). A link-failure
-  reason moves to RESULTS with that reason; otherwise raceFinished moves to
-  RESULTS with FINISHED. A failure reason outranks FINISHED on the same tick
-  (UX-6).
+  reason moves to RESULTS with that reason; otherwise a LOST lobby status
+  moves to RESULTS with LINK_ERROR; otherwise raceFinished moves to RESULTS
+  with FINISHED. A failure reason, and a LOST lobby status, each outrank
+  FINISHED on the same tick (UX-6).
 - RESULTS: rows REMATCH (default focus) and EXIT. Events are ignored until
   resultsDwellTicks have elapsed. PREV/NEXT toggle focus; CONFIRM on REMATCH
   moves to REMATCH_WAIT and returns BEGIN_REMATCH; CONFIRM on EXIT moves to
   EXIT and returns CLOSE_LINK; BACK moves focus to EXIT without confirming;
-  no event for resultsIdleTimeoutTicks moves to EXIT and returns CLOSE_LINK.
-- REMATCH_WAIT: READY moves to MATCH_FOUND; WAITING or LOST returns
-  RESTART_LOBBY after lobbyRetryPauseTicks; REJECTED, or
+  resultsIdleTimeoutTicks ticks without an accepted event move to EXIT and
+  return CLOSE_LINK. The idle count includes ticks inside the dwell, where
+  every event is ignored.
+- REMATCH_WAIT, rules checked in this order: BACK moves to EXIT (end reason
+  NONE) and returns CLOSE_LINK; READY moves to MATCH_FOUND; REJECTED, or
   rematchWaitTimeoutTicks elapsed, moves to EXIT with reason OPPONENT_LEFT
-  and returns CLOSE_LINK; BACK moves to EXIT and returns CLOSE_LINK.
+  and returns CLOSE_LINK; WAITING or LOST returns RESTART_LOBBY after
+  lobbyRetryPauseTicks. On the timeout tick the flow therefore exits rather
+  than retrying.
 - EXIT: after exitHoldTicks (opponentLeftNoticeTicks when the reason is
   OPPONENT_LEFT) moves to OFF and returns RETURN_TO_TITLE.
 
@@ -309,13 +314,18 @@ native_arcade_flow_isolation).
 
 ### Task 4 -- host adapter (native_arcade_netplay)
 
-Status: planned. Header, implementation, a unit test over real loopback
+Status: done. Header, implementation, a unit test over real loopback
 sockets with two in-process adapters (lobby to READY, rematch agreement to
 READY on a new seed, one-sided rematch to OPPONENT LEFT, rejection, backing
 out), a deterministic outcome-mapping test driven through the race-time hook
 without sockets, and an isolation test (no lease, canonical-state, or replay
 write tokens, no allocation, and API names free of the tokens forbidden
 under game/). Review required: it decides which config a rematch runs on.
+Landed as include/platform/native_arcade_netplay.h,
+platform/native_arcade_netplay.c, tests/native_arcade_netplay_test.c, and
+tests/native_arcade_netplay_isolation_test.cmake (library
+ctr_native_arcade_netplay, tests native_arcade_netplay_unit and
+native_arcade_netplay_isolation).
 
 ### Task 5 -- screen layout builder (MainArcadeLinkScreens layout)
 

@@ -333,6 +333,22 @@ set_target_properties(ctr_native_arcade_flow PROPERTIES
 target_include_directories(ctr_native_arcade_flow PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_arcade_flow PUBLIC ctr_native_arcade_menu_input)
 
+# Arcade-link host adapter (docs/GAME_LOOP_UI_MILESTONE.md section 2.3): the
+# only production module that composes the lobby layer with the
+# failure-handling layer and drives the pure arcade screen flow. It reaches
+# the transport only through ctr_native_lobby_state. Not yet linked into
+# ctr_native (Task 6).
+add_library(ctr_native_arcade_netplay STATIC platform/native_arcade_netplay.c)
+set_target_properties(ctr_native_arcade_netplay PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_netplay PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_arcade_netplay PUBLIC
+    ctr_native_arcade_flow ctr_native_lobby_state ctr_native_lockstep_match_outcome
+    ctr_native_lockstep_match_roster ctr_native_lockstep_rematch ctr_native_match_config)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -1078,6 +1094,21 @@ if(BUILD_TESTING)
 
     add_test(NAME native_arcade_flow_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_flow_isolation_test.cmake")
+
+    # Arcade-link host adapter (docs/GAME_LOOP_UI_MILESTONE.md section 2.3,
+    # Task 4): two in-process adapters over real loopback sockets, every
+    # advance tick-counted, never wall-clock.
+    add_executable(native_arcade_netplay_test tests/native_arcade_netplay_test.c)
+    set_target_properties(native_arcade_netplay_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_netplay_test PRIVATE ctr_native_arcade_netplay)
+    add_test(NAME native_arcade_netplay_unit COMMAND $<TARGET_FILE:native_arcade_netplay_test>)
+
+    add_test(NAME native_arcade_netplay_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_netplay_isolation_test.cmake")
 
     add_test(NAME native_lockstep_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_isolation_test.cmake")
