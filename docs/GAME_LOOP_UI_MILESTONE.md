@@ -486,8 +486,10 @@ for the operator to confirm or change after seeing the built flow.
 Run these from the repository root in a Windows command prompt, with
 assets/ctr-u.bin in place (the executable finds assets/ from its own
 directory). Captures go to the gitignored debug\captures folder. Frame 1320 is
-past the title intro's menu-ready frame, so the preview screen is up. Each
-line writes one BMP and exits:
+past the title intro's menu-ready frame, so the preview screen is up. Run
+them from a connected desktop session (with no display the game exits 1; see
+risk 12); each capture run takes about 45 seconds. Each line writes one BMP
+and exits:
 
 ```bat
 mkdir debug\captures
@@ -547,7 +549,7 @@ the title until Task 7.
 ## 5. Task list
 
 Baseline before this milestone: 91 tests, 100% passing (commit 52976808c).
-Current state: 106 tests, 100% passing. Tasks 1-6b-5 are done; Tasks 7 and 8
+Current state: 108 tests, 100% passing. Tasks 1-6b-5 are done; Tasks 7 and 8
 are gated (see their entries); this document stays open until they land.
 
 ### Task 1 -- this document
@@ -816,7 +818,11 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-5.
     could fault the new session (detail in risk 2); Task 8 must test for
     this.
 11. Every tick count assumes the 30 Hz game loop (see risk 3).
-12. Startup hang observed on this machine: since Task 6b-4, ctr_native.exe
-    has stopped during platform init with an SDL assertion in SDL_hid.c. The
-    same hang was also seen on the unchanged Task 6b-3 build, so it looks
-    environmental. Re-confirming the default-path run is still open.
+12. Startup needs a display. With no display in the Windows session (e.g. a
+    console session disconnected by fast user switching), SDL video init
+    fails with "No displays available"; ctr_native.exe logs the SDL error and
+    exits 1, never showing a dialog. The SDL_hid.c:258 assertion seen then is
+    a device-notification refcount imbalance in SDL's video error path, not
+    the G29; it is logged and ignored. When the exe owns its console window
+    (e.g. double-clicked), every early exit waits on "Press Enter to close
+    this window...".

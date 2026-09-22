@@ -218,6 +218,12 @@ ctest --test-dir build-msvc-x86 -C Debug --output-on-failure
 Use `build-msvc-x86`; other `build-msvc-x86-*` directories are from earlier
 milestones. The full suite passes. LF-to-CRLF warnings are benign.
 
+`ctr_native.exe` needs a connected desktop session with a display. Without
+one, platform init fails, the SDL error is logged, and the exe exits 1. SDL
+assertions are logged and ignored rather than shown as a dialog, and the G29
+stays enabled (HIDAPI is not disabled). When the exe owns its console window
+(e.g. launched by double-click), every early exit waits for Enter.
+
 ## Key files
 
 - Canonical state and RNG: `platform/native_canonical_state{,_v3,_v4}.c`,
@@ -270,6 +276,9 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
   (unattended frame capture); renderer seam in `platform/native_renderer.c`.
+- Startup robustness: `platform/native_sdl_assert.c`,
+  `include/platform/native_sdl_assert.h` (SDL assertion handler);
+  `Platform_Init` in `platform/native_platform.c` (fail-fast platform init).
 - Unity build chain: `game/game_unity.h` (ordered includes; add new game `.c`
   files here). Standalone libraries are declared in `CMakeLists.txt`.
 - Related docs: `docs/ARCADE_FORK.md`, `docs/TOPOLOGY_LEASE_AUTHORITY.md`,
@@ -302,13 +311,10 @@ The game-loop/UI milestone is tracked in `docs/GAME_LOOP_UI_MILESTONE.md`.
 1. Operator review of the built flow and the UX defaults UX-1 to UX-11,
    using the "How to review the flow" subsection (section 3) of that
    document.
-2. Re-confirm the default-path startup: `ctr_native.exe` has been seen to
-   stop during platform init with an SDL assertion in `SDL_hid.c` on this
-   machine (risk 12 there).
-3. Task 7, networked race launch, gated on step 3 live roster/bot setup.
-4. Task 8, in-race lockstep drive and failure handling, gated on Task 7 and
+2. Task 7, networked race launch, gated on step 3 live roster/bot setup.
+3. Task 8, in-race lockstep drive and failure handling, gated on Task 7 and
    live V4 projection.
-5. Real two-cabinet and G29 validation (actual wire, LAN switch,
+4. Real two-cabinet and G29 validation (actual wire, LAN switch,
    latency/loss, wheel input) needs cabinet access and is the separately
    gated requirement for step 6 (CAB1 G29/kiosk gate) and step 7
    (two-cabinet fleet acceptance).
