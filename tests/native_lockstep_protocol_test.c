@@ -43,7 +43,8 @@ static void MakeBundle(struct NativeLockstepBundleV1 *bundle)
 	memcpy(bundle->pads[1].pad.buttons, buttons1, sizeof(buttons1));
 	memcpy(bundle->pads[1].pad.analog, analog1, sizeof(analog1));
 	bundle->pads[1].pad.connected = 0x00u;
-	bundle->verifiedFrameIndex = UINT32_C(0x00001234);
+	/* Lag consistent: verifiedFrameIndex + g_inputDelay + 1 == frameIndex. */
+	bundle->verifiedFrameIndex = UINT32_C(0x0A0B0C0A);
 	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
 	{
 		bundle->verifiedDomainDigests[i] = UINT64_C(0x0102030405060708) + i;
@@ -193,7 +194,7 @@ int main(void)
 		/* 32: senderSlot, padCount, verifiedPresent, reserved0 */ 0x01u, 0x02u, 0x01u, 0x00u,
 		/* 36: pad entry 0 */ 0x00u, 0x5Au, 0x01u, 0x34u, 0x12u, 0x01u, 0x02u, 0x03u, 0x04u, 0x01u,
 		/* 46: pad entry 1 */ 0x03u, 0x11u, 0x02u, 0xFFu, 0x00u, 0x10u, 0x20u, 0x30u, 0x40u, 0x00u,
-		/* 56: verifiedFrameIndex 0x1234 */ 0x34u, 0x12u, 0x00u, 0x00u,
+		/* 56: verifiedFrameIndex 0x0A0B0C0A */ 0x0Au, 0x0Cu, 0x0Bu, 0x0Au,
 		/* 60: verifiedDomainDigests[0..5] */
 		0x08u, 0x07u, 0x06u, 0x05u, 0x04u, 0x03u, 0x02u, 0x01u,
 		0x09u, 0x07u, 0x06u, 0x05u, 0x04u, 0x03u, 0x02u, 0x01u,
@@ -214,7 +215,7 @@ int main(void)
 	uint8_t patched[BUNDLE_BYTES];
 	uint8_t offsetBuffer[8u + BUNDLE_BYTES];
 	uint8_t narrow[BUNDLE_BYTES];
-	uint32_t causes[11];
+	uint32_t causes[12];
 	size_t causeCount = 0u;
 	uint32_t cause = NATIVE_LOCKSTEP_FAULT_NONE;
 
@@ -353,14 +354,73 @@ int main(void)
 	}
 	causes[causeCount++] = NATIVE_LOCKSTEP_FAULT_BAD_SLOT;
 
-	/* verifiedPresent == 0 requires zero verification fields. */
-	CHECK(PatchedCause(bytes, 34u, 0x00u, NATIVE_LOCKSTEP_FAULT_VERIFY_LAG) == 0);
-	CHECK(PatchedCause(bytes, 34u, 0x02u, NATIVE_LOCKSTEP_FAULT_VERIFY_LAG) == 0);
-	CHECK(PatchedCause(singleBytes, 56u, 0x01u, NATIVE_LOCKSTEP_FAULT_VERIFY_LAG) == 0);
-	CHECK(PatchedCause(singleBytes, 60u, 0x01u, NATIVE_LOCKSTEP_FAULT_VERIFY_LAG) == 0);
-	CHECK(PatchedCause(singleBytes, 103u, 0x80u, NATIVE_LOCKSTEP_FAULT_VERIFY_LAG) == 0);
-	CHECK(PatchedCause(singleBytes, 108u, 0x01u, NATIVE_LOCKSTEP_FAULT_VERIFY_LAG) == 0);
+	/*
+	 * Verified-block shape: verifiedPresent is 0 or 1, and 0 requires zero
+	 * verification fields.  This is a malformed record, not a lag violation.
+	 */
+	CHECK(PatchedCause(bytes, 34u, 0x00u, NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE) == 0);
+	CHECK(PatchedCause(bytes, 34u, 0x02u, NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE) == 0);
+	CHECK(PatchedCause(bytes, 34u, 0xFFu, NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE) == 0);
+	CHECK(PatchedCause(singleBytes, 56u, 0x01u, NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE) == 0);  /* verifiedFrameIndex */
+	CHECK(PatchedCause(singleBytes, 60u, 0x01u, NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE) == 0);  /* domain digest 0 */
+	CHECK(PatchedCause(singleBytes, 103u, 0x80u, NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE) == 0); /* domain digest 5 */
+	CHECK(PatchedCause(singleBytes, 108u, 0x01u, NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE) == 0); /* combined digest */
+	causes[causeCount++] = NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE;
+
+	/*
+	 * The verified-digest lag invariant: with verifiedPresent == 1 the digest
+	 * lags the carried input frame by exactly D + 1 frames.  The fixture is at
+	 * exact lag, so one frame either way is the only patch needed.
+	 */
+	CHECK(PatchedCause(bytes, 56u, 0x0Bu, NATIVE_LOCKSTEP_FAULT_VERIFY_LAG) == 0); /* one frame too new */
+	CHECK(PatchedCause(bytes, 56u, 0x09u, NATIVE_LOCKSTEP_FAULT_VERIFY_LAG) == 0); /* one frame too old */
 	causes[causeCount++] = NATIVE_LOCKSTEP_FAULT_VERIFY_LAG;
+
+	/* Exact lag at another nonzero delay, and the cases the lag rule excludes. */
+	{
+		struct NativeLockstepBundleV1 lag;
+		struct NativeLockstepBundleV1 out;
+		struct NativeCodecReader reader;
+		uint8_t lagBytes[BUNDLE_BYTES];
+
+		MakeBundle(&lag);
+		lag.inputDelay = 5u;
+		lag.frameIndex = 100u;
+		lag.verifiedFrameIndex = 94u; /* 94 + 5 + 1 == 100 */
+		CHECK(Encode(&lag, lagBytes) == 0);
+		memset(&out, 0xCDu, sizeof(out));
+		cause = NATIVE_LOCKSTEP_FAULT_BAD_MAGIC;
+		NativeCodecReader_Init(&reader, lagBytes, BUNDLE_BYTES);
+		CHECK(NativeLockstepBundleV1_Decode(&reader, g_identity, g_protocolVersion, 5u, &out, &cause));
+		CHECK(cause == NATIVE_LOCKSTEP_FAULT_NONE);
+		CHECK(NativeCodecReader_Remaining(&reader) == 0);
+		CHECK(SameBundle(&out, &lag));
+
+		/* 64-bit arithmetic: a verifiedFrameIndex that wraps uint32 is no pass. */
+		lag.inputDelay = g_inputDelay;
+		lag.frameIndex = 2u;
+		lag.verifiedFrameIndex = UINT32_MAX;
+		CHECK(Encode(&lag, lagBytes) == 0);
+		CHECK(DecodeFails(lagBytes, BUNDLE_BYTES, g_protocolVersion, g_inputDelay, NATIVE_LOCKSTEP_FAULT_VERIFY_LAG) == 0);
+
+		/* verifiedPresent == 0 is never lag-checked, whatever the frame index. */
+		MakeSinglePadBundle(&lag);
+		lag.frameIndex = 0u;
+		CHECK(Encode(&lag, lagBytes) == 0);
+		memset(&out, 0xCDu, sizeof(out));
+		cause = NATIVE_LOCKSTEP_FAULT_BAD_MAGIC;
+		NativeCodecReader_Init(&reader, lagBytes, BUNDLE_BYTES);
+		CHECK(NativeLockstepBundleV1_Decode(&reader, g_identity, g_protocolVersion, g_inputDelay, &out, &cause));
+		CHECK(cause == NATIVE_LOCKSTEP_FAULT_NONE);
+		CHECK(SameBundle(&out, &lag));
+		lag.frameIndex = UINT32_MAX;
+		CHECK(Encode(&lag, lagBytes) == 0);
+		cause = NATIVE_LOCKSTEP_FAULT_BAD_MAGIC;
+		NativeCodecReader_Init(&reader, lagBytes, BUNDLE_BYTES);
+		CHECK(NativeLockstepBundleV1_Decode(&reader, g_identity, g_protocolVersion, g_inputDelay, &out, &cause));
+		CHECK(cause == NATIVE_LOCKSTEP_FAULT_NONE);
+		CHECK(SameBundle(&out, &lag));
+	}
 
 	/* Every covered failure path reported a distinct, non-zero cause. */
 	CHECK(causeCount == sizeof(causes) / sizeof(causes[0]));

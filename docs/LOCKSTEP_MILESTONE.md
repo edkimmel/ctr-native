@@ -480,7 +480,11 @@ struct NativeLockstepDivergenceReport {
   uint32_t senderSlot; uint32_t detail; }` or `NULL`. Causes:
   `BAD_MAGIC`, `BAD_VERSION`, `BAD_SIZE`, `BAD_DIGEST`, `BAD_RESERVED`,
   `MATCH_IDENTITY`, `PROTOCOL_VERSION`, `INPUT_DELAY`, `BAD_SLOT`,
-  `BAD_PAD_COUNT`, `CONFLICTING_INPUT`, `WINDOW_OVERRUN`, `VERIFY_LAG`.
+  `BAD_PAD_COUNT`, `CONFLICTING_INPUT`, `WINDOW_OVERRUN`, `VERIFY_LAG`,
+  `VERIFY_SHAPE`. `VERIFY_LAG` is the lag invariant
+  `verifiedFrameIndex + D + 1 == frameIndex` alone; a malformed verified block
+  (`verifiedPresent > 1`, or `verifiedPresent == 0` with a nonzero digest
+  field) is `VERIFY_SHAPE`.
   Session modes: `IDLE`, `RUNNING`, `DIVERGED`, `FAULTED`. `DIVERGED` and
   `FAULTED` are both terminal for simulation; only `DIVERGED` outranks
   `FAULTED` for retention.
@@ -586,7 +590,10 @@ Acceptance test `native_lockstep_protocol_unit` must cover:
 - oversize rejection: a writer with capacity 127 fails and writes nothing;
 - `padCount > NATIVE_LOCKSTEP_BUNDLE_PAD_CAPACITY`, `senderSlot >= 8`, an
   unused pad entry whose `slotIndex` is not `0xFF`;
-- `verifiedPresent == 0` with nonzero digest fields is rejected;
+- `verifiedPresent == 0` with nonzero digest fields, and `verifiedPresent > 1`,
+  are rejected as `VERIFY_SHAPE`; a present digest whose
+  `verifiedFrameIndex + D + 1 != frameIndex` is rejected as `VERIFY_LAG`, and
+  `verifiedPresent == 0` is never lag-checked;
 - every failure path reports a distinct fault cause.
 
 ### Task 2 - delay / reorder buffer

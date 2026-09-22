@@ -9,9 +9,9 @@
 
 /*
  * Fixed-delay lockstep frame bundle, one record per peer per frame.  This
- * header is transport-agnostic by design: it has no socket, OS networking,
- * SDL, clock, or game dependency, and the codec is fixed little-endian, so the
- * wire is identical on any host.  The bundle is a new sibling format; it never
+ * header is transport-agnostic by design: it has no OS transport, windowing,
+ * clock, or game dependency, and the codec is fixed little-endian, so the wire
+ * is identical on any host.  The bundle is a new sibling format; it never
  * reinterprets canonical state, replay, or match-config records.
  */
 
@@ -27,8 +27,10 @@
 #define NATIVE_LOCKSTEP_BUNDLE_SLOT_COUNT 8u
 
 /*
- * Protocol fault causes.  Values are frozen: they are reported out of the
- * codec and are intended to be latched and logged verbatim.
+ * Protocol fault causes.  The enum is append-only: they are reported out of
+ * the codec and are intended to be latched and logged verbatim, so new causes
+ * may only be appended at the end and an existing numeric value must never
+ * change.
  */
 enum NativeLockstepFaultCause
 {
@@ -45,7 +47,8 @@ enum NativeLockstepFaultCause
 	NATIVE_LOCKSTEP_FAULT_BAD_PAD_COUNT = 10,
 	NATIVE_LOCKSTEP_FAULT_CONFLICTING_INPUT = 11,
 	NATIVE_LOCKSTEP_FAULT_WINDOW_OVERRUN = 12,
-	NATIVE_LOCKSTEP_FAULT_VERIFY_LAG = 13
+	NATIVE_LOCKSTEP_FAULT_VERIFY_LAG = 13,
+	NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE = 14
 };
 
 /* One owned input slot plus the canonical pad bytes the INPUT domain records. */
@@ -72,6 +75,7 @@ struct NativeLockstepBundleV1
 	uint8_t reserved0;
 	struct NativeLockstepBundlePadV1 pads[NATIVE_LOCKSTEP_BUNDLE_PAD_CAPACITY];
 	uint32_t verifiedFrameIndex;
+	/* Index i is domain NativeCanonicalDomainOrder[i]. */
 	uint64_t verifiedDomainDigests[NATIVE_CANONICAL_DOMAIN_COUNT];
 	uint64_t verifiedCombinedDigest;
 	uint8_t reserved1[NATIVE_LOCKSTEP_BUNDLE_V1_RESERVED1_BYTES];
@@ -83,9 +87,12 @@ size_t NativeLockstepBundleV1_EncodedSize(void);
  * Validates only the sender-local invariants: zero reserved bytes, an in-range
  * sender slot, a pad count within capacity, distinct in-range slot indices for
  * used pad entries, unused entries encoded as slot 0xFF with nine zero bytes,
- * and zero verification fields whenever verifiedPresent is 0.  Peer
- * expectations (match identity, protocol version, input delay) are checked at
- * decode, not here.
+ * and a well formed verified-block shape: verifiedPresent is 0 or 1, and when
+ * it is 0 every verification field is zero (NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE
+ * otherwise).  The verified-digest lag invariant is not checked here: it needs
+ * the peer-expected input delay, so it is checked only at decode.  Peer
+ * expectations (match identity, protocol version, input delay) are likewise
+ * checked at decode, not here.
  */
 int NativeLockstepBundleV1_Validate(const struct NativeLockstepBundleV1 *bundle);
 
@@ -105,7 +112,10 @@ int NativeLockstepBundleV1_Encode(struct NativeCodecWriter *writer, const struct
  * arguments and any remaining length other than the encoded width report
  * NATIVE_LOCKSTEP_FAULT_BAD_SIZE.  Checks run in wire order: magic, bundle
  * version, encoded size, bundle digest, match identity, protocol version,
- * input delay, then the record invariants of NativeLockstepBundleV1_Validate.
+ * input delay, the record invariants of NativeLockstepBundleV1_Validate, then
+ * the verified-digest lag invariant
+ * verifiedFrameIndex + expectedInputDelay + 1 == frameIndex, applied only when
+ * verifiedPresent is 1.
  */
 int NativeLockstepBundleV1_Decode(struct NativeCodecReader *reader,
                                   const uint8_t expectedMatchIdentity[NATIVE_LOCKSTEP_BUNDLE_V1_MATCH_IDENTITY_BYTES],

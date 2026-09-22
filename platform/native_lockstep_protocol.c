@@ -1,6 +1,17 @@
 #include "platform/native_lockstep_protocol.h"
 
+/* Compile-time only: the shared slot count and digest widths are pinned here
+ * so a future divergence fails to build.  No link dependency is added. */
+#include "platform/native_match_config.h"
+
 #include <string.h>
+
+_Static_assert(NATIVE_LOCKSTEP_BUNDLE_SLOT_COUNT == NATIVE_MATCH_CONFIG_V1_SLOT_COUNT,
+               "The lockstep bundle slot count must mirror NATIVE_MATCH_CONFIG_V1_SLOT_COUNT.");
+_Static_assert(NATIVE_LOCKSTEP_BUNDLE_V1_DIGEST_OFFSET + sizeof(uint64_t) == NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES,
+               "The bundle digest must be the last field of the encoded record.");
+_Static_assert(NATIVE_LOCKSTEP_BUNDLE_V1_MATCH_IDENTITY_BYTES <= NATIVE_SHA256_DIGEST_BYTES,
+               "The match identity is a truncation of the SHA-256 config digest.");
 
 static int NativeLockstepBundle_IsAllZero(const uint8_t *bytes, size_t size)
 {
@@ -63,21 +74,23 @@ static uint32_t NativeLockstepBundle_RecordCause(const struct NativeLockstepBund
 			}
 		}
 	}
+	/* Shape only.  The lag invariant needs the peer input delay, so it lives
+	 * in Decode, not here. */
 	if (bundle->verifiedPresent > 1)
 	{
-		return NATIVE_LOCKSTEP_FAULT_VERIFY_LAG;
+		return NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE;
 	}
 	if (bundle->verifiedPresent == 0)
 	{
 		if ((bundle->verifiedFrameIndex != 0) || (bundle->verifiedCombinedDigest != 0))
 		{
-			return NATIVE_LOCKSTEP_FAULT_VERIFY_LAG;
+			return NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE;
 		}
 		for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
 		{
 			if (bundle->verifiedDomainDigests[i] != 0)
 			{
-				return NATIVE_LOCKSTEP_FAULT_VERIFY_LAG;
+				return NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE;
 			}
 		}
 	}
@@ -114,6 +127,7 @@ static int NativeLockstepBundle_WriteBody(struct NativeCodecWriter *writer, cons
 	{
 		return 0;
 	}
+	/* Index i is domain NativeCanonicalDomainOrder[i]. */
 	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
 	{
 		if (!NativeCodecWriter_WriteU64(writer, bundle->verifiedDomainDigests[i]))
@@ -157,6 +171,7 @@ static int NativeLockstepBundle_ReadBody(struct NativeCodecReader *reader, struc
 	{
 		return 0;
 	}
+	/* Index i is domain NativeCanonicalDomainOrder[i]. */
 	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
 	{
 		if (!NativeCodecReader_ReadU64(reader, &bundle->verifiedDomainDigests[i]))
@@ -282,6 +297,19 @@ int NativeLockstepBundleV1_Decode(struct NativeCodecReader *reader,
 	else
 	{
 		cause = NativeLockstepBundle_RecordCause(&decoded);
+		/*
+		 * The verified digest lags the carried input frame by exactly D + 1
+		 * frames, so a present digest must satisfy
+		 * verifiedFrameIndex + D + 1 == frameIndex.  The arithmetic is 64-bit
+		 * so a hostile or early-session verifiedFrameIndex cannot wrap a
+		 * uint32 into a false pass.  With verifiedPresent 0 there is no digest
+		 * to lag-check: that is the first D + 1 frames of a session.
+		 */
+		if ((cause == NATIVE_LOCKSTEP_FAULT_NONE) && (decoded.verifiedPresent == 1) &&
+		    (((uint64_t)decoded.verifiedFrameIndex + expectedInputDelay + 1u) != (uint64_t)decoded.frameIndex))
+		{
+			cause = NATIVE_LOCKSTEP_FAULT_VERIFY_LAG;
+		}
 	}
 
 	if (cause != NATIVE_LOCKSTEP_FAULT_NONE)
