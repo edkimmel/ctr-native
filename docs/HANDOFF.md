@@ -257,18 +257,25 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
 
 ## Next work
 
-Game-loop/UI wiring is still missing for both policy layers that already
-exist and are tested: the failure-handling policy layer (stall-timeout
-outcome, peer-drop roster, rematch — complete and fault-tested since the
-failure-handling milestone) and the lobby/connect stack (real transport,
-handshake, peer-link integration, and lobby state — complete and tested,
-see Networking). Nothing under `game/` calls either one yet: no menu, no
-wheel-input wiring, and no waiting/results/rematch/exit screens exist.
+Owner direction: wire both existing, tested backend policy layers into the
+actual game loop and UI. Nothing under `game/` calls either one yet:
+
+- The failure-handling policy layer (stall-timeout outcome, peer-drop
+  roster, rematch — complete and fault-tested since the failure-handling
+  milestone).
+- The lobby/connect stack (real transport, handshake, peer-link
+  integration, and lobby state — complete and tested, see Networking).
+
+This milestone needs a menu/UI pass (lobby/waiting, results, rematch, exit
+screens) and wheel/G29 input wiring for them, following the existing
+decompiled menu code's own patterns (see `docs/OVERLAYS.md`'s Region 3 Main
+Menu overlay and the end-of-race overlays, and `docs/G29_INPUT.md`) rather
+than inventing a new UI framework. This is a design-and-build milestone with
+real UX decisions (screen layout, wheel navigation feel); the operator
+should review the resulting flow once it's built.
 
 Real two-cabinet, physical-hardware validation — actual wire, an actual LAN
 switch, actual latency/loss conditions, actual G29 wheel input — has not
-happened and cannot happen without cabinet access; this gates step 6 (CAB1
-G29/kiosk gate) and step 7 (two-cabinet fleet acceptance).
-
-Both of the above need to land, in whatever order the operator chooses,
-before step 6 can run on real hardware.
+happened and cannot happen without cabinet access; this remains a separately
+gated requirement for step 6 (CAB1 G29/kiosk gate) and step 7 (two-cabinet
+fleet acceptance), independent of this milestone.
