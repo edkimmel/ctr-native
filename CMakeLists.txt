@@ -275,6 +275,24 @@ set_target_properties(ctr_native_lockstep_handshake PROPERTIES
 target_include_directories(ctr_native_lockstep_handshake PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_lockstep_handshake PUBLIC ctr_native_match_config ctr_native_canonical_codec)
 
+# Real-transport integration glue (docs/LOBBY_MILESTONE.md section 2.3): the
+# one module in this milestone allowed to depend on all three of
+# ctr_native_udp_transport, ctr_native_lockstep_handshake, and
+# ctr_native_lockstep_session -- nothing in Tasks 2-4 depends on this one.
+# It owns one of each, drives the handshake to completion over a real
+# socket, opens the session on the agreed config once the handshake
+# completes, and from then on composes/sends and receives/accepts lockstep
+# bundles over that same real socket.
+add_library(ctr_native_lockstep_peer_link STATIC platform/native_lockstep_peer_link.c)
+set_target_properties(ctr_native_lockstep_peer_link PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_lockstep_peer_link PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_lockstep_peer_link PUBLIC
+    ctr_native_udp_transport ctr_native_lockstep_handshake ctr_native_lockstep_session)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -945,6 +963,29 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_lockstep_handshake_fault_test PRIVATE ctr_native_lockstep_handshake ctr_native_virtual_datagram)
     add_test(NAME native_lockstep_handshake_fault_unit COMMAND $<TARGET_FILE:native_lockstep_handshake_fault_test>)
+
+    # Not registered as its own add_test: it is the second real OS process
+    # spawned by native_lockstep_peer_link_process_test below.
+    add_executable(native_lockstep_peer_link_helper tests/native_lockstep_peer_link_helper.c)
+    set_target_properties(native_lockstep_peer_link_helper PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_lockstep_peer_link_helper PRIVATE ctr_native_lockstep_peer_link)
+
+    # Master two-process, real-socket, real-lockstep-bundle proof test for
+    # the whole lobby milestone (docs/LOBBY_MILESTONE.md section 2.3 and
+    # section 3 constraint 8).
+    add_executable(native_lockstep_peer_link_process_test tests/native_lockstep_peer_link_process_test.c)
+    set_target_properties(native_lockstep_peer_link_process_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_lockstep_peer_link_process_test PRIVATE ctr_native_lockstep_peer_link)
+    add_test(NAME native_lockstep_peer_link_process_unit
+        COMMAND $<TARGET_FILE:native_lockstep_peer_link_process_test> $<TARGET_FILE:native_lockstep_peer_link_helper>)
 
     add_test(NAME native_lockstep_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_isolation_test.cmake")
