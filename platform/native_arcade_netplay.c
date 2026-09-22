@@ -49,11 +49,21 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 	{
 		return 0;
 	}
-	if (config->candidateCount > NATIVE_LOBBY_STATE_MAX_CANDIDATES)
+	if (config->localPort == 0u)
+	{
+		return 0;
+	}
+	if ((config->candidateCount == 0u) || (config->candidateCount > NATIVE_LOBBY_STATE_MAX_CANDIDATES))
 	{
 		return 0;
 	}
 	if (config->attemptTicksPerCandidate == 0u)
+	{
+		return 0;
+	}
+	/* Only 0 is rejected; see the retransmitIntervalTicks field comment for
+	 * why any value but 1 is test-only. */
+	if (config->retransmitIntervalTicks == 0u)
 	{
 		return 0;
 	}
@@ -102,8 +112,17 @@ static void NativeArcadeNetplay_CloseLobby(struct NativeArcadeNetplay *netplay)
 	netplay->raceArmed = 0u;
 }
 
+/* Restarts the candidate cycle, or closes and begins again when no lobby is
+ * open or the restart is refused. While a rematch is blocked nothing is
+ * begun, so REMATCH_WAIT keeps reading WAITING and times out to OPPONENT
+ * LEFT. */
 static void NativeArcadeNetplay_RestartLobby(struct NativeArcadeNetplay *netplay)
 {
+	if (netplay->rematchBlocked != 0u)
+	{
+		NativeArcadeNetplay_CloseLobby(netplay);
+		return;
+	}
 	if ((netplay->lobbyBegun != 0u) && NativeLobbyState_RestartCycle(&netplay->lobby))
 	{
 		return;
@@ -147,6 +166,7 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
 	{
 		netplay->currentConfig = netplay->config.fixture;
 		netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+		netplay->rematchBlocked = 0u;
 		NativeArcadeNetplay_BeginLobby(netplay);
 	}
 	return action;
@@ -157,9 +177,10 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
  * agreed config, so both propose the same rematch config on a brand-new
  * lobby, link, and session. If the seed or the config cannot be built (a
  * defensive path only: the current config was validated when it was
- * proposed), currentConfig is left unchanged; the peer then proposes a
- * different config, the handshake is refused or unanswered, and the flow
- * ends the rematch wait with OPPONENT LEFT rather than racing on a guess.
+ * proposed), no lobby is begun and the rematch is blocked: RestartLobby
+ * begins nothing while rematchBlocked is set, so the flow reads WAITING
+ * until the rematch wait times out to OPPONENT LEFT. The old config, and so
+ * the old seed, is never proposed again, and nothing races on a guess.
  */
 static void NativeArcadeNetplay_BeginRematch(struct NativeArcadeNetplay *netplay)
 {
@@ -172,12 +193,29 @@ static void NativeArcadeNetplay_BeginRematch(struct NativeArcadeNetplay *netplay
 		built = NativeLockstepRematch_BuildConfig(&netplay->currentConfig, seed, &next);
 	}
 	NativeArcadeNetplay_CloseLobby(netplay);
-	if (built)
-	{
-		netplay->currentConfig = next;
-	}
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+	if (!built)
+	{
+		netplay->rematchBlocked = 1u;
+		return;
+	}
+	netplay->currentConfig = next;
 	NativeArcadeNetplay_BeginLobby(netplay);
+}
+
+/* Applies a latched outcome, if any: drops the remote human in the roster
+ * and records the flow's link-failure reason for its next observation.
+ * Shared by OnTakeResult and Tick's own PEER_LOST read. */
+static void NativeArcadeNetplay_ApplyLatchedOutcome(struct NativeArcadeNetplay *netplay)
+{
+	const struct NativeLockstepMatchOutcomeReport *report;
+
+	report = NativeLockstepMatchOutcome_FirstOutcome(&netplay->outcome);
+	if (report != NULL)
+	{
+		(void)NativeLockstepMatchRoster_ApplyOutcome(&netplay->roster, netplay->localSlot, report);
+		netplay->pendingLinkFailure = NativeArcadeNetplay_EndReasonForCause(report->cause);
+	}
 }
 
 /* START_RACE: a fresh outcome tracker and roster for this match. */
@@ -209,6 +247,21 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	if (netplay->lobbyBegun != 0u)
 	{
 		NativeLobbyState_Poll(&netplay->lobby);
+	}
+
+	/* 2b. That poll drains bundles into the session. If it found the link
+	 * FAULTED or DIVERGED while racing (lobby PEER_LOST), read the cause from
+	 * the session now; the outcome tracker checks DIVERGED and FAULTED before
+	 * any stall logic, so the flow shows DESYNC or LINK ERROR from the real
+	 * cause. */
+	if ((netplay->lobbyBegun != 0u) && (netplay->raceArmed != 0u) &&
+		(netplay->pendingLinkFailure == NATIVE_ARCADE_FLOW_END_NONE) &&
+		(NativeArcadeFlow_Screen(&netplay->flow) == NATIVE_ARCADE_FLOW_SCREEN_RACING) &&
+		(NativeLobbyState_Mode(&netplay->lobby) == NATIVE_LOBBY_STATE_PEER_LOST))
+	{
+		(void)NativeLockstepMatchOutcome_Poll(&netplay->outcome,
+			NativeLockstepPeerLink_Session(NativeLobbyState_Link(&netplay->lobby)), NATIVE_LOCKSTEP_SESSION_OK, 0u);
+		NativeArcadeNetplay_ApplyLatchedOutcome(netplay);
 	}
 
 	/* 3. Release-to-arm on every screen entry (UX-3). */
@@ -249,6 +302,7 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	case NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE:
 		NativeArcadeNetplay_CloseLobby(netplay);
 		netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+		netplay->rematchBlocked = 0u;
 		break;
 	case NATIVE_ARCADE_FLOW_ACTION_NONE:
 	case NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY:
@@ -263,7 +317,6 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 void NativeArcadeNetplay_OnTakeResult(struct NativeArcadeNetplay *netplay, enum NativeLockstepSessionResult result,
 	uint32_t frameIndex)
 {
-	const struct NativeLockstepMatchOutcomeReport *report;
 	struct NativeLockstepSession *session;
 
 	if ((netplay == NULL) || (netplay->initialized == 0u) || (netplay->raceArmed == 0u) ||
@@ -277,14 +330,8 @@ void NativeArcadeNetplay_OnTakeResult(struct NativeArcadeNetplay *netplay, enum 
 	 * session as a no-op. */
 	session = NativeLockstepPeerLink_Session(NativeLobbyState_Link(&netplay->lobby));
 	(void)NativeLockstepMatchOutcome_Poll(&netplay->outcome, session, result, frameIndex);
-
-	report = NativeLockstepMatchOutcome_FirstOutcome(&netplay->outcome);
-	if (report != NULL)
-	{
-		(void)NativeLockstepMatchRoster_ApplyOutcome(&netplay->roster, netplay->localSlot, report);
-		/* The flow picks this up on the next Tick. */
-		netplay->pendingLinkFailure = NativeArcadeNetplay_EndReasonForCause(report->cause);
-	}
+	/* The flow picks this up on the next Tick. */
+	NativeArcadeNetplay_ApplyLatchedOutcome(netplay);
 }
 
 int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struct NativeArcadeNetplayView *view)
@@ -393,13 +440,16 @@ void NativeArcadeNetplay_Shutdown(struct NativeArcadeNetplay *netplay)
 	{
 		return;
 	}
-	NativeArcadeNetplay_CloseLobby(netplay);
+	/* A zeroed (never initialized) struct has no lobby to close. */
 	if (netplay->initialized != 0u)
 	{
+		NativeArcadeNetplay_CloseLobby(netplay);
 		(void)NativeArcadeFlow_Init(&netplay->flow, &netplay->config.timings);
 		NativeArcadeMenuInput_Reset(&netplay->menuInput);
 		netplay->lastScreenSerial = NativeArcadeFlow_ScreenSerial(&netplay->flow);
 	}
+	netplay->lobbyBegun = 0u;
 	netplay->raceArmed = 0u;
+	netplay->rematchBlocked = 0u;
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 }

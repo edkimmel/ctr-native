@@ -346,8 +346,9 @@ set_target_properties(ctr_native_arcade_netplay PROPERTIES
 )
 target_include_directories(ctr_native_arcade_netplay PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_arcade_netplay PUBLIC
-    ctr_native_arcade_flow ctr_native_lobby_state ctr_native_lockstep_match_outcome
-    ctr_native_lockstep_match_roster ctr_native_lockstep_rematch ctr_native_match_config)
+    ctr_native_arcade_flow ctr_native_arcade_menu_input ctr_native_lobby_state
+    ctr_native_lockstep_match_outcome ctr_native_lockstep_match_roster ctr_native_lockstep_rematch
+    ctr_native_match_config)
 
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.

@@ -22,14 +22,30 @@
  * itself, so the existing structural isolation rules on engine sources stay
  * exactly as strict as they are.
  *
+ * Platform-only hooks: NativeArcadeNetplay_OnTakeResult and
+ * NativeArcadeNetplay_Link carry lockstep types in their signatures (a
+ * session result and a peer link). They are platform-side hooks for the
+ * Task 8 race driver only, which lives under platform/. Game code must not
+ * call them: naming their types there would fail
+ * tests/native_lockstep_isolation_test.cmake. Every other name below is
+ * safe for game code.
+ *
  * Each tick it polls the lobby, maps the lobby mode onto the flow's lobby
  * status, re-arms the menu input on every screen entry (release-to-arm,
  * UX-3), runs the flow once, and executes the host-side actions itself:
  * BEGIN_LOBBY opens a lobby on the current proposal, RESTART_LOBBY restarts
- * its candidate cycle, CLOSE_LINK closes it, and BEGIN_REMATCH closes it,
- * builds the rematch config, and opens a new lobby on that. START_RACE and
- * RETURN_TO_TITLE are only returned: the caller owns level loading and the
- * title screen, and this adapter never loads a level.
+ * its candidate cycle (or closes and begins again when no lobby is open or
+ * the restart is refused), CLOSE_LINK closes it, and BEGIN_REMATCH closes
+ * it, builds the rematch config, and opens a new lobby on that. START_RACE
+ * and RETURN_TO_TITLE are only returned: the caller owns level loading and
+ * the title screen, and this adapter never loads a level.
+ *
+ * The adapter itself reads the link every Tick, including during RACING:
+ * the lobby poll drains arriving bundles into the session, and when that
+ * poll finds the link FAULTED or DIVERGED (lobby PEER_LOST) while racing,
+ * Tick reads the session's latched fault or divergence into the outcome
+ * tracker and roster, so the result is DESYNC or LINK ERROR from the real
+ * cause. The Task 8 race driver is therefore not the link's only reader.
  *
  * Rematch rule (UX-7): agreement is implicit, not a new wire message. Both
  * cabinets hold the same agreed config byte-identically, so both derive the
@@ -40,7 +56,19 @@
  * the other side's handshake goes unanswered until the flow's rematch wait
  * times out and it shows OPPONENT LEFT. Every rematch opens a brand-new peer
  * link and session: nothing from a finished, diverged, or faulted session is
- * ever reused.
+ * ever reused. If the rematch seed or config cannot be built (defensive
+ * only), the adapter opens no lobby at all and refuses every restart until
+ * the rematch wait times out to OPPONENT LEFT: it never races again on the
+ * old seed.
+ *
+ * HELLO cadence (UX-5): the handshake HELLO is retransmitted every tick,
+ * because the peer link requires Retransmit before Poll on every tick while
+ * HANDSHAKING (include/platform/native_lockstep_peer_link.h,
+ * NativeLockstepPeerLink_Retransmit). A sparser cadence lets the side that
+ * completes first stop sending HELLO before the other side has seen one,
+ * which then never completes (a staggered Enter or a rematch confirmed at
+ * different ticks would hang one cabinet). 284 bytes 30 times a second is
+ * negligible.
  *
  * Stall timeout (UX-9): the in-race stall timeout defaults to 90 ticks, 3 s
  * at the real 30 Hz game loop. The failure-handling layer's own default of
@@ -55,7 +83,8 @@
 /* Defaults, in 30 Hz game-loop ticks where they are durations. Frozen. */
 #define NATIVE_ARCADE_NETPLAY_DEFAULT_INPUT_DELAY 2u
 #define NATIVE_ARCADE_NETPLAY_DEFAULT_ATTEMPT_TICKS_PER_CANDIDATE 150u
-#define NATIVE_ARCADE_NETPLAY_DEFAULT_RETRANSMIT_INTERVAL_TICKS 15u
+/* Every tick: the peer-link Retransmit-before-Poll contract, UX-5. */
+#define NATIVE_ARCADE_NETPLAY_DEFAULT_RETRANSMIT_INTERVAL_TICKS 1u
 #define NATIVE_ARCADE_NETPLAY_DEFAULT_STALL_TIMEOUT_TICKS 90u   /* 3 s at the 30 Hz loop, UX-9 */
 
 struct NativeArcadeNetplayConfig
@@ -71,6 +100,10 @@ struct NativeArcadeNetplayConfig
 	uint8_t reserved;
 	uint32_t inputDelay;
 	uint32_t attemptTicksPerCandidate;
+	/* Must be 1 (the default) in production. Any other value violates the
+	 * peer-link Retransmit-before-Poll contract and can hang a handshake;
+	 * Init rejects only 0 and accepts other values solely so tests can
+	 * exercise the lobby layer's own cadence. */
 	uint32_t retransmitIntervalTicks;
 	uint32_t stallTimeoutTicks;
 	struct NativeArcadeFlowTimings timings;
@@ -112,6 +145,10 @@ struct NativeArcadeNetplay
 	uint8_t lobbyBegun;
 	uint8_t raceArmed;
 	uint8_t initialized;
+	/* Set when a rematch config could not be built: no lobby is begun until
+	 * Enter, Shutdown, or RETURN_TO_TITLE clears it. */
+	uint8_t rematchBlocked;
+	uint8_t reserved[3];
 };
 
 /* memset 0, then the four NATIVE_ARCADE_NETPLAY_DEFAULT_* values, the flow's
@@ -123,10 +160,12 @@ void NativeArcadeNetplay_DefaultConfig(struct NativeArcadeNetplayConfig *config)
 /* Validates and stores the config and leaves the adapter dormant on screen
  * OFF. Opens no link. Returns 1 on success; returns 0 with *netplay untouched
  * on a NULL argument, an invalid fixture, a local role that is not CAB1_HUMAN
- * or CAB2_HUMAN or is absent from the fixture, more than
- * NATIVE_LOBBY_STATE_MAX_CANDIDATES candidates, a zero attempt budget, an
- * input delay or stall timeout outside the ranges the lower layers accept,
- * or timings the flow rejects. */
+ * or CAB2_HUMAN or is absent from the fixture, a zero local port, zero or
+ * more than NATIVE_LOBBY_STATE_MAX_CANDIDATES candidates, a zero attempt
+ * budget, a zero retransmit interval, an input delay or stall timeout
+ * outside the ranges the lower layers accept, or timings the flow rejects.
+ * Must not be called on an adapter with an open lobby (it would be
+ * overwritten without being closed): call Shutdown first. */
 int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct NativeArcadeNetplayConfig *config);
 
 /* From screen OFF only: enters LOBBY on the fixture and opens the lobby.
@@ -142,10 +181,13 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
 enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay *netplay, uint32_t heldMenuButtons,
 	uint8_t raceFinished);
 
-/* Race-time hook: feed each frame's take result and the attempted frame
- * index. A no-op unless the adapter is racing with no failure pending. A
- * latched outcome drops the remote human in the roster and becomes the
- * flow's link-failure reason on the next Tick. */
+/* Platform-side race-time hook for the Task 8 race driver only (it carries
+ * a lockstep type; game code must not call it, see the block comment above):
+ * feed each frame's take result and the attempted frame index. A no-op
+ * unless the adapter is racing with no failure pending. A latched outcome
+ * drops the remote human in the roster and becomes the flow's link-failure
+ * reason on the next Tick. Tick also latches a fault or divergence it finds
+ * itself, so this hook is not the only path to DESYNC or LINK ERROR. */
 void NativeArcadeNetplay_OnTakeResult(struct NativeArcadeNetplay *netplay, enum NativeLockstepSessionResult result,
 	uint32_t frameIndex);
 
@@ -159,7 +201,9 @@ int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struc
  * holds exactly this config. */
 const struct NativeMatchConfigV1 *NativeArcadeNetplay_AgreedConfig(const struct NativeArcadeNetplay *netplay);
 
-/* The open peer link, for the race-time drive; NULL when no lobby is open. */
+/* Platform-side hook for the Task 8 race driver only (it carries a lockstep
+ * type; game code must not call it, see the block comment above): the open
+ * peer link, for the race-time drive; NULL when no lobby is open. */
 struct NativeLockstepPeerLink *NativeArcadeNetplay_Link(struct NativeArcadeNetplay *netplay);
 
 /* Maps a match outcome cause: STALL_TIMEOUT to END_PEER_TIMEOUT, DIVERGED
@@ -174,7 +218,8 @@ uint32_t NativeArcadeNetplay_EndReasonForCause(uint32_t outcomeCause);
 int NativeArcadeNetplay_DeriveRematchSeed(const struct NativeMatchConfigV1 *previous, uint64_t *seedOut);
 
 /* Closes any open lobby and returns the flow to OFF. Safe on NULL, on a
- * zero-initialized struct, and when called twice. */
+ * zero-initialized struct (which it leaves closed without touching the
+ * lobby), and when called twice. */
 void NativeArcadeNetplay_Shutdown(struct NativeArcadeNetplay *netplay);
 
 #endif

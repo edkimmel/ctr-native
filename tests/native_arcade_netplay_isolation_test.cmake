@@ -6,7 +6,7 @@
 # never touches the virtual-datagram test harness, includes only its allowed
 # headers, exposes a public API whose own names stay free of every token the
 # lockstep and failure-handling isolation rules forbid under the engine
-# sources (so engine code can call it), links exactly its six composed
+# sources (so engine code can call it), links exactly its seven composed
 # libraries and never the transport directly, stays portable C17 with
 # extensions off, and keeps its four defaults frozen.
 
@@ -72,9 +72,14 @@ foreach(relative_path IN LISTS netplay_files)
 endforeach()
 
 # 3. The adapter's own public names carry none of the tokens the lockstep and
-#    failure-handling isolation rules forbid under the engine sources, so
-#    engine code can call every NativeArcadeNetplay_* name without tripping
-#    either rule.
+#    failure-handling isolation rules forbid under the engine sources. This
+#    checks names only: NativeArcadeNetplay_OnTakeResult and
+#    NativeArcadeNetplay_Link carry lockstep types in their signatures and
+#    are platform-side hooks for the Task 8 race driver only (which lives
+#    under platform/). Engine code must not call those two; naming their
+#    types there would fail tests/native_lockstep_isolation_test.cmake.
+#    Every other NativeArcadeNetplay_* name is callable from engine code
+#    without tripping either rule.
 ctr_read_source("${netplay_header}" header)
 string(REGEX MATCHALL "(NativeArcadeNetplay|NATIVE_ARCADE_NETPLAY)[A-Za-z0-9_]*" public_names "${header}")
 list(LENGTH public_names public_name_count)
@@ -90,10 +95,10 @@ foreach(public_name IN LISTS public_names)
     endforeach()
 endforeach()
 
-# 4. ctr_native_arcade_netplay links its six composed libraries, in exactly
-#    one target_link_libraries call, and reaches the transport only through
-#    the lobby layer: never ctr_native_udp_transport or the virtual-datagram
-#    harness directly.
+# 4. ctr_native_arcade_netplay links exactly its seven composed libraries and
+#    nothing else, in exactly one target_link_libraries call, and reaches the
+#    transport only through the lobby layer: never ctr_native_udp_transport
+#    or the virtual-datagram harness directly.
 ctr_read_source("CMakeLists.txt" cmake)
 set(target ctr_native_arcade_netplay)
 string(REGEX MATCHALL "target_link_libraries\\([ \t\r\n]*${target}[ \t\r\n][^)]*\\)" link_calls "${cmake}")
@@ -106,14 +111,26 @@ string(REGEX REPLACE "^target_link_libraries\\([ \t\r\n]*${target}[ \t\r\n]+" ""
 string(REGEX REPLACE "\\)$" "" link_body "${link_body}")
 string(REGEX REPLACE "[ \t\r\n]+" ";" link_items "${link_body}")
 list(REMOVE_ITEM link_items "" PUBLIC PRIVATE INTERFACE)
-foreach(expected IN ITEMS
-        ctr_native_arcade_flow ctr_native_lobby_state ctr_native_lockstep_match_outcome
-        ctr_native_lockstep_match_roster ctr_native_lockstep_rematch ctr_native_match_config)
+set(expected_link_items
+    ctr_native_arcade_flow ctr_native_arcade_menu_input ctr_native_lobby_state
+    ctr_native_lockstep_match_outcome ctr_native_lockstep_match_roster ctr_native_lockstep_rematch
+    ctr_native_match_config)
+foreach(expected IN LISTS expected_link_items)
     list(FIND link_items "${expected}" expected_index)
     if(expected_index EQUAL -1)
         message(FATAL_ERROR "arcade netplay isolation: ${target} must link ${expected} (found '${link_items}')")
     endif()
 endforeach()
+foreach(item IN LISTS link_items)
+    list(FIND expected_link_items "${item}" item_index)
+    if(item_index EQUAL -1)
+        message(FATAL_ERROR "arcade netplay isolation: ${target} links unexpected item '${item}'; only the seven composed libraries are allowed")
+    endif()
+endforeach()
+list(LENGTH link_items link_item_count)
+if(NOT link_item_count EQUAL 7)
+    message(FATAL_ERROR "arcade netplay isolation: ${target} must link exactly seven libraries, found ${link_item_count} ('${link_items}')")
+endif()
 foreach(forbidden IN ITEMS ctr_native_virtual_datagram ctr_native_udp_transport)
     string(FIND "${link_call}" "${forbidden}" leak)
     if(NOT leak EQUAL -1)
@@ -142,13 +159,15 @@ if(NOT (properties_at LESS standard_at AND standard_at LESS required_at AND requ
 endif()
 
 #    The four defaults are frozen, whole line for whole line (UX-5, UX-9);
-#    the line end may be LF or CRLF.
+#    the line end may be LF or CRLF. The HELLO retransmit interval is 1u
+#    (every tick) because the peer link requires Retransmit before Poll on
+#    every tick while HANDSHAKING.
 ctr_require_regex("${netplay_header} (INPUT_DELAY must stay 2u)" "${header}"
     "\n#define NATIVE_ARCADE_NETPLAY_DEFAULT_INPUT_DELAY 2u\r?\n")
 ctr_require_regex("${netplay_header} (ATTEMPT_TICKS_PER_CANDIDATE must stay 150u)" "${header}"
     "\n#define NATIVE_ARCADE_NETPLAY_DEFAULT_ATTEMPT_TICKS_PER_CANDIDATE 150u\r?\n")
-ctr_require_regex("${netplay_header} (RETRANSMIT_INTERVAL_TICKS must stay 15u)" "${header}"
-    "\n#define NATIVE_ARCADE_NETPLAY_DEFAULT_RETRANSMIT_INTERVAL_TICKS 15u\r?\n")
+ctr_require_regex("${netplay_header} (RETRANSMIT_INTERVAL_TICKS must stay 1u)" "${header}"
+    "\n#define NATIVE_ARCADE_NETPLAY_DEFAULT_RETRANSMIT_INTERVAL_TICKS 1u\r?\n")
 ctr_require_regex("${netplay_header} (STALL_TIMEOUT_TICKS must stay 90u)" "${header}"
     "\n#define NATIVE_ARCADE_NETPLAY_DEFAULT_STALL_TIMEOUT_TICKS 90u   /\\* 3 s at the 30 Hz loop, UX-9 \\*/\r?\n")
 

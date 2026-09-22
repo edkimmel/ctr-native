@@ -144,31 +144,55 @@ tracker, one roster, one menu-input state, and one flow. Each tick it polls
 the lobby, maps NativeLobbyStateMode onto the flow's lobby status, resets
 the menu-input arming whenever the flow's screen changes, runs the flow, and
 executes the host-side actions itself: BEGIN_LOBBY calls
-NativeLobbyState_Begin, RESTART_LOBBY calls NativeLobbyState_RestartCycle,
-CLOSE_LINK calls NativeLobbyState_Close, and BEGIN_REMATCH closes, builds
-the rematch config, and begins on it. START_RACE and RETURN_TO_TITLE are
-returned to the caller (the game), which owns level loading. Race-time
-hooks (task 8) feed each TakeFrameInputs result into the outcome tracker and
-the roster, and a latched outcome becomes the flow's link-failure reason:
-STALL_TIMEOUT maps to PEER_TIMEOUT, DIVERGED to DESYNC, FAULTED to
-LINK_ERROR.
+NativeLobbyState_Begin, RESTART_LOBBY calls NativeLobbyState_RestartCycle
+(falling back to NativeLobbyState_Close plus NativeLobbyState_Begin when no
+lobby is open, for example after a failed Begin, or when RestartCycle
+refuses), CLOSE_LINK calls NativeLobbyState_Close, and BEGIN_REMATCH
+closes, builds the rematch config, and begins on it. START_RACE and
+RETURN_TO_TITLE are returned to the caller (the game), which owns level
+loading. Race-time hooks (task 8) feed each TakeFrameInputs result into the
+outcome tracker and the roster, and a latched outcome becomes the flow's
+link-failure reason: STALL_TIMEOUT maps to PEER_TIMEOUT, DIVERGED to
+DESYNC, FAULTED to LINK_ERROR.
+
+The race driver is not the link's only reader: the adapter's own lobby poll
+runs every tick, including during RACING, and drains arriving bundles into
+the session. When that poll finds the link FAULTED or DIVERGED (lobby
+PEER_LOST) while racing with no failure pending, the adapter reads the
+session's latched fault or divergence into the outcome tracker and roster
+itself, so the flow shows DESYNC or LINK ERROR from the real cause.
+
+The HELLO is retransmitted every tick (UX-5): the peer link requires
+Retransmit before Poll on every tick while HANDSHAKING, and a sparser
+cadence lets the side that completes first stop sending HELLO before the
+other side has seen one, which then never completes.
 
 Rematch agreement is implicit, not a new wire message (UX-7): both peers
 derive the rematch masterSeed deterministically from the agreed config they
-both hold byte-identically (the first 8 bytes, little-endian, of the
-SHA-256 NativeMatchConfigV1_Digest of the previous config; the next 8 bytes
-if that equals the previous seed), build the config with
-NativeLockstepRematch_BuildConfig, and re-run the ordinary handshake on it.
+both hold byte-identically: the first little-endian 8-byte word of the
+SHA-256 NativeMatchConfigV1_Digest of the previous config that is nonzero
+and differs from the previous seed, trying up to four 8-byte words
+([0, 8), [8, 16), [16, 24), [24, 32)) in order. They build the config with
+NativeLockstepRematch_BuildConfig and re-run the ordinary handshake on it.
 Two peers that both chose REMATCH therefore propose byte-identical configs
 and reach READY; a peer that chose EXIT has closed its socket, so the other
 side's handshake goes unanswered until rematchWaitTimeoutTicks and it shows
 OPPONENT LEFT. Every rematch opens a brand-new peer link and session, per
 the native_lockstep_rematch.h contract; nothing from a finished, diverged,
-or faulted session is reused.
+or faulted session is reused. If the seed or the rematch config cannot be
+built (defensive only), the adapter begins no lobby and refuses every
+RESTART_LOBBY until the rematch wait times out to OPPONENT LEFT; it never
+proposes the old config (and old seed) again. Enter, Shutdown, and
+RETURN_TO_TITLE clear that block.
 
 The adapter's public API uses only NativeArcadeNetplay_* identifiers, so
 game code can call it without tripping the lockstep and failure-handling
-isolation rules.
+isolation rules. Two of those names are platform-only:
+NativeArcadeNetplay_OnTakeResult and NativeArcadeNetplay_Link carry
+lockstep types (a session result and a peer link) and are hooks for the
+task 8 race driver only, which lives under platform/. Game code must not
+call them; naming their types there would fail
+tests/native_lockstep_isolation_test.cmake.
 
 ### 2.4 Screens: game/MAIN/MainArcadeLinkScreens
 
@@ -245,8 +269,9 @@ for the operator to confirm or change after seeing the built flow.
    every menu here has at most two rows.
 5. UX-5: The lobby retries forever, pausing lobbyRetryPauseTicks = 30 (1 s)
    between candidate-list passes, with a per-candidate attempt budget of 150
-   ticks (5 s) and a HELLO retransmit every 15 ticks (0.5 s). A REJECTED
-   handshake is never retried automatically.
+   ticks (5 s) and a HELLO retransmit every tick, as the peer-link contract
+   requires (Retransmit before Poll on every tick while HANDSHAKING). A
+   REJECTED handshake is never retried automatically.
 6. UX-6: An in-race link failure outranks a same-tick race finish, because a
    desynced or dropped race's standings cannot be trusted.
 7. UX-7: A rematch needs both players to choose REMATCH, and REMATCH is the
@@ -317,15 +342,33 @@ native_arcade_flow_isolation).
 Status: done. Header, implementation, a unit test over real loopback
 sockets with two in-process adapters (lobby to READY, rematch agreement to
 READY on a new seed, one-sided rematch to OPPONENT LEFT, rejection, backing
-out), a deterministic outcome-mapping test driven through the race-time hook
-without sockets, and an isolation test (no lease, canonical-state, or replay
-write tokens, no allocation, and API names free of the tokens forbidden
-under game/). Review required: it decides which config a rematch runs on.
+out), a pure test of the cause mapping and the rematch seed, a stall-timeout
+test that feeds STALL results through the race-time hook on a real loopback
+race (two adapters in RACING, no bundles exchanged), and an isolation test
+(no lease, canonical-state, or replay write tokens, no allocation, and API
+names free of the tokens forbidden under game/). Review required: it
+decides which config a rematch runs on.
 Landed as include/platform/native_arcade_netplay.h,
 platform/native_arcade_netplay.c, tests/native_arcade_netplay_test.c, and
 tests/native_arcade_netplay_isolation_test.cmake (library
 ctr_native_arcade_netplay, tests native_arcade_netplay_unit and
 native_arcade_netplay_isolation).
+
+Task 4b (review fixes): the default HELLO retransmit interval is now every
+tick (it was 15 ticks, which hung one cabinet when the two entered, or
+confirmed a rematch, at different ticks); the adapter latches a fault or
+divergence its own lobby poll finds during RACING, so the flow shows DESYNC
+or LINK ERROR from the real cause; a rematch whose config cannot be built
+now blocks every restart instead of reusing the old seed; Init rejects a
+zero local port, zero candidates, and a zero retransmit interval; and the
+platform-only hooks are documented. New loopback tests cover a staggered
+Enter and a staggered rematch at the production cadence, a real in-race
+fault (a corrupted bundle) and a real in-race divergence (drifting
+synthetic digests over the real links) found by the lobby poll, the
+blocked rematch, BACK from REMATCH_WAIT, and Begin failure on an occupied
+port followed by recovery. The isolation test now requires exactly seven
+linked libraries (ctr_native_arcade_menu_input is linked explicitly) and
+the retransmit default of 1u.
 
 ### Task 5 -- screen layout builder (MainArcadeLinkScreens layout)
 
@@ -350,7 +393,10 @@ NativeMatchConfigV1 through the arcade roster and bot setup.
 
 ### Task 8 -- in-race lockstep drive and failure handling
 
-Status: gated on task 7 and on live V4 canonical projection. Per tick:
+Status: gated on task 7 and on live V4 canonical projection. The race
+driver lives under platform/, because it calls the platform-only
+NativeArcadeNetplay_OnTakeResult and NativeArcadeNetplay_Link hooks and the
+lockstep session API, none of which game code may name. Per tick:
 submit the local pad, compose and send, poll, take frame inputs, install
 the committed pads with Platform_InputInstallPadSnapshots, record local V4
 digests, feed the result to the outcome tracker and roster, hold the
