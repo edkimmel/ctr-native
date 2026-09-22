@@ -61,9 +61,9 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 	{
 		return 0;
 	}
-	/* Only 0 is rejected; see the retransmitIntervalTicks field comment for
-	 * why any value but 1 is test-only. */
-	if (config->retransmitIntervalTicks == 0u)
+	/* Only 1 honours the peer-link Retransmit-before-Poll contract (UX-5);
+	 * any other cadence can hang a handshake. */
+	if (config->retransmitIntervalTicks != NATIVE_ARCADE_NETPLAY_DEFAULT_RETRANSMIT_INTERVAL_TICKS)
 	{
 		return 0;
 	}

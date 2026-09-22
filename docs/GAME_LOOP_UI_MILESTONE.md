@@ -165,7 +165,8 @@ itself, so the flow shows DESYNC or LINK ERROR from the real cause.
 The HELLO is retransmitted every tick (UX-5): the peer link requires
 Retransmit before Poll on every tick while HANDSHAKING, and a sparser
 cadence lets the side that completes first stop sending HELLO before the
-other side has seen one, which then never completes.
+other side has seen one, which then never completes. The adapter therefore
+only accepts a retransmit interval of 1: Init rejects every other value.
 
 Rematch agreement is implicit, not a new wire message (UX-7): both peers
 derive the rematch masterSeed deterministically from the agreed config they
@@ -290,8 +291,9 @@ for the operator to confirm or change after seeing the built flow.
 5. UX-5: The lobby retries forever, pausing lobbyRetryPauseTicks = 30 (1 s)
    between candidate-list passes, with a per-candidate attempt budget of 150
    ticks (5 s) and a HELLO retransmit every tick, as the peer-link contract
-   requires (Retransmit before Poll on every tick while HANDSHAKING). A
-   REJECTED handshake is never retried automatically.
+   requires (Retransmit before Poll on every tick while HANDSHAKING); the
+   adapter only accepts a retransmit interval of 1. A REJECTED handshake is
+   never retried automatically.
 6. UX-6: An in-race link failure outranks a same-tick race finish, because a
    desynced or dropped race's standings cannot be trusted.
 7. UX-7: A rematch needs both players to choose REMATCH, and REMATCH is the
@@ -393,6 +395,16 @@ blocked rematch, BACK from REMATCH_WAIT, and Begin failure on an occupied
 port followed by recovery. The isolation test now requires exactly seven
 linked libraries (ctr_native_arcade_menu_input is linked explicitly) and
 the retransmit default of 1u.
+
+Task 4c (last review items): Init now rejects any retransmit interval other
+than 1, not only 0, since every other cadence reintroduces the staggered
+handshake hang. Two new loopback tests drive the race-time hook
+NativeArcadeNetplay_OnTakeResult itself on a latched cause, with the race
+driver polling the peer link directly before any adapter Tick: a corrupted
+bundle latches FAULTED (LINK ERROR), and a real drifting-digest race
+latches DIVERGED (DESYNC) on both sides; each asserts the latched report,
+the pending failure, the remote slot dropped and the local slot kept ACTIVE
+in the roster, and one Tick to RESULTS.
 
 ### Task 5 -- screen layout builder (MainArcadeLinkScreens layout)
 

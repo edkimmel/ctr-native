@@ -11,7 +11,7 @@
 
 /*
  * Tests for the arcade-link host adapter (platform/native_arcade_netplay.c,
- * docs/GAME_LOOP_UI_MILESTONE.md section 2.3, Tasks 4 and 4b). The socket tests run
+ * docs/GAME_LOOP_UI_MILESTONE.md section 2.3, Tasks 4, 4b, and 4c). The socket tests run
  * two adapters in this one process -- A as CAB1_HUMAN and B as CAB2_HUMAN --
  * over real loopback UDP sockets through the real, unmodified lobby layer,
  * each with exactly one candidate pointing at the other's port, the same
@@ -69,6 +69,13 @@
 
 #define TEST_BEGIN_FAIL_A_PORT 48426u
 #define TEST_BEGIN_FAIL_B_PORT 48427u
+
+/* Task 4c: the race-time hook on a latched fault and a latched divergence. */
+#define TEST_HOOK_FAULT_A_PORT 48428u
+#define TEST_HOOK_FAULT_B_PORT 48429u
+
+#define TEST_HOOK_DIVERGE_A_PORT 48430u
+#define TEST_HOOK_DIVERGE_B_PORT 48431u
 
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
@@ -422,12 +429,18 @@ static int TestPure(void)
 	bad.attemptTicksPerCandidate = 0u;
 	CHECK(InitRejectsUntouched(&bad));
 
-	/* Zero retransmit interval. Any other value is accepted (only 1 honours
-	 * the peer-link contract; the rest exist for lobby-layer tests). */
+	/* Retransmit interval: only 1 honours the peer-link Retransmit-before-Poll
+	 * contract (UX-5), so 0, 2, and the old 15 are all rejected. */
 	bad = base;
 	bad.retransmitIntervalTicks = 0u;
 	CHECK(InitRejectsUntouched(&bad));
+	bad.retransmitIntervalTicks = 2u;
+	CHECK(InitRejectsUntouched(&bad));
 	bad.retransmitIntervalTicks = 15u;
+	CHECK(InitRejectsUntouched(&bad));
+	bad.retransmitIntervalTicks = UINT32_MAX;
+	CHECK(InitRejectsUntouched(&bad));
+	bad.retransmitIntervalTicks = 1u;
 	CHECK(NativeArcadeNetplay_Init(&g_probe, &bad) == 1);
 
 	/* Input delay outside [1, 6]. */
@@ -1472,6 +1485,210 @@ static int TestBeginFailureRecovers(void)
 	return 0;
 }
 
+/* Polls a peer link directly (never through an adapter Tick) until it reaches
+ * the wanted mode; returns 0 if the budget ran out. */
+static int PollLinkUntil(struct NativeLockstepPeerLink *link, enum NativeLockstepPeerLinkMode mode)
+{
+	uint32_t spin;
+
+	for (spin = 0; (spin < DRIVE_BUDGET) && (NativeLockstepPeerLink_Mode(link) != mode); spin++)
+	{
+		NativeLockstepPeerLink_Poll(link);
+	}
+	return NativeLockstepPeerLink_Mode(link) == mode;
+}
+
+/* 16. Task 4c: a link fault latched through the race-time hook. B sends A
+ * the same corrupted bundle as test 11, but here the race driver's own
+ * NativeLockstepPeerLink_Poll receives it before any adapter Tick, so the
+ * lobby poll never sees it first: NativeArcadeNetplay_OnTakeResult alone
+ * latches FAULTED, drops B, and the next Tick shows LINK ERROR. */
+static int TestHookFaultBeforeTick(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeUdpTransportAddress addrA;
+	struct NativeLockstepPeerLink *linkA;
+	struct NativeLockstepPeerLink *linkB;
+	struct NativeLockstepSession *sessionB;
+	const struct NativeLockstepMatchOutcomeReport *report;
+	const struct NativeLockstepFaultReport *fault;
+	uint8_t bundleBytes[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	size_t bundleSize = 0;
+	uint8_t slotB = 0u;
+	const uint32_t frame = 0u;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(NativeMatchConfigV1_FindRoleSlot(&fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &slotB));
+	CHECK(EnterAndRace(&fixture, TEST_HOOK_FAULT_A_PORT, TEST_HOOK_FAULT_B_PORT));
+	CHECK(NativeUdpTransport_MakeAddress(&addrA, "127.0.0.1", (uint16_t)TEST_HOOK_FAULT_A_PORT));
+	CHECK(slotB != g_a.localSlot);
+
+	linkA = NativeArcadeNetplay_Link(&g_a);
+	linkB = NativeArcadeNetplay_Link(&g_b);
+	CHECK(linkA != NULL);
+	CHECK(linkB != NULL);
+	sessionB = NativeLockstepPeerLink_Session(linkB);
+	CHECK(sessionB != NULL);
+	CHECK(NativeLockstepSession_ComposeBundle(sessionB, 0u, bundleBytes, sizeof(bundleBytes), &bundleSize) == 1);
+	CHECK(bundleSize == NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES);
+	bundleBytes[40] ^= 0x01u; /* A pad-region body byte; the trailing digest goes stale. */
+	CHECK(NativeUdpTransport_Send(&linkB->transport, &addrA, bundleBytes, bundleSize));
+
+	/* The race driver's poll, not the adapter's: no adapter Tick yet. */
+	CHECK(PollLinkUntil(linkA, NATIVE_LOCKSTEP_PEER_LINK_FAULTED));
+	fault = NativeLockstepSession_FirstFault(NativeLockstepPeerLink_Session(linkA));
+	CHECK(fault != NULL);
+	CHECK(fault->cause == (uint32_t)NATIVE_LOCKSTEP_FAULT_BAD_DIGEST);
+	/* Nothing is latched in the adapter until the hook runs. */
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(NativeLockstepMatchOutcome_FirstOutcome(&g_a.outcome) == NULL);
+	CHECK(g_a.pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_NONE);
+	CHECK(g_a.roster.lifecycle[slotB] == (uint8_t)NATIVE_MATCH_SLOT_LIFECYCLE_ACTIVE);
+
+	NativeArcadeNetplay_OnTakeResult(&g_a, NATIVE_LOCKSTEP_SESSION_OK, frame);
+
+	report = NativeLockstepMatchOutcome_FirstOutcome(&g_a.outcome);
+	CHECK(report != NULL);
+	CHECK(report->cause == (uint32_t)NATIVE_LOCKSTEP_MATCH_OUTCOME_FAULTED);
+	CHECK(report->frameIndex == fault->frameIndex);
+	CHECK(report->senderSlot == fault->senderSlot);
+	CHECK(g_a.pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(g_a.roster.lifecycle[slotB] == (uint8_t)NATIVE_MATCH_SLOT_LIFECYCLE_DISCONNECTED);
+	CHECK(g_a.roster.lifecycle[g_a.localSlot] == (uint8_t)NATIVE_MATCH_SLOT_LIFECYCLE_ACTIVE);
+	/* Still RACING until the next Tick. */
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* Hook-path assertions for one side whose link has latched DIVERGED at
+ * divergeFrame: nothing latched before the hook, DESYNC after it, then one
+ * Tick to RESULTS. */
+static int CheckHookDivergence(struct NativeArcadeNetplay *self, uint8_t remoteSlot, uint32_t divergeFrame,
+	uint32_t hookFrame)
+{
+	const struct NativeLockstepMatchOutcomeReport *report;
+	const struct NativeLockstepDivergenceReport *divergence;
+
+	divergence = NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(self)));
+	CHECK(divergence != NULL);
+	CHECK(divergence->frameIndex == divergeFrame);
+	CHECK(ScreenOf(self) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(NativeLockstepMatchOutcome_FirstOutcome(&self->outcome) == NULL);
+	CHECK(self->pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_NONE);
+
+	NativeArcadeNetplay_OnTakeResult(self, NATIVE_LOCKSTEP_SESSION_OK, hookFrame);
+
+	report = NativeLockstepMatchOutcome_FirstOutcome(&self->outcome);
+	CHECK(report != NULL);
+	CHECK(report->cause == (uint32_t)NATIVE_LOCKSTEP_MATCH_OUTCOME_DIVERGED);
+	CHECK(report->frameIndex == divergeFrame);
+	CHECK(self->pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_DESYNC);
+	CHECK(self->roster.lifecycle[remoteSlot] == (uint8_t)NATIVE_MATCH_SLOT_LIFECYCLE_DISCONNECTED);
+	CHECK(self->roster.lifecycle[self->localSlot] == (uint8_t)NATIVE_MATCH_SLOT_LIFECYCLE_ACTIVE);
+	CHECK(ScreenOf(self) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+
+	CHECK(NativeArcadeNetplay_Tick(self, 0u, 0u) == ACT_NONE);
+	CHECK(ScreenOf(self) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(self) == (uint32_t)NATIVE_ARCADE_FLOW_END_DESYNC);
+	return 0;
+}
+
+/* 17. Task 4c: a real divergence latched through the race-time hook. The
+ * same real-frame race as test 12, but the adapters are never ticked while
+ * racing: the race driver polls each link directly and feeds every take
+ * result to NativeArcadeNetplay_OnTakeResult. Once a link reads DIVERGED,
+ * the hook alone latches DIVERGED on each side, and one Tick shows DESYNC. */
+static int TestHookDivergenceBeforeTick(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeCanonicalInputPadV1 pad;
+	struct NativeLockstepPeerLink *linkA;
+	struct NativeLockstepPeerLink *linkB;
+	struct NativeLockstepSession *sessionA;
+	struct NativeLockstepSession *sessionB;
+	enum NativeLockstepSessionResult result;
+	const uint32_t divergeFrame = 6u;
+	const uint32_t detectFrame = divergeFrame + NATIVE_ARCADE_NETPLAY_DEFAULT_INPUT_DELAY + 1u;
+	const uint32_t perturbedWorld = 3u;
+	uint32_t frame;
+	uint32_t spin;
+	uint32_t leftAtFrame = UINT32_MAX;
+	int takenA;
+	int takenB;
+	int recordOk;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(EnterAndRace(&fixture, TEST_HOOK_DIVERGE_A_PORT, TEST_HOOK_DIVERGE_B_PORT));
+	CHECK(g_a.config.inputDelay == NATIVE_ARCADE_NETPLAY_DEFAULT_INPUT_DELAY);
+	linkA = NativeArcadeNetplay_Link(&g_a);
+	linkB = NativeArcadeNetplay_Link(&g_b);
+	CHECK(linkA != NULL);
+	CHECK(linkB != NULL);
+	sessionA = NativeLockstepPeerLink_Session(linkA);
+	sessionB = NativeLockstepPeerLink_Session(linkB);
+
+	for (frame = 0; (frame <= detectFrame) && (leftAtFrame == UINT32_MAX); frame++)
+	{
+		MakeTestPad(&pad, g_a.localSlot, frame);
+		CHECK(NativeLockstepSession_SubmitLocalInput(sessionA, frame, &pad) == 1);
+		MakeTestPad(&pad, g_b.localSlot, frame);
+		CHECK(NativeLockstepSession_SubmitLocalInput(sessionB, frame, &pad) == 1);
+		CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(linkA, frame) == 1);
+		CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(linkB, frame) == 1);
+
+		takenA = 0;
+		takenB = 0;
+		for (spin = 0; (spin < DRIVE_BUDGET) && !(takenA && takenB); spin++)
+		{
+			/* The race driver's poll; no adapter Tick. */
+			NativeLockstepPeerLink_Poll(linkA);
+			NativeLockstepPeerLink_Poll(linkB);
+			if ((NativeLockstepPeerLink_Mode(linkA) != NATIVE_LOCKSTEP_PEER_LINK_RUNNING) ||
+				(NativeLockstepPeerLink_Mode(linkB) != NATIVE_LOCKSTEP_PEER_LINK_RUNNING))
+			{
+				leftAtFrame = frame;
+				break;
+			}
+			if (!takenA)
+			{
+				result = TakeAndRecord(sessionA, frame, (frame >= divergeFrame) ? perturbedWorld : 0u, &recordOk);
+				CHECK(recordOk);
+				NativeArcadeNetplay_OnTakeResult(&g_a, result, frame);
+				takenA = result == NATIVE_LOCKSTEP_SESSION_OK;
+			}
+			if (!takenB)
+			{
+				result = TakeAndRecord(sessionB, frame, 0u, &recordOk);
+				CHECK(recordOk);
+				NativeArcadeNetplay_OnTakeResult(&g_b, result, frame);
+				takenB = result == NATIVE_LOCKSTEP_SESSION_OK;
+			}
+			/* Healthy frames latch nothing. */
+			CHECK(g_a.pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_NONE);
+			CHECK(g_b.pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_NONE);
+		}
+		CHECK((leftAtFrame != UINT32_MAX) || (takenA && takenB));
+	}
+	/* Nothing diverged before the bundle that carries divergeFrame's digests. */
+	CHECK(leftAtFrame == detectFrame);
+
+	/* Whichever link noticed first, the other notices from its own poll. */
+	CHECK(PollLinkUntil(linkA, NATIVE_LOCKSTEP_PEER_LINK_DIVERGED));
+	CHECK(PollLinkUntil(linkB, NATIVE_LOCKSTEP_PEER_LINK_DIVERGED));
+
+	CHECK(CheckHookDivergence(&g_a, g_b.localSlot, divergeFrame, detectFrame) == 0);
+	CHECK(CheckHookDivergence(&g_b, g_a.localSlot, divergeFrame, detectFrame) == 0);
+
+	ShutdownBoth();
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestPure() == 0);
@@ -1489,6 +1706,8 @@ int main(void)
 	CHECK(TestRematchBuildFailureBlocks() == 0);
 	CHECK(TestBackFromRematchWait() == 0);
 	CHECK(TestBeginFailureRecovers() == 0);
+	CHECK(TestHookFaultBeforeTick() == 0);
+	CHECK(TestHookDivergenceBeforeTick() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }

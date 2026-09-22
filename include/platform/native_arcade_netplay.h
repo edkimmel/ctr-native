@@ -68,7 +68,7 @@
  * completes first stop sending HELLO before the other side has seen one,
  * which then never completes (a staggered Enter or a rematch confirmed at
  * different ticks would hang one cabinet). 284 bytes 30 times a second is
- * negligible.
+ * negligible. Init accepts only 1 for retransmitIntervalTicks.
  *
  * Stall timeout (UX-9): the in-race stall timeout defaults to 90 ticks, 3 s
  * at the real 30 Hz game loop. The failure-handling layer's own default of
@@ -100,10 +100,10 @@ struct NativeArcadeNetplayConfig
 	uint8_t reserved;
 	uint32_t inputDelay;
 	uint32_t attemptTicksPerCandidate;
-	/* Must be 1 (the default) in production. Any other value violates the
-	 * peer-link Retransmit-before-Poll contract and can hang a handshake;
-	 * Init rejects only 0 and accepts other values solely so tests can
-	 * exercise the lobby layer's own cadence. */
+	/* Must be 1 (the default); Init rejects any other value. Any other
+	 * cadence violates the peer-link Retransmit-before-Poll contract and can
+	 * hang a handshake (UX-5). Tests of the lobby layer's own cadence go
+	 * through native_lobby_state directly, not through this adapter. */
 	uint32_t retransmitIntervalTicks;
 	uint32_t stallTimeoutTicks;
 	struct NativeArcadeFlowTimings timings;
@@ -162,7 +162,7 @@ void NativeArcadeNetplay_DefaultConfig(struct NativeArcadeNetplayConfig *config)
  * on a NULL argument, an invalid fixture, a local role that is not CAB1_HUMAN
  * or CAB2_HUMAN or is absent from the fixture, a zero local port, zero or
  * more than NATIVE_LOBBY_STATE_MAX_CANDIDATES candidates, a zero attempt
- * budget, a zero retransmit interval, an input delay or stall timeout
+ * budget, a retransmit interval other than 1, an input delay or stall timeout
  * outside the ranges the lower layers accept, or timings the flow rejects.
  * Must not be called on an adapter with an open lobby (it would be
  * overwritten without being closed): call Shutdown first. */
