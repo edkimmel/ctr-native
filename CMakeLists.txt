@@ -231,6 +231,20 @@ set_target_properties(ctr_native_lockstep_match_roster PROPERTIES
 target_include_directories(ctr_native_lockstep_match_roster PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_lockstep_match_roster PUBLIC ctr_native_match_config ctr_native_lockstep_match_outcome)
 
+# Pure rematch config builder: a fresh NativeMatchConfigV1 for the same
+# fixture (track, mode, rules, build/content identity, bot rules, per-slot
+# character/difficulty) as a previous match, with a new masterSeed. No
+# session, replay, roster, outcome, or topology lease dependency of any
+# kind: this leaf consumes native_match_config only.
+add_library(ctr_native_lockstep_rematch STATIC platform/native_lockstep_rematch.c)
+set_target_properties(ctr_native_lockstep_rematch PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_lockstep_rematch PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_lockstep_rematch PUBLIC ctr_native_match_config)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -822,6 +836,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_lockstep_match_roster_test PRIVATE ctr_native_lockstep_match_roster ctr_native_match_config)
     add_test(NAME native_lockstep_match_roster_unit COMMAND $<TARGET_FILE:native_lockstep_match_roster_test>)
+
+    add_executable(native_lockstep_rematch_test tests/native_lockstep_rematch_test.c)
+    set_target_properties(native_lockstep_rematch_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_lockstep_rematch_test PRIVATE ctr_native_lockstep_rematch)
+    add_test(NAME native_lockstep_rematch_unit COMMAND $<TARGET_FILE:native_lockstep_rematch_test>)
 
     add_executable(native_lockstep_transport_fault_test tests/native_lockstep_transport_fault_test.c)
     set_target_properties(native_lockstep_transport_fault_test PROPERTIES
