@@ -320,6 +320,19 @@ set_target_properties(ctr_native_arcade_menu_input PROPERTIES
 )
 target_include_directories(ctr_native_arcade_menu_input PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# Arcade screen flow seam (docs/GAME_LOOP_UI_MILESTONE.md section 2.2): a pure
+# state machine for the arcade-link screens, fed one menu event and one
+# observation per tick and returning at most one action. Links only the menu
+# input seam for its event enum; not yet linked into ctr_native (Task 6).
+add_library(ctr_native_arcade_flow STATIC platform/native_arcade_flow.c)
+set_target_properties(ctr_native_arcade_flow PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_flow PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_arcade_flow PUBLIC ctr_native_arcade_menu_input)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -1051,6 +1064,20 @@ if(BUILD_TESTING)
 
     add_test(NAME native_arcade_menu_input_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_menu_input_isolation_test.cmake")
+
+    # Arcade screen flow seam (docs/GAME_LOOP_UI_MILESTONE.md section 2.2,
+    # Task 3): pure state machine, no sockets and no clock.
+    add_executable(native_arcade_flow_test tests/native_arcade_flow_test.c)
+    set_target_properties(native_arcade_flow_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_flow_test PRIVATE ctr_native_arcade_flow)
+    add_test(NAME native_arcade_flow_unit COMMAND $<TARGET_FILE:native_arcade_flow_test>)
+
+    add_test(NAME native_arcade_flow_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_flow_isolation_test.cmake")
 
     add_test(NAME native_lockstep_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_isolation_test.cmake")

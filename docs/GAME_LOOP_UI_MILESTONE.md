@@ -298,9 +298,14 @@ native_arcade_menu_input_isolation).
 
 ### Task 3 -- screen flow seam (native_arcade_flow)
 
-Status: planned. Header, implementation, a unit test covering every
+Status: done. Header, implementation, a unit test covering every
 transition in section 2.2 and every timing default, an isolation test
 (pure, same token rules as task 2), C17 target. No review required.
+Landed as include/platform/native_arcade_flow.h,
+platform/native_arcade_flow.c, tests/native_arcade_flow_test.c, and
+tests/native_arcade_flow_isolation_test.cmake (library
+ctr_native_arcade_flow, tests native_arcade_flow_unit and
+native_arcade_flow_isolation).
 
 ### Task 4 -- host adapter (native_arcade_netplay)
 
