@@ -869,6 +869,9 @@ if(BUILD_TESTING)
     add_test(NAME native_lockstep_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_isolation_test.cmake")
 
+    add_test(NAME native_lockstep_failure_handling_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_failure_handling_isolation_test.cmake")
+
     add_executable(main_arcade_roster_test tests/main_arcade_roster_test.c)
     set_target_properties(main_arcade_roster_test PROPERTIES
         C_STANDARD 17
