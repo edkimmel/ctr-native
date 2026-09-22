@@ -772,6 +772,18 @@ set(SDL_X11_XSCRNSAVER OFF CACHE BOOL "" FORCE)
 set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)
 add_subdirectory(externals/SDL)
 
+# Host-only SDL assertion policy: log one line and continue instead of SDL's
+# modal assertion dialog, so an unattended Debug run can never block on it.
+# Linked into ctr_native as a library; it is not part of the game unity chain.
+add_library(ctr_native_sdl_assert STATIC platform/native_sdl_assert.c)
+set_target_properties(ctr_native_sdl_assert PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_sdl_assert PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_sdl_assert PUBLIC SDL3::SDL3)
+
 # CTR Native
 add_executable(ctr_native main.c)
 set_target_properties(ctr_native PROPERTIES
@@ -818,7 +830,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -921,6 +933,21 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_g29_input_test PRIVATE ctr_native_g29_input)
     add_test(NAME native_g29_input_unit COMMAND $<TARGET_FILE:native_g29_input_test>)
+
+    add_executable(native_sdl_assert_test tests/native_sdl_assert_test.c)
+    set_target_properties(native_sdl_assert_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_sdl_assert_test PRIVATE ctr_native_sdl_assert)
+    add_test(NAME native_sdl_assert_unit COMMAND $<TARGET_FILE:native_sdl_assert_test>)
+
+    # SDL assertions must never block startup on a modal dialog: the handler
+    # is installed before SDL_Init, no host code overrides SDL_ASSERT, and no
+    # host code disables HIDAPI or hides the G29.
+    add_test(NAME native_sdl_startup_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_sdl_startup_isolation_test.cmake")
 
     add_executable(native_display_config_test tests/native_display_config_test.c)
     set_target_properties(native_display_config_test PROPERTIES

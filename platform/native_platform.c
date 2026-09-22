@@ -13,6 +13,7 @@
 #include "platform/native_renderer.h"
 #include "platform/native_replay_scheduler.h"
 #include "platform/native_savestate.h"
+#include "platform/native_sdl_assert.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -399,11 +400,19 @@ internal void Platform_HandleKey(int key, char down)
 #endif
 }
 
+/* SDL assertions are reported through the platform log and then ignored, so a
+ * Debug build never blocks on SDL's modal assertion dialog. */
+internal void Platform_LogSdlAssertion(const char *line)
+{
+	Platform_LogError("%s", line);
+}
+
 void Platform_Init(const char *title, int width, int height, int fullscreen)
 {
 	char windowName[128];
 
 	Platform_LogInit(title);
+	NativeSdlAssert_Install(Platform_LogSdlAssertion);
 	Platform_GetWindowName(title, windowName, sizeof(windowName));
 
 	Platform_Log("[CTR Native] Initialising platform\n");
