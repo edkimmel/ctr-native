@@ -162,6 +162,20 @@ set_target_properties(ctr_native_virtual_datagram PROPERTIES
 )
 target_include_directories(ctr_native_virtual_datagram PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
+# Real-socket, leaf byte-mover over a Winsock2 UDP socket. Caller-owned
+# buffers, no dynamic allocation, no packet/protocol format of its own, and
+# no lockstep, match-config, canonical-state, or topology-lease dependency;
+# it is the real-socket analog of the test-only native_virtual_datagram
+# harness above and is never linked into it or vice versa.
+add_library(ctr_native_udp_transport STATIC platform/native_udp_transport.c)
+set_target_properties(ctr_native_udp_transport PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_udp_transport PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_udp_transport PUBLIC ws2_32)
+
 # Fixed-delay lockstep frame-bundle wire format.  Transport-agnostic by
 # design: this leaf encodes to and decodes from caller-owned byte buffers and
 # has no socket, OS networking, SDL, clock, game, or virtual-datagram
@@ -791,6 +805,38 @@ if(BUILD_TESTING)
     add_test(NAME native_virtual_datagram_unit COMMAND $<TARGET_FILE:native_virtual_datagram_test>)
     add_test(NAME native_virtual_datagram_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_virtual_datagram_isolation_test.cmake")
+
+    add_executable(native_udp_transport_test tests/native_udp_transport_test.c)
+    set_target_properties(native_udp_transport_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_udp_transport_test PRIVATE ctr_native_udp_transport)
+    add_test(NAME native_udp_transport_unit COMMAND $<TARGET_FILE:native_udp_transport_test>)
+
+    # Not registered as its own add_test: it is a helper process spawned by
+    # native_udp_transport_process_test below.
+    add_executable(native_udp_transport_echo_helper tests/native_udp_transport_echo_helper.c)
+    set_target_properties(native_udp_transport_echo_helper PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_udp_transport_echo_helper PRIVATE ctr_native_udp_transport)
+
+    add_executable(native_udp_transport_process_test tests/native_udp_transport_process_test.c)
+    set_target_properties(native_udp_transport_process_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_udp_transport_process_test PRIVATE ctr_native_udp_transport)
+    add_test(NAME native_udp_transport_process_unit
+        COMMAND $<TARGET_FILE:native_udp_transport_process_test> $<TARGET_FILE:native_udp_transport_echo_helper>)
+
+    add_test(NAME native_udp_transport_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_udp_transport_isolation_test.cmake")
 
     add_executable(native_lockstep_protocol_test tests/native_lockstep_protocol_test.c)
     set_target_properties(native_lockstep_protocol_test PROPERTIES
