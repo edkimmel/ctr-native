@@ -57,19 +57,24 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	 * returns 0 before touching anything and this block is retail.
 	 *
 	 * When it returns 1 the arcade-link layer owns this frame's menu layer
-	 * and has already drawn its screen. The retail main-menu box is then
+	 * and has already drawn its screen. It owns every frame on which the
+	 * retail main-menu box could be visible or take input (from the intro's
+	 * menu-ready frame on, submenu or not). The retail main-menu box is then
 	 * suppressed with the least invasive mechanism available:
 	 * - RECTMENU_ProcessState still runs, so the box's funcPtr
 	 *   (MM_MenuProc_Main) keeps driving the title scene (MM_Title_*).
-	 * - The per-player menu input collected below is cleared the same frame,
-	 *   so RECTMENU_ProcessInput sees no button and the title intro thread
-	 *   sees no tap on the next frame; nothing collected while the layer owns
-	 *   the frame can reach a retail menu later.
+	 * - MainArcadeLink_Frame has already cleared every pad's taps, so the
+	 *   retail cheat-code parser sees none, and the per-player menu input
+	 *   collected below is cleared the same frame, so RECTMENU_ProcessInput
+	 *   sees no button and the title intro thread sees no tap on the next
+	 *   frame; nothing collected while the layer owns the frame can reach a
+	 *   retail menu later.
 	 * - MainArcadeLink_Frame sets INVISIBLE on the retail main-menu box, so
 	 *   RECTMENU_ProcessState skips RECTMENU_DrawSelf, and clears it again
 	 *   once the layer no longer owns the frame.
-	 * - While an arcade-link screen is up (not the attract screen) it resets
-	 *   the retail title demo countdown every frame, so the demo never fires.
+	 * - While an arcade-link screen is up (not the attract screen), or a
+	 *   preview is shown, it resets the retail title demo countdown every
+	 *   frame, so the demo never fires.
 	 */
 	const int arcadeLinkOwnsMenu = MainArcadeLink_Frame(gGT, gGamepads);
 #endif

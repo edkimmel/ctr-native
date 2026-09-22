@@ -272,9 +272,23 @@ ctr_native.exe --arcade-link-preview results --capture-frame 1800=results.bmp --
 main.c parses these right after the display options. A malformed
 arcade-link option is fatal with a one-line usage message, the same posture
 as the frame-capture options, and `--arcade-link-preview` is rejected in a
-build without CTR_INTERNAL. With `--arcade-link`, main.c reads the build and
-content identity once with NativeIdentity_Get after asset and replay
-initialisation (the disc image caches the content digest the replay
+build without CTR_INTERNAL. `--arcade-link` or `--arcade-link-preview`
+combined with any replay record, playback, or report option
+(`--record`, `--record-v2`, `--record-v3`, `--replay`, `--replay-v2`,
+`--replay-v3`, `--replay-bypass-header`, `--toggle`, `--detailed`, matched by
+name in argv) is fatal with "--arcade-link and --arcade-link-preview cannot
+be combined with replay record or playback options.": the layer hides the
+retail main-menu box and clears menu input and pad taps, all of which a
+checkpointed recording captures (checkpoints capture the D230 and sdata
+regions), so a recording made with the option would not play back without
+it. The check runs right after the arcade-link parser and before the replay
+parsers, so no report folder or recording file is created first. Quick-state
+hotkeys (save and load state) are unsupported in link and preview mode: a
+quick state does not carry the layer's own state (the hidden-box flag, the
+previous held word, or the host's link), so loading one can leave the retail
+box hidden or the link out of step. With `--arcade-link`, main.c reads the
+build and content identity once with NativeIdentity_Get after asset and
+replay initialisation (the disc image caches the content digest the replay
 scheduler also reads, so nothing is hashed per frame) and fails with
 "arcade link requires a known build and content identity" if it is not
 known. It then calls NativeArcadeLinkHost_Configure (failure is fatal), logs
@@ -287,28 +301,58 @@ registration made after Platform_Init's own runs first).
 The live hook is game/MAIN/MainArcadeLink.c, called once per frame from
 MainFrame_RenderFrame at the retail menu seam, just before
 RECTMENU_CollectInput. With the host mode OFF it returns 0 as its first
-statement and changes nothing, so the default path is retail. Otherwise:
+statement and changes nothing, so the default path is retail. Otherwise it
+gathers one frame's facts, hands them to the pure decision policy
+game/MAIN/MainArcadeLinkPolicy.c (MainArcadeLinkPolicy_Decide, unit-tested
+branch by branch; its mirrored retail button bits, title states, menu-ready
+frame, and host modes are static-asserted in MainArcadeLink.c), applies the
+outputs, ticks the host, and draws:
 
-- Ownership. The arcade-link layer owns a frame's menu layer when the
-  main-menu level is idle (levelID MAIN_MENU_LEVEL, no load in progress),
-  the title intro has finished (MM_TITLE_MENU_STATE is IN_MENU), the retail
-  top-level main menu is the active box with no submenu open, and
-  mainMenuState is MAIN_MENU_TITLE; or whenever an arcade-link screen is
-  active (NativeArcadeLinkHost_ScreenActive, always true in preview mode).
+- Ownership. The arcade-link layer owns a frame's menu layer whenever the
+  retail main-menu box could be visible or take input: the main-menu level
+  is idle (levelID MAIN_MENU_LEVEL, no load in progress), the retail
+  top-level main menu is the box the retail menu system processes this frame
+  (the pending ptrDesiredMenu if one is set, else ptrActiveMenu),
+  mainMenuState is MAIN_MENU_TITLE, and the title is anywhere but the intro
+  before the retail menu-ready frame. That is, it owns INTRO once
+  MM_TITLE_INTRO_FRAME (read as the title code reads it, as s16) has reached
+  TITLE_INTRO_MENU_READY_FRAME (230), which is when MM_Title_MenuUpdate
+  clears DISABLE_INPUT_ALLOW_FUNCPTRS and slides the box in for 12 frames
+  while the state is still INTRO, and also when the intro is skipped to
+  frame 1000; IN_MENU; EXITING (the box still takes input while it slides
+  out, which could replace the demo exit route with a retail one); and
+  RETURNING. The hook and the funcPtr read the same intro frame and title
+  state in the same frame, so no frame falls between the box becoming
+  interactive (or IN_MENU being set inside the funcPtr) and the layer owning
+  it. An open submenu never relaxes ownership: the retail menu hierarchy is
+  unreachable in link and preview mode, and if a submenu is somehow open the
+  layer owns the frame anyway and keeps the whole box, submenu included,
+  hidden. Before the menu-ready frame the box is input-less and undrawn in
+  retail, so the layer leaves the frame alone and the retail intro skip
+  keeps working. In LINK mode the layer also owns every frame on which a
+  link screen other than OFF is active (NativeArcadeLinkHost_ScreenActive),
+  on any level. PREVIEW mode follows the same title-window rule and never
+  owns outside it (the host's ScreenActive reports 1 in preview mode; the
+  policy does not use it there), so from boot to the menu-ready frame a
+  preview run shows the retail boot and intro.
 - LINK mode, when it owns the frame: on the attract screen (screen OFF) a
   rising edge of START or CROSS on local player 0 calls
-  NativeArcadeLinkHost_Enter; NativeArcadeLinkHost_Tick runs every owned
-  frame with player 0's held buttons mapped to the logical menu bits
-  (BTN_CROSS_one and BTN_SQUARE_one, not the combined bits). A button already
-  held when the layer takes the frame is not a press. START_RACE logs that
+  NativeArcadeLinkHost_Enter, except while the title is EXITING (the demo is
+  already on its way); NativeArcadeLinkHost_Tick runs every owned frame with
+  player 0's held buttons mapped to the logical menu bits (BTN_CROSS_one and
+  BTN_SQUARE_one, not the combined bits). A button already held when the
+  layer takes the frame is not a press. START_RACE logs (Platform_Log) that
   the networked race launch is not wired yet (Task 7) and calls
-  NativeArcadeLinkHost_AbortToTitle, back to the attract screen.
-  RETURN_TO_TITLE off the main-menu level uses the retail demo-mode exit
-  (numPlyrNextGame 1, mainMenuState MAIN_MENU_TITLE,
+  NativeArcadeLinkHost_AbortToTitle, back to the attract screen; if that
+  falls back to mode OFF (the link cannot reopen), the hook gives the retail
+  box back in the same call, because the next frame's OFF early return
+  touches nothing. RETURN_TO_TITLE off the main-menu level uses the retail
+  demo-mode exit (numPlyrNextGame 1, mainMenuState MAIN_MENU_TITLE,
   MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL)); on the main-menu level it
   needs nothing.
-- PREVIEW mode: the same ownership rule and a Tick every frame, never
-  Enter; it draws the scripted preview screen.
+- PREVIEW mode: the same ownership rule and a Tick every owned frame, never
+  Enter; it draws the scripted preview screen and resets the demo countdown
+  on every owned frame, so a capture holds steady.
 - Drawing: the host view goes field for field into the layout builder
   (2.4), and the draw list is walked in order with the retail primitives:
   TEXT with DecalFont_DrawLine, HIGHLIGHT with the RECTMENU_DrawSelf row
@@ -318,27 +362,43 @@ statement and changes nothing, so the default path is retail. Otherwise:
   main-menu box neither receives input nor draws, but the retail title scene
   keeps running. RECTMENU_ProcessState still runs, so the box's funcPtr
   (MM_MenuProc_Main) keeps driving the title camera and trophy animation
-  (MM_Title_*). The per-player menu input RECTMENU_CollectInput gathers is
+  (MM_Title_*). Before the retail menu code runs, the hook clears every
+  pad's buttonsTapped (all eight GamepadBuffer entries) and anyoneTapped,
+  because MM_ParseCheatCodes, called from that funcPtr, reads
+  gamepad[0].buttonsTapped straight from the pad; so no cheat code and no
+  intro-skip tap can fire on an owned frame. Held bits are kept: the layer
+  reads them and the retail demo countdown reads anyoneHeldCurr. The
+  per-player menu input RECTMENU_CollectInput gathers (buttonTapPerPlayer,
+  which the title thread also reads as its tap, and buttonHeldPerPlayer) is
   cleared with RECTMENU_ClearInput in the same frame, so
   RECTMENU_ProcessInput sees no button and the title thread sees no tap the
   next frame; nothing collected while the layer owns the frame can reach a
   retail menu later. The hook sets INVISIBLE on the retail main-menu box, so
-  RECTMENU_ProcessState skips RECTMENU_DrawSelf, and clears it again once
-  the layer no longer owns the frame (retail never sets INVISIBLE on that
-  box). If the title slides out on the main-menu level (the demo countdown
-  fired from the attract screen) the box stays hidden until the level
-  changes, so it does not flash in only to slide away. While any
-  arcade-link screen other than OFF is up, the hook resets the retail title
-  demo countdown (demoCountdownTimer) every frame, so the demo never fires;
-  on the attract screen the countdown runs as retail, reset by any held
-  button, and the demo attract loop plays. Skipping RECTMENU_ProcessState
-  would stop the title funcPtr, and so the title scene. Setting
-  DISABLE_INPUT_ALLOW_FUNCPTRS would also hide and mute the box, but retail
-  title code writes that bit itself (MM_JumpTo_Title_FirstTime sets it and
-  the intro handler clears it), so restoring it could fight retail; and it
-  would leave the collected taps in the per-player buffers for the title
-  thread and later menus. INVISIBLE is written by no retail code on this
-  box, so the hook can own and restore it without conflict.
+  RECTMENU_ProcessState skips RECTMENU_DrawSelf (which also draws any open
+  submenu), and clears it again on the first frame the layer no longer owns
+  (retail never sets INVISIBLE on that box). If the title slides out on the
+  main-menu level (the demo countdown fired from the attract screen) the
+  layer keeps owning the frame until the demo exit closes the box, so the
+  box does not flash in only to slide away. While any arcade-link screen
+  other than OFF is up, or a preview is shown, the hook resets the retail
+  title demo countdown (demoCountdownTimer) every owned frame, so the demo
+  never fires; on the LINK attract screen the countdown runs as retail,
+  reset by any held button, and the demo attract loop plays. Skipping
+  RECTMENU_ProcessState would stop the title funcPtr, and so the title
+  scene. Setting DISABLE_INPUT_ALLOW_FUNCPTRS would also hide and mute the
+  box, but retail title code writes that bit itself
+  (MM_JumpTo_Title_FirstTime sets it and the intro handler clears it), so
+  restoring it could fight retail; and it would leave the collected taps in
+  the per-player buffers for the title thread and later menus. INVISIBLE is
+  written by no retail code on this box, so the hook can own and restore it
+  without conflict.
+- Residual retail window. Before the menu-ready frame the layer leaves the
+  intro to retail so the intro skip works, and the retail funcPtr already
+  runs there (DISABLE_INPUT_ALLOW_FUNCPTRS still runs funcPtrs), so a player
+  holding L1 and R1 can still enter a retail cheat code during the first
+  seconds of the title intro. Clearing taps there would also kill the intro
+  skip, which reads the same taps. Task 7 must therefore reset the gameMode2
+  cheat bits from the fixture when it launches a linked race.
 
 The fixture (native_arcade_link_options, Task 6a) is profile ARCADE_TWO_CAB
 on track 3 (CRASH_COVE), 3 laps, a 30/1 tick rate, master seed
@@ -411,8 +471,10 @@ for the operator to confirm or change after seeing the built flow.
     cabinet to the title/attract loop; matchFoundHoldTicks = 45 (1.5 s);
     exitHoldTicks = 60 (2 s).
 11. UX-11: In arcade-link mode the retail main-menu box is replaced by the
-    attract prompt; START or CROSS enters the lobby; the retail title scene
-    and demo attract loop keep running while the screen is OFF.
+    attract prompt from the title intro's menu-ready frame on, so the retail
+    box never slides in and no retail menu or submenu is reachable; START or
+    CROSS enters the lobby; the retail title scene and demo attract loop keep
+    running while the screen is OFF.
 
 ## 4. Constraints
 
@@ -560,11 +622,47 @@ through the options library, and already through ctr_native_match_config)
 is a static library whose members the linker never pulls because main.obj
 defines their symbols; the host chain does not link ctr_native_identity.
 
+### Task 6b-3 -- live hook review fixes
+
+Status: done. Fixes the review findings on the Task 6b-2 hook (section 2.5).
+The layer now owns the frame whenever the retail main-menu box could be
+visible or take input: INTRO from TITLE_INTRO_MENU_READY_FRAME on (the
+12-frame slide-in, and the intro skip to frame 1000), IN_MENU, EXITING, and
+RETURNING, judged on the menu the retail menu system processes this frame,
+so the leaky frame where IN_MENU is set inside the funcPtr is gone and an
+open submenu no longer releases the frame (the retail menu hierarchy is
+unreachable). Owned frames clear every pad's taps before the retail menu
+code runs, so cheat entry and the intro-skip tap cannot fire. If
+AbortToTitle falls back to mode OFF the hook restores the box in the same
+call. main.c rejects `--arcade-link` or `--arcade-link-preview` with any
+replay record, playback, or report option; quick-state hotkeys are
+documented as unsupported in link and preview mode. PREVIEW follows the
+link-mode ownership rule instead of owning every frame from boot, and resets
+the demo countdown on every owned frame. The START_RACE notice logs through
+Platform_Log. The decision logic moved into a pure, unit-tested policy.
+Landed as game/MAIN/MainArcadeLinkPolicy.h and
+game/MAIN/MainArcadeLinkPolicy.c (unity-included from game/game_unity.h
+between the layout and the hook; standalone library
+ctr_native_arcade_link_policy, which links nothing and which ctr_native
+does not link), tests/main_arcade_link_policy_test.c and
+tests/main_arcade_link_policy_isolation_test.cmake (tests
+main_arcade_link_policy_unit and main_arcade_link_policy_isolation), the
+thinned hook game/MAIN/MainArcadeLink.{c,h}, the seam comment in
+game/MAIN/MainFrame_RenderFrame.c, the replay-option rejection in main.c,
+and extended checks in tests/main_arcade_link_hook_isolation_test.cmake
+(identity read only in the link-enabled branch, the input clear inside the
+retail collect block, the policy include and unity order, the replay-option
+rejection, and no stdio in the hook).
+
 ### Task 7 -- networked race launch
 
 Status: gated on integration step 3 (live two-human-plus-bot roster). On
 START_RACE, configure and load the race described by the agreed
-NativeMatchConfigV1 through the arcade roster and bot setup.
+NativeMatchConfigV1 through the arcade roster and bot setup. Task 7 must
+reset gameMode2 cheat bits from the fixture: retail cheat entry stays
+possible during the title intro before the menu-ready frame, which the layer
+leaves to retail so the intro skip keeps working (section 2.5, residual
+retail window).
 
 ### Task 8 -- in-race lockstep drive and failure handling
 

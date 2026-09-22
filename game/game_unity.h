@@ -255,11 +255,12 @@
 
 #include "230.c"
 
-// Arcade-link screens (docs/GAME_LOOP_UI_MILESTONE.md Task 6b-2): the pure
-// layout builder, then the CTR_NATIVE-only drawer and hook, which reads the
-// 230 title state above. MainFrame_RenderFrame.c calls it through
-// MAIN/MainArcadeLink.h.
+// Arcade-link screens (docs/GAME_LOOP_UI_MILESTONE.md Tasks 6b-2 and 6b-3):
+// the pure layout builder and decision policy, then the CTR_NATIVE-only
+// drawer and hook, which reads the 230 title state above.
+// MainFrame_RenderFrame.c calls it through MAIN/MainArcadeLink.h.
 #include "MAIN/MainArcadeLinkLayout.c"
+#include "MAIN/MainArcadeLinkPolicy.c"
 #include "MAIN/MainArcadeLink.c"
 
 #include "231/R231.c"

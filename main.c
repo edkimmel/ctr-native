@@ -143,6 +143,27 @@ static int NativeArg_IsVersion(const char *arg)
 	return (arg != NULL) && ((strcmp(arg, "--version") == 0) || (strcmp(arg, "-v") == 0));
 }
 
+/* Returns 1 when argv names any replay record, playback, or report option
+ * NativeReplayScheduler_ParseArgs accepts (the options behind
+ * NativeReplayScheduler_ConfigureFromArgs and
+ * NativeReplayScheduler_PrepareReportFromArgs). Matched by name only. */
+static int NativeArg_NamesReplayOption(int argc, char *argv[])
+{
+	static const char *const replayOptions[] = {"--record", "--record-v2", "--record-v3", "--replay", "--replay-v2", "--replay-v3", "--replay-bypass-header", "--toggle", "--detailed"};
+
+	for (int argIndex = 1; argIndex < argc; argIndex++)
+	{
+		for (size_t optionIndex = 0; optionIndex < sizeof(replayOptions) / sizeof(replayOptions[0]); optionIndex++)
+		{
+			if ((argv[argIndex] != NULL) && (strcmp(argv[argIndex], replayOptions[optionIndex]) == 0))
+			{
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
 
 int main(int argc, char *argv[])
 {
@@ -186,6 +207,16 @@ int main(int argc, char *argv[])
 		return NativeConsole_Return(1);
 	}
 #endif
+	/* Link and preview modes hide the retail main-menu box and clear the menu
+	 * input and pad taps they own, all of which a recording captures, so a
+	 * recording would not play back without the option. Rejected here, after
+	 * the arcade-link parser and before the replay parsers run, so no report
+	 * folder or recording file is created first. */
+	if (((arcadeLinkOptions.enabled != 0u) || (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE)) && NativeArg_NamesReplayOption(argc, argv))
+	{
+		fprintf(stderr, "[CTR Native] --arcade-link and --arcade-link-preview cannot be combined with replay record or playback options.\n");
+		return NativeConsole_Return(1);
+	}
 
 	printf("[CTR Native] Starting...\n");
 	printf("[CTR Native] Local render scale: %dx\n", displayConfig.renderScale);

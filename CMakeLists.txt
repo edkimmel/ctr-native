@@ -363,6 +363,20 @@ set_target_properties(ctr_native_arcade_link_layout PROPERTIES
 target_include_directories(ctr_native_arcade_link_layout PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 target_link_libraries(ctr_native_arcade_link_layout PUBLIC ctr_native_arcade_flow)
 
+# Arcade-link live hook decision policy (docs/GAME_LOOP_UI_MILESTONE.md
+# section 2.5, Task 6b-3): the pure ownership, input, and box decisions of the
+# hook, with mirrored retail constants and no game globals. Like the layout,
+# ctr_native unity-includes the same source (game/game_unity.h) instead of
+# linking this target; the target exists for the unit test. It links nothing:
+# it uses only the menu-input button bit macros.
+add_library(ctr_native_arcade_link_policy STATIC game/MAIN/MainArcadeLinkPolicy.c)
+set_target_properties(ctr_native_arcade_link_policy PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_link_policy PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+
 # Arcade-link host options and fixed race fixture (docs/GAME_LOOP_UI_MILESTONE.md
 # sections 2.5 and 3, UX-8, Task 6a): pure argv parsing and a pure fixture
 # builder over a caller-supplied identity. Uses only the identity struct, so
@@ -1164,6 +1178,20 @@ if(BUILD_TESTING)
 
     add_test(NAME main_arcade_link_layout_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_layout_isolation_test.cmake")
+
+    # Arcade-link live hook decision policy (docs/GAME_LOOP_UI_MILESTONE.md
+    # section 2.5, Task 6b-3): every ownership, input, and box branch, pure.
+    add_executable(main_arcade_link_policy_test tests/main_arcade_link_policy_test.c)
+    set_target_properties(main_arcade_link_policy_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(main_arcade_link_policy_test PRIVATE ctr_native_arcade_link_policy)
+    add_test(NAME main_arcade_link_policy_unit COMMAND $<TARGET_FILE:main_arcade_link_policy_test>)
+
+    add_test(NAME main_arcade_link_policy_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_policy_isolation_test.cmake")
 
     # Arcade-link host options and fixed fixture (docs/GAME_LOOP_UI_MILESTONE.md
     # section 2.5, Task 6a): pure argv parsing and fixture building, no sockets.
