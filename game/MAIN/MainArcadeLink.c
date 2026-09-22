@@ -195,6 +195,7 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 	else if ((action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE) && (gGT->levelID != MAIN_MENU_LEVEL))
 	{
 		/* The retail demo-mode exit (MainMain.c): back to the title. */
+		gGT->boolDemoMode = 0;
 		gGT->numPlyrNextGame = 1;
 		sdata->mainMenuState = MAIN_MENU_TITLE;
 		MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL);

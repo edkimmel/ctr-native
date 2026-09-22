@@ -15,11 +15,12 @@ struct GamepadSystem;
  * Called once per frame from MainFrame_RenderFrame at the retail menu seam,
  * before RECTMENU_CollectInput. Returns 1 when the arcade-link layer owns
  * this frame's menu layer (it has then already cleared every pad's taps and
- * hidden the retail main-menu box): the caller must then clear the
- * per-player menu input it collects, so the retail main-menu box receives
- * none. Returns 0
- * otherwise. With the host mode OFF (no arcade-link option) it returns 0
- * immediately and has no side effect of any kind.
+ * normally hidden the retail main-menu box; on the frame a START_RACE abort
+ * falls back to host mode OFF it has instead given the box back): the
+ * caller must then clear the per-player menu input it collects, so the
+ * retail main-menu box receives none this frame. Returns 0 otherwise. With
+ * the host mode OFF (no arcade-link option) it returns 0 immediately and
+ * has no side effect of any kind.
  */
 int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS);
 

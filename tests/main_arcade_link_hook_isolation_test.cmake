@@ -1,6 +1,6 @@
 # Structural isolation for the arcade-link live hook
 # (game/MAIN/MainArcadeLink.{c,h}, docs/GAME_LOOP_UI_MILESTONE.md section 2.5,
-# Tasks 6b-2 and 6b-3): the hook is native only and dormant by default. Its
+# Tasks 6b-2, 6b-3, and 6b-4): the hook is native only and dormant by default. Its
 # whole body sits inside one #if defined(CTR_NATIVE) block and its host-mode
 # OFF check runs before anything else; it talks to the link only through the
 # host glue API (never the adapter, lobby, failure-handling, or link
@@ -11,10 +11,13 @@
 # clear sits inside the retail menu-input collect block; the unity chain
 # includes the layout, the policy, and the hook after the 230 overlay; main.c
 # parses the options, reads the identity only inside the link-enabled branch,
-# rejects link or preview mode combined with a replay option, and configures
-# and shuts the host down; and ctr_native links the host glue but not the
-# layout library (the layout is unity-included). The policy's own rules are
-# in main_arcade_link_policy_isolation_test.cmake.
+# rejects link or preview mode combined with any replay option the replay
+# scheduler parses, and configures and shuts the host down; ctr_native links
+# the host glue but not the layout library (the layout is unity-included);
+# the F5 and F8 quick-state hotkeys in native_platform.c are gated off in
+# link and preview mode; and the START_RACE abort gives the retail box back
+# when the host falls back to mode OFF. The policy's own rules are in
+# main_arcade_link_policy_isolation_test.cmake.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -291,6 +294,37 @@ string(SUBSTRING "${main_code}" ${reject_begin} ${reject_length} reject_block)
 ctr_require_order("main.c (replay rejection)" "${reject_block}"
     "[CTR Native] --arcade-link and --arcade-link-preview cannot be combined with replay record or playback options."
     "return NativeConsole_Return(1);")
+# 8d. The rejection list covers every replay option the replay scheduler
+#     parses: each quoted "--..." string in the scheduler's argument parser
+#     must appear in main.c's replayOptions list, so a new replay option
+#     cannot silently bypass the rejection.
+set(replay_seam_path "platform/native_replay_scheduler_seam.c")
+ctr_read_source("${replay_seam_path}" replay_seam_source)
+ctr_strip_comments("${replay_seam_source}" replay_seam_code)
+string(REGEX MATCHALL "\"--[^\"\r\n]*\"" replay_seam_options "${replay_seam_code}")
+list(REMOVE_DUPLICATES replay_seam_options)
+list(LENGTH replay_seam_options replay_seam_option_count)
+if(replay_seam_option_count EQUAL 0)
+    message(FATAL_ERROR "arcade link hook isolation: found no quoted \"--...\" option in ${replay_seam_path}")
+endif()
+set(replay_list_opener "static const char *const replayOptions[] = {")
+string(FIND "${main_code}" "${replay_list_opener}" replay_list_at)
+if(replay_list_at EQUAL -1)
+    message(FATAL_ERROR "arcade link hook isolation: main.c must define '${replay_list_opener}...}'")
+endif()
+string(SUBSTRING "${main_code}" ${replay_list_at} -1 replay_list_tail)
+string(FIND "${replay_list_tail}" "};" replay_list_end)
+if(replay_list_end EQUAL -1)
+    message(FATAL_ERROR "arcade link hook isolation: main.c replayOptions list is not terminated")
+endif()
+string(SUBSTRING "${replay_list_tail}" 0 ${replay_list_end} replay_list)
+foreach(option IN LISTS replay_seam_options)
+    string(FIND "${replay_list}" "${option}" option_at)
+    if(option_at EQUAL -1)
+        message(FATAL_ERROR "arcade link hook isolation: replay option ${option} from ${replay_seam_path} is missing from main.c's replayOptions rejection list")
+    endif()
+endforeach()
+
 ctr_require_order("main.c" "${main_code}"
     "NativeArcadeLinkOptions_ApplyArgs(argc, argv, &arcadeLinkOptions)"
     "${replay_reject}"
@@ -315,3 +349,77 @@ string(FIND "${native_link_block}" "ctr_native_arcade_link_layout" layout_hit)
 if(NOT layout_hit EQUAL -1)
     message(FATAL_ERROR "arcade link hook isolation: ctr_native must not link ctr_native_arcade_link_layout (the layout is unity-included)")
 endif()
+
+# 10. Quick states are disabled in link and preview mode: in
+#     native_platform.c each quick-state request is made exactly once, in its
+#     own F5 or F8 case, after a host-mode gate whose block logs the warning
+#     and breaks out before the request.
+set(platform_path "platform/native_platform.c")
+ctr_read_source("${platform_path}" platform_source)
+ctr_require_literal("${platform_path}" "${platform_source}" "#include \"platform/native_arcade_link_host.h\"")
+ctr_strip_comments("${platform_source}" platform_code)
+set(quick_state_gate "if (NativeArcadeLinkHost_Mode() != (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF)")
+foreach(pair "F5 NativeSaveState_RequestSave()" "F8 NativeSaveState_RequestLoad()")
+    string(REPLACE " " ";" pair_items "${pair}")
+    list(GET pair_items 0 hotkey)
+    list(GET pair_items 1 request)
+    string(REPLACE "(" "\\(" request_regex "${request}")
+    string(REPLACE ")" "\\)" request_regex "${request_regex}")
+    string(REGEX MATCHALL "${request_regex}" request_calls "${platform_code}")
+    list(LENGTH request_calls request_call_count)
+    if(NOT request_call_count EQUAL 1)
+        message(FATAL_ERROR "arcade link hook isolation: ${platform_path} must call ${request} exactly once (found ${request_call_count})")
+    endif()
+    set(case_label "case SDL_SCANCODE_${hotkey}:")
+    string(FIND "${platform_code}" "${case_label}" case_at)
+    if(case_at EQUAL -1)
+        message(FATAL_ERROR "arcade link hook isolation: required text '${case_label}' missing from ${platform_path}")
+    endif()
+    string(FIND "${platform_code}" "${request}" request_at)
+    if(NOT request_at GREATER case_at)
+        message(FATAL_ERROR "arcade link hook isolation: ${request} in ${platform_path} must sit in its ${case_label} case")
+    endif()
+    math(EXPR case_length "${request_at} - ${case_at}")
+    string(SUBSTRING "${platform_code}" ${case_at} ${case_length} case_segment)
+    string(LENGTH "${case_label}" case_label_length)
+    string(SUBSTRING "${case_segment}" ${case_label_length} -1 case_body)
+    foreach(intruder IN ITEMS "case " "default:")
+        string(FIND "${case_body}" "${intruder}" intruder_at)
+        if(NOT intruder_at EQUAL -1)
+            message(FATAL_ERROR "arcade link hook isolation: ${request} in ${platform_path} must sit in its ${case_label} case")
+        endif()
+    endforeach()
+    string(FIND "${case_body}" "${quick_state_gate}" gate_at)
+    if(gate_at EQUAL -1)
+        message(FATAL_ERROR "arcade link hook isolation: ${case_label} in ${platform_path} must be gated by '${quick_state_gate}' before ${request}")
+    endif()
+    ctr_find_block("${platform_path} (${case_label})" "${case_body}" "${quick_state_gate}" gate_begin gate_end)
+    math(EXPR gate_length "${gate_end} - ${gate_begin} + 1")
+    string(SUBSTRING "${case_body}" ${gate_begin} ${gate_length} gate_block)
+    ctr_require_order("${platform_path} (${case_label} gate)" "${gate_block}"
+        "Platform_LogWarn(\"[CTR Native] quick states are disabled in arcade-link mode\\n\");"
+        "break;")
+endforeach()
+
+# 11. The START_RACE branch gives the retail main-menu box back when
+#     AbortToTitle falls back to host mode OFF: the only AbortToTitle call is
+#     inside that branch and is followed, inside the branch, by a host-mode
+#     OFF check whose block restores the box.
+ctr_strip_comments("${hook_source}" hook_code)
+string(REGEX MATCHALL "NativeArcadeLinkHost_AbortToTitle\\(" abort_calls "${hook_code}")
+list(LENGTH abort_calls abort_call_count)
+if(NOT abort_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call NativeArcadeLinkHost_AbortToTitle exactly once (found ${abort_call_count})")
+endif()
+ctr_find_block("${hook_source_path}" "${hook_code}"
+    "if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)" start_begin start_end)
+math(EXPR start_length "${start_end} - ${start_begin} + 1")
+string(SUBSTRING "${hook_code}" ${start_begin} ${start_length} start_block)
+ctr_require_literal("${hook_source_path} (START_RACE branch)" "${start_block}" "NativeArcadeLinkHost_AbortToTitle();")
+string(FIND "${start_block}" "NativeArcadeLinkHost_AbortToTitle();" abort_at)
+string(SUBSTRING "${start_block}" ${abort_at} -1 after_abort)
+ctr_find_block("${hook_source_path} (START_RACE branch)" "${after_abort}"
+    "if (NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF)" restore_begin restore_end)
+math(EXPR restore_length "${restore_end} - ${restore_begin} + 1")
+string(SUBSTRING "${after_abort}" ${restore_begin} ${restore_length} restore_block)
+ctr_require_literal("${hook_source_path} (START_RACE fallback)" "${restore_block}" "MainArcadeLink_RestoreMainMenu();")

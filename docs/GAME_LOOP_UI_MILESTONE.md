@@ -282,11 +282,16 @@ retail main-menu box and clears menu input and pad taps, all of which a
 checkpointed recording captures (checkpoints capture the D230 and sdata
 regions), so a recording made with the option would not play back without
 it. The check runs right after the arcade-link parser and before the replay
-parsers, so no report folder or recording file is created first. Quick-state
-hotkeys (save and load state) are unsupported in link and preview mode: a
-quick state does not carry the layer's own state (the hidden-box flag, the
-previous held word, or the host's link), so loading one can leave the retail
-box hidden or the link out of step. With `--arcade-link`, main.c reads the
+parsers, so no report folder or recording file is created first. The
+quick-state hotkeys (F5 save state, F8 load state) are disabled in link and
+preview mode: while the host mode is not OFF each press does nothing but log
+"[CTR Native] quick states are disabled in arcade-link mode" once. A quick
+state captures the retail main-menu box the layer hides (checkpoints include
+the main-menu overlay data) but not the layer's own state (the hidden-box
+flag, the previous held word, or the host's link), so a state saved in link
+or preview mode would leave the retail box invisible in a later normal run,
+and loading one could leave the link out of step. With no arcade-link option
+both hotkeys behave as before. With `--arcade-link`, main.c reads the
 build and content identity once with NativeIdentity_Get after asset and
 replay initialisation (the disc image caches the content digest the replay
 scheduler also reads, so nothing is hashed per frame) and fails with
@@ -653,6 +658,28 @@ and extended checks in tests/main_arcade_link_hook_isolation_test.cmake
 (identity read only in the link-enabled branch, the input clear inside the
 retail collect block, the policy include and unity order, the replay-option
 rejection, and no stdio in the hook).
+
+### Task 6b-4 -- quick states and hook nits
+
+Status: done. Closes the last review items on the live hook (section 2.5).
+The F5 and F8 quick-state hotkeys in platform/native_platform.c do nothing
+but log one warning per press while the host mode is not OFF, so a state
+saved in link or preview mode can no longer carry the hidden retail box
+into a later normal run; with no arcade-link option they are unchanged.
+The RETURN_TO_TITLE branch now copies the retail demo-mode exit exactly
+(boolDemoMode = 0, numPlyrNextGame = 1, mainMenuState = MAIN_MENU_TITLE,
+MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL)), and the MainArcadeLink_Frame
+comment no longer claims the box is always hidden when it returns 1 (the
+AbortToTitle fallback frame gives it back). New isolation checks: every
+quoted "--..." option in platform/native_replay_scheduler_seam.c is in
+main.c's replay-rejection list, the F5 and F8 cases are gated by
+NativeArcadeLinkHost_Mode, and the START_RACE AbortToTitle call is followed
+in its branch by the host-mode OFF check that restores the box.
+Landed as platform/native_platform.c, game/MAIN/MainArcadeLink.c,
+game/MAIN/MainArcadeLink.h, and
+tests/main_arcade_link_hook_isolation_test.cmake (test
+main_arcade_link_hook_isolation). native_savestate.c and
+native_checkpoint.c are unchanged.
 
 ### Task 7 -- networked race launch
 

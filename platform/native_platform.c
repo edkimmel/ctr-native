@@ -2,6 +2,7 @@
 
 #include <macros.h>
 
+#include "platform/native_arcade_link_host.h"
 #include "platform/native_audio.h"
 #include "platform/native_frame_capture.h"
 #include "platform/native_glad.h"
@@ -372,10 +373,25 @@ internal void Platform_HandleKey(int key, char down)
 			NativeRenderer_SetTextureFilter(NativeRenderer_GetTextureFilter() != 0 ? 0 : 1);
 			Platform_LogWarn("[CTR Native] texture filter: %s\n", NativeRenderer_GetTextureFilter() != 0 ? "bilinear" : "nearest");
 			break;
+		/* Quick states are disabled in arcade-link link and preview mode: a
+		 * checkpoint captures the retail main-menu box the layer hides, so a
+		 * state saved there would leave that box invisible in a later normal
+		 * run (docs/GAME_LOOP_UI_MILESTONE.md section 2.5). With the host
+		 * mode OFF both hotkeys behave as before. */
 		case SDL_SCANCODE_F5:
+			if (NativeArcadeLinkHost_Mode() != (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF)
+			{
+				Platform_LogWarn("[CTR Native] quick states are disabled in arcade-link mode\n");
+				break;
+			}
 			NativeSaveState_RequestSave();
 			break;
 		case SDL_SCANCODE_F8:
+			if (NativeArcadeLinkHost_Mode() != (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF)
+			{
+				Platform_LogWarn("[CTR Native] quick states are disabled in arcade-link mode\n");
+				break;
+			}
 			NativeSaveState_RequestLoad();
 			break;
 		}
