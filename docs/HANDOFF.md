@@ -32,8 +32,11 @@ Integration order:
    complete.
 3. Stable two-human-plus-bot roster and RNG ownership — in progress.
 4. Native lockstep protocol and virtual-network fault tests — protocol design
-   and fault-tolerant session logic complete; real wired-LAN transport not
-   started, separately gated (see Networking).
+   and fault-tolerant session logic complete; a real socket transport,
+   connect/handshake protocol, and a lobby data/state layer now exist and are
+   tested, including live two-process, real-socket evidence (see Networking).
+   Game-loop/UI wiring and physical two-cabinet hardware validation remain
+   open before steps 6-7.
 5. Failure handling, results, and rematch — stall-timeout policy, peer-drop
    roster, and rematch config builder complete and fault-tested against
    `native_virtual_datagram`; no game-loop integration or results/rematch UI
@@ -76,8 +79,9 @@ Integration order:
 
 ## Networking
 
-The native lockstep protocol is complete and transport-agnostic; no real
-socket/OS transport exists yet.
+The native lockstep protocol is complete and transport-agnostic. A real
+socket transport, a connect/handshake protocol, and a lobby data/state layer
+now exist and are tested on top of it (see below).
 
 - **Fixed-delay lockstep, no rollback, no prediction.** Each peer buffers its
   sampled input for a configured `inputDelay` (`D`) frames; simulation frame
@@ -108,9 +112,8 @@ socket/OS transport exists yet.
   delivery harness (DROP, DELIVER, DUPLICATE, explicit reordering); it has no
   wire encoding, OS transport, peer search, or version commitment, and the
   protocol library never links it.
-- There are still no sockets (`winsock`, `AF_INET`, SDL_net) and no lobby or
-  peer discovery. `NativeMatchConfigV1.protocolVersion` is a reserved field,
-  not a wire format, though the lockstep bundle copies and compares it.
+- `NativeMatchConfigV1.protocolVersion` is a reserved field, not a wire
+  format, though the lockstep bundle copies and compares it.
 - **Failure handling, peer drop, and rematch** (`native_lockstep_match_outcome.c`/`.h`,
   `native_lockstep_match_roster.c`/`.h`, `native_lockstep_rematch.c`/`.h`)
   build a policy layer on top of the session. `NativeLockstepMatchOutcome`
@@ -130,6 +133,40 @@ socket/OS transport exists yet.
   same way the protocol/window/session stack is. None of it is wired into
   the game loop yet, there is no results/rematch UI, and it makes no change
   to the topology lease, canonical state, or replay wire formats.
+- **Real transport, handshake, and lobby** (`native_udp_transport.c`/`.h`,
+  `native_lockstep_handshake.c`/`.h`, `native_lockstep_peer_link.c`/`.h`,
+  `native_lobby_state.c`/`.h`) add a real socket underneath the stack above.
+  A Winsock2 UDP socket transport leaf moves raw bytes over an actual OS
+  socket, proven with a real two-OS-process loopback test. A
+  connect/handshake protocol exchanges and validates a full
+  `NativeMatchConfigV1` proposal between two peers — an explicit
+  accept/reject negotiation, not automatic reconciliation of differing
+  proposals — before a lockstep session opens, replacing the previous
+  implicit hard-fault-on-first-bundle behavior with a clean pre-session
+  rejection when identities disagree. It is transport-agnostic (encodes to
+  and decodes from caller-owned buffers only, no socket dependency) and is
+  fault-tested against `native_virtual_datagram` the same way the lockstep
+  protocol was, in addition to running over the real transport. A
+  real-transport integration module is the first production code calling
+  `NativeLockstepSession_Open`/`_ComposeBundle`/`_AcceptBundle` against a
+  real OS socket instead of a test harness, proven with a genuine
+  two-OS-process test that opens real sockets, completes a real handshake,
+  opens a real session, and exchanges real lockstep bundles for dozens of
+  frames with both sides reaching session mode `RUNNING` and no divergence
+  or fault. A lobby/waiting-flow policy layer cycles through a
+  caller-supplied candidate peer-address list with a bounded per-candidate
+  attempt budget, exposing a small state (`WAITING_FOR_PEER` /
+  `HANDSHAKING` / `READY` / `REJECTED` / `PEER_LOST`) an eventual
+  lobby/waiting UI can read; it is a data/state layer only — no menu, no
+  wheel input, no waiting/results screen — mirroring how the
+  failure-handling policy layer also has no game-loop caller.
+  `native_virtual_datagram` remains test-only and none of these new modules
+  link it in production; only their fault-injection test fixtures do, the
+  same posture the lockstep protocol library already established. See
+  `docs/LOBBY_MILESTONE.md` for full design detail.
+- No game-loop or menu/UI wiring exists for any of this yet, and none of it
+  has been exercised over real two-cabinet LAN hardware (only two real OS
+  processes on one machine over loopback) — both remain open before step 6.
 
 ## Topology lease
 
@@ -181,6 +218,15 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
   `include/platform/native_lockstep_match_roster.h` (peer-lifecycle roster
   and drop policy); `platform/native_lockstep_rematch.c`,
   `include/platform/native_lockstep_rematch.h` (rematch config builder).
+- Real transport, handshake, and lobby: `platform/native_udp_transport.c`,
+  `include/platform/native_udp_transport.h` (Winsock2 UDP socket leaf);
+  `platform/native_lockstep_handshake.c`,
+  `include/platform/native_lockstep_handshake.h` (connect/handshake
+  protocol); `platform/native_lockstep_peer_link.c`,
+  `include/platform/native_lockstep_peer_link.h` (real-transport session
+  integration); `platform/native_lobby_state.c`,
+  `include/platform/native_lobby_state.h` (candidate-cycling lobby policy
+  layer).
 - Presentation options (host-local): `platform/native_display_config.c`,
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
@@ -211,33 +257,18 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
 
 ## Next work
 
-Integration step 5's failure-handling policy (stall-timeout outcome,
-peer-drop roster, rematch config builder — see Networking) is complete and
-fault-tested against `native_virtual_datagram`, the same way the lockstep
-protocol was. Nothing under `game/` calls it yet (no results/rematch UI), and
-that game-loop wiring is still open, but it is not the next milestone.
+Game-loop/UI wiring is still missing for both policy layers that already
+exist and are tested: the failure-handling policy layer (stall-timeout
+outcome, peer-drop roster, rematch — complete and fault-tested since the
+failure-handling milestone) and the lobby/connect stack (real transport,
+handshake, peer-link integration, and lobby state — complete and tested,
+see Networking). Nothing under `game/` calls either one yet: no menu, no
+wheel-input wiring, and no waiting/results/rematch/exit screens exist.
 
-Owner direction: the next milestone is the real wired-LAN transport, peer
-connect/handshake, and lobby (game startup and initial sync) — and it must be
-proven in practice, not just against the virtual datagram harness. Scope, to
-be written up as `docs/LOBBY_MILESTONE.md` before work starts:
+Real two-cabinet, physical-hardware validation — actual wire, an actual LAN
+switch, actual latency/loss conditions, actual G29 wheel input — has not
+happened and cannot happen without cabinet access; this gates step 6 (CAB1
+G29/kiosk gate) and step 7 (two-cabinet fleet acceptance).
 
-- A real socket/transport layer (winsock or SDL_net) actually carrying
-  lockstep bundles between two processes/machines.
-- A connect/handshake protocol. Today a mismatched `NativeMatchConfigV1` hard
-  faults on the first bundle instead of renegotiating (see
-  `docs/LOCKSTEP_MILESTONE.md`'s future-work note on this); a real lobby needs
-  to negotiate identity before the lockstep session opens, not fault on it.
-- Peer discovery and a wheel-first lobby/waiting flow (see
-  `docs/ARCADE_FORK.md` scope: "wheel-first lobby, waiting, results, rematch,
-  and exit flows"). Today the main menu boots and runs fully local/unsynced on
-  each cabinet; this milestone is what makes the two cabinets agree on a match
-  before the race starts.
-- Exit criteria include live two-cabinet (or two-machine) connect evidence —
-  actual wire, actual latency/loss conditions — not just unit tests and
-  `native_virtual_datagram` fault injection, which is necessary but not
-  sufficient here.
-
-This, plus the still-open game-loop wiring of the failure-handling policy
-above, both need live-cabinet evidence before step 6 (CAB1 G29/kiosk gate) and
-step 7 (two-cabinet fleet acceptance) can run on real hardware.
+Both of the above need to land, in whatever order the operator chooses,
+before step 6 can run on real hardware.
