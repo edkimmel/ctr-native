@@ -308,6 +308,18 @@ set_target_properties(ctr_native_lobby_state PROPERTIES
 target_include_directories(ctr_native_lobby_state PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_lobby_state PUBLIC ctr_native_lockstep_peer_link)
 
+# Arcade menu input seam (docs/GAME_LOOP_UI_MILESTONE.md section 2.1): a pure
+# classifier turning one player's held logical buttons into at most one
+# PREV/NEXT/CONFIRM/BACK event per tick, release-to-arm and rising-edge only.
+# A leaf with no link dependencies; not yet linked into ctr_native (Task 6).
+add_library(ctr_native_arcade_menu_input STATIC platform/native_arcade_menu_input.c)
+set_target_properties(ctr_native_arcade_menu_input PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_menu_input PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -1025,6 +1037,20 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_lobby_state_test PRIVATE ctr_native_lobby_state)
     add_test(NAME native_lobby_state_unit COMMAND $<TARGET_FILE:native_lobby_state_test>)
+
+    # Arcade menu input seam (docs/GAME_LOOP_UI_MILESTONE.md section 2.1,
+    # Task 2): pure input classification, no sockets and no clock.
+    add_executable(native_arcade_menu_input_test tests/native_arcade_menu_input_test.c)
+    set_target_properties(native_arcade_menu_input_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_menu_input_test PRIVATE ctr_native_arcade_menu_input)
+    add_test(NAME native_arcade_menu_input_unit COMMAND $<TARGET_FILE:native_arcade_menu_input_test>)
+
+    add_test(NAME native_arcade_menu_input_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_menu_input_isolation_test.cmake")
 
     add_test(NAME native_lockstep_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_isolation_test.cmake")

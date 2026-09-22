@@ -287,9 +287,14 @@ Status: done.
 
 ### Task 2 -- menu input seam (native_arcade_menu_input)
 
-Status: planned. Header, implementation, unit test, isolation test (pure:
+Status: done. Header, implementation, unit test, isolation test (pure:
 no game, socket, lockstep, clock, lease, or allocation token), C17 target.
 No review required: pure input classification, no identity or replay state.
+Landed as include/platform/native_arcade_menu_input.h,
+platform/native_arcade_menu_input.c, tests/native_arcade_menu_input_test.c,
+and tests/native_arcade_menu_input_isolation_test.cmake (library
+ctr_native_arcade_menu_input, tests native_arcade_menu_input_unit and
+native_arcade_menu_input_isolation).
 
 ### Task 3 -- screen flow seam (native_arcade_flow)
 
