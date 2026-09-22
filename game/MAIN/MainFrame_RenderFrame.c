@@ -1,5 +1,9 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeLink.h"
+#endif
+
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 #include <platform/native_perf.h>
 #define MAINFRAME_PERF_BEGIN(bucket) NativePerf_BeginScope(bucket)
@@ -46,9 +50,39 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 		}
 	}
 
+#if defined(CTR_NATIVE)
+	/*
+	 * Arcade-link seam (docs/GAME_LOOP_UI_MILESTONE.md section 2.5). Dormant
+	 * unless an arcade-link host option was given: MainArcadeLink_Frame then
+	 * returns 0 before touching anything and this block is retail.
+	 *
+	 * When it returns 1 the arcade-link layer owns this frame's menu layer
+	 * and has already drawn its screen. The retail main-menu box is then
+	 * suppressed with the least invasive mechanism available:
+	 * - RECTMENU_ProcessState still runs, so the box's funcPtr
+	 *   (MM_MenuProc_Main) keeps driving the title scene (MM_Title_*).
+	 * - The per-player menu input collected below is cleared the same frame,
+	 *   so RECTMENU_ProcessInput sees no button and the title intro thread
+	 *   sees no tap on the next frame; nothing collected while the layer owns
+	 *   the frame can reach a retail menu later.
+	 * - MainArcadeLink_Frame sets INVISIBLE on the retail main-menu box, so
+	 *   RECTMENU_ProcessState skips RECTMENU_DrawSelf, and clears it again
+	 *   once the layer no longer owns the frame.
+	 * - While an arcade-link screen is up (not the attract screen) it resets
+	 *   the retail title demo countdown every frame, so the demo never fires.
+	 */
+	const int arcadeLinkOwnsMenu = MainArcadeLink_Frame(gGT, gGamepads);
+#endif
+
 	if ((sdata->ptrActiveMenu != 0) || ((gGT->gameMode1 & END_OF_RACE) != 0))
 	{
 		RECTMENU_CollectInput();
+#if defined(CTR_NATIVE)
+		if (arcadeLinkOwnsMenu != 0)
+		{
+			RECTMENU_ClearInput();
+		}
+#endif
 	}
 
 	if (sdata->ptrActiveMenu != 0)

@@ -18,6 +18,8 @@
 #define EnterCriticalSection(x)
 #define ExitCriticalSection()
 
+#include "platform/native_arcade_link_host.h"
+#include "platform/native_arcade_link_options.h"
 #include "platform/native_assets.h"
 #include "platform/native_display_config.h"
 #include "platform/native_frame_capture.h"
@@ -165,6 +167,26 @@ int main(int argc, char *argv[])
 		NativeDisplayConfig_SetDefaults(&displayConfig);
 	}
 
+	/* Host-local arcade-link launch configuration, never match identity
+	 * (docs/GAME_LOOP_UI_MILESTONE.md section 2.5). Like the frame-capture
+	 * options, a malformed request is fatal: a cabinet must not silently come
+	 * up unlinked. With no arcade-link option everything stays dormant. */
+	struct NativeArcadeLinkOptions arcadeLinkOptions;
+
+	NativeArcadeLinkOptions_SetDefaults(&arcadeLinkOptions);
+	if (!NativeArcadeLinkOptions_ApplyArgs(argc, argv, &arcadeLinkOptions))
+	{
+		fprintf(stderr, "[CTR Native] invalid arcade-link option; expected --arcade-link cab1|cab2 --arcade-link-port <1-65535> --arcade-link-peer <a.b.c.d:port> (repeatable), or --arcade-link-preview <screen> alone.\n");
+		return NativeConsole_Return(1);
+	}
+#if !defined(CTR_INTERNAL)
+	if (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE)
+	{
+		fprintf(stderr, "[CTR Native] --arcade-link-preview is available in internal builds only.\n");
+		return NativeConsole_Return(1);
+	}
+#endif
+
 	printf("[CTR Native] Starting...\n");
 	printf("[CTR Native] Local render scale: %dx\n", displayConfig.renderScale);
 	printf("[CTR Native] Local window mode: %s\n", displayConfig.fullscreen ? "fullscreen" : "windowed");
@@ -259,8 +281,58 @@ int main(int argc, char *argv[])
 	(void)argv;
 #endif
 
+	/* The link fixture carries the build and content identity. It is read
+	 * once here, after the disc image was opened by NativeAssets_Init; the
+	 * disc image caches the content digest, the same one the replay
+	 * scheduler reads, so nothing is hashed per frame. */
+	struct NativeIdentityV1 arcadeLinkIdentity;
+	const struct NativeIdentityV1 *arcadeLinkIdentityPtr = NULL;
+
+	if (arcadeLinkOptions.enabled != 0u)
+	{
+		if (!NativeIdentity_Get(&arcadeLinkIdentity))
+		{
+			fprintf(stderr, "[CTR Native] arcade link requires a known build and content identity.\n");
+			Platform_LogFlush();
+			Platform_Shutdown();
+			return NativeConsole_Return(1);
+		}
+		arcadeLinkIdentityPtr = &arcadeLinkIdentity;
+	}
+	if (!NativeArcadeLinkHost_Configure(&arcadeLinkOptions, arcadeLinkIdentityPtr))
+	{
+		fprintf(stderr, "[CTR Native] failed to configure the arcade link.\n");
+		NativeArcadeLinkHost_Shutdown();
+		Platform_LogFlush();
+		Platform_Shutdown();
+		return NativeConsole_Return(1);
+	}
+	if (arcadeLinkOptions.enabled != 0u)
+	{
+		printf("[CTR Native] arcade link: cab%u port %u, %u peers\n", (arcadeLinkOptions.localRole == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN) ? 2u : 1u,
+		       (unsigned)arcadeLinkOptions.localPort, (unsigned)arcadeLinkOptions.peerCount);
+	}
+	else if (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE)
+	{
+		printf("[CTR Native] arcade link: preview %s\n", NativeArcadeLinkOptions_PreviewName(arcadeLinkOptions.preview));
+	}
+	else
+	{
+		printf("[CTR Native] arcade link: off\n");
+	}
+	fflush(stdout);
+	if (NativeArcadeLinkHost_Mode() != (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF)
+	{
+		/* The host's quit and window-close paths leave through exit(), which
+		 * runs Platform_Shutdown from its atexit registration in Platform_Init.
+		 * Handlers run in reverse order, so registering here closes the link
+		 * before Platform_Shutdown on those paths too. */
+		(void)atexit(NativeArcadeLinkHost_Shutdown);
+	}
+
 	const int result = CTR_Main();
 
+	NativeArcadeLinkHost_Shutdown();
 	Platform_Shutdown();
 	return NativeConsole_Return(result);
 }

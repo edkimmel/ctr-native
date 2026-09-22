@@ -258,6 +258,88 @@ replay, and canonical-state behaviour is unchanged by default:
   `exit`, and `exit-opponent-left`. A preview is exclusive with
   `--arcade-link`, and a port or peer without `--arcade-link` is an error.
 
+Exact command lines (Task 6b-2), run from the build directory:
+
+```sh
+# Cabinet 1 on port 7001, trying cabinet 2 at 192.168.1.12:7002
+ctr_native.exe --arcade-link cab1 --arcade-link-port 7001 --arcade-link-peer 192.168.1.12:7002
+# Cabinet 2, the mirror image
+ctr_native.exe --arcade-link cab2 --arcade-link-port 7002 --arcade-link-peer 192.168.1.11:7001
+# Operator review capture of one screen (internal builds)
+ctr_native.exe --arcade-link-preview results --capture-frame 1800=results.bmp --exit-after-frame 1810
+```
+
+main.c parses these right after the display options. A malformed
+arcade-link option is fatal with a one-line usage message, the same posture
+as the frame-capture options, and `--arcade-link-preview` is rejected in a
+build without CTR_INTERNAL. With `--arcade-link`, main.c reads the build and
+content identity once with NativeIdentity_Get after asset and replay
+initialisation (the disc image caches the content digest the replay
+scheduler also reads, so nothing is hashed per frame) and fails with
+"arcade link requires a known build and content identity" if it is not
+known. It then calls NativeArcadeLinkHost_Configure (failure is fatal), logs
+one line (`arcade link: off`, `arcade link: cabN port P, K peers`, or
+`arcade link: preview <name>`), and shuts the host down before
+Platform_Shutdown on every exit path after Configure, including the host's
+quit and window-close paths, which leave through exit() (an atexit
+registration made after Platform_Init's own runs first).
+
+The live hook is game/MAIN/MainArcadeLink.c, called once per frame from
+MainFrame_RenderFrame at the retail menu seam, just before
+RECTMENU_CollectInput. With the host mode OFF it returns 0 as its first
+statement and changes nothing, so the default path is retail. Otherwise:
+
+- Ownership. The arcade-link layer owns a frame's menu layer when the
+  main-menu level is idle (levelID MAIN_MENU_LEVEL, no load in progress),
+  the title intro has finished (MM_TITLE_MENU_STATE is IN_MENU), the retail
+  top-level main menu is the active box with no submenu open, and
+  mainMenuState is MAIN_MENU_TITLE; or whenever an arcade-link screen is
+  active (NativeArcadeLinkHost_ScreenActive, always true in preview mode).
+- LINK mode, when it owns the frame: on the attract screen (screen OFF) a
+  rising edge of START or CROSS on local player 0 calls
+  NativeArcadeLinkHost_Enter; NativeArcadeLinkHost_Tick runs every owned
+  frame with player 0's held buttons mapped to the logical menu bits
+  (BTN_CROSS_one and BTN_SQUARE_one, not the combined bits). A button already
+  held when the layer takes the frame is not a press. START_RACE logs that
+  the networked race launch is not wired yet (Task 7) and calls
+  NativeArcadeLinkHost_AbortToTitle, back to the attract screen.
+  RETURN_TO_TITLE off the main-menu level uses the retail demo-mode exit
+  (numPlyrNextGame 1, mainMenuState MAIN_MENU_TITLE,
+  MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL)); on the main-menu level it
+  needs nothing.
+- PREVIEW mode: the same ownership rule and a Tick every frame, never
+  Enter; it draws the scripted preview screen.
+- Drawing: the host view goes field for field into the layout builder
+  (2.4), and the draw list is walked in order with the retail primitives:
+  TEXT with DecalFont_DrawLine, HIGHLIGHT with the RECTMENU_DrawSelf row
+  highlight (CTR_Box_DrawClearBox with menuRowHighlight_Normal), PANEL with
+  RECTMENU_DrawInnerRect in style 0, the retail main menu's drawStyle.
+- Title, demo, and input. While the layer owns the frame, the retail
+  main-menu box neither receives input nor draws, but the retail title scene
+  keeps running. RECTMENU_ProcessState still runs, so the box's funcPtr
+  (MM_MenuProc_Main) keeps driving the title camera and trophy animation
+  (MM_Title_*). The per-player menu input RECTMENU_CollectInput gathers is
+  cleared with RECTMENU_ClearInput in the same frame, so
+  RECTMENU_ProcessInput sees no button and the title thread sees no tap the
+  next frame; nothing collected while the layer owns the frame can reach a
+  retail menu later. The hook sets INVISIBLE on the retail main-menu box, so
+  RECTMENU_ProcessState skips RECTMENU_DrawSelf, and clears it again once
+  the layer no longer owns the frame (retail never sets INVISIBLE on that
+  box). If the title slides out on the main-menu level (the demo countdown
+  fired from the attract screen) the box stays hidden until the level
+  changes, so it does not flash in only to slide away. While any
+  arcade-link screen other than OFF is up, the hook resets the retail title
+  demo countdown (demoCountdownTimer) every frame, so the demo never fires;
+  on the attract screen the countdown runs as retail, reset by any held
+  button, and the demo attract loop plays. Skipping RECTMENU_ProcessState
+  would stop the title funcPtr, and so the title scene. Setting
+  DISABLE_INPUT_ALLOW_FUNCPTRS would also hide and mute the box, but retail
+  title code writes that bit itself (MM_JumpTo_Title_FirstTime sets it and
+  the intro handler clears it), so restoring it could fight retail; and it
+  would leave the collected taps in the per-player buffers for the title
+  thread and later menus. INVISIBLE is written by no retail code on this
+  box, so the hook can own and restore it without conflict.
+
 The fixture (native_arcade_link_options, Task 6a) is profile ARCADE_TWO_CAB
 on track 3 (CRASH_COVE), 3 laps, a 30/1 tick rate, master seed
 0x4354524e41524331 ("CTRNARC1"), characters 0..5 in slots 0..5 (CAB1 Crash,
@@ -328,6 +410,9 @@ for the operator to confirm or change after seeing the built flow.
     timeout of resultsIdleTimeoutTicks = 900 (30 s) returns an abandoned
     cabinet to the title/attract loop; matchFoundHoldTicks = 45 (1.5 s);
     exitHoldTicks = 60 (2 s).
+11. UX-11: In arcade-link mode the retail main-menu box is replaced by the
+    attract prompt; START or CROSS enters the lobby; the retail title scene
+    and demo attract loop keep running while the screen is OFF.
 
 ## 4. Constraints
 
@@ -441,7 +526,8 @@ platform/native_arcade_link_options.c,
 tests/native_arcade_link_options_test.c, and
 tests/native_arcade_link_options_isolation_test.cmake (library
 ctr_native_arcade_link_options, tests native_arcade_link_options_unit and
-native_arcade_link_options_isolation); not yet linked into ctr_native.
+native_arcade_link_options_isolation); reaches ctr_native through the host
+glue (Task 6b-2).
 
 ### Task 6b-1 -- host glue (native_arcade_link_host)
 
@@ -449,16 +535,30 @@ Status: done. Landed as include/platform/native_arcade_link_host.h,
 platform/native_arcade_link_host.c, tests/native_arcade_link_host_test.c,
 and tests/native_arcade_link_host_isolation_test.cmake (library
 ctr_native_arcade_link_host, tests native_arcade_link_host_unit and
-native_arcade_link_host_isolation); not yet linked into ctr_native.
+native_arcade_link_host_isolation); linked into ctr_native by Task 6b-2.
 
 ### Task 6b-2 -- live hook, dormant by default
 
-Status: planned. Hooking the already-landed option parser
-(native_arcade_link_options) and host glue (native_arcade_link_host) into
-main.c, linking the new libraries into ctr_native, the CTR_NATIVE-only drawer in the unity chain, the title-screen
-entry into LOBBY, RETURN_TO_TITLE back to the title/attract loop, and the
-internal-only preview option. Review required: it touches the game loop,
-even though default behaviour is unchanged.
+Status: done. The option parser and host glue are hooked into main.c, the
+host glue is linked into ctr_native, and the CTR_NATIVE-only drawer and hook
+are in the unity chain: title-screen entry into LOBBY, START_RACE aborting to
+the title until Task 7, RETURN_TO_TITLE back to the title/attract loop, and
+the internal-only preview option (section 2.5). Review required: it touches
+the game loop, even though default behaviour is unchanged.
+Landed as game/MAIN/MainArcadeLink.h, game/MAIN/MainArcadeLink.c (with
+game/MAIN/MainArcadeLinkLayout.c, both unity-included from
+game/game_unity.h after the 230 overlay), the hook in
+game/MAIN/MainFrame_RenderFrame.c, the option, identity, configure, and
+shutdown wiring in main.c, the ctr_native link of
+ctr_native_arcade_link_host in CMakeLists.txt, and
+tests/main_arcade_link_hook_isolation_test.cmake (test
+main_arcade_link_hook_isolation). ctr_native does not link
+ctr_native_arcade_link_layout; that library remains for its unit test.
+Linking the host glue adds no duplicate symbol: main.c already
+unity-includes platform/native_sha256.c, and ctr_native_sha256 (reached
+through the options library, and already through ctr_native_match_config)
+is a static library whose members the linker never pulls because main.obj
+defines their symbols; the host chain does not link ctr_native_identity.
 
 ### Task 7 -- networked race launch
 

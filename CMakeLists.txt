@@ -311,7 +311,7 @@ target_link_libraries(ctr_native_lobby_state PUBLIC ctr_native_lockstep_peer_lin
 # Arcade menu input seam (docs/GAME_LOOP_UI_MILESTONE.md section 2.1): a pure
 # classifier turning one player's held logical buttons into at most one
 # PREV/NEXT/CONFIRM/BACK event per tick, release-to-arm and rising-edge only.
-# A leaf with no link dependencies; not yet linked into ctr_native (Task 6).
+# A leaf with no link dependencies; reaches ctr_native through the host glue.
 add_library(ctr_native_arcade_menu_input STATIC platform/native_arcade_menu_input.c)
 set_target_properties(ctr_native_arcade_menu_input PROPERTIES
     C_STANDARD 17
@@ -323,7 +323,7 @@ target_include_directories(ctr_native_arcade_menu_input PUBLIC ${CMAKE_SOURCE_DI
 # Arcade screen flow seam (docs/GAME_LOOP_UI_MILESTONE.md section 2.2): a pure
 # state machine for the arcade-link screens, fed one menu event and one
 # observation per tick and returning at most one action. Links only the menu
-# input seam for its event enum; not yet linked into ctr_native (Task 6).
+# input seam for its event enum; reaches ctr_native through the host glue.
 add_library(ctr_native_arcade_flow STATIC platform/native_arcade_flow.c)
 set_target_properties(ctr_native_arcade_flow PROPERTIES
     C_STANDARD 17
@@ -336,8 +336,8 @@ target_link_libraries(ctr_native_arcade_flow PUBLIC ctr_native_arcade_menu_input
 # Arcade-link host adapter (docs/GAME_LOOP_UI_MILESTONE.md section 2.3): the
 # only production module that composes the lobby layer with the
 # failure-handling layer and drives the pure arcade screen flow. It reaches
-# the transport only through ctr_native_lobby_state. Not yet linked into
-# ctr_native (Task 6).
+# the transport only through ctr_native_lobby_state. Reaches ctr_native
+# through the host glue.
 add_library(ctr_native_arcade_netplay STATIC platform/native_arcade_netplay.c)
 set_target_properties(ctr_native_arcade_netplay PROPERTIES
     C_STANDARD 17
@@ -352,8 +352,8 @@ target_link_libraries(ctr_native_arcade_netplay PUBLIC
 
 # Arcade-link screen layout builder (docs/GAME_LOOP_UI_MILESTONE.md section
 # 2.4, Task 5): a pure draw-list builder under game/MAIN with no game globals
-# and no rendering. Not linked into ctr_native and not in game/game_unity.h
-# yet (Task 6).
+# and no rendering. ctr_native unity-includes the same source (game/game_unity.h)
+# instead of linking this target; the target exists for the unit test.
 add_library(ctr_native_arcade_link_layout STATIC game/MAIN/MainArcadeLinkLayout.c)
 set_target_properties(ctr_native_arcade_link_layout PROPERTIES
     C_STANDARD 17
@@ -366,7 +366,7 @@ target_link_libraries(ctr_native_arcade_link_layout PUBLIC ctr_native_arcade_flo
 # Arcade-link host options and fixed race fixture (docs/GAME_LOOP_UI_MILESTONE.md
 # sections 2.5 and 3, UX-8, Task 6a): pure argv parsing and a pure fixture
 # builder over a caller-supplied identity. Uses only the identity struct, so
-# it does not link ctr_native_identity. Not yet linked into ctr_native (Task 6b).
+# it does not link ctr_native_identity. Reaches ctr_native through the host glue.
 add_library(ctr_native_arcade_link_options STATIC platform/native_arcade_link_options.c)
 set_target_properties(ctr_native_arcade_link_options PROPERTIES
     C_STANDARD 17
@@ -379,8 +379,8 @@ target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_con
 # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6, Task
 # 6b-1): a process-wide singleton owning one arcade-link host adapter (link
 # mode) or a scripted screen preview (preview mode), behind a small
-# game-safe API. Dormant unless configured. Not yet linked into ctr_native
-# (Task 6b-2).
+# game-safe API. Dormant unless configured. Linked into ctr_native, whose
+# main.c configures it from the host options (Task 6b-2).
 add_library(ctr_native_arcade_link_host STATIC platform/native_arcade_link_host.c)
 set_target_properties(ctr_native_arcade_link_host PROPERTIES
     C_STANDARD 17
@@ -804,7 +804,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -1193,6 +1193,12 @@ if(BUILD_TESTING)
 
     add_test(NAME native_arcade_link_host_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_link_host_isolation_test.cmake")
+
+    # Arcade-link live hook (docs/GAME_LOOP_UI_MILESTONE.md section 2.5, Task
+    # 6b-2): native only, dormant by default, host glue API only, and wired
+    # into main.c, the unity chain, and the retail menu seam as designed.
+    add_test(NAME main_arcade_link_hook_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_hook_isolation_test.cmake")
 
     add_test(NAME native_lockstep_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_isolation_test.cmake")
