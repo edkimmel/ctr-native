@@ -293,6 +293,21 @@ target_include_directories(ctr_native_lockstep_peer_link PUBLIC ${CMAKE_SOURCE_D
 target_link_libraries(ctr_native_lockstep_peer_link PUBLIC
     ctr_native_udp_transport ctr_native_lockstep_handshake ctr_native_lockstep_session)
 
+# Lobby / waiting-flow state layer (docs/LOBBY_MILESTONE.md section 2.4): a
+# data/state-layer-only policy wrapper over ctr_native_lockstep_peer_link
+# adding a caller-supplied candidate peer address list and a frame-counted
+# per-candidate attempt budget, exposing a small state enum an eventual
+# waiting/lobby UI can read. No menu, no wheel input, no rendering; nothing
+# under game/ references this module.
+add_library(ctr_native_lobby_state STATIC platform/native_lobby_state.c)
+set_target_properties(ctr_native_lobby_state PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_lobby_state PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_lobby_state PUBLIC ctr_native_lockstep_peer_link)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -999,6 +1014,17 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_lockstep_peer_link_test PRIVATE ctr_native_lockstep_peer_link)
     add_test(NAME native_lockstep_peer_link_unit COMMAND $<TARGET_FILE:native_lockstep_peer_link_test>)
+
+    # Lobby / waiting-flow state layer (docs/LOBBY_MILESTONE.md section 2.4,
+    # Task 6): real loopback sockets, all within this one test process.
+    add_executable(native_lobby_state_test tests/native_lobby_state_test.c)
+    set_target_properties(native_lobby_state_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_lobby_state_test PRIVATE ctr_native_lobby_state)
+    add_test(NAME native_lobby_state_unit COMMAND $<TARGET_FILE:native_lobby_state_test>)
 
     add_test(NAME native_lockstep_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_isolation_test.cmake")
