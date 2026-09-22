@@ -205,6 +205,32 @@ target_link_libraries(ctr_native_lockstep_session PUBLIC
     ctr_native_lockstep_protocol ctr_native_lockstep_input_window
     ctr_native_canonical_state_v4 ctr_native_match_config)
 
+# Stall-timeout policy on top of the lockstep session: turns an indefinitely
+# retried stall into a terminated match outcome after a bounded number of
+# consecutive stalled frames, and mirrors the session's own
+# DIVERGED-outranks-FAULTED priority.  Reads the session only through its
+# public const-or-NULL accessors and never mutates it.
+add_library(ctr_native_lockstep_match_outcome STATIC platform/native_lockstep_match_outcome.c)
+set_target_properties(ctr_native_lockstep_match_outcome PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_lockstep_match_outcome PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_lockstep_match_outcome PUBLIC ctr_native_lockstep_session)
+
+# Caller-owned per-slot lifecycle tracking for peer-drop policy, entirely
+# separate from struct NativeMatchConfigV1.  It never touches canonical
+# state, replay, or the topology lease, and never mutates the match config.
+add_library(ctr_native_lockstep_match_roster STATIC platform/native_lockstep_match_roster.c)
+set_target_properties(ctr_native_lockstep_match_roster PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_lockstep_match_roster PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_lockstep_match_roster PUBLIC ctr_native_match_config ctr_native_lockstep_match_outcome)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -778,6 +804,24 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_lockstep_session_test PRIVATE ctr_native_lockstep_session)
     add_test(NAME native_lockstep_session_unit COMMAND $<TARGET_FILE:native_lockstep_session_test>)
+
+    add_executable(native_lockstep_match_outcome_test tests/native_lockstep_match_outcome_test.c)
+    set_target_properties(native_lockstep_match_outcome_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_lockstep_match_outcome_test PRIVATE ctr_native_lockstep_match_outcome ctr_native_lockstep_session)
+    add_test(NAME native_lockstep_match_outcome_unit COMMAND $<TARGET_FILE:native_lockstep_match_outcome_test>)
+
+    add_executable(native_lockstep_match_roster_test tests/native_lockstep_match_roster_test.c)
+    set_target_properties(native_lockstep_match_roster_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_lockstep_match_roster_test PRIVATE ctr_native_lockstep_match_roster ctr_native_match_config)
+    add_test(NAME native_lockstep_match_roster_unit COMMAND $<TARGET_FILE:native_lockstep_match_roster_test>)
 
     add_executable(native_lockstep_transport_fault_test tests/native_lockstep_transport_fault_test.c)
     set_target_properties(native_lockstep_transport_fault_test PROPERTIES
