@@ -552,7 +552,9 @@ Task 2 `f9f3c2742`; Task 3 `ff6a6db66`, fixes `8ec228319`, `a67a55aad`; Task 4
 `7e7d3f8b4`; Task 5 `643787e22`; Task 6 this commit). Full suite: 77 tests,
 100% passed. The only remaining work from the milestone statement is the real
 wired-LAN socket layer, deliberately not built by this milestone (section 2.5)
-and separately gated.
+and separately gated. Integration step 5 (failure handling, results, and
+rematch) has since landed as its own milestone; see
+`docs/FAILURE_HANDLING_MILESTONE.md`.
 
 ### Task 1 - frame-bundle codec
 

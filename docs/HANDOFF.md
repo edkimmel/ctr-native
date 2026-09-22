@@ -34,7 +34,10 @@ Integration order:
 4. Native lockstep protocol and virtual-network fault tests — protocol design
    and fault-tolerant session logic complete; real wired-LAN transport not
    started, separately gated (see Networking).
-5. Failure handling, results, and rematch.
+5. Failure handling, results, and rematch — stall-timeout policy, peer-drop
+   roster, and rematch config builder complete and fault-tested against
+   `native_virtual_datagram`; no game-loop integration or results/rematch UI
+   yet.
 6. CAB1 G29/kiosk gate.
 7. Two-cabinet fleet acceptance.
 
@@ -108,6 +111,25 @@ socket/OS transport exists yet.
 - There are still no sockets (`winsock`, `AF_INET`, SDL_net) and no lobby or
   peer discovery. `NativeMatchConfigV1.protocolVersion` is a reserved field,
   not a wire format, though the lockstep bundle copies and compares it.
+- **Failure handling, peer drop, and rematch** (`native_lockstep_match_outcome.c`/`.h`,
+  `native_lockstep_match_roster.c`/`.h`, `native_lockstep_rematch.c`/`.h`)
+  build a policy layer on top of the session. `NativeLockstepMatchOutcome`
+  turns an indefinitely retried stall into a latch-once, bounded
+  `STALL_TIMEOUT` outcome after a configurable number of consecutive stalled
+  polls (default 180 frames / 3 s at 60 Hz, range 30-600), mirroring the
+  session's own DIVERGED-outranks-FAULTED priority for the two other
+  terminal causes. `NativeLockstepMatchRoster` tracks each slot's current
+  lifecycle in a caller-owned array, separate from `NativeMatchConfigV1`
+  (whose `initialLifecycle` is pinned and digested), and drops every human
+  peer named by a latched outcome except the local slot; a bot slot is never
+  dropped. `NativeLockstepRematch` builds a fresh `NativeMatchConfigV1` for
+  the same fixture with a mandatory new `masterSeed`, and never resumes a
+  session left DIVERGED/FAULTED or a replay scheduler left MISMATCH/POISON —
+  a rematch always opens a brand-new session and a brand-new V4 replay
+  recording. This layer is fault-tested against `native_virtual_datagram` the
+  same way the protocol/window/session stack is. None of it is wired into
+  the game loop yet, there is no results/rematch UI, and it makes no change
+  to the topology lease, canonical state, or replay wire formats.
 
 ## Topology lease
 
@@ -153,6 +175,12 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
   `platform/native_lockstep_session.c`,
   `include/platform/native_lockstep_session.h` (session, first-divergence and
   first-fault reports).
+- Failure handling: `platform/native_lockstep_match_outcome.c`,
+  `include/platform/native_lockstep_match_outcome.h` (stall-timeout policy
+  and outcome latch); `platform/native_lockstep_match_roster.c`,
+  `include/platform/native_lockstep_match_roster.h` (peer-lifecycle roster
+  and drop policy); `platform/native_lockstep_rematch.c`,
+  `include/platform/native_lockstep_rematch.h` (rematch config builder).
 - Presentation options (host-local): `platform/native_display_config.c`,
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
@@ -183,14 +211,19 @@ milestones. The full suite passes. LF-to-CRLF warnings are benign.
 
 ## Next work
 
-Integration step 5: failure handling, results, and rematch. The lockstep
-session already reports a stall, a first-divergence, and a first-fault
-condition (see Networking); step 5 decides what the game does with each of
-those (how long to wait on a stall, when to drop a peer, what the results and
-rematch flow show), and, following this milestone's own pattern, that logic
-can be designed and fault-tested against `native_virtual_datagram` exactly as
-the lockstep protocol was, before a real wired-LAN socket layer exists. The
-real socket/transport layer (winsock or SDL_net, peer discovery, a lobby)
-remains a separately gated piece of work with its own live-cabinet evidence
-requirement, needed before step 6 (CAB1 G29/kiosk gate) and step 7 (two-cabinet
-fleet acceptance) can run on real hardware.
+Integration step 5's failure-handling policy (stall-timeout outcome,
+peer-drop roster, rematch config builder — see Networking) is designed and
+fault-tested against `native_virtual_datagram`, the same way the lockstep
+protocol was, but two things remain undone and neither has been touched by
+this milestone:
+
+- **Game-loop integration.** `NativeLockstepMatchOutcome`,
+  `NativeLockstepMatchRoster`, and `NativeLockstepRematch` are standalone
+  `platform/native_*` libraries; nothing under `game/` calls them yet, and
+  there is no results or rematch UI that reads their reports.
+- **The real socket/transport layer** (winsock or SDL_net, peer discovery, a
+  lobby) remains a separately gated piece of work with its own live-cabinet
+  evidence requirement.
+
+Both need their own live-cabinet evidence before step 6 (CAB1 G29/kiosk gate)
+and step 7 (two-cabinet fleet acceptance) can run on real hardware.
