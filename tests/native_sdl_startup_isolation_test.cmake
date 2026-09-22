@@ -53,7 +53,7 @@ endfunction()
 ctr_read_source("platform/native_platform.c" platform_source)
 ctr_require("platform/native_platform.c" "${platform_source}" "#include \"platform/native_sdl_assert.h\"")
 
-string(FIND "${platform_source}" "void Platform_Init(" init_begin)
+string(FIND "${platform_source}" "int Platform_Init(" init_begin)
 if(init_begin EQUAL -1)
     message(FATAL_ERROR "sdl startup: cannot locate Platform_Init in platform/native_platform.c")
 endif()
@@ -85,6 +85,46 @@ ctr_read_source("main.c" main_source)
 ctr_forbid("main.c" "${main_source}" "native_sdl_assert.c")
 ctr_read_source("game/game_unity.h" game_unity_source)
 ctr_forbid("game/game_unity.h" "${game_unity_source}" "native_sdl_assert")
+
+# d. Platform initialisation failure is fatal.  Platform_Init reports success,
+#    every failure branch logs SDL_GetError() and returns 0, and main.c exits
+#    non-zero instead of running the game without SDL video.
+ctr_read_source("include/platform.h" platform_header)
+ctr_require("include/platform.h" "${platform_header}" "int Platform_Init(")
+ctr_forbid("include/platform.h" "${platform_header}" "void Platform_Init(")
+
+string(SUBSTRING "${init_body}" "${sdl_init_offset}" -1 sdl_init_tail)
+string(FIND "${sdl_init_tail}" "\n\t}" sdl_init_branch_length)
+if(sdl_init_branch_length EQUAL -1)
+    message(FATAL_ERROR "sdl startup: cannot locate the SDL_Init( failure branch in Platform_Init")
+endif()
+string(SUBSTRING "${sdl_init_tail}" 0 "${sdl_init_branch_length}" sdl_init_branch)
+ctr_require("Platform_Init's SDL_Init( failure branch" "${sdl_init_branch}" "SDL_GetError()")
+ctr_require("Platform_Init's SDL_Init( failure branch" "${sdl_init_branch}" "return 0;")
+ctr_forbid("Platform_Init" "${init_body}" "return;")
+ctr_count("${init_body}" "Platform_LogError(" init_error_count)
+ctr_count("${init_body}" "SDL_GetError()" init_sdl_error_count)
+ctr_count("${init_body}" "return 0;" init_failure_return_count)
+if(init_error_count LESS 3 OR NOT init_error_count EQUAL init_sdl_error_count OR NOT init_error_count EQUAL init_failure_return_count)
+    message(FATAL_ERROR
+        "sdl startup: every Platform_Init failure must log SDL_GetError() and return 0 (${init_error_count} errors, ${init_sdl_error_count} SDL_GetError, ${init_failure_return_count} return 0)")
+endif()
+string(REGEX MATCH "return 1;[\r\n\t ]*$" init_success_return "${init_body}")
+if("${init_success_return}" STREQUAL "")
+    message(FATAL_ERROR "sdl startup: Platform_Init must end with 'return 1;'")
+endif()
+
+# Replace each checked call with a marker (a MATCHALL list would split on the
+# ';' inside each match); any Platform_Init( left over is an unchecked call.
+ctr_count("${main_source}" "Platform_Init(" main_init_call_count)
+string(REGEX REPLACE
+    "if \\(!Platform_Init\\([^\r\n]*\\)\\)[\r\n\t ]*{[^}]*return NativeConsole_Return\\(1\\);[\r\n\t ]*}"
+    "@CTR_CHECKED_PLATFORM_INIT@" main_checked_source "${main_source}")
+ctr_count("${main_checked_source}" "@CTR_CHECKED_PLATFORM_INIT@" main_checked_init_count)
+if(main_init_call_count LESS 2 OR NOT main_init_call_count EQUAL main_checked_init_count)
+    message(FATAL_ERROR
+        "sdl startup: every Platform_Init( call in main.c must be 'if (!Platform_Init(...))' returning NativeConsole_Return(1) (${main_init_call_count} calls, ${main_checked_init_count} checked)")
+endif()
 
 # The handler returns always-ignore and delegates only to SDL's default
 # handler when an explicit override is present.

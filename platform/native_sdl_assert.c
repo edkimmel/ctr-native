@@ -76,12 +76,16 @@ static SDL_AssertState SDLCALL NativeSdlAssert_Handler(const SDL_AssertData *dat
 		(void)snprintf(line, sizeof(line), "[CTR Native] SDL assertion failed; continuing\n");
 	}
 
-	fputs(line, stderr);
-	fflush(stderr);
-
+	/* The log callback owns the console copy (the platform log already
+	 * writes errors to stderr), so stderr is used directly only without one. */
 	if (s_nativeSdlAssertLogFn != NULL)
 	{
 		s_nativeSdlAssertLogFn(line);
+	}
+	else
+	{
+		fputs(line, stderr);
+		fflush(stderr);
 	}
 
 	return SDL_ASSERTION_ALWAYS_IGNORE;

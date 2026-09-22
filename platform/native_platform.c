@@ -407,7 +407,7 @@ internal void Platform_LogSdlAssertion(const char *line)
 	Platform_LogError("%s", line);
 }
 
-void Platform_Init(const char *title, int width, int height, int fullscreen)
+int Platform_Init(const char *title, int width, int height, int fullscreen)
 {
 	char windowName[128];
 
@@ -419,18 +419,18 @@ void Platform_Init(const char *title, int width, int height, int fullscreen)
 
 	if (SDL_Init(SDL_INIT_VIDEO) == 0)
 	{
-		Platform_LogError("[CTR Native] Failed to initialise SDL\n");
+		Platform_LogError("[CTR Native] Failed to initialise SDL video: %s\n", SDL_GetError());
 		Platform_LogShutdown();
-		return;
+		return 0;
 	}
 
 	s_platformInitialized = 1;
 
 	if (!NativeRenderer_InitialiseRender(windowName, width, height, fullscreen != 0))
 	{
-		Platform_LogError("[CTR Native] Failed to initialise window\n");
+		Platform_LogError("[CTR Native] Failed to initialise window: %s\n", SDL_GetError());
 		Platform_Shutdown();
-		return;
+		return 0;
 	}
 
 	/* SDL fullscreen uses the desktop resolution. Preserve the renderer's
@@ -440,14 +440,17 @@ void Platform_Init(const char *title, int width, int height, int fullscreen)
 
 	if (!NativeRenderer_InitialisePSX())
 	{
-		Platform_LogError("[CTR Native] Failed to initialise PSX renderer state\n");
+		Platform_LogError("[CTR Native] Failed to initialise PSX renderer state: %s\n", SDL_GetError());
 		Platform_Shutdown();
-		return;
+		return 0;
 	}
 
 	atexit(Platform_Shutdown);
 	Platform_UpdateCursorVisibility();
+	/* Input/HID initialisation is deliberately non-fatal: keyboard play must
+	 * still work when no controller subsystem is available. */
 	Platform_InputInit();
+	return 1;
 }
 
 void Platform_Shutdown(void)

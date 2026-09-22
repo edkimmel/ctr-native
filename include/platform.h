@@ -10,7 +10,9 @@ struct PlatformMempackArena
 	int backingSize;
 };
 
-void Platform_Init(const char *title, int width, int height, int fullscreen);
+/* Returns 1 on success and 0 on failure. A failure has already been logged
+ * with SDL_GetError() and the platform has been shut down. */
+int Platform_Init(const char *title, int width, int height, int fullscreen);
 void Platform_Shutdown(void);
 void Platform_InitScratchpad(void);
 const struct PlatformMempackArena *Platform_InitMempackArena(void);

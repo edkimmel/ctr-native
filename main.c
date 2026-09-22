@@ -260,10 +260,20 @@ int main(int argc, char *argv[])
 
 #ifdef USE_16BY9
 	printf("[CTR Native] Widescreen\n");
-	Platform_Init("Crash Team Racing", 1280, 720, displayConfig.fullscreen);
+	if (!Platform_Init("Crash Team Racing", 1280, 720, displayConfig.fullscreen))
+	{
+		fprintf(stderr, "[CTR Native] Platform initialisation failed; see the log above.\n");
+		fflush(stderr);
+		return NativeConsole_Return(1);
+	}
 #else
 	printf("[CTR Native] 4:3\n");
-	Platform_Init("Crash Team Racing", 800, 600, displayConfig.fullscreen);
+	if (!Platform_Init("Crash Team Racing", 800, 600, displayConfig.fullscreen))
+	{
+		fprintf(stderr, "[CTR Native] Platform initialisation failed; see the log above.\n");
+		fflush(stderr);
+		return NativeConsole_Return(1);
+	}
 #endif
 	/* This is host presentation state only. The renderer applies it to its GL
 	 * attachments; no game, replay, or canonical-state code observes it. */

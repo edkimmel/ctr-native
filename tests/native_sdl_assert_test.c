@@ -21,6 +21,15 @@ static void CaptureLine(const char *line)
 static SDL_AssertData s_ignoredRecord = {false, 0u, "ignored_condition != 0", NULL, 0, NULL, NULL};
 static SDL_AssertData s_delegatedRecord = {false, 0u, "delegated_condition != 0", NULL, 0, NULL, NULL};
 static SDL_AssertData s_stderrOnlyRecord = {false, 0u, "stderr_only_condition != 0", NULL, 0, NULL, NULL};
+static SDL_AssertData s_routedLogRecord = {false, 0u, "routed_log_condition != 0", NULL, 0, NULL, NULL};
+static SDL_AssertData s_routedStderrRecord = {false, 0u, "routed_stderr_condition != 0", NULL, 0, NULL, NULL};
+
+#define STDERR_CAPTURE_PATH "native_sdl_assert_test_stderr.txt"
+
+static int s_stderrRedirected = 0;
+
+/* stderr is redirected below, so these checks report on stdout. */
+#define CHECK_STDOUT(expression) do { if (!(expression)) { printf("CHECK failed at line %d: %s\n", __LINE__, #expression); return 1; } } while (0)
 
 static int TestFormatter(void)
 {
@@ -136,6 +145,47 @@ static int TestHandler(void)
 	return 0;
 }
 
+/* With a log callback the line goes to the callback only (the platform log
+ * owns the console copy, so the console must not see it twice); without one
+ * it goes to stderr.  stderr cannot be portably restored after freopen, so
+ * this runs last. */
+static int TestStderrRouting(void)
+{
+	char captured[2048];
+	size_t length;
+	FILE *file;
+	int captureBefore;
+
+	if (freopen(STDERR_CAPTURE_PATH, "w", stderr) == NULL)
+	{
+		printf("CHECK failed: cannot redirect stderr to %s\n", STDERR_CAPTURE_PATH);
+		return 1;
+	}
+	s_stderrRedirected = 1;
+
+	captureBefore = s_captureCount;
+	NativeSdlAssert_Install(CaptureLine);
+	(void)SDL_ReportAssertion(&s_routedLogRecord, "fn4", "fourth.c", 11);
+	CHECK_STDOUT(s_captureCount == captureBefore + 1);
+	CHECK_STDOUT(strstr(s_captured, "'routed_log_condition != 0'") != NULL);
+
+	NativeSdlAssert_Install(NULL);
+	(void)SDL_ReportAssertion(&s_routedStderrRecord, "fn5", "fifth.c", 13);
+	CHECK_STDOUT(s_captureCount == captureBefore + 1);
+
+	fflush(stderr);
+	file = fopen(STDERR_CAPTURE_PATH, "r");
+	CHECK_STDOUT(file != NULL);
+	length = fread(captured, 1, sizeof(captured) - 1, file);
+	captured[length] = '\0';
+	fclose(file);
+
+	CHECK_STDOUT(strstr(captured, "routed_log_condition") == NULL);
+	CHECK_STDOUT(strstr(captured, "'routed_stderr_condition != 0' at fn5 (fifth.c:13)") != NULL);
+
+	return 0;
+}
+
 int main(void)
 {
 	int result;
@@ -152,7 +202,21 @@ int main(void)
 	}
 
 	result = TestHandler();
-	SDL_Quit();
+	if (result == 0)
+	{
+		result = TestStderrRouting();
+		SDL_Quit();
+		/* stderr now names the capture file; close it so it can be removed. */
+		if (s_stderrRedirected != 0)
+		{
+			(void)fclose(stderr);
+			(void)remove(STDERR_CAPTURE_PATH);
+		}
+	}
+	else
+	{
+		SDL_Quit();
+	}
 
 	if (result != 0)
 	{

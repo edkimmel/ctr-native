@@ -18,7 +18,8 @@
 typedef void (*NativeSdlAssertLogFn)(const char *line);
 
 /* Installs the handler with SDL_SetAssertionHandler.  logFn receives each
- * formatted line in addition to stderr; NULL means stderr only. */
+ * formatted line instead of stderr (it owns any console copy); NULL means
+ * stderr only. */
 void NativeSdlAssert_Install(NativeSdlAssertLogFn logFn);
 
 /* Formats one newline-terminated report line into buf.  Returns the length
