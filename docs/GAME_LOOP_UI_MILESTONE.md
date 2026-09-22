@@ -1,0 +1,359 @@
+# Game-loop / UI wiring milestone
+
+Design-and-status record for wiring the two existing, tested backend policy
+layers -- the failure-handling layer (docs/FAILURE_HANDLING_MILESTONE.md) and
+the lobby/connect stack (docs/LOBBY_MILESTONE.md) -- into the running game
+loop and a small set of arcade-link screens, on branch `arcade`. Read
+AGENTS.md and docs/HANDOFF.md first. This document follows the same pattern
+as docs/LOCKSTEP_MILESTONE.md and docs/LOBBY_MILESTONE.md: a prospective plan
+with a task list, updated to record status as tasks land.
+
+It expands the docs/HANDOFF.md "Next work" section and adds no scope beyond
+it:
+
+> Owner direction: wire both existing, tested backend policy layers into the
+> actual game loop and UI. [...] This milestone needs a menu/UI pass
+> (lobby/waiting, results, rematch, exit screens) and wheel/G29 input wiring
+> for them, following the existing decompiled menu code's own patterns [...]
+> rather than inventing a new UI framework. This is a design-and-build
+> milestone with real UX decisions (screen layout, wheel navigation feel);
+> the operator should review the resulting flow once it's built.
+
+Real two-cabinet, physical-hardware validation (real wire, real switch, real
+G29 input) is not part of this milestone; it stays gated behind step 6 (CAB1
+G29/kiosk gate) and step 7 (two-cabinet fleet acceptance).
+
+## 1. Starting point (do not modify)
+
+- Failure handling: platform/native_lockstep_match_outcome.{c,h},
+  native_lockstep_match_roster.{c,h}, native_lockstep_rematch.{c,h}.
+- Lobby/connect: platform/native_udp_transport.{c,h},
+  native_lockstep_handshake.{c,h}, native_lockstep_peer_link.{c,h},
+  native_lobby_state.{c,h}.
+- Underneath both: native_lockstep_protocol/_input_window/_session and
+  native_match_config. This milestone calls into all of these and edits none
+  of them.
+- Existing structural rules this milestone keeps, not relaxes:
+  tests/native_lockstep_isolation_test.cmake forbids the tokens `lockstep`,
+  `Lockstep`, `LOCKSTEP` anywhere under game/;
+  tests/native_lockstep_failure_handling_isolation_test.cmake forbids
+  `MatchOutcome`, `MatchRoster`, `LockstepRematch` anywhere under game/.
+  Both remain true after this milestone: game code talks only to the new
+  arcade-link adapter API (section 2.3), never to the lockstep or
+  failure-handling modules by name.
+
+Two facts about the running game shape the task split:
+
+- The game loop runs at 30 Hz (MainFrame_RenderFrame sets
+  `sdata->vsyncTillFlip = 2`, two 60 Hz VBlanks per game tick). Every
+  duration below is in game-loop ticks at 30 Hz. The existing
+  NATIVE_LOCKSTEP_STALL_TIMEOUT_DEFAULT_FRAMES (180) was documented as "3 s
+  at 60 Hz"; at the real 30 Hz loop it would be 6 s, so the adapter passes an
+  explicit 90 ticks (3 s) instead (UX-9), which is inside the frozen
+  [30, 600] range; the frozen constants themselves are not changed.
+- Live per-frame V4 canonical projection (MainCanonicalRuntime_PrepareV4) and
+  the arcade stable-slot roster/bot setup (MainArcadeRoster,
+  MainArcadeBotSetup) are dormant: no live game path calls them (integration
+  step 3 is still in progress). A lockstep session cannot compose bundles
+  past its first inputDelay + 1 frames without recorded V4 digests
+  (NativeLockstepSession_ComposeBundle), and a networked race cannot be
+  launched without the two-human-plus-bot roster. The in-race tasks (7 and 8
+  below) therefore depend on that step-3 work and are listed here so the
+  seam is designed end to end, but they are gated on it.
+
+## 2. Decided design
+
+Four layers, seam first. Each layer depends only on the layers above it in
+this list, and only layer 2.4 lives under game/.
+
+### 2.1 Menu input: native_arcade_menu_input (pure)
+
+platform/native_arcade_menu_input.c and
+include/platform/native_arcade_menu_input.h. Converts one local player's
+held-button word, expressed in the module's own logical button bits (UP,
+DOWN, LEFT, RIGHT, CROSS, CIRCLE, SQUARE, TRIANGLE, START, SELECT, R1), into
+at most one navigation event per tick: PREV, NEXT, CONFIRM, BACK, or NONE.
+The game-side caller translates the retail `BTN_*` held bits from
+`sdata->gGamepads` into these logical bits, so the G29 needs no new
+mapping: it already produces a PS1 pad word (docs/G29_INPUT.md) that the
+retail GAMEPAD code turns into `BTN_*` bits like any other controller.
+Pure, allocation-free, with no game, socket, clock, or lockstep dependency;
+the logical bits keep it independent of both the raw pad format and game
+headers.
+
+Rules (UX-1 to UX-4): release-to-arm on every reset (no event fires until
+every mapped button has been observed released at least once), rising-edge
+only (holding a button never repeats), and ambiguous same-tick edges
+(CONFIRM with BACK, or PREV with NEXT) produce NONE.
+
+### 2.2 Screen flow: native_arcade_flow (pure)
+
+platform/native_arcade_flow.c and include/platform/native_arcade_flow.h. A
+deterministic state machine for the arcade-link screens with its own small
+enums, fed once per tick with a navigation event (2.1) and an observation
+(lobby status, race-finished flag, in-race link-failure reason), returning
+at most one action per tick. It owns no socket and names no lockstep type,
+so it is exhaustively unit-testable.
+
+Screens: OFF, LOBBY, MATCH_FOUND, RACING, RESULTS, REMATCH_WAIT, EXIT.
+Lobby status (mirrors native_lobby_state without naming it): WAITING,
+CONNECTING, READY, REJECTED, LOST. End reason: NONE, FINISHED, PEER_TIMEOUT,
+DESYNC, LINK_ERROR, OPPONENT_LEFT. Actions: NONE, BEGIN_LOBBY,
+RESTART_LOBBY, START_RACE, BEGIN_REMATCH, CLOSE_LINK, RETURN_TO_TITLE.
+
+Transitions:
+
+- OFF: inert. Enter moves to LOBBY and returns BEGIN_LOBBY.
+- LOBBY: WAITING or LOST returns RESTART_LOBBY after lobbyRetryPauseTicks
+  (automatic, indefinite retry); CONNECTING stays; READY moves to
+  MATCH_FOUND; REJECTED stays and shows the rejection, and CONFIRM returns
+  RESTART_LOBBY (no automatic retry, matching native_lobby_state's own rule
+  of never auto-retrying a rejection); BACK in any status moves to EXIT and
+  returns CLOSE_LINK.
+- MATCH_FOUND: input ignored; after matchFoundHoldTicks moves to RACING and
+  returns START_RACE; lobby LOST during the hold moves back to LOBBY and
+  returns RESTART_LOBBY.
+- RACING: input ignored (race input belongs to the game). A link-failure
+  reason moves to RESULTS with that reason; otherwise raceFinished moves to
+  RESULTS with FINISHED. A failure reason outranks FINISHED on the same tick
+  (UX-6).
+- RESULTS: rows REMATCH (default focus) and EXIT. Events are ignored until
+  resultsDwellTicks have elapsed. PREV/NEXT toggle focus; CONFIRM on REMATCH
+  moves to REMATCH_WAIT and returns BEGIN_REMATCH; CONFIRM on EXIT moves to
+  EXIT and returns CLOSE_LINK; BACK moves focus to EXIT without confirming;
+  no event for resultsIdleTimeoutTicks moves to EXIT and returns CLOSE_LINK.
+- REMATCH_WAIT: READY moves to MATCH_FOUND; WAITING or LOST returns
+  RESTART_LOBBY after lobbyRetryPauseTicks; REJECTED, or
+  rematchWaitTimeoutTicks elapsed, moves to EXIT with reason OPPONENT_LEFT
+  and returns CLOSE_LINK; BACK moves to EXIT and returns CLOSE_LINK.
+- EXIT: after exitHoldTicks (opponentLeftNoticeTicks when the reason is
+  OPPONENT_LEFT) moves to OFF and returns RETURN_TO_TITLE.
+
+### 2.3 Host adapter: native_arcade_netplay
+
+platform/native_arcade_netplay.c and include/platform/native_arcade_netplay.h.
+The only production module allowed to name native_lobby_state,
+native_lockstep_match_outcome, native_lockstep_match_roster, and
+native_lockstep_rematch together. It owns one NativeLobbyState, one outcome
+tracker, one roster, one menu-input state, and one flow. Each tick it polls
+the lobby, maps NativeLobbyStateMode onto the flow's lobby status, resets
+the menu-input arming whenever the flow's screen changes, runs the flow, and
+executes the host-side actions itself: BEGIN_LOBBY calls
+NativeLobbyState_Begin, RESTART_LOBBY calls NativeLobbyState_RestartCycle,
+CLOSE_LINK calls NativeLobbyState_Close, and BEGIN_REMATCH closes, builds
+the rematch config, and begins on it. START_RACE and RETURN_TO_TITLE are
+returned to the caller (the game), which owns level loading. Race-time
+hooks (task 8) feed each TakeFrameInputs result into the outcome tracker and
+the roster, and a latched outcome becomes the flow's link-failure reason:
+STALL_TIMEOUT maps to PEER_TIMEOUT, DIVERGED to DESYNC, FAULTED to
+LINK_ERROR.
+
+Rematch agreement is implicit, not a new wire message (UX-7): both peers
+derive the rematch masterSeed deterministically from the agreed config they
+both hold byte-identically (the first 8 bytes, little-endian, of the
+SHA-256 NativeMatchConfigV1_Digest of the previous config; the next 8 bytes
+if that equals the previous seed), build the config with
+NativeLockstepRematch_BuildConfig, and re-run the ordinary handshake on it.
+Two peers that both chose REMATCH therefore propose byte-identical configs
+and reach READY; a peer that chose EXIT has closed its socket, so the other
+side's handshake goes unanswered until rematchWaitTimeoutTicks and it shows
+OPPONENT LEFT. Every rematch opens a brand-new peer link and session, per
+the native_lockstep_rematch.h contract; nothing from a finished, diverged,
+or faulted session is reused.
+
+The adapter's public API uses only NativeArcadeNetplay_* identifiers, so
+game code can call it without tripping the lockstep and failure-handling
+isolation rules.
+
+### 2.4 Screens: game/MAIN/MainArcadeLinkScreens
+
+Split in two, following the existing standalone-testable game/MAIN pattern
+(MainArcadeRoster, MainArcadeBotSetup):
+
+- A pure layout builder (standalone static library, unit-tested) that turns
+  the adapter's view (screen, lobby status, end reason, focused row, ticks
+  in screen, local cabinet role) into a fixed-capacity draw list of text
+  lines: ASCII string, x, y, font (FONT_BIG or FONT_SMALL), and flags
+  (JUSTIFY_CENTER plus a retail colour). No game globals, no rendering.
+- A thin CTR_NATIVE-only drawer, in the game/game_unity.h chain, that walks
+  the draw list with the retail DecalFont_DrawLine and frames it with the
+  retail menu box (RECTMENU_DrawInnerRect / RECTMENU_DrawOuterRect_*), the
+  same primitives VB_EndEvent_DrawMenu (game/225.c) and the RECTMENU code
+  use. No new UI framework.
+
+Layout defaults (UX-10), in the 512 x 216 retail screen space: title line
+in FONT_BIG, ORANGE, centred at y = 40; status/body lines in FONT_SMALL,
+centred, starting at y = 90 with 20 px spacing; menu rows in FONT_BIG,
+centred, at y = 120 and y = 145, the focused row in the retail highlight
+colour and the other row in the normal colour; footer hint in FONT_SMALL at
+y = 190. Strings are ASCII upper case to match the retail font:
+
+| Screen | Title | Body |
+| --- | --- | --- |
+| LOBBY, WAITING | ARCADE LINK | WAITING FOR OPPONENT; THIS CABINET: CAB 1 (or CAB 2) |
+| LOBBY, CONNECTING | ARCADE LINK | CONNECTING |
+| LOBBY, REJECTED | ARCADE LINK | LINK REFUSED: SETTINGS DO NOT MATCH; CROSS: RETRY  TRIANGLE: BACK |
+| MATCH_FOUND | ARCADE LINK | OPPONENT FOUND; GET READY |
+| RESULTS, FINISHED | RACE COMPLETE | rows REMATCH, EXIT |
+| RESULTS, PEER_TIMEOUT | OPPONENT DISCONNECTED | rows REMATCH, EXIT |
+| RESULTS, DESYNC | RACE OUT OF SYNC | rows REMATCH, EXIT |
+| RESULTS, LINK_ERROR | LINK ERROR | rows REMATCH, EXIT |
+| REMATCH_WAIT | REMATCH | WAITING FOR OPPONENT; TRIANGLE: CANCEL |
+| EXIT | THANKS FOR PLAYING (or OPPONENT LEFT) | none |
+
+A trailing 0-3 dot animation on the WAITING and CONNECTING lines is driven
+by ticksInScreen, so it is deterministic and frame-capture friendly.
+
+### 2.5 Activation and scope of the live hook
+
+Everything is dormant unless a host-local option is given, so retail,
+replay, and canonical-state behaviour is unchanged by default:
+
+- `--arcade-link cab1|cab2`, `--arcade-link-port <port>`, and one or more
+  `--arcade-link-peer <ipv4>:<port>` enable the adapter. Like the display
+  options, these are host-local launch configuration, not match identity.
+- The race fixture both cabinets propose is fixed by the build (UX-8), not
+  chosen per cabinet in a menu, because the handshake is validate-and-reject,
+  not negotiation (docs/LOBBY_MILESTONE.md section 2.2).
+- `--arcade-link-preview <screen>` (internal builds only) drives the flow
+  through scripted observations with no socket, so every screen can be
+  captured with the existing `--capture-frame` and `--exit-after-frame`
+  options for operator review.
+
+## 3. UX defaults for operator review
+
+Each is a default chosen for a two-cabinet, wheel-only kiosk, and is flagged
+for the operator to confirm or change after seeing the built flow.
+
+1. UX-1: Confirm is Cross or Start. On the G29 the throttle pedal is also
+   Cross (docs/G29_INPUT.md); that is retail behaviour and is kept, made
+   safe by UX-3.
+2. UX-2: Back is Triangle only. Square is excluded on these screens because
+   the brake pedal is Square: a foot resting on the brake at race end must
+   never exit the session.
+3. UX-3: Release-to-arm on every screen entry, rising edge only, and a
+   30-tick (1 s) results dwell, so a throttle still held across the finish
+   line cannot auto-confirm the results screen.
+4. UX-4: Navigation is D-pad up/left or the left paddle (R1) for previous,
+   and D-pad down/right or the right paddle (Circle) for next. Steering never
+   navigates, so an off-centre wheel cannot drift the focus. No auto-repeat:
+   every menu here has at most two rows.
+5. UX-5: The lobby retries forever, pausing lobbyRetryPauseTicks = 30 (1 s)
+   between candidate-list passes, with a per-candidate attempt budget of 150
+   ticks (5 s) and a HELLO retransmit every 15 ticks (0.5 s). A REJECTED
+   handshake is never retried automatically.
+6. UX-6: An in-race link failure outranks a same-tick race finish, because a
+   desynced or dropped race's standings cannot be trusted.
+7. UX-7: A rematch needs both players to choose REMATCH, and REMATCH is the
+   default focus on the results screen. The rematch wait times out after
+   rematchWaitTimeoutTicks = 300 (10 s) and shows OPPONENT LEFT for
+   opponentLeftNoticeTicks = 90 (3 s).
+8. UX-8: One fixed fixture per build (track, laps, characters, bot
+   difficulty), not a per-cabinet selection menu.
+9. UX-9: The in-race stall timeout is 90 ticks (3 s at the 30 Hz loop); a
+   WAITING FOR OPPONENT overlay appears after 15 stalled ticks (0.5 s).
+10. UX-10: Screen layout and strings as in section 2.4; a results idle
+    timeout of resultsIdleTimeoutTicks = 900 (30 s) returns an abandoned
+    cabinet to the title/attract loop; matchFoundHoldTicks = 45 (1.5 s);
+    exitHoldTicks = 60 (2 s).
+
+## 4. Constraints
+
+1. The topology lease is untouched: no acquire, activate, capture, or
+   publish; no lease owner in checkpoints, replay, or canonical state; no
+   retire hook on LOAD_Hub_ReadFile.
+2. No edits to the lockstep protocol, window, session, failure-handling,
+   handshake, peer-link, lobby-state, UDP-transport, or match-config
+   modules. This milestone calls into them.
+3. The existing lockstep and failure-handling isolation rules on game/ stay
+   exactly as strict as they are.
+4. No dynamic allocation in any new module; portable C17 with extensions off
+   on every new target.
+5. Every new seam gets a unit test; every structural rule gets an isolation
+   test. New game .c files go in game/game_unity.h.
+6. Default behaviour (no `--arcade-link` option) is unchanged; the full
+   replay and network suites must stay green.
+7. A task is done only when `cmake --build build-msvc-x86 --config Debug`
+   succeeds and the full `ctest --test-dir build-msvc-x86 -C Debug` suite
+   passes. Commit on `arcade` only; no push.
+
+## 5. Task list
+
+Baseline before this milestone: 91 tests, 100% passing (commit 52976808c).
+
+### Task 1 -- this document
+
+Status: done.
+
+### Task 2 -- menu input seam (native_arcade_menu_input)
+
+Status: planned. Header, implementation, unit test, isolation test (pure:
+no game, socket, lockstep, clock, lease, or allocation token), C17 target.
+No review required: pure input classification, no identity or replay state.
+
+### Task 3 -- screen flow seam (native_arcade_flow)
+
+Status: planned. Header, implementation, a unit test covering every
+transition in section 2.2 and every timing default, an isolation test
+(pure, same token rules as task 2), C17 target. No review required.
+
+### Task 4 -- host adapter (native_arcade_netplay)
+
+Status: planned. Header, implementation, a unit test over real loopback
+sockets with two in-process adapters (lobby to READY, rematch agreement to
+READY on a new seed, one-sided rematch to OPPONENT LEFT, rejection, backing
+out), a deterministic outcome-mapping test driven through the race-time hook
+without sockets, and an isolation test (no lease, canonical-state, or replay
+write tokens, no allocation, and API names free of the tokens forbidden
+under game/). Review required: it decides which config a rematch runs on.
+
+### Task 5 -- screen layout builder (MainArcadeLinkScreens layout)
+
+Status: planned. A pure standalone library under game/MAIN with a unit test
+of every screen's draw list (strings, positions, focus colour, dot
+animation), and an isolation test that it names no lockstep or
+failure-handling token and touches no game global.
+
+### Task 6 -- live hook, dormant by default
+
+Status: planned. Host option parsing, linking the new libraries into
+ctr_native, the CTR_NATIVE-only drawer in the unity chain, the title-screen
+entry into LOBBY, RETURN_TO_TITLE back to the title/attract loop, and the
+internal-only preview option. Review required: it touches the game loop,
+even though default behaviour is unchanged.
+
+### Task 7 -- networked race launch
+
+Status: gated on integration step 3 (live two-human-plus-bot roster). On
+START_RACE, configure and load the race described by the agreed
+NativeMatchConfigV1 through the arcade roster and bot setup.
+
+### Task 8 -- in-race lockstep drive and failure handling
+
+Status: gated on task 7 and on live V4 canonical projection. Per tick:
+submit the local pad, compose and send, poll, take frame inputs, install
+the committed pads with Platform_InputInstallPadSnapshots, record local V4
+digests, feed the result to the outcome tracker and roster, hold the
+simulation and show the WAITING FOR OPPONENT overlay on a stall, and hand a
+latched outcome or the race finish to the flow's RESULTS screen, reusing the
+retail standings drawing. Review required.
+
+### Task 9 -- docs close-out
+
+Status: planned. Update this document and docs/HANDOFF.md.
+
+## 6. Risks and open questions
+
+1. Tasks 7 and 8 are gated on step-3 roster wiring and live V4 projection.
+   Until then the live hook can reach LOBBY, MATCH_FOUND, and the preview
+   screens, but not a real networked race.
+2. Stale bundles from a just-finished session that arrive after a rematch
+   link has opened on the same port would be staged by the peer link and
+   fault the new session on its match identity. Both peers stop sending
+   bundles when they leave RACING and the results dwell is 1 s, so this
+   needs a peer still racing more than 1 s after the other finished, which
+   lockstep should prevent; task 8 must still test it explicitly.
+3. All tick counts assume the retail 30 Hz loop. A future 60 Hz native mode
+   would halve every duration and needs these defaults revisited.
+4. The G29 menu feel (UX-1 to UX-4) is only unit tested; it is a CAB1
+   live-hardware acceptance item at step 6.
