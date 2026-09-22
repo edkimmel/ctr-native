@@ -376,6 +376,20 @@ set_target_properties(ctr_native_arcade_link_options PROPERTIES
 target_include_directories(ctr_native_arcade_link_options PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_config ctr_native_sha256)
 
+# Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6, Task
+# 6b-1): a process-wide singleton owning one arcade-link host adapter (link
+# mode) or a scripted screen preview (preview mode), behind a small
+# game-safe API. Dormant unless configured. Not yet linked into ctr_native
+# (Task 6b-2).
+add_library(ctr_native_arcade_link_host STATIC platform/native_arcade_link_host.c)
+set_target_properties(ctr_native_arcade_link_host PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_link_host PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_arcade_link_host PUBLIC ctr_native_arcade_netplay ctr_native_arcade_link_options)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -1164,6 +1178,21 @@ if(BUILD_TESTING)
 
     add_test(NAME native_arcade_link_options_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_link_options_isolation_test.cmake")
+
+    # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6,
+    # Task 6b-1): the singleton in every mode, one loopback socket on a dead
+    # peer port, every advance tick-counted, never wall-clock.
+    add_executable(native_arcade_link_host_test tests/native_arcade_link_host_test.c)
+    set_target_properties(native_arcade_link_host_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_link_host_test PRIVATE ctr_native_arcade_link_host)
+    add_test(NAME native_arcade_link_host_unit COMMAND $<TARGET_FILE:native_arcade_link_host_test>)
+
+    add_test(NAME native_arcade_link_host_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_link_host_isolation_test.cmake")
 
     add_test(NAME native_lockstep_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_isolation_test.cmake")

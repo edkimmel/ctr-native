@@ -270,6 +270,22 @@ same build and disc build byte-identical fixtures; different builds or discs
 build configs the handshake rejects with CONFIG_MISMATCH, which is the
 intended "LINK REFUSED: SETTINGS DO NOT MATCH" path.
 
+### 2.6 Host glue
+
+platform/native_arcade_link_host.c and include/platform/native_arcade_link_host.h
+(Task 6b-1) are a process-wide singleton that owns one host adapter in LINK
+mode or a scripted preview in PREVIEW mode, and is OFF (every call inert, no
+socket) unless NativeArcadeLinkHost_Configure is given enabled or preview
+options and, for a link, the caller's identity. Game code calls only
+Configure, Mode, ScreenActive, Enter, Tick (held NATIVE_ARCADE_MENU_BUTTON_*
+bits and a race-finished flag in, a flow action out), GetView (a flat view
+with the local cabinet, whether the results rows accept input, and whether
+the title attract layout applies), AbortToTitle (close the link and return
+to screen OFF when START_RACE cannot be honoured yet), and Shutdown. Its
+header includes no adapter header and names no lockstep, failure-handling,
+or lobby token, which tests/native_arcade_link_host_isolation_test.cmake
+enforces.
+
 ## 3. UX defaults for operator review
 
 Each is a default chosen for a two-cabinet, wheel-only kiosk, and is flagged
@@ -427,10 +443,19 @@ tests/native_arcade_link_options_isolation_test.cmake (library
 ctr_native_arcade_link_options, tests native_arcade_link_options_unit and
 native_arcade_link_options_isolation); not yet linked into ctr_native.
 
-### Task 6b -- live hook, dormant by default
+### Task 6b-1 -- host glue (native_arcade_link_host)
 
-Status: planned. Host option parsing, linking the new libraries into
-ctr_native, the CTR_NATIVE-only drawer in the unity chain, the title-screen
+Status: done. Landed as include/platform/native_arcade_link_host.h,
+platform/native_arcade_link_host.c, tests/native_arcade_link_host_test.c,
+and tests/native_arcade_link_host_isolation_test.cmake (library
+ctr_native_arcade_link_host, tests native_arcade_link_host_unit and
+native_arcade_link_host_isolation); not yet linked into ctr_native.
+
+### Task 6b-2 -- live hook, dormant by default
+
+Status: planned. Hooking the already-landed option parser
+(native_arcade_link_options) and host glue (native_arcade_link_host) into
+main.c, linking the new libraries into ctr_native, the CTR_NATIVE-only drawer in the unity chain, the title-screen
 entry into LOBBY, RETURN_TO_TITLE back to the title/attract loop, and the
 internal-only preview option. Review required: it touches the game loop,
 even though default behaviour is unchanged.
