@@ -855,6 +855,17 @@ if(BUILD_TESTING)
     target_link_libraries(native_lockstep_transport_fault_test PRIVATE ctr_native_lockstep_session ctr_native_virtual_datagram)
     add_test(NAME native_lockstep_transport_fault_unit COMMAND $<TARGET_FILE:native_lockstep_transport_fault_test>)
 
+    add_executable(native_lockstep_failure_handling_fault_test tests/native_lockstep_failure_handling_fault_test.c)
+    set_target_properties(native_lockstep_failure_handling_fault_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_lockstep_failure_handling_fault_test PRIVATE
+        ctr_native_lockstep_session ctr_native_lockstep_match_outcome ctr_native_lockstep_match_roster
+        ctr_native_lockstep_rematch ctr_native_virtual_datagram)
+    add_test(NAME native_lockstep_failure_handling_fault_unit COMMAND $<TARGET_FILE:native_lockstep_failure_handling_fault_test>)
+
     add_test(NAME native_lockstep_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_isolation_test.cmake")
 
