@@ -546,6 +546,82 @@ static int TestFrameUnavailableRetired(void)
 }
 
 /*
+ * Regression for the deleted per-peer high-water mark: an ACCEPTED record
+ * carrying a lower verifiedFrameIndex than one already compared must still be
+ * digest-compared, and a divergence on it must latch at that earlier frame,
+ * not at the later one processed first.  Two different frameIndex values are
+ * both legitimately ACCEPTED by the window out of order here, exactly as a
+ * reordering transport could deliver them; only their verifiedFrameIndex
+ * ordering is reversed relative to the order they are offered.  A high-water
+ * mark keyed on "largest verifiedFrameIndex seen" would have treated the
+ * second record's lower verifiedFrameIndex as already covered and silently
+ * discarded its only comparison.
+ */
+static int TestOutOfOrderLowerVerifiedFrameStillCompared(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeCanonicalStateV4 state;
+	struct NativeCanonicalStateV4 cleanFrame1;
+	struct NativeCanonicalStateV4 cleanFrame4;
+	struct NativeCanonicalStateV4 perturbedFrame1;
+	const struct NativeLockstepDivergenceReport *report;
+	uint8_t higher[BUNDLE_BYTES];
+	uint8_t lower[BUNDLE_BYTES];
+	const uint32_t recordedFrames = 5u; /* Frames 0..4. */
+
+	FillConfig(&config, UINT32_C(0x01020304));
+	NativeLockstepSession_Init(&g_b);
+	CHECK(NativeLockstepSession_Open(&g_b, &config, INPUT_DELAY, (uint8_t)SLOT_B) == 1);
+	for (uint32_t frame = 0; frame < recordedFrames; frame++)
+	{
+		CHECK(MakeState(&state, frame, 0u) == 0);
+		CHECK(NativeLockstepSession_RecordLocalDigests(&g_b, &state) == 1);
+	}
+	CHECK(g_b.recordedFrame == recordedFrames - 1u);
+	CHECK(g_b.historyCapacity == INPUT_DELAY + 2u);
+	/* Frame 1 is still inside the D + 2 = 4 deep history: recordedFrame 4 minus
+	 * frame 1 is 3, below historyCapacity, so it has not been retired. */
+	CHECK((g_b.recordedFrame - 1u) < g_b.historyCapacity);
+
+	CHECK(MakeState(&cleanFrame4, 4u, 0u) == 0);
+	CHECK(MakeState(&cleanFrame1, 1u, 0u) == 0);
+	CHECK(MakeState(&perturbedFrame1, 1u, 3u) == 0);
+	CHECK(cleanFrame1.combinedDigest != perturbedFrame1.combinedDigest);
+
+	/* Offered first: verifiedFrameIndex 4, agrees with the local history. */
+	CHECK(CraftBundle(&g_b, (uint8_t)SLOT_A, 4u + INPUT_DELAY + 1u, 4u, 1, cleanFrame4.domainDigests, cleanFrame4.combinedDigest,
+	                  higher) == 0);
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, higher, sizeof(higher)) == NATIVE_LOCKSTEP_SESSION_OK);
+	CHECK(NativeLockstepSession_FirstDivergence(&g_b) == NULL);
+	CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_RUNNING);
+
+	/* Offered second, a different frameIndex so the window's occupancy-slot
+	 * dedup does not apply: verifiedFrameIndex 1, below the one just compared,
+	 * and its digest disagrees with the local history. */
+	CHECK(CraftBundle(&g_b, (uint8_t)SLOT_A, 1u + INPUT_DELAY + 1u, 1u, 1, perturbedFrame1.domainDigests, perturbedFrame1.combinedDigest,
+	                  lower) == 0);
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, lower, sizeof(lower)) == NATIVE_LOCKSTEP_SESSION_DIVERGENCE);
+
+	report = NativeLockstepSession_FirstDivergence(&g_b);
+	CHECK(report != NULL);
+	/* The frame that actually diverged is 1, not 4: the earlier frame, not the
+	 * one compared first. */
+	CHECK(report->frameIndex == 1u);
+	CHECK(report->frameIndex != 4u);
+	CHECK(report->senderSlot == SLOT_A);
+	CHECK(report->mask == (NATIVE_LOCKSTEP_DIVERGENCE_COMBINED | NATIVE_LOCKSTEP_DIVERGENCE_CANONICAL_DOMAIN));
+	CHECK((report->mask & NATIVE_LOCKSTEP_DIVERGENCE_FRAME_UNAVAILABLE) == 0u);
+	CHECK(report->canonicalDomainMask == (UINT32_C(1) << DOMAIN_WORLD));
+	CHECK(report->localCombinedDigest == cleanFrame1.combinedDigest);
+	CHECK(report->remoteCombinedDigest == perturbedFrame1.combinedDigest);
+	CHECK(memcmp(report->localDomainDigests, cleanFrame1.domainDigests, sizeof(report->localDomainDigests)) == 0);
+	CHECK(memcmp(report->remoteDomainDigests, perturbedFrame1.domainDigests, sizeof(report->remoteDomainDigests)) == 0);
+	CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_DIVERGED);
+	CHECK(NativeLockstepSession_FirstFault(&g_b) == NULL);
+	return 0;
+}
+
+/*
  * A record the peer window does not accept is never digest-verified, so a
  * delaying or duplicating transport cannot kill the match: the re-delivery of an
  * already consumed frame is a STALE drop and an in-window re-delivery is a
@@ -907,11 +983,14 @@ static int TestOpenRejects(void)
 	/*
 	 * The ring-capacity and history-depth clauses of Open are unreachable at
 	 * runtime while the capacities are 8 and the maximum delay is 6: the range
-	 * check rejects every such delay first.  Both relationships are enforced at
-	 * compile time by the _Static_asserts in
+	 * check rejects every such delay first.  The ring-capacity relationship is
+	 * also enforced at compile time by a _Static_assert in both
 	 * platform/native_lockstep_session.c and
-	 * platform/native_lockstep_input_window.c, and are asserted here as
-	 * constant expressions rather than faked at runtime.
+	 * platform/native_lockstep_input_window.c; the history-depth relationship
+	 * has no _Static_assert because NATIVE_LOCKSTEP_SESSION_DIGEST_HISTORY_CAPACITY
+	 * is defined as exactly NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 2, so an
+	 * assertion against that expression could not fail.  Both are asserted
+	 * here as constant expressions rather than faked at runtime.
 	 */
 	CHECK(NATIVE_LOCKSTEP_RING_CAPACITY >= NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 1);
 	CHECK(NATIVE_LOCKSTEP_SESSION_DIGEST_HISTORY_CAPACITY >= NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 2u);
@@ -992,6 +1071,7 @@ int main(void)
 	CHECK(TestDivergence() == 0);
 	CHECK(TestFrameUnavailableNeverSimulated() == 0);
 	CHECK(TestFrameUnavailableRetired() == 0);
+	CHECK(TestOutOfOrderLowerVerifiedFrameStillCompared() == 0);
 	CHECK(TestLateRedeliveryIsNotADivergence() == 0);
 	CHECK(TestWindowOverrunLatchesNoDivergence() == 0);
 	CHECK(TestSubmitLocalInputRefusesReplacement() == 0);

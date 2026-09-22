@@ -10,7 +10,8 @@
  * set has to hold the local pad plus every other slot's full bundle pad
  * capacity.  The history depth is not asserted here: it is defined as
  * NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 2, so an assertion against that expression
- * could not fail, and FindDigests guards the modulus at runtime instead.
+ * could not fail, and FindDigests and RecordLocalDigests each guard their use
+ * of historyCapacity as a modulus at runtime instead.
  */
 _Static_assert(NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY == NATIVE_LOCKSTEP_BUNDLE_SLOT_COUNT,
                "The lockstep peer array must be indexable by bundle sender slot.");
@@ -131,7 +132,7 @@ static void NativeLockstepSession_LatchFault(struct NativeLockstepSession *sessi
  * carries no digest, which is the first inputDelay + 1 frames of a session, and
  * is never a divergence.
  */
-static int NativeLockstepSession_Verify(struct NativeLockstepSession *session, const struct NativeLockstepBundleV1 *bundle, uint32_t slot)
+static int NativeLockstepSession_Verify(struct NativeLockstepSession *session, const struct NativeLockstepBundleV1 *bundle)
 {
 	const struct NativeLockstepSessionDigestRecord *record;
 	uint32_t canonicalDomainMask = 0;
@@ -146,22 +147,21 @@ static int NativeLockstepSession_Verify(struct NativeLockstepSession *session, c
 	if (record == NULL)
 	{
 		/* Well formed, but the two simulations are no longer comparable.  This
-		 * is deliberately a divergence and never a protocol fault, and it does
-		 * not depend on the high-water mark: an incomparable frame was never
-		 * compared, so suppressing it would hide a real report on a record the
-		 * window did accept. */
+		 * is deliberately a divergence and never a protocol fault: an
+		 * incomparable frame was never compared, so suppressing it would hide a
+		 * real report on a record the window did accept. */
 		NativeLockstepSession_LatchDivergence(session, NATIVE_LOCKSTEP_DIVERGENCE_FRAME_UNAVAILABLE, 0u, bundle, NULL);
 		return 1;
 	}
-	/* The per-peer high-water mark makes a second comparison of one verified
-	 * frame structurally impossible, whatever the window classification and the
-	 * wire ordering do. */
-	if ((session->peerVerifiedAny[slot] != 0) && (bundle->verifiedFrameIndex <= session->peerVerifiedThroughFrame[slot]))
-	{
-		return 0;
-	}
-	session->peerVerifiedThroughFrame[slot] = bundle->verifiedFrameIndex;
-	session->peerVerifiedAny[slot] = 1u;
+	/* No dedup bookkeeping is needed to keep this comparison at most once per
+	 * verifiedFrameIndex: only the caller's ACCEPTED case reaches here, and the
+	 * window's occupancy-slot check makes ACCEPTED happen at most once per
+	 * frameIndex (platform/native_lockstep_input_window.c:83-97, with the
+	 * below-window half at :65-69).  The codec pins
+	 * verifiedFrameIndex + inputDelay + 1 == frameIndex on every decode
+	 * (platform/native_lockstep_protocol.c:308-312), a bijection between the two,
+	 * so at most one ACCEPTED record can ever carry this verifiedFrameIndex
+	 * regardless of wire reordering. */
 
 	/* Identical to platform/native_replay_scheduler_v4.c EndFrame: one bit per
 	 * differing domain digest, with the combined digest reported separately. */
@@ -319,6 +319,18 @@ int NativeLockstepSession_RecordLocalDigests(struct NativeLockstepSession *sessi
 	{
 		return 0;
 	}
+	/* historyCapacity is always inputDelay + 2 with inputDelay in
+	 * [MIN_INPUT_DELAY, MAX_INPUT_DELAY] once Open has succeeded, so it can
+	 * never be 0 or exceed NATIVE_LOCKSTEP_SESSION_DIGEST_HISTORY_CAPACITY
+	 * through the public API.  The same modulus is guarded the same way in
+	 * FindDigests, whose comment explains why it is checked rather than
+	 * trusted; this call is not wire facing, but the array below is sized to
+	 * that capacity, so a 0 divides by zero and an over-large one indexes past
+	 * it, and neither is worth trusting an invariant to avoid checking. */
+	if ((session->historyCapacity == 0u) || (session->historyCapacity > NATIVE_LOCKSTEP_SESSION_DIGEST_HISTORY_CAPACITY))
+	{
+		return 0;
+	}
 
 	record = &session->localDigests[state->frameNumber % session->historyCapacity];
 	memset(record, 0, sizeof(*record));
@@ -447,8 +459,7 @@ enum NativeLockstepSessionResult NativeLockstepSession_AcceptBundle(struct Nativ
 	switch (offered)
 	{
 	case NATIVE_LOCKSTEP_INPUT_WINDOW_ACCEPTED:
-		result = NativeLockstepSession_Verify(session, &bundle, slot) ? NATIVE_LOCKSTEP_SESSION_DIVERGENCE
-		                                                              : NATIVE_LOCKSTEP_SESSION_OK;
+		result = NativeLockstepSession_Verify(session, &bundle) ? NATIVE_LOCKSTEP_SESSION_DIVERGENCE : NATIVE_LOCKSTEP_SESSION_OK;
 		break;
 	case NATIVE_LOCKSTEP_INPUT_WINDOW_DUPLICATE:
 		result = NATIVE_LOCKSTEP_SESSION_DUPLICATE;
