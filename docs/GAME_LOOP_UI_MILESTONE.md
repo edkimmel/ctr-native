@@ -251,7 +251,23 @@ replay, and canonical-state behaviour is unchanged by default:
 - `--arcade-link-preview <screen>` (internal builds only) drives the flow
   through scripted observations with no socket, so every screen can be
   captured with the existing `--capture-frame` and `--exit-after-frame`
-  options for operator review.
+  options for operator review. The screen names are `title`, `lobby`,
+  `lobby-connecting`, `lobby-rejected`, `match-found`, `results`,
+  `results-timeout`, `results-desync`, `results-link-error`, `rematch`,
+  `exit`, and `exit-opponent-left`. A preview is exclusive with
+  `--arcade-link`, and a port or peer without `--arcade-link` is an error.
+
+The fixture (native_arcade_link_options, Task 6a) is profile ARCADE_TWO_CAB
+on track 3 (CRASH_COVE), 3 laps, a 30/1 tick rate, master seed
+0x4354524e41524331 ("CTRNARC1"), characters 0..5 in slots 0..5 (CAB1 Crash,
+CAB2 Cortex, then four bots) at difficulty 0, and gameMode1, gameMode2, and
+rules all 0 until Task 7 maps the fixture onto the retail race flags. Build
+and content identity come from the caller's identity. botRulesDigest is the
+SHA-256 of the text "CTRN arcade-link fixture bot rules v1", a placeholder
+digest until integration step 3 defines the bot rules. Two cabinets on the
+same build and disc build byte-identical fixtures; different builds or discs
+build configs the handshake rejects with CONFIG_MISMATCH, which is the
+intended "LINK REFUSED: SETTINGS DO NOT MATCH" path.
 
 ## 3. UX defaults for operator review
 
@@ -283,7 +299,11 @@ for the operator to confirm or change after seeing the built flow.
    rematchWaitTimeoutTicks = 300 (10 s) and shows OPPONENT LEFT for
    opponentLeftNoticeTicks = 90 (3 s).
 8. UX-8: One fixed fixture per build (track, laps, characters, bot
-   difficulty), not a per-cabinet selection menu.
+   difficulty), not a per-cabinet selection menu. The fixture is track 3
+   (CRASH_COVE), 3 laps, a 30/1 tick rate, CAB1 Crash (character 0), CAB2
+   Cortex (character 1), bots on characters 2..5, and bot difficulty 0. The
+   first match always uses the fixed seed 0x4354524e41524331 ("CTRNARC1");
+   each rematch derives a new seed (UX-7).
 9. UX-9: The in-race stall timeout is 90 ticks (3 s at the 30 Hz loop); a
    WAITING FOR OPPONENT overlay appears after 15 stalled ticks (0.5 s).
 10. UX-10: Screen layout and strings as in section 2.4; a results idle
@@ -386,7 +406,16 @@ tests/main_arcade_link_layout_isolation_test.cmake (library
 ctr_native_arcade_link_layout, tests main_arcade_link_layout_unit and
 main_arcade_link_layout_isolation).
 
-### Task 6 -- live hook, dormant by default
+### Task 6a -- host options and fixture (native_arcade_link_options)
+
+Status: done. Landed as include/platform/native_arcade_link_options.h,
+platform/native_arcade_link_options.c,
+tests/native_arcade_link_options_test.c, and
+tests/native_arcade_link_options_isolation_test.cmake (library
+ctr_native_arcade_link_options, tests native_arcade_link_options_unit and
+native_arcade_link_options_isolation); not yet linked into ctr_native.
+
+### Task 6b -- live hook, dormant by default
 
 Status: planned. Host option parsing, linking the new libraries into
 ctr_native, the CTR_NATIVE-only drawer in the unity chain, the title-screen
