@@ -1,0 +1,599 @@
+#include "platform/native_lockstep_peer_link.h"
+
+#include "native_lockstep_peer_link_test_fixture.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#define CHECK(expression) do { if (!(expression)) { fprintf(stderr, "%d: %s\n", __LINE__, #expression); return 1; } } while (0)
+
+/*
+ * Single-process, real-socket hardening tests for
+ * platform/native_lockstep_peer_link.c (Task 5b, a follow-up on Task 5,
+ * commit 8fdfb0413), closing GAP 1 from that commit's independent review:
+ * the two real integration bugs Task 5 fixed (mode-routing-by-wire-size and
+ * the retransmit-before-poll liveness ordering fix) had no deterministic
+ * single-process test -- the only coverage was
+ * tests/native_lockstep_peer_link_process_test.c, whose exercise of the
+ * early-bundle staging/replay path and the ordering fix depends on
+ * incidental OS process scheduling, not anything that test controls.
+ *
+ * Every test below opens two real struct NativeLockstepPeerLink instances,
+ * each on its own real loopback UDP socket -- NativeUdpTransport underneath
+ * is genuinely real -- but collapses both peer roles into this ONE test
+ * process, so this file fully controls call ordering itself instead of
+ * depending on OS scheduling of a second process. Several tests
+ * deliberately open side B before its peer exists (or vice versa) so that
+ * side's own Open()-time HELLO is silently lost -- the same real-socket
+ * startup race tests/native_lockstep_peer_link_process_test.c's own
+ * DriveParentSide/native_lockstep_peer_link_helper.c comments describe --
+ * which is what makes it possible, deterministically and on demand, to
+ * control exactly which single HELLO datagram a side ever receives and
+ * when, using only the real NativeUdpTransport/NativeLockstepPeerLink
+ * public API (occasionally reaching directly into the plain, non-opaque
+ * struct NativeLockstepPeerLink fields -- e.g. .transport, .session,
+ * .earlyBundleCount -- exactly the way NativeLockstepPeerLink_Session
+ * already hands out direct access to another one of those fields).
+ *
+ * Fixed loopback test ports, in the 48000-48999 band, distinct from
+ * NATIVE_UDP_TRANSPORT_PROCESS_TEST_PORT (48037,
+ * tests/native_udp_transport_process_test.c) and from PARENT_PORT/
+ * HELPER_PORT (48110/48111, tests/native_lockstep_peer_link_process_test.c):
+ * this file uses 48200-48210.
+ */
+#define TEST1_PORT_A 48200u
+#define TEST1_PORT_B 48201u
+#define TEST2_PORT_A 48202u
+#define TEST2_PORT_B 48203u
+#define TEST3_GOOD_PORT_A 48204u
+#define TEST3_GOOD_PORT_B 48205u
+#define TEST3_BAD_PORT_A 48206u
+#define TEST3_BAD_PORT_B 48207u
+#define TEST4_PORT_A 48208u
+#define TEST4_PORT_B 48209u
+#define TEST4_PORT_BYSTANDER 48210u
+
+/* Real loopback delivery is asynchronous relative to sendto returning
+ * (tests/native_udp_transport_test.c's own PollReceive helper documents the
+ * same thing): every spin below is bounded by an attempt count, never by
+ * wall-clock time. */
+#define SPIN_BUDGET 20000u
+
+/* Poll-only spin: never calls Retransmit, so it cannot itself queue any
+ * further HELLO for the peer. Used wherever a test needs to control exactly
+ * how many HELLO datagrams a side sends. */
+static enum NativeLockstepPeerLinkMode PumpPollUntilMode(struct NativeLockstepPeerLink *link, enum NativeLockstepPeerLinkMode expected)
+{
+	uint32_t attempt;
+
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Poll(link);
+		if (NativeLockstepPeerLink_Mode(link) == expected)
+		{
+			break;
+		}
+	}
+	return NativeLockstepPeerLink_Mode(link);
+}
+
+/* Also retransmits every attempt: the normal caller-driven-cadence usage
+ * pattern (NativeLockstepPeerLink_Retransmit doc comment), for scenarios
+ * that do not need fine control over exactly how many HELLOs get sent. */
+static enum NativeLockstepPeerLinkMode PumpUntilMode(struct NativeLockstepPeerLink *link, enum NativeLockstepPeerLinkMode expected)
+{
+	uint32_t attempt;
+
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Retransmit(link);
+		NativeLockstepPeerLink_Poll(link);
+		if (NativeLockstepPeerLink_Mode(link) == expected)
+		{
+			break;
+		}
+	}
+	return NativeLockstepPeerLink_Mode(link);
+}
+
+/* Poll-only spin that stops once at least expectedCount early bundles have
+ * been staged (struct NativeLockstepPeerLink's earlyBundleCount field is
+ * plain and directly readable, not opaque). */
+static void PumpPollUntilEarlyCount(struct NativeLockstepPeerLink *link, uint32_t expectedCount)
+{
+	uint32_t attempt;
+
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Poll(link);
+		if (link->earlyBundleCount >= expectedCount)
+		{
+			break;
+		}
+	}
+}
+
+/* Bounded spin around NativeUdpTransport_Receive directly (bypassing
+ * NativeLockstepPeerLink_Poll entirely), mirroring
+ * tests/native_udp_transport_test.c's own PollReceive helper. */
+static enum NativeUdpTransportReceiveResult PumpRawReceive(struct NativeUdpTransport *transport, uint8_t *bytesOut, size_t capacity,
+	size_t *sizeOut, struct NativeUdpTransportAddress *senderOut)
+{
+	uint32_t attempt;
+	enum NativeUdpTransportReceiveResult result = NATIVE_UDP_TRANSPORT_RECEIVE_EMPTY;
+
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		result = NativeUdpTransport_Receive(transport, bytesOut, capacity, sizeOut, senderOut);
+		if (result != NATIVE_UDP_TRANSPORT_RECEIVE_EMPTY)
+		{
+			return result;
+		}
+	}
+	return result;
+}
+
+/*
+ * GAP 1, bullet 1 (early-bundle arrival): side A is driven all the way to
+ * RUNNING and composes/sends real bundles over its real socket while side B
+ * has never once called Poll, so those bundles sit unconsumed in B's real
+ * OS receive queue. Genuinely forcing them through the staging path (not
+ * merely happening to be processed directly, because B's own completing
+ * HELLO datagram would otherwise always be queued ahead of them -- A can
+ * only ever send a bundle after A's own handshake has completed, and every
+ * HELLO A ever sends necessarily precedes that) requires deterministically
+ * controlling which single HELLO datagram is the one that finally lets B's
+ * handshake complete, and delivering it only after the bundles: A is opened
+ * before B exists (so A's own Open()-time HELLO to B is silently lost, the
+ * real-socket startup race described in NativeLockstepPeerLink_Open's
+ * process-test comment), then B is opened once A genuinely exists, so B's
+ * own HELLO reaches A fine (which is how A itself will reach RUNNING) while
+ * A sends exactly one fresh HELLO of its own -- via a single explicit
+ * Retransmit call, now that B's socket genuinely exists -- which is the one
+ * and only HELLO datagram B will ever receive from A. That HELLO is drained
+ * directly off B's real socket (bypassing NativeLockstepPeerLink_Poll via
+ * the transport field) and held back, so B's own link state stays untouched
+ * at HANDSHAKING while A's bundles arrive and get genuinely staged; the
+ * held-back HELLO is then replayed onto the wire so B's own Poll finally
+ * completes the handshake and, per the documented contract, replays the
+ * staged bundles into the freshly opened session.
+ */
+static int TestEarlyBundleArrival(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	struct NativeUdpTransportAddress sender;
+	uint8_t savedHello[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
+	size_t savedHelloSize = 0;
+	struct NativeLockstepSession *session;
+	struct NativeLockstepSessionFrameInputs inputs;
+
+	CHECK(NativeLockstepPeerLink_DroppedEarlyBundleCount(NULL) == 0u);
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+	CHECK(NativeUdpTransport_MakeAddress(&addrA, "127.0.0.1", (uint16_t)TEST1_PORT_A));
+	CHECK(NativeUdpTransport_MakeAddress(&addrB, "127.0.0.1", (uint16_t)TEST1_PORT_B));
+
+	/* A first: B does not exist yet, so A's own Open()-time HELLO to B is
+	 * silently lost (nothing is listening on B's port yet). A's own socket
+	 * is the one a stray "destination unreachable" for that lost send could
+	 * ever affect, and this test only ever drives A through the public
+	 * NativeLockstepPeerLink_Poll API afterward (never a raw receive on
+	 * A's own socket), which already tolerates and drains past a spurious
+	 * receive error. */
+	CHECK(NativeLockstepPeerLink_Open(&linkA, (uint16_t)TEST1_PORT_A, &addrB, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_Mode(&linkA) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+
+	/* B second: A already exists, so B's own Open()-time HELLO to A
+	 * genuinely reaches A's real socket and sits there, unconsumed. Because
+	 * B's own send here lands on a real listener, B's own socket is never
+	 * put in that same "stray unreachable" state, which matters below: this
+	 * test does do a raw receive directly on B's own socket. */
+	CHECK(NativeLockstepPeerLink_Open(&linkB, (uint16_t)TEST1_PORT_B, &addrA, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+	CHECK(NativeLockstepPeerLink_DroppedEarlyBundleCount(&linkB) == 0u);
+
+	/* A's own original HELLO to B was lost above, so A needs one more
+	 * resend -- now that B's real socket genuinely exists -- before B can
+	 * ever see a HELLO from A at all. This is the one and only HELLO
+	 * datagram B will receive from A in this test. */
+	NativeLockstepPeerLink_Retransmit(&linkA);
+
+	/* Drain that one HELLO directly off B's real socket, bypassing
+	 * NativeLockstepPeerLink_Poll entirely, so B's own link/handshake state
+	 * is left completely untouched at HANDSHAKING; the bytes are held back
+	 * for later, deliberately delayed redelivery. */
+	memset(&sender, 0, sizeof(sender));
+	CHECK(PumpRawReceive(&linkB.transport, savedHello, sizeof(savedHello), &savedHelloSize, &sender) == NATIVE_UDP_TRANSPORT_RECEIVE_OK);
+	CHECK(savedHelloSize == NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES);
+	CHECK(sender.ipv4 == addrA.ipv4);
+	CHECK(sender.port == addrA.port);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+
+	/* B's own Open()-time HELLO to A (above) already reached A fine, so a
+	 * plain Poll (never Retransmit) is all A needs to discover completion;
+	 * this cannot itself queue any further HELLO for B. */
+	CHECK(PumpPollUntilMode(&linkA, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	/* A composes and sends two real bundles over its real socket while B
+	 * has never once called Poll. */
+	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkA, 0u));
+	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkA, 1u));
+
+	/* Drain B: both bundles arrive while B is still genuinely HANDSHAKING
+	 * (it has still never received any handshake datagram at all), so both
+	 * must be staged -- not dropped, not causing an error. */
+	PumpPollUntilEarlyCount(&linkB, 2u);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+	CHECK(linkB.earlyBundleCount == 2u);
+	CHECK(NativeLockstepPeerLink_DroppedEarlyBundleCount(&linkB) == 0u);
+
+	/* Replay the held-back HELLO onto the real wire: this is what finally
+	 * lets B's own handshake complete and, per the documented contract,
+	 * replay the staged bundles into the freshly opened session before
+	 * Poll returns. */
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, savedHello, savedHelloSize));
+	CHECK(PumpPollUntilMode(&linkB, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(linkB.earlyBundleCount == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedEarlyBundleCount(&linkB) == 0u);
+
+	/* B can take both early-arrived frames without A ever resending them. */
+	session = NativeLockstepPeerLink_Session(&linkB);
+	CHECK(session != NULL);
+	CHECK(NativeLockstepSession_TakeFrameInputs(session, 0u, &inputs) == NATIVE_LOCKSTEP_SESSION_OK);
+	CHECK(NativeLockstepSession_TakeFrameInputs(session, 1u, &inputs) == NATIVE_LOCKSTEP_SESSION_OK);
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+/*
+ * GAP 1, bullet 2 (capacity bound): same construction as
+ * TestEarlyBundleArrival, but side A sends strictly more bundles than
+ * NATIVE_LOCKSTEP_PEER_LINK_EARLY_BUNDLE_CAPACITY
+ * (== NATIVE_LOCKSTEP_RING_CAPACITY, defined in
+ * platform/native_lockstep_input_window.h and pulled in transitively here
+ * through native_lockstep_session.h) can hold, before B ever polls.
+ *
+ * Uses inputDelay NATIVE_LOCKSTEP_MAX_INPUT_DELAY so frames
+ * 0..NATIVE_LOCKSTEP_MAX_INPUT_DELAY (NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 1 of
+ * them) each compose with verifiedPresent 0: NativeLockstepSession_ComposeBundle
+ * only attaches a verified-digest block once a frame's own recorded local
+ * digest exists, which B's session -- opened only once replay begins --
+ * could never have for a peer-sent frame, and a verifiedPresent-0 record is
+ * never digest-compared (platform/native_lockstep_session.c:141), so every
+ * early-arrived bundle here is divergence-free by construction. Padded out
+ * to, and past, capacity by resending the last distinct frame's own bundle
+ * (NativeLockstepSession_ComposeBundle is a read-only, side-effect-free
+ * query of session state, so repeat calls for the same frame produce
+ * byte-identical output and replay as DUPLICATE, not FAULT).
+ */
+static int TestEarlyBundleCapacityBound(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	struct NativeUdpTransportAddress sender;
+	uint8_t savedHello[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
+	size_t savedHelloSize = 0;
+	struct NativeLockstepSession *session;
+	struct NativeLockstepSessionFrameInputs inputs;
+	const uint32_t distinctFrameCount = (uint32_t)NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 1u;
+	const uint32_t duplicateFillCount = (uint32_t)NATIVE_LOCKSTEP_RING_CAPACITY - distinctFrameCount;
+	const uint32_t overflowCount = 4u;
+	uint32_t sent;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+	CHECK(NativeUdpTransport_MakeAddress(&addrA, "127.0.0.1", (uint16_t)TEST2_PORT_A));
+	CHECK(NativeUdpTransport_MakeAddress(&addrB, "127.0.0.1", (uint16_t)TEST2_PORT_B));
+
+	/* A first: B does not exist yet, so A's own Open()-time HELLO to B is
+	 * silently lost. Only the public Poll API is ever used on A afterward
+	 * (never a raw receive on A's own socket), which tolerates and drains
+	 * past a spurious receive error from that lost send. */
+	CHECK(NativeLockstepPeerLink_Open(&linkA, (uint16_t)TEST2_PORT_A, &addrB, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MAX_INPUT_DELAY));
+	/* B second: A already exists, so B's own Open()-time HELLO to A reaches
+	 * A fine, and B's own socket is never put in that same "stray
+	 * unreachable" state -- this test does a raw receive directly on it. */
+	CHECK(NativeLockstepPeerLink_Open(&linkB, (uint16_t)TEST2_PORT_B, &addrA, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MAX_INPUT_DELAY));
+
+	/* A's own original HELLO to B was lost above; this single resend, now
+	 * that B's socket genuinely exists, is the one and only HELLO B will
+	 * ever receive from A in this test. */
+	NativeLockstepPeerLink_Retransmit(&linkA);
+
+	memset(&sender, 0, sizeof(sender));
+	CHECK(PumpRawReceive(&linkB.transport, savedHello, sizeof(savedHello), &savedHelloSize, &sender) == NATIVE_UDP_TRANSPORT_RECEIVE_OK);
+	CHECK(savedHelloSize == NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+
+	/* B's own Open()-time HELLO to A already reached A fine, so a plain
+	 * Poll is all A needs to discover completion. */
+	CHECK(PumpPollUntilMode(&linkA, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	for (sent = 0; sent < distinctFrameCount; sent++)
+	{
+		CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkA, sent));
+	}
+	for (sent = 0; sent < (duplicateFillCount + overflowCount); sent++)
+	{
+		CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkA, distinctFrameCount - 1u));
+	}
+
+	PumpPollUntilEarlyCount(&linkB, (uint32_t)NATIVE_LOCKSTEP_RING_CAPACITY);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+	/* Capacity, not overrun: exactly NATIVE_LOCKSTEP_RING_CAPACITY, never more. */
+	CHECK(linkB.earlyBundleCount == (uint32_t)NATIVE_LOCKSTEP_RING_CAPACITY);
+	CHECK(NativeLockstepPeerLink_DroppedEarlyBundleCount(&linkB) == overflowCount);
+
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, savedHello, savedHelloSize));
+	CHECK(PumpPollUntilMode(&linkB, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(linkB.earlyBundleCount == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedEarlyBundleCount(&linkB) == overflowCount);
+
+	/* Every frame that was actually staged (0..distinctFrameCount-1) still
+	 * replays correctly; the dropped overflow copies were all duplicates of
+	 * the last frame, so nothing new was ever lost. */
+	session = NativeLockstepPeerLink_Session(&linkB);
+	CHECK(session != NULL);
+	for (sent = 0; sent < distinctFrameCount; sent++)
+	{
+		CHECK(NativeLockstepSession_TakeFrameInputs(session, sent, &inputs) == NATIVE_LOCKSTEP_SESSION_OK);
+	}
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+#define REGRESSION_MAX_DRIVER_TICKS 3u
+
+/* One real driver tick using the documented, correct call order:
+ * Retransmit before Poll, every tick (NativeLockstepPeerLink_Retransmit doc
+ * comment). The inner spin absorbs real loopback delivery latency only; it
+ * is never counted as a driver tick. */
+static enum NativeLockstepPeerLinkMode DriveOneTickCorrectOrder(struct NativeLockstepPeerLink *link)
+{
+	uint32_t attempt;
+
+	NativeLockstepPeerLink_Retransmit(link);
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Poll(link);
+		if (NativeLockstepPeerLink_Mode(link) != NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING)
+		{
+			break;
+		}
+	}
+	return NativeLockstepPeerLink_Mode(link);
+}
+
+/*
+ * One real driver tick using the historical buggy call order the commit
+ * message (8fdfb0413) fixed: Poll first, and -- exactly like a
+ * "Poll(); if (mode changed) break;" loop shape -- this tick never reaches
+ * a Retransmit call at all once mode leaves HANDSHAKING inside the Poll
+ * spin below, reproducing the historical gap on demand: the very tick that
+ * discovers local completion skips sending the one more HELLO the peer
+ * might still need.
+ */
+static enum NativeLockstepPeerLinkMode DriveOneTickBuggyOrder(struct NativeLockstepPeerLink *link)
+{
+	uint32_t attempt;
+
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Poll(link);
+		if (NativeLockstepPeerLink_Mode(link) != NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING)
+		{
+			return NativeLockstepPeerLink_Mode(link);
+		}
+	}
+	NativeLockstepPeerLink_Retransmit(link);
+	return NativeLockstepPeerLink_Mode(link);
+}
+
+/*
+ * GAP 1, bullet 3 (retransmit-before-poll ordering regression): reproduces,
+ * on demand, the exact real-socket startup race the commit message
+ * describes -- side A's own Open()-time HELLO is lost because side B does
+ * not exist yet -- so the only HELLO of A's that ever reaches B is whichever
+ * one A's driving loop sends on the tick that discovers A's own completion.
+ * Two independent scenarios, on independent port pairs:
+ *
+ *   - Correct order (this module's documented contract): both sides reach
+ *     RUNNING within REGRESSION_MAX_DRIVER_TICKS driver ticks each -- a
+ *     small, fixed, deterministic bound, not a wall-clock timeout.
+ *   - Buggy order (reproducing the historical gap): side A still reaches
+ *     RUNNING (its own completion never depended on sending anything), but
+ *     because its one completing tick skipped Retransmit, side B never
+ *     receives any HELLO at all and provably stays HANDSHAKING even after
+ *     the same driver-tick budget, using its own correct call order.
+ */
+static int TestRetransmitBeforePollRegression(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint32_t tick;
+	enum NativeLockstepPeerLinkMode mode;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+
+	/* Correct order. */
+	CHECK(NativeUdpTransport_MakeAddress(&addrA, "127.0.0.1", (uint16_t)TEST3_GOOD_PORT_A));
+	CHECK(NativeUdpTransport_MakeAddress(&addrB, "127.0.0.1", (uint16_t)TEST3_GOOD_PORT_B));
+	/* B does not exist yet: A's Open()-time HELLO to B is lost. */
+	CHECK(NativeLockstepPeerLink_Open(&linkA, (uint16_t)TEST3_GOOD_PORT_A, &addrB, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	/* A exists: B's Open()-time HELLO to A reaches A fine. */
+	CHECK(NativeLockstepPeerLink_Open(&linkB, (uint16_t)TEST3_GOOD_PORT_B, &addrA, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+
+	mode = NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING;
+	for (tick = 0; tick < REGRESSION_MAX_DRIVER_TICKS; tick++)
+	{
+		mode = DriveOneTickCorrectOrder(&linkA);
+		if (mode != NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING)
+		{
+			break;
+		}
+	}
+	CHECK(tick < REGRESSION_MAX_DRIVER_TICKS);
+	CHECK(mode == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	mode = NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING;
+	for (tick = 0; tick < REGRESSION_MAX_DRIVER_TICKS; tick++)
+	{
+		mode = DriveOneTickCorrectOrder(&linkB);
+		if (mode != NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING)
+		{
+			break;
+		}
+	}
+	CHECK(tick < REGRESSION_MAX_DRIVER_TICKS);
+	CHECK(mode == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+
+	/* Buggy order: reproduces the historical liveness gap on demand. */
+	CHECK(NativeUdpTransport_MakeAddress(&addrA, "127.0.0.1", (uint16_t)TEST3_BAD_PORT_A));
+	CHECK(NativeUdpTransport_MakeAddress(&addrB, "127.0.0.1", (uint16_t)TEST3_BAD_PORT_B));
+	CHECK(NativeLockstepPeerLink_Open(&linkA, (uint16_t)TEST3_BAD_PORT_A, &addrB, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_Open(&linkB, (uint16_t)TEST3_BAD_PORT_B, &addrA, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+
+	mode = NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING;
+	for (tick = 0; tick < REGRESSION_MAX_DRIVER_TICKS; tick++)
+	{
+		mode = DriveOneTickBuggyOrder(&linkA);
+		if (mode != NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING)
+		{
+			break;
+		}
+	}
+	/* A's own completion never depended on sending anything, so the buggy
+	 * order does not stop A itself from reaching RUNNING. */
+	CHECK(mode == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	mode = NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING;
+	for (tick = 0; tick < REGRESSION_MAX_DRIVER_TICKS; tick++)
+	{
+		mode = DriveOneTickCorrectOrder(&linkB);
+		if (mode != NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING)
+		{
+			break;
+		}
+	}
+	/* The liveness gap: B never received any HELLO at all (A never sent one
+	 * back on its completing tick), so B provably stays stuck in
+	 * HANDSHAKING even with a full driver-tick budget and B's own correct
+	 * call order. */
+	CHECK(mode == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+/*
+ * GAP 2 (sender-address filtering): a spurious, well-formed lockstep bundle
+ * datagram arriving at B's real socket from a different source address than
+ * B's own configured peer must be silently discarded by
+ * NativeLockstepPeerLink_Poll -- never staged, never accepted, and never
+ * disturbing B's mode -- while the genuinely configured peer's own traffic
+ * for the same frame is accepted normally, proving this is specifically
+ * about sender address and not an accidental drop of legitimate traffic.
+ */
+static int TestSenderAddressFiltering(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransport bystander = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t forgedBundle[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	size_t forgedBundleSize = 0;
+	struct NativeLockstepSession *session;
+	struct NativeLockstepSessionFrameInputs inputs;
+	uint32_t attempt;
+	enum NativeLockstepSessionResult result;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+	CHECK(NativeUdpTransport_MakeAddress(&addrA, "127.0.0.1", (uint16_t)TEST4_PORT_A));
+	CHECK(NativeUdpTransport_MakeAddress(&addrB, "127.0.0.1", (uint16_t)TEST4_PORT_B));
+
+	CHECK(NativeLockstepPeerLink_Open(&linkA, (uint16_t)TEST4_PORT_A, &addrB, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_Open(&linkB, (uint16_t)TEST4_PORT_B, &addrA, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+
+	CHECK(PumpUntilMode(&linkA, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(PumpUntilMode(&linkB, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	/* A well-formed frame-0 bundle, composed from A's own real session so
+	 * every content check (match identity, protocol version, input delay,
+	 * sender slot) would otherwise pass cleanly. */
+	CHECK(NativeLockstepSession_ComposeBundle(&linkA.session, 0u, forgedBundle, sizeof(forgedBundle), &forgedBundleSize));
+
+	CHECK(NativeUdpTransport_GlobalInit());
+	CHECK(NativeUdpTransport_Open(&bystander, (uint16_t)TEST4_PORT_BYSTANDER));
+
+	/* Sent from the bystander's address, not from A's: must be silently
+	 * discarded, not staged/accepted, and must not disturb B's mode. */
+	CHECK(NativeUdpTransport_Send(&bystander, &addrB, forgedBundle, forgedBundleSize));
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Poll(&linkB);
+	}
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	session = NativeLockstepPeerLink_Session(&linkB);
+	CHECK(session != NULL);
+	CHECK(NativeLockstepSession_TakeFrameInputs(session, 0u, &inputs) == NATIVE_LOCKSTEP_SESSION_STALL);
+
+	/* The same content, sent for real by the configured peer, is accepted
+	 * normally. */
+	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkA, 0u));
+	result = NATIVE_LOCKSTEP_SESSION_STALL;
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Poll(&linkB);
+		result = NativeLockstepSession_TakeFrameInputs(session, 0u, &inputs);
+		if (result != NATIVE_LOCKSTEP_SESSION_STALL)
+		{
+			break;
+		}
+	}
+	CHECK(result == NATIVE_LOCKSTEP_SESSION_OK);
+
+	NativeUdpTransport_Close(&bystander);
+	NativeUdpTransport_GlobalShutdown();
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+int main(void)
+{
+	CHECK(TestEarlyBundleArrival() == 0);
+	CHECK(TestEarlyBundleCapacityBound() == 0);
+	CHECK(TestRetransmitBeforePollRegression() == 0);
+	CHECK(TestSenderAddressFiltering() == 0);
+	puts("native_lockstep_peer_link_test: passed");
+	return 0;
+}

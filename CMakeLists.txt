@@ -987,6 +987,19 @@ if(BUILD_TESTING)
     add_test(NAME native_lockstep_peer_link_process_unit
         COMMAND $<TARGET_FILE:native_lockstep_peer_link_process_test> $<TARGET_FILE:native_lockstep_peer_link_helper>)
 
+    # Single-process, real-socket hardening tests (Task 5b, following up on
+    # Task 5 commit 8fdfb0413): deterministically controls call ordering
+    # itself, unlike native_lockstep_peer_link_process_test's two real OS
+    # processes.
+    add_executable(native_lockstep_peer_link_test tests/native_lockstep_peer_link_test.c)
+    set_target_properties(native_lockstep_peer_link_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_lockstep_peer_link_test PRIVATE ctr_native_lockstep_peer_link)
+    add_test(NAME native_lockstep_peer_link_unit COMMAND $<TARGET_FILE:native_lockstep_peer_link_test>)
+
     add_test(NAME native_lockstep_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_isolation_test.cmake")
 

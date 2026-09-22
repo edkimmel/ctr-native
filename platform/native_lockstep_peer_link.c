@@ -45,6 +45,7 @@ int NativeLockstepPeerLink_Open(struct NativeLockstepPeerLink *link, uint16_t lo
 	link->inputDelay = inputDelay;
 	link->localRole = localRole;
 	link->earlyBundleCount = 0;
+	link->droppedEarlyBundleCount = 0;
 	link->mode = NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING;
 	link->opened = 1;
 	return 1;
@@ -122,7 +123,10 @@ static void NativeLockstepPeerLink_StageEarlyBundle(struct NativeLockstepPeerLin
 	if (link->earlyBundleCount >= NATIVE_LOCKSTEP_PEER_LINK_EARLY_BUNDLE_CAPACITY)
 	{
 		/* Buffer exhausted: dropped, the same "not an error, just lossy"
-		 * posture UDP itself already has. */
+		 * posture UDP itself already has, but counted so the loss is
+		 * observable (GAP 4) instead of only surfacing much later as a
+		 * TakeFrameInputs stall. */
+		link->droppedEarlyBundleCount++;
 		return;
 	}
 	memcpy(link->earlyBundleBytes[link->earlyBundleCount], bytes, size);
@@ -220,6 +224,16 @@ void NativeLockstepPeerLink_Poll(struct NativeLockstepPeerLink *link)
 			continue;
 		}
 
+		if ((sender.ipv4 != link->peerAddress.ipv4) || (sender.port != link->peerAddress.port))
+		{
+			/* Not from the configured peer (GAP 2): discard before this
+			 * datagram is fed to either the handshake or the session, and
+			 * keep draining. The inner decoders' magic/version/digest
+			 * checks already backstop identity, so this is a defensive,
+			 * cheap filter, not the only line of defense. */
+			continue;
+		}
+
 		if (byteCount == NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES)
 		{
 			NativeLockstepPeerLink_HandleHandshakeDatagram(link, bytes, byteCount);
@@ -262,6 +276,11 @@ int NativeLockstepPeerLink_ComposeAndSendBundle(struct NativeLockstepPeerLink *l
 enum NativeLockstepPeerLinkMode NativeLockstepPeerLink_Mode(const struct NativeLockstepPeerLink *link)
 {
 	return (link != NULL) ? link->mode : NATIVE_LOCKSTEP_PEER_LINK_IDLE;
+}
+
+uint32_t NativeLockstepPeerLink_DroppedEarlyBundleCount(const struct NativeLockstepPeerLink *link)
+{
+	return (link != NULL) ? link->droppedEarlyBundleCount : 0u;
 }
 
 struct NativeLockstepSession *NativeLockstepPeerLink_Session(struct NativeLockstepPeerLink *link)

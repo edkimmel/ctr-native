@@ -94,6 +94,18 @@ struct NativeLockstepPeerLink
 	uint8_t earlyBundleBytes[NATIVE_LOCKSTEP_PEER_LINK_EARLY_BUNDLE_CAPACITY][NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
 	size_t earlyBundleSizes[NATIVE_LOCKSTEP_PEER_LINK_EARLY_BUNDLE_CAPACITY];
 	uint32_t earlyBundleCount;
+	/*
+	 * Simple observable counter, the same idiom
+	 * native_lockstep_input_window.c staleDropCount/duplicateAcceptCount
+	 * uses: incremented whenever NativeLockstepPeerLink_Poll drops a
+	 * 9th-and-later early-arriving bundle because earlyBundleBytes is
+	 * already at NATIVE_LOCKSTEP_PEER_LINK_EARLY_BUNDLE_CAPACITY. The drop
+	 * behavior itself is unchanged (capacity stays bounded and fixed); this
+	 * only makes it observable instead of a silent loss that would
+	 * otherwise only surface much later as a TakeFrameInputs stall. Read via
+	 * NativeLockstepPeerLink_DroppedEarlyBundleCount.
+	 */
+	uint32_t droppedEarlyBundleCount;
 };
 
 /*
@@ -119,6 +131,28 @@ int NativeLockstepPeerLink_Open(struct NativeLockstepPeerLink *link, uint16_t lo
  * in every other mode, including on a NULL link. This module has no wall
  * clock; the caller decides the resend cadence and calls this on its own
  * schedule.
+ *
+ * Caller contract while mode is HANDSHAKING (see also the
+ * NativeLockstepPeerLink_Poll doc comment below): call this before
+ * NativeLockstepPeerLink_Poll on every tick, not after. The two peers'
+ * handshakes complete independently (each latches COMPLETE as soon as it
+ * has validated the peer's HELLO, with no guarantee the peer has yet
+ * validated this side's own HELLO in return -- see the earlyBundleBytes
+ * field doc comment on struct NativeLockstepPeerLink), so the tick whose
+ * Poll() call first discovers this side's own handshake completion is
+ * exactly the tick on which the peer may still be waiting to receive one
+ * more copy of this side's HELLO. This module never auto-resends
+ * internally -- it has no wall clock, and the caller-driven cadence is
+ * deliberate (docs/LOBBY_MILESTONE.md section 2.3) -- so a caller that
+ * polls first and only calls Retransmit afterward (for example, a loop
+ * shaped "Poll(); if (mode changed) break;" that never reaches a
+ * following Retransmit call once mode leaves HANDSHAKING) can silently
+ * skip that last HELLO and stall the peer, which may then never complete
+ * its own handshake. Calling Retransmit first, every tick, unconditionally
+ * sends that tick's HELLO (or the armed ACCEPT/REJECT reply, once this
+ * side itself has validated the peer's HELLO) before Poll can possibly
+ * observe local completion, so the peer never misses the message it was
+ * waiting for.
  */
 void NativeLockstepPeerLink_Retransmit(struct NativeLockstepPeerLink *link);
 
@@ -130,6 +164,19 @@ void NativeLockstepPeerLink_Retransmit(struct NativeLockstepPeerLink *link);
  * (REJECTED, FAULTED, or DIVERGED) or still IDLE (Open never succeeded), is
  * a no-op that drains and drops every waiting datagram without inspecting
  * it further.
+ *
+ * While mode is HANDSHAKING, see the NativeLockstepPeerLink_Retransmit doc
+ * comment above: the caller must call Retransmit before calling this
+ * function on every tick, or the tick that first observes local handshake
+ * completion here can silently skip a HELLO the peer still needed.
+ *
+ * Each received datagram whose sender address (both ipv4 and port, from
+ * NativeUdpTransport_Receive's sender out-parameter) does not exactly equal
+ * this link's own peerAddress is silently discarded before being inspected
+ * any further -- not fed to either the handshake or the session -- and the
+ * drain simply continues with the next waiting datagram. This is a cheap,
+ * unconditional identity check against the one peer address this link was
+ * opened with; it adds no configuration and never resolves a hostname.
  *
  * Otherwise each received datagram is routed by its own byte count, not by
  * link mode alone, because the two peers' handshakes complete
@@ -158,10 +205,14 @@ void NativeLockstepPeerLink_Retransmit(struct NativeLockstepPeerLink *link);
  *     session; afterwards NativeLockstepSession_Mode is checked, DIVERGED
  *     sets link mode DIVERGED, FAULTED sets link mode FAULTED, anything
  *     else leaves RUNNING alone. While mode is still HANDSHAKING, it is
- *     staged into the early-bundle buffer instead (silently dropped only if
- *     that buffer is already full, which needs more in-flight bundles than
+ *     staged into the early-bundle buffer instead (dropped only if that
+ *     buffer is already full, which needs more in-flight bundles than
  *     NATIVE_LOCKSTEP_PEER_LINK_EARLY_BUNDLE_CAPACITY, an already-generous,
- *     session-ring-matching bound).
+ *     session-ring-matching bound; each such drop increments
+ *     droppedEarlyBundleCount, readable through
+ *     NativeLockstepPeerLink_DroppedEarlyBundleCount, so the loss is
+ *     observable rather than only surfacing much later as a
+ *     TakeFrameInputs stall).
  *   - Any other byte count matches neither wire record at this seam and is
  *     dropped.
  * If handling a datagram makes link mode become terminal (REJECTED,
@@ -184,6 +235,17 @@ void NativeLockstepPeerLink_Poll(struct NativeLockstepPeerLink *link);
 int NativeLockstepPeerLink_ComposeAndSendBundle(struct NativeLockstepPeerLink *link, uint32_t frameIndex);
 
 enum NativeLockstepPeerLinkMode NativeLockstepPeerLink_Mode(const struct NativeLockstepPeerLink *link);
+
+/*
+ * Simple observable-counter accessor, the same idiom as
+ * native_lockstep_input_window.c's staleDropCount/duplicateAcceptCount:
+ * returns the number of early-arriving bundles NativeLockstepPeerLink_Poll
+ * has dropped so far because the early-bundle staging buffer was already at
+ * NATIVE_LOCKSTEP_PEER_LINK_EARLY_BUNDLE_CAPACITY (see the
+ * NativeLockstepPeerLink_Poll doc comment above). Returns 0 for a NULL link,
+ * mirroring NativeLockstepPeerLink_Mode's own NULL convention.
+ */
+uint32_t NativeLockstepPeerLink_DroppedEarlyBundleCount(const struct NativeLockstepPeerLink *link);
 
 /*
  * Non-const accessor to the underlying session, so the caller can call
