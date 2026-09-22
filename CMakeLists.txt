@@ -259,6 +259,22 @@ set_target_properties(ctr_native_lockstep_rematch PROPERTIES
 target_include_directories(ctr_native_lockstep_rematch PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_lockstep_rematch PUBLIC ctr_native_match_config)
 
+# Connect/handshake protocol that lets two peers exchange and validate a
+# NativeMatchConfigV1 proposal before a NativeLockstepSession is opened.
+# Transport-agnostic by design, exactly like ctr_native_lockstep_protocol:
+# this leaf encodes to and decodes from caller-owned byte buffers and has no
+# socket, OS networking, clock, or game dependency, and it never links
+# ctr_native_udp_transport, ctr_native_lockstep_session,
+# ctr_native_lockstep_protocol, or ctr_native_virtual_datagram.
+add_library(ctr_native_lockstep_handshake STATIC platform/native_lockstep_handshake.c)
+set_target_properties(ctr_native_lockstep_handshake PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_lockstep_handshake PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_lockstep_handshake PUBLIC ctr_native_match_config ctr_native_canonical_codec)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -891,6 +907,15 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_lockstep_rematch_test PRIVATE ctr_native_lockstep_rematch)
     add_test(NAME native_lockstep_rematch_unit COMMAND $<TARGET_FILE:native_lockstep_rematch_test>)
+
+    add_executable(native_lockstep_handshake_test tests/native_lockstep_handshake_test.c)
+    set_target_properties(native_lockstep_handshake_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_lockstep_handshake_test PRIVATE ctr_native_lockstep_handshake)
+    add_test(NAME native_lockstep_handshake_unit COMMAND $<TARGET_FILE:native_lockstep_handshake_test>)
 
     add_executable(native_lockstep_transport_fault_test tests/native_lockstep_transport_fault_test.c)
     set_target_properties(native_lockstep_transport_fault_test PROPERTIES
