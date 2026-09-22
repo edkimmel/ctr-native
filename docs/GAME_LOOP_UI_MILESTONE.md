@@ -213,12 +213,16 @@ Split in two, following the existing standalone-testable game/MAIN pattern
 Layout defaults (UX-10), in the 512 x 216 retail screen space: title line
 in FONT_BIG, ORANGE, centred at y = 40; status/body lines in FONT_SMALL,
 centred, starting at y = 90 with 20 px spacing; menu rows in FONT_BIG,
-centred, at y = 120 and y = 145, the focused row in the retail highlight
-colour and the other row in the normal colour; footer hint in FONT_SMALL at
-y = 190. Strings are ASCII upper case to match the retail font:
+centred, at y = 120 and y = 145, drawn in ORANGE like retail RECTMENU rows,
+with the focused row marked by the retail translucent highlight box, and
+drawn GRAY (the retail disabled-row colour) with no highlight until the menu
+accepts input (after the results dwell and release-to-arm); footer hint in
+FONT_SMALL at y = 186. Strings are ASCII upper case to match the retail
+font:
 
 | Screen | Title | Body |
 | --- | --- | --- |
+| Title (attract, arcade-link mode) | ARCADE LINK | PRESS START (blinking); THIS CABINET: CAB 1 (or CAB 2) |
 | LOBBY, WAITING | ARCADE LINK | WAITING FOR OPPONENT; THIS CABINET: CAB 1 (or CAB 2) |
 | LOBBY, CONNECTING | ARCADE LINK | CONNECTING |
 | LOBBY, REJECTED | ARCADE LINK | LINK REFUSED: SETTINGS DO NOT MATCH; CROSS: RETRY  TRIANGLE: BACK |
@@ -372,10 +376,15 @@ the retransmit default of 1u.
 
 ### Task 5 -- screen layout builder (MainArcadeLinkScreens layout)
 
-Status: planned. A pure standalone library under game/MAIN with a unit test
+Status: done. A pure standalone library under game/MAIN with a unit test
 of every screen's draw list (strings, positions, focus colour, dot
 animation), and an isolation test that it names no lockstep or
 failure-handling token and touches no game global.
+Landed as game/MAIN/MainArcadeLinkLayout.h, game/MAIN/MainArcadeLinkLayout.c,
+tests/main_arcade_link_layout_test.c, and
+tests/main_arcade_link_layout_isolation_test.cmake (library
+ctr_native_arcade_link_layout, tests main_arcade_link_layout_unit and
+main_arcade_link_layout_isolation).
 
 ### Task 6 -- live hook, dormant by default
 

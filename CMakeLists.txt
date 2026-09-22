@@ -350,6 +350,19 @@ target_link_libraries(ctr_native_arcade_netplay PUBLIC
     ctr_native_lockstep_match_outcome ctr_native_lockstep_match_roster ctr_native_lockstep_rematch
     ctr_native_match_config)
 
+# Arcade-link screen layout builder (docs/GAME_LOOP_UI_MILESTONE.md section
+# 2.4, Task 5): a pure draw-list builder under game/MAIN with no game globals
+# and no rendering. Not linked into ctr_native and not in game/game_unity.h
+# yet (Task 6).
+add_library(ctr_native_arcade_link_layout STATIC game/MAIN/MainArcadeLinkLayout.c)
+set_target_properties(ctr_native_arcade_link_layout PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_link_layout PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_link_libraries(ctr_native_arcade_link_layout PUBLIC ctr_native_arcade_flow)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -1110,6 +1123,20 @@ if(BUILD_TESTING)
 
     add_test(NAME native_arcade_netplay_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_netplay_isolation_test.cmake")
+
+    # Arcade-link screen layout builder (docs/GAME_LOOP_UI_MILESTONE.md
+    # section 2.4, Task 5): pure draw lists, no game globals, no rendering.
+    add_executable(main_arcade_link_layout_test tests/main_arcade_link_layout_test.c)
+    set_target_properties(main_arcade_link_layout_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(main_arcade_link_layout_test PRIVATE ctr_native_arcade_link_layout)
+    add_test(NAME main_arcade_link_layout_unit COMMAND $<TARGET_FILE:main_arcade_link_layout_test>)
+
+    add_test(NAME main_arcade_link_layout_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_layout_isolation_test.cmake")
 
     add_test(NAME native_lockstep_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_lockstep_isolation_test.cmake")
