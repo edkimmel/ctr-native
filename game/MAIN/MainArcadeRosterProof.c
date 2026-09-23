@@ -624,11 +624,15 @@ void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct Native
 		state->raceTickZeroCounters.frameCounter = frameState->control.frameCounter;
 		state->raceTickZeroCounters.frameTimer = frameState->control.frameTimer;
 		/* frameTimer_Confetti is not a V1 control value, so it is read from
-		 * gGT here. It is the same frame the control values come from:
-		 * MainMain.c projects frameState right before this hook, on the game
-		 * thread, and the only writer (the VBlank callback, MainDrawCb.c) runs
-		 * on the game thread only inside VSync, which neither the projector
-		 * nor this hook calls. */
+		 * gGT here. It is the same frame the control values come from: their
+		 * snapshot is taken at CTR_Main's per-frame frame-info read
+		 * (MainMain.c), on the game thread, shortly before this hook. Its
+		 * writers are the VBlank callback (MainDrawCb.c), which runs on the
+		 * game thread whenever VSync or Platform_WaitUntilVBlank emits a
+		 * VBlank, and the RS-17 pin (MainArcadeRaceSetup.c) at race init.
+		 * None of them runs between that snapshot and this hook: the
+		 * projector and this hook call neither VSync,
+		 * Platform_WaitUntilVBlank, nor the race setup. */
 		state->raceTickZeroCounters.frameTimerConfetti = (int32_t)gGT->frameTimer_Confetti;
 		state->countersValid = 1u;
 		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "race tick 0 counters: timer %ld frameCounter %ld frameTimer %ld frameTimerConfetti %ld\n",

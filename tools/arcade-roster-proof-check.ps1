@@ -28,7 +28,8 @@ param(
 )
 
 # Live roster determinism check (docs/ROSTER_MILESTONE.md section 3.4, R-6,
-# R-6b, R-6c, and R-6d).  Runs five live roster proofs and compares their reports:
+# R-6b, R-6c, and R-6d).  Runs five live roster proofs and compares their
+# reports:
 #   A  seed 0x5EED, dwell 0     (launches from the title)
 #   B  seed 0x5EED, dwell 0     (A again: byte-identical report)
 #   C  seed 0x5EED, dwell 5400  (launches from inside the attract demo race)
