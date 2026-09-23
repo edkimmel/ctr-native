@@ -405,6 +405,20 @@ set_target_properties(ctr_native_match_select_rules PROPERTIES
 target_include_directories(ctr_native_match_select_rules PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_match_select_rules PUBLIC ctr_native_match_config ctr_native_sha256)
 
+# Arcade bot rules v1 (docs/ROSTER_MILESTONE.md sections 3.1 and 3.3, R-2):
+# pure, versioned rule choices for the two-cabinet arcade race (shape,
+# difficulty table, retail 2P AI set rule, mode policy, retail RNG seed
+# recipe), their canonical encoding and SHA-256 digest, the seed mapping
+# and derivation, and the config validator. Nothing links it yet (R-3/R-4).
+add_library(ctr_native_arcade_bot_rules STATIC platform/native_arcade_bot_rules.c)
+set_target_properties(ctr_native_arcade_bot_rules PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_bot_rules PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_arcade_bot_rules PUBLIC ctr_native_match_config ctr_native_sha256 ctr_native_canonical_codec ctr_native_deterministic_rng ctr_native_match_select_rules)
+
 # Match-select wire message (docs/MATCH_SELECT_MILESTONE.md section 2.2,
 # MS-3): the pure, transactional 64-byte select record codec with an FNV-1a
 # 64 trailer; table membership from the rules. Reaches ctr_native through
@@ -1299,6 +1313,21 @@ if(BUILD_TESTING)
 
     add_test(NAME native_match_select_rules_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_match_select_rules_isolation_test.cmake")
+
+    # Arcade bot rules v1 (docs/ROSTER_MILESTONE.md section 3.1, R-2): golden
+    # encoding and digest; the isolation test checks purity and the retail
+    # difficulty and advRng fallback mirrors.
+    add_executable(native_arcade_bot_rules_test tests/native_arcade_bot_rules_test.c)
+    set_target_properties(native_arcade_bot_rules_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_bot_rules_test PRIVATE ctr_native_arcade_bot_rules)
+    add_test(NAME native_arcade_bot_rules_unit COMMAND $<TARGET_FILE:native_arcade_bot_rules_test>)
+
+    add_test(NAME native_arcade_bot_rules_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_bot_rules_isolation_test.cmake")
 
     # Match-select wire message (docs/MATCH_SELECT_MILESTONE.md section 2.2,
     # MS-3): frozen golden bytes, every fault cause in check order, and the
