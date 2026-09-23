@@ -13,10 +13,12 @@
  * Turns a pointer-free snapshot of the retail race, taken after
  * MainInit_Drivers, into the observed facts MainArcadeRoster_ValidateNativeFacts
  * and MainArcadeBotSetup_Plan validate against the plan. Not in
- * game/game_unity.h; its one live caller is the R-5b adapter
+ * game/game_unity.h; its one live caller is the race setup decision core
+ * (game/MAIN/MainArcadeRaceSetupCore.c, R-5c), on behalf of the R-5b adapter
  * (game/MAIN/MainArcadeRaceSetup.c), which fills the snapshot from the
  * retail globals and the roster input from
- * MainCanonicalDrivers_ExtractRosterInput.
+ * MainCanonicalDrivers_ExtractRosterInputPreRace (no race order or winners:
+ * the first race tick has not rebuilt them yet).
  *
  * Pure: reads no game global, does no I/O, uses no heap, keeps no hidden
  * state. Build returns 1 on success, or 0 with both outputs untouched on
@@ -24,14 +26,14 @@
  *
  * ---------------------------------------------------------------------------
  * Audit (R-5a): what the retail source holds after MainInit_Drivers in a
- * 2-human arcade race (game/MAIN/MainInit.c:284-402), drivers 0..1 humans,
+ * 2-human arcade race (game/MAIN/MainInit.c:288-406), drivers 0..1 humans,
  * 2..5 bots, 6..7 absent.
  *
- * Order inside MainInit_Drivers: drivers[0..7] = NULL (:290-293);
- * numBotsNextGame = 0 (:295); BOTS_Adv_AdjustDifficulty (:299, skipped only
+ * Order inside MainInit_Drivers: drivers[0..7] = NULL (:294-297);
+ * numBotsNextGame = 0 (:299); BOTS_Adv_AdjustDifficulty (:303, skipped only
  * in a cutscene, the adventure arena, or the main menu); humans
- * drivers[i] = VehBirth_Player(i) for i = numPlyrCurrGame-1 .. 0 (:312-315);
- * numDrivers = 6 for 2 humans (:355); BOTS_Driver_Init(i) for i = 2..5 (:360-363).
+ * drivers[i] = VehBirth_Player(i) for i = numPlyrCurrGame-1 .. 0 (:316-319);
+ * numDrivers = 6 for 2 humans (:359); BOTS_Driver_Init(i) for i = 2..5 (:364-367).
  *
  * kartSpawnOrderArray (include/regionsEXE.h:3113, char[8]): all 8 entries are
  * written this race init by BOTS_Adv_AdjustDifficulty through
@@ -76,7 +78,7 @@
  * driverID: VehBirth_NonGhost sets driver->driverID = playerIndex
  * (game/Vehicle/VehBirth.c:835), called with the slot by VehBirth_Player
  * (:865) and by BOTS_Driver_Init (game/BOTS.c:3098), which also stores
- * drivers[driverID] (:3099); humans are stored by MainInit.c:314. So
+ * drivers[driverID] (:3099); humans are stored by MainInit.c:318. So
  * driverID == slot for every present driver.
  *
  * Bot recognition: ACTION_BOT (include/namespace_Vehicle.h:602) in
@@ -84,7 +86,7 @@
  * BOTS_GotoStartingLine (:3038). A human Driver is zeroed by VehBirth_Player
  * (game/Vehicle/VehBirth.c:863) and gains ACTION_BOT only through
  * BOTS_Driver_Convert (game/BOTS.c:3188). Its demo-mode call is at
- * MainInit.c:551 (under the boolDemoMode test at :547), pinned off by the
+ * MainInit.c:571 (under the boolDemoMode test at :567), pinned off by the
  * plan; the other callers (PlayLevel.c:226, GhostReplay.c:88,
  * MainGameEnd.c:157) run after the snapshot point.
  *

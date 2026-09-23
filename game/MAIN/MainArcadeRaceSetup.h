@@ -3,16 +3,25 @@
 
 #include <stdint.h>
 
+#include "MAIN/MainArcadeRaceSetupCore.h"
+
 /*
- * Live race setup adapter (docs/ROSTER_MILESTONE.md section 3.2, task R-5b).
- * Native only: game/MAIN/MainArcadeRaceSetup.c is compiled only with
- * CTR_NATIVE and is dormant unless MainArcadeRaceSetup_Arm is called. It
+ * Live race setup adapter (docs/ROSTER_MILESTONE.md section 3.2, tasks R-5b
+ * and R-5c). Native only: game/MAIN/MainArcadeRaceSetup.c is compiled only
+ * with CTR_NATIVE and is dormant unless MainArcadeRaceSetup_Arm is called. It
  * turns a validated TWO_CAB NativeMatchConfigV1 into a retail 2P arcade race
  * through the pure plan (MAIN/MainArcadeRaceSetupPlan.h, whose R-5 contract
  * comment this module implements), seeds the retail RNGs from the match's
  * deterministic bank, and validates the live roster and bot setup facts
  * (MAIN/MainArcadeRaceSetupFacts.h, MAIN/MainArcadeRoster.h,
  * MAIN/MainArcadeBotSetup.h) right after MainInit_Drivers.
+ *
+ * The adapter is thin: every decision is made by the pure core
+ * (MAIN/MainArcadeRaceSetupCore.h, which also defines the status and failure
+ * codes and documents the state machine, the wrong-state rules, and the exact
+ * writes of each step). Each entry point reads a pointer-free view of the live
+ * values, calls the core step, applies exactly the writes the core returns, in
+ * order, and logs.
  *
  * State machine:
  *
@@ -34,7 +43,9 @@
  *   mode words, arcadeDifficulty, and boolDemoMode, and seeds the retail RNG
  *   states from the bank's MATCH_SETUP stream.
  * - OnDriversInitialized (right after MainInit_Drivers) acts only in SEEDED:
- *   it builds the facts from the live race and validates them against the
+ *   it builds the facts from the live race, reading the roster input with
+ *   MainCanonicalDrivers_ExtractRosterInputPreRace (the race order is not
+ *   rebuilt before the first race tick), and validates them against the
  *   roster plan and the bot setup, drawing the per-bot setup values from the
  *   post-seed bank.
  *
@@ -45,47 +56,17 @@
  * OnFinalizeInitBegin in SEEDED (the drivers hook of the previous race init
  * never ran) or VALIDATED (a new race init over a validated setup, which the
  * owner must Disarm first) latches FAILED/STATE; OnDriversInitialized in
- * LAUNCHED (the seeding hook was skipped) latches FAILED/STATE. Every other
- * hook call is a no-op, so normal boot and every load not launched here are
- * unchanged.
+ * LAUNCHED (the seeding hook was skipped) latches FAILED/STATE. A NULL game
+ * tracker in a hook that should act (LAUNCHED, SEEDED) latches
+ * FAILED/NO_TRACKER. Every other hook call is a no-op, so normal boot and
+ * every load not launched here are unchanged.
  *
- * The state is file-scope static in the module: never in a saved state, a
- * recording, or canonical state (RS-11). Every state change and failure
- * logs one Platform_Log line with the prefix "arcade race setup:".
+ * The state and the scratch are file-scope static in the module: never in a
+ * saved state, a recording, or canonical state (RS-11). Every state change and
+ * failure logs one Platform_Log line with the prefix "arcade race setup:".
  */
 
 struct GameTracker;
-struct NativeMatchConfigV1;
-struct NativeDeterministicRngBankV1;
-struct MainArcadeBotSetupSourceFacts;
-
-#define MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES 32u
-
-enum MainArcadeRaceSetupStatus
-{
-	MAIN_ARCADE_RACE_SETUP_IDLE = 0,
-	MAIN_ARCADE_RACE_SETUP_ARMED,
-	MAIN_ARCADE_RACE_SETUP_LAUNCHED,
-	MAIN_ARCADE_RACE_SETUP_SEEDED,
-	MAIN_ARCADE_RACE_SETUP_VALIDATED,
-	MAIN_ARCADE_RACE_SETUP_FAILED
-};
-
-/* Append-only: the codes are logged and reported. */
-enum MainArcadeRaceSetupFailure
-{
-	MAIN_ARCADE_RACE_SETUP_FAILURE_NONE = 0,
-	MAIN_ARCADE_RACE_SETUP_FAILURE_PLAN,                 /* the plan refused the config */
-	MAIN_ARCADE_RACE_SETUP_FAILURE_BANK,                 /* the bank could not be derived */
-	MAIN_ARCADE_RACE_SETUP_FAILURE_PRECONDITION,         /* a Launch precondition failed */
-	MAIN_ARCADE_RACE_SETUP_FAILURE_LEVEL_MISMATCH,       /* the loaded levelID is not the plan's */
-	MAIN_ARCADE_RACE_SETUP_FAILURE_LOAD_FIELDS_MISMATCH, /* numLaps, numPlyrCurrGame, or characterIDs[0..5] */
-	MAIN_ARCADE_RACE_SETUP_FAILURE_SEED,                 /* the retail seeds could not be derived */
-	MAIN_ARCADE_RACE_SETUP_FAILURE_FACTS,                /* the live facts could not be read or built */
-	MAIN_ARCADE_RACE_SETUP_FAILURE_ROSTER,               /* the roster plan or its validation failed */
-	MAIN_ARCADE_RACE_SETUP_FAILURE_BOT_SETUP,            /* MainArcadeBotSetup_Plan refused the facts */
-	MAIN_ARCADE_RACE_SETUP_FAILURE_STATE                 /* a hook or call in the wrong state */
-};
 
 /* IDLE only. Returns 1 and moves to ARMED; 0 otherwise (see above). */
 int MainArcadeRaceSetup_Arm(const struct NativeMatchConfigV1 *config);

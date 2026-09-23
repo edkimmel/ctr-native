@@ -1,0 +1,331 @@
+#ifndef MAIN_ARCADE_RACE_SETUP_CORE_H
+#define MAIN_ARCADE_RACE_SETUP_CORE_H
+
+#include "MAIN/MainArcadeBotSetup.h"
+#include "MAIN/MainArcadeRaceSetupFacts.h"
+#include "MAIN/MainArcadeRaceSetupPlan.h"
+#include "MAIN/MainArcadeRoster.h"
+#include "platform/native_arcade_bot_rules.h"
+#include "platform/native_canonical_drivers_roster.h"
+#include "platform/native_deterministic_rng.h"
+#include "platform/native_match_config.h"
+#include "platform/native_sha256.h"
+
+#include <stdint.h>
+
+/*
+ * Race setup decision core (docs/ROSTER_MILESTONE.md section 3.2, R-5c).
+ * Every decision of the live race setup adapter (game/MAIN/MainArcadeRaceSetup.c)
+ * lives here as a pure step over a pointer-free view of the live values: the
+ * state checks, the Launch preconditions, the verification of the fields the
+ * load consumed, which retail fields are written and with what values, the
+ * retail RNG seed write order, the fact validation, and the failure codes.
+ * The adapter reads the view from the retail globals, calls the step, applies
+ * the returned write list in order, and logs; it decides nothing itself.
+ *
+ * Built as the standalone library ctr_native_arcade_race_setup_core (C17,
+ * extensions off), linked into ctr_native and never unity-included. Pure: no
+ * retail global, no I/O, no heap, and no static state; all state is the
+ * caller-owned struct MainArcadeRaceSetupCore, and the post-drivers step works
+ * in a caller-owned scratch so that no large object lives on the stack.
+ *
+ * State machine (the adapter's contract, MAIN/MainArcadeRaceSetup.h):
+ *
+ *   IDLE --Arm--> ARMED --Launch--> LAUNCHED --OnFinalizeInitBegin--> SEEDED
+ *        --OnDriversInitialized--> VALIDATED
+ *
+ * and FAILED (fail closed, with a failure code) from any step after Arm.
+ * Disarm returns every state to IDLE.
+ *
+ * Wrong state (STATE): Arm outside IDLE and Launch outside ARMED return 0;
+ * while a setup is in flight (ARMED, LAUNCHED, SEEDED, VALIDATED) the misuse
+ * also latches FAILED/STATE, and from IDLE or FAILED nothing changes (the
+ * outcome log is REFUSED). OnFinalizeInitBegin in SEEDED or VALIDATED, and
+ * OnDriversInitialized in LAUNCHED, latch FAILED/STATE. A hook that should act
+ * (OnFinalizeInitBegin in LAUNCHED, OnDriversInitialized in SEEDED) without a
+ * game tracker latches FAILED/NO_TRACKER. Every other hook call is a no-op:
+ * no write, no state change.
+ *
+ * Writes. Every step fills a MainArcadeRaceSetupCoreOutcome whose ops list
+ * is the exact, ordered set of retail writes the adapter performs. There is
+ * no levelID target: the load request (REQUEST_LOAD) carries the plan's level
+ * and LOAD_LevelFile writes it. The ops are:
+ * - Launch: GAME_MODE1, GAME_MODE2, ARCADE_DIFFICULTY, BOOL_DEMO_MODE,
+ *   NUM_LAPS, NUM_PLYR_NEXT_GAME, CHARACTER_ID 0..7 (slots 6 and 7 with their
+ *   observed values), then REQUEST_LOAD.
+ * - OnFinalizeInitBegin (LAUNCHED): GAME_MODE1, GAME_MODE2, ARCADE_DIFFICULTY,
+ *   BOOL_DEMO_MODE (the re-apply), then RANDOM_NUMBER, ADV_RNG0, ADV_RNG1,
+ *   PSX_RAND_SEED, AUDIO_RNG (the seeds, RS-7, in this order).
+ * - Disarm: GAME_MODE1 only when the vibration bits are restored.
+ * Every other step writes nothing.
+ */
+
+/* Mirrors of retail values the steps compare against; the adapter
+ * static-asserts each one. */
+#define MAIN_ARCADE_RACE_SETUP_CORE_STAGE_IDLE (-1)        /* the idle Loading.stage (namespace_Main.h) */
+#define MAIN_ARCADE_RACE_SETUP_CORE_MAIN_MENU_LEVEL 39      /* enum LevelID main-menu level (namespace_Level.h) */
+
+#define MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS 16u
+#define MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES 32u
+
+enum MainArcadeRaceSetupStatus
+{
+	MAIN_ARCADE_RACE_SETUP_IDLE = 0,
+	MAIN_ARCADE_RACE_SETUP_ARMED,
+	MAIN_ARCADE_RACE_SETUP_LAUNCHED,
+	MAIN_ARCADE_RACE_SETUP_SEEDED,
+	MAIN_ARCADE_RACE_SETUP_VALIDATED,
+	MAIN_ARCADE_RACE_SETUP_FAILED
+};
+
+/* Append-only: the codes are logged and reported. */
+enum MainArcadeRaceSetupFailure
+{
+	MAIN_ARCADE_RACE_SETUP_FAILURE_NONE = 0,
+	MAIN_ARCADE_RACE_SETUP_FAILURE_PLAN,                 /* the plan refused the config */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_BANK,                 /* the bank could not be derived */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_PRECONDITION,         /* a Launch precondition failed */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_LEVEL_MISMATCH,       /* the loaded levelID is not the plan's */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_LOAD_FIELDS_MISMATCH, /* numLaps, numPlyrCurrGame, or characterIDs[0..5] */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_SEED,                 /* the retail seeds could not be derived */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_FACTS,                /* the live facts could not be read or built */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_ROSTER,               /* the roster plan or its validation failed */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_BOT_SETUP,            /* MainArcadeBotSetup_Plan refused the facts */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_STATE,                /* a hook or call in the wrong state */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_NO_TRACKER            /* a hook that should act had no game tracker */
+};
+
+/* The retail write targets. The adapter maps each to exactly one retail
+ * write; value carries the field's value at its retail width and sign. */
+enum MainArcadeRaceSetupCoreTarget
+{
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_NONE = 0,
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_GAME_MODE1,         /* the gameMode1 word, as its 32-bit pattern */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_GAME_MODE2,         /* the gameMode2 word, as its 32-bit pattern */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ARCADE_DIFFICULTY,  /* int */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_BOOL_DEMO_MODE,     /* char, 0 or 1 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_NUM_LAPS,           /* s8 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_NUM_PLYR_NEXT_GAME, /* u8 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CHARACTER_ID,       /* characterIDs[index] (s16), index 0..7 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_REQUEST_LOAD,       /* MainRaceTrack_RequestLoad(value): the plan's level */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RANDOM_NUMBER,      /* the 16-bit LCG state */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG0,           /* advRng state0 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG1,           /* advRng state1 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_PSX_RAND_SEED,      /* the PSX BIOS rand seed */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_AUDIO_RNG           /* the audio RNG */
+};
+
+struct MainArcadeRaceSetupCoreOp
+{
+	uint8_t target; /* MainArcadeRaceSetupCoreTarget */
+	uint8_t index;  /* CHARACTER_ID only: the slot; else 0 */
+	uint8_t reserved[6];
+	int64_t value;  /* the value, exact: signed fields signed, unsigned fields 0..UINT32_MAX */
+};
+
+/* What the adapter logs for a step (it logs nothing for NONE). */
+enum MainArcadeRaceSetupCoreLog
+{
+	MAIN_ARCADE_RACE_SETUP_CORE_LOG_NONE = 0,   /* a no-op */
+	MAIN_ARCADE_RACE_SETUP_CORE_LOG_ENTERED,    /* moved to status */
+	MAIN_ARCADE_RACE_SETUP_CORE_LOG_FAILED,     /* latched FAILED with failure; detail says why */
+	MAIN_ARCADE_RACE_SETUP_CORE_LOG_REFUSED,    /* refused in IDLE or FAILED; nothing changed; detail is the call */
+	MAIN_ARCADE_RACE_SETUP_CORE_LOG_ARM_REFUSED /* Arm refused (failure PLAN or BANK); still IDLE */
+};
+
+/* Disarm only: what happened to the vibration bits saved at Arm. */
+enum MainArcadeRaceSetupCoreVibration
+{
+	MAIN_ARCADE_RACE_SETUP_CORE_VIBRATION_UNTOUCHED = 0, /* Launch never wrote the fields */
+	MAIN_ARCADE_RACE_SETUP_CORE_VIBRATION_RESTORED,      /* the GAME_MODE1 op restores them */
+	MAIN_ARCADE_RACE_SETUP_CORE_VIBRATION_NOT_RESTORED   /* not idle on the main-menu level */
+};
+
+struct MainArcadeRaceSetupCoreOutcome
+{
+	uint32_t opCount;
+	struct MainArcadeRaceSetupCoreOp ops[MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS];
+	uint8_t result;         /* the step's return value */
+	uint8_t log;            /* MainArcadeRaceSetupCoreLog */
+	uint8_t vibration;      /* MainArcadeRaceSetupCoreVibration */
+	uint8_t reserved;
+	uint32_t status;        /* MainArcadeRaceSetupStatus after the step */
+	uint32_t failure;       /* MainArcadeRaceSetupFailure after the step */
+	const char *detail;     /* fixed text for the log; never NULL */
+	int32_t botSetupResult; /* MainArcadeBotSetupResult of the failed bot setup, else OK */
+	uint32_t savedVibration;                   /* Disarm: the bits saved at Arm */
+	struct NativeArcadeRetailRngSeedsV1 seeds; /* SEEDED: the seeds the ops write */
+};
+
+/* The live values Launch reads. */
+struct MainArcadeRaceSetupCoreLaunchView
+{
+	int32_t loadingStage;       /* Loading.stage */
+	uint32_t onBeginAddBits0;   /* Loading.OnBegin.AddBitsConfig0 */
+	uint32_t onBeginRemBits0;   /* Loading.OnBegin.RemBitsConfig0 */
+	uint32_t onBeginAddBits8;   /* Loading.OnBegin.AddBitsConfig8 */
+	uint32_t onBeginRemBits8;   /* Loading.OnBegin.RemBitsConfig8 */
+	uint32_t optionsLoaded;     /* boolHasLoadedOptions */
+	struct MainArcadeRaceSetupRetailFields fields; /* the owned fields, gameMode1 included */
+};
+
+/* The live values the pre-drivers hook reads. Only trackerPresent is read
+ * unless MainArcadeRaceSetupCore_HookReadsView says the hook acts. */
+struct MainArcadeRaceSetupCoreBeginView
+{
+	uint8_t trackerPresent;  /* the hook's game tracker is not NULL */
+	uint8_t numPlyrCurrGame; /* u8 */
+	uint8_t reserved[2];
+	struct MainArcadeRaceSetupRetailFields fields;
+};
+
+/* The live values the post-drivers hook reads, with the same rule. */
+struct MainArcadeRaceSetupCoreDriversView
+{
+	uint8_t trackerPresent;   /* the hook's game tracker is not NULL */
+	uint8_t rosterInputValid; /* the pre-race roster input extraction succeeded */
+	uint8_t reserved[2];
+	uint32_t gameMode1;
+	uint32_t gameMode2;
+	struct MainArcadeRaceSetupLiveSnapshot snapshot;
+	struct NativeCanonicalDriversRosterInput rosterInput;
+};
+
+/* The live values Disarm reads. */
+struct MainArcadeRaceSetupCoreDisarmView
+{
+	int32_t currentLevel; /* the current level */
+	int32_t loadingStage; /* Loading.stage */
+	uint32_t gameMode1;
+};
+
+enum MainArcadeRaceSetupCoreHook
+{
+	MAIN_ARCADE_RACE_SETUP_CORE_HOOK_FINALIZE_INIT_BEGIN = 0,
+	MAIN_ARCADE_RACE_SETUP_CORE_HOOK_DRIVERS_INITIALIZED
+};
+
+/*
+ * The whole setup state, owned by the caller (the adapter keeps one
+ * file-scope static instance, outside every saved-state region, never
+ * recorded or canonical, RS-11). bank is the post-Arm bank, then the
+ * post-seed bank from SEEDED, then the post-setup bank from VALIDATED.
+ */
+struct MainArcadeRaceSetupCore
+{
+	uint32_t status;         /* MainArcadeRaceSetupStatus */
+	uint32_t failure;        /* MainArcadeRaceSetupFailure */
+	uint32_t savedVibration; /* gameMode1 & HOST_LOCAL_MASK at Arm */
+	uint8_t fieldsWritten;   /* 1 once Launch wrote the live fields */
+	uint8_t reserved[3];
+	struct NativeMatchConfigV1 config;
+	struct MainArcadeRaceSetupPlan plan;
+	struct NativeDeterministicRngBankV1 bank;
+	struct MainArcadeBotSetupPlan botSetupPlan;
+	struct MainArcadeBotSetupSourceFacts setupFacts;
+	uint8_t configDigest[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t racePlanDigest[NATIVE_SHA256_DIGEST_BYTES];
+};
+
+/* Workspace of the pre-drivers and post-drivers hooks. */
+struct MainArcadeRaceSetupCoreScratch
+{
+	struct NativeDeterministicRngBankV1 seedBank;
+	struct MainArcadeRosterNativeFacts rosterFacts;
+	struct MainArcadeBotSetupSourceFacts setupFacts;
+	struct MainArcadeRosterPlan rosterPlan;
+	struct MainArcadeRosterValidated validated;
+	struct MainArcadeBotSetupPlan botSetupPlan;
+	struct NativeDeterministicRngBankV1 bankAfter;
+};
+
+/* IDLE, everything zero. NULL is a no-op. */
+void MainArcadeRaceSetupCore_Reset(struct MainArcadeRaceSetupCore *core);
+
+/*
+ * The steps. Each one zeroes *outcome, decides, updates *core, fills the
+ * outcome, and returns outcome->result. With a NULL core, view, scratch, or
+ * outcome it returns 0 and touches nothing.
+ *
+ * Arm (IDLE only) builds the plan and its digest and derives the bank from
+ * the config's masterSeed; it saves liveGameMode1's vibration bits. On failure
+ * it stays IDLE with failure PLAN or BANK (log ARM_REFUSED) and returns 0.
+ * config may be NULL (PLAN).
+ */
+int MainArcadeRaceSetupCore_Arm(struct MainArcadeRaceSetupCore *core, const struct NativeMatchConfigV1 *config,
+	uint32_t liveGameMode1, struct MainArcadeRaceSetupCoreOutcome *outcome);
+
+/*
+ * Launch (ARMED only): the preconditions, in order, each failing closed with
+ * PRECONDITION and no op: the loading stage is idle; the four pending OnBegin
+ * mode words are 0; the options are loaded; no PAUSE bit in gameMode1. Then
+ * MainArcadeRaceSetupPlan_Apply on the view's fields (PLAN on failure) and the
+ * Launch ops; LAUNCHED, and returns 1.
+ */
+int MainArcadeRaceSetupCore_Launch(struct MainArcadeRaceSetupCore *core,
+	const struct MainArcadeRaceSetupCoreLaunchView *view, struct MainArcadeRaceSetupCoreOutcome *outcome);
+
+/* 1 when the hook acts in the current state and so reads the whole view
+ * (FINALIZE_INIT_BEGIN in LAUNCHED, DRIVERS_INITIALIZED in SEEDED), else 0
+ * (also for NULL): the adapter then fills only trackerPresent. */
+int MainArcadeRaceSetupCore_HookReadsView(const struct MainArcadeRaceSetupCore *core, enum MainArcadeRaceSetupCoreHook hook);
+
+/*
+ * The pre-drivers hook. In LAUNCHED with a tracker: verifies levelID
+ * (LEVEL_MISMATCH), numLaps and numPlyrCurrGame (LOAD_FIELDS_MISMATCH), and
+ * characterIDs[i] for every bit i of the plan's characterWriteMask
+ * (LOAD_FIELDS_MISMATCH); re-applies the plan to the view's fields (PLAN);
+ * derives the retail seeds from a copy of the bank in scratch (SEED); only then
+ * emits its ops, keeps the post-seed bank, and moves to SEEDED. Every failure
+ * writes nothing. Returns 1 when it moved to SEEDED.
+ */
+int MainArcadeRaceSetupCore_OnFinalizeInitBegin(struct MainArcadeRaceSetupCore *core,
+	const struct MainArcadeRaceSetupCoreBeginView *view, struct MainArcadeRaceSetupCoreScratch *scratch,
+	struct MainArcadeRaceSetupCoreOutcome *outcome);
+
+/*
+ * The post-drivers hook. In SEEDED with a tracker: the plan's mode bits still
+ * hold and no cheat bit is set (FACTS); the roster input was extracted
+ * (FACTS); MainArcadeRaceSetupFacts_Build (FACTS); MainArcadeRoster_BuildPlan
+ * and _ValidateNativeFacts (ROSTER); MainArcadeBotSetup_Plan on the post-seed
+ * bank (BOT_SETUP, with botSetupResult). On success it keeps the bot setup
+ * plan, the setup facts, and the post-setup bank, and moves to VALIDATED.
+ * It never writes a retail field. Returns 1 when it moved to VALIDATED.
+ */
+int MainArcadeRaceSetupCore_OnDriversInitialized(struct MainArcadeRaceSetupCore *core,
+	const struct MainArcadeRaceSetupCoreDriversView *view, struct MainArcadeRaceSetupCoreScratch *scratch,
+	struct MainArcadeRaceSetupCoreOutcome *outcome);
+
+/*
+ * Any state to IDLE (returns 1). When Launch wrote the fields, the vibration
+ * bits saved at Arm are restored (one GAME_MODE1 op: gameMode1 with its
+ * HOST_LOCAL bits replaced by the saved ones) only on the main-menu level with
+ * the loading stage idle and LOADING clear; otherwise nothing is written
+ * (NOT_RESTORED), since gameMode1 is canonical control state and must not
+ * change under a running race.
+ */
+int MainArcadeRaceSetupCore_Disarm(struct MainArcadeRaceSetupCore *core,
+	const struct MainArcadeRaceSetupCoreDisarmView *view, struct MainArcadeRaceSetupCoreOutcome *outcome);
+
+/* IDLE for NULL. */
+enum MainArcadeRaceSetupStatus MainArcadeRaceSetupCore_Status(const struct MainArcadeRaceSetupCore *core);
+/* NONE for NULL; else the latched failure (NONE unless FAILED, or IDLE after a refused Arm). */
+enum MainArcadeRaceSetupFailure MainArcadeRaceSetupCore_Failure(const struct MainArcadeRaceSetupCore *core);
+
+/* Only when VALIDATED: the config, race plan, locked bot setup plan, and
+ * post-setup bank digests. Returns 0 with every output untouched otherwise. */
+int MainArcadeRaceSetupCore_Digests(const struct MainArcadeRaceSetupCore *core,
+	uint8_t configDigest[MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES], uint8_t racePlanDigest[MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES],
+	uint8_t botSetupPlanDigest[MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES], uint8_t bankDigest[MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES]);
+
+/* Only when VALIDATED: the validated per-slot setup facts. 0 with *out untouched otherwise. */
+int MainArcadeRaceSetupCore_SlotFacts(const struct MainArcadeRaceSetupCore *core, struct MainArcadeBotSetupSourceFacts *out);
+
+/* The post-setup bank when VALIDATED, else NULL. */
+const struct NativeDeterministicRngBankV1 *MainArcadeRaceSetupCore_Bank(const struct MainArcadeRaceSetupCore *core);
+
+/* Fixed names for logs and reports ("IDLE", "PLAN", ...); "UNKNOWN" out of range. */
+const char *MainArcadeRaceSetupCore_StatusName(enum MainArcadeRaceSetupStatus status);
+const char *MainArcadeRaceSetupCore_FailureName(enum MainArcadeRaceSetupFailure failure);
+
+#endif

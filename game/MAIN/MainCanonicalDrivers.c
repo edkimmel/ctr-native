@@ -339,13 +339,16 @@ int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 		wantsMask?driver->KartStates.MaskGrab.maskObj:NULL,wantsMask,out);
 }
 
-/* The one extraction pass behind ExtractRosterInput and ExtractRosterPrelude:
- * fills the caller-owned staging *input and its normalized *candidate with a
- * single NativeCanonicalDriversRoster_Normalize.  May leave both partly
+/* The one extraction pass behind ExtractRosterInput, ExtractRosterInputPreRace,
+ * and ExtractRosterPrelude: fills the caller-owned staging *input and its
+ * normalized *candidate with a single NativeCanonicalDriversRoster_Normalize.
+ * readRaceOrder 0 (the pre-race variant only) records the race order and
+ * winner lists as not yet observed, at their empty encodings, and never reads
+ * driversInRaceOrder, numWinners, or winnerIndex.  May leave both partly
  * written on failure; each public wrapper owns them as staging and commits
  * only its own output, and only on success. */
 static int MainCanonicalDrivers_ExtractRosterSource(const struct GameTracker *gGT,const struct sData *sourceData,
-	struct NativeCanonicalDriversRosterInput *input,struct NativeCanonicalDriversRosterCandidate *candidate)
+	int readRaceOrder,struct NativeCanonicalDriversRosterInput *input,struct NativeCanonicalDriversRosterCandidate *candidate)
 {
 	DriverFunc tables[8][13]={{0}};
 	void(*threads[8])(struct Thread *)={0};
@@ -382,7 +385,7 @@ static int MainCanonicalDrivers_ExtractRosterSource(const struct GameTracker *gG
 		input->slots[slot].kind=(driver->actionsFlagSet&ACTION_BOT)?NATIVE_CANONICAL_DRIVER_KIND_BOT:NATIVE_CANONICAL_DRIVER_KIND_HUMAN;
 		memcpy(tables[slot],driver->funcPtrs,sizeof(tables[slot]));threads[slot]=driver->instSelf->thread->funcThTick;
 	}
-	for(uint8_t n=0,tail=0;n<8;n++)
+	for(uint8_t n=0,tail=0;readRaceOrder&&n<8;n++)
 	{
 		uint8_t slot;const struct Driver *driver=gGT->driversInRaceOrder[n];
 		if(!driver){tail=1;continue;}
@@ -390,8 +393,8 @@ static int MainCanonicalDrivers_ExtractRosterSource(const struct GameTracker *gG
 		for(uint8_t prior=0;prior<n;prior++)if(input->raceOrder[prior]==slot)return 0;
 		input->raceOrder[input->raceOrderCount++]=slot;
 	}
-	if(gGT->numWinners>4)return 0;
-	input->winnerCount=(uint8_t)gGT->numWinners;
+	if(readRaceOrder&&gGT->numWinners>4)return 0;
+	input->winnerCount=readRaceOrder?(uint8_t)gGT->numWinners:0;
 	for(uint8_t n=0;n<input->winnerCount;n++)
 	{
 		int id=gGT->winnerIndex[n];uint8_t slot;
@@ -414,7 +417,16 @@ int MainCanonicalDrivers_ExtractRosterInput(const struct GameTracker *gGT,const 
 {
 	struct NativeCanonicalDriversRosterInput input;
 	struct NativeCanonicalDriversRosterCandidate accepted;
-	if(!out||!MainCanonicalDrivers_ExtractRosterSource(gGT,sourceData,&input,&accepted))return 0;
+	if(!out||!MainCanonicalDrivers_ExtractRosterSource(gGT,sourceData,1,&input,&accepted))return 0;
+	*out=input;
+	return 1;
+}
+
+int MainCanonicalDrivers_ExtractRosterInputPreRace(const struct GameTracker *gGT,const struct sData *sourceData,struct NativeCanonicalDriversRosterInput *out)
+{
+	struct NativeCanonicalDriversRosterInput input;
+	struct NativeCanonicalDriversRosterCandidate accepted;
+	if(!out||!MainCanonicalDrivers_ExtractRosterSource(gGT,sourceData,0,&input,&accepted))return 0;
 	*out=input;
 	return 1;
 }
@@ -423,7 +435,7 @@ int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,cons
 {
 	struct NativeCanonicalDriversRosterInput input;
 	struct NativeCanonicalDriversRosterCandidate candidate;
-	if(!out||!MainCanonicalDrivers_ExtractRosterSource(gGT,sourceData,&input,&candidate))return 0;
+	if(!out||!MainCanonicalDrivers_ExtractRosterSource(gGT,sourceData,1,&input,&candidate))return 0;
 	*out=candidate;
 	return 1;
 }

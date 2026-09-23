@@ -16,9 +16,10 @@
 #     include/namespace_Vehicle.h Driver);
 #  6. it is confined: no game/, platform/, include/platform/, or main.c
 #     file other than the module and the live adapter
-#     (game/MAIN/MainArcadeRaceSetup.{c,h}, R-5b) names
+#     (game/MAIN/MainArcadeRaceSetup.{c,h}, R-5b) and its decision core
+#     (game/MAIN/MainArcadeRaceSetupCore.{c,h}, R-5c) names
 #     MainArcadeRaceSetupFacts, it is not in game/game_unity.h, and only its
-#     unit test and ctr_native (for the adapter) link it.
+#     unit test, the core library, and ctr_native (for the adapter) link it.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "race setup facts isolation")
@@ -258,9 +259,11 @@ if(slot_count_at EQUAL -1)
     message(FATAL_ERROR "${prefix}: ${module_header} must define MAIN_ARCADE_RACE_SETUP_FACTS_SLOT_COUNT 8u")
 endif()
 
-# 6. Confined: only the module and the R-5b live adapter name it, and only its
-# unit test and ctr_native link it.
-set(facts_adapter_paths "game/MAIN/MainArcadeRaceSetup.c" "game/MAIN/MainArcadeRaceSetup.h")
+# 6. Confined: only the module, the R-5b live adapter, and its R-5c core name
+# it, and only its
+# unit test, the core, and ctr_native link it.
+set(facts_adapter_paths "game/MAIN/MainArcadeRaceSetup.c" "game/MAIN/MainArcadeRaceSetup.h"
+    "game/MAIN/MainArcadeRaceSetupCore.c" "game/MAIN/MainArcadeRaceSetupCore.h")
 file(GLOB_RECURSE scan_files "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/game/*.inc"
     "${repo}/platform/*.c" "${repo}/platform/*.h" "${repo}/platform/*.inc"
     "${repo}/include/platform/*.h" "${repo}/main.c")
@@ -295,8 +298,8 @@ foreach(link_call IN LISTS all_link_calls)
     if(names_module)
         if(linking_target STREQUAL "main_arcade_race_setup_facts_test")
             set(linked_by_test 1)
-        elseif(NOT linking_target STREQUAL "ctr_native")
-            message(FATAL_ERROR "${prefix}: ${linking_target} links ${target}; only main_arcade_race_setup_facts_test and ctr_native may")
+        elseif(NOT linking_target STREQUAL "ctr_native" AND NOT linking_target STREQUAL "ctr_native_arcade_race_setup_core")
+            message(FATAL_ERROR "${prefix}: ${linking_target} links ${target}; only main_arcade_race_setup_facts_test, ctr_native_arcade_race_setup_core, and ctr_native may")
         endif()
     endif()
 endforeach()

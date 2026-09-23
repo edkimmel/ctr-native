@@ -15,9 +15,11 @@
 #  6. the retail field widths the mirror struct assumes still hold
 #     (include/namespace_Main.h GameTracker, include/regionsEXE.h);
 #  7. it is confined: no game/ or platform/ file other than the module
-#     and the live adapter (game/MAIN/MainArcadeRaceSetup.{c,h},
-#     R-5b) names MainArcadeRaceSetupPlan, it is not in game/game_unity.h,
-#     and only its unit test, the roster proof unit test, and ctr_native (for
+#     and the live adapter and its decision core
+#     (game/MAIN/MainArcadeRaceSetup{,Core}.{c,h},
+#     R-5b/R-5c) names MainArcadeRaceSetupPlan, it is not in game/game_unity.h,
+#     and only its unit test, the roster proof unit test, the core library,
+#     and ctr_native (for
 #     the adapter) link it.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
@@ -321,10 +323,11 @@ foreach(field IN ITEMS "int32_t levelID" "uint32_t gameMode1" "uint32_t gameMode
 endforeach()
 ctr_require("${module_header}" "${header}" "#define MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT 8u")
 
-# 7. Confined: only the module and the R-5b live adapter name
-# it, and only its unit test, the roster proof unit test, and ctr_native link
+# 7. Confined: only the module, the R-5b live adapter, and its R-5c core name
+# it, and only its unit test, the roster proof unit test, the core, and ctr_native link
 # it.
-set(plan_adapter_paths "game/MAIN/MainArcadeRaceSetup.c" "game/MAIN/MainArcadeRaceSetup.h")
+set(plan_adapter_paths "game/MAIN/MainArcadeRaceSetup.c" "game/MAIN/MainArcadeRaceSetup.h"
+    "game/MAIN/MainArcadeRaceSetupCore.c" "game/MAIN/MainArcadeRaceSetupCore.h")
 file(GLOB_RECURSE game_files "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/game/*.inc"
     "${repo}/platform/*.c" "${repo}/platform/*.h" "${repo}/platform/*.inc"
     "${repo}/include/platform/*.h" "${repo}/main.c")
@@ -357,7 +360,8 @@ foreach(link_call IN LISTS all_link_calls)
     string(REGEX MATCH "[ \t\r\n]${target}[ \t\r\n)]" names_module "${link_call}")
     if(names_module AND NOT linking_target STREQUAL "main_arcade_race_setup_plan_test"
        AND NOT linking_target STREQUAL "native_arcade_roster_proof_test"
+       AND NOT linking_target STREQUAL "ctr_native_arcade_race_setup_core"
        AND NOT linking_target STREQUAL "ctr_native")
-        message(FATAL_ERROR "race setup plan isolation: ${linking_target} links ${target}; only main_arcade_race_setup_plan_test, native_arcade_roster_proof_test, and ctr_native may")
+        message(FATAL_ERROR "race setup plan isolation: ${linking_target} links ${target}; only main_arcade_race_setup_plan_test, native_arcade_roster_proof_test, ctr_native_arcade_race_setup_core, and ctr_native may")
     endif()
 endforeach()

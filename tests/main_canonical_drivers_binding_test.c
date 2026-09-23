@@ -294,6 +294,66 @@ static int ExtractRosterInputTest(void)
 	return 1;
 }
 
+/* PreRace equals ExtractRosterInput except the race order and winner fields,
+ * which it records as not yet observed (empty encodings). */
+static int PreRaceMatchesInput(const struct NativeCanonicalDriversRosterInput *preRace,const struct NativeCanonicalDriversRosterInput *input)
+{
+	struct NativeCanonicalDriversRosterInput a=*preRace,b=*input;
+	for(uint8_t n=0;n<8;n++)if(preRace->raceOrder[n]!=NATIVE_CANONICAL_DRIVERS_HANDLE_NONE)return 0;
+	for(uint8_t n=0;n<4;n++)if(preRace->winnerDriverIDs[n]!=NATIVE_CANONICAL_DRIVERS_HANDLE_NONE)return 0;
+	if(preRace->raceOrderCount!=0||preRace->winnerCount!=0)return 0;
+	a.raceOrderCount=b.raceOrderCount;memcpy(a.raceOrder,b.raceOrder,sizeof(a.raceOrder));
+	a.winnerCount=b.winnerCount;memcpy(a.winnerDriverIDs,b.winnerDriverIDs,sizeof(a.winnerDriverIDs));
+	return memcmp(&a,&b,sizeof(a))==0;
+}
+static int ExtractRosterInputPreRaceTest(void)
+{
+	struct SourceFixture f,stale;struct sData *sd=&sdata_static;
+	struct NativeCanonicalDriversRosterInput input,preRace,before;struct NativeCanonicalDriversRosterCandidate normalized;
+	/* A fresh race: equal except the race-order and winner fields; Normalize accepts it. */
+	SourceFixtureInit(&f);
+	if(!MainCanonicalDrivers_ExtractRosterInput(&f.tracker,sd,&input)||input.raceOrderCount!=3||input.winnerCount!=2)return 0;
+	memset(&preRace,0x5a,sizeof(preRace));
+	if(!MainCanonicalDrivers_ExtractRosterInputPreRace(&f.tracker,sd,&preRace)||!PreRaceMatchesInput(&preRace,&input))return 0;
+	if(!NativeCanonicalDriversRoster_Normalize(&preRace,&normalized)||normalized.prelude.raceOrderCount!=0||
+		normalized.prelude.winnerCount!=0||normalized.prelude.presenceMask!=0x25)return 0;
+	SourceFixtureInit(&f);SourceDriver(&f,3,0);f.tracker.humanPlayerPositions[0]=6;f.tracker.humanPlayerPositions[3]=1;f.tracker.driversInRaceOrder[3]=FD(&f,3);
+	if(!MainCanonicalDrivers_ExtractRosterInput(&f.tracker,sd,&input)||!MainCanonicalDrivers_ExtractRosterInputPreRace(&f.tracker,sd,&preRace)||
+		!PreRaceMatchesInput(&preRace,&input))return 0;
+	SourceFixtureInit(&f);SourceNavTwo(&f);
+	if(!MainCanonicalDrivers_ExtractRosterInput(&f.tracker,sd,&input)||!MainCanonicalDrivers_ExtractRosterInputPreRace(&f.tracker,sd,&preRace)||
+		!PreRaceMatchesInput(&preRace,&input))return 0;
+	/* A stale race order and winner list left by a previous 8-driver race:
+	 * pointers that are not in drivers[]. ExtractRosterInput refuses it; the
+	 * pre-race variant never reads them and succeeds with empty order. */
+	SourceFixtureInit(&stale);SourceDriver(&stale,1,1);SourceDriver(&stale,3,1);SourceDriver(&stale,4,1);SourceDriver(&stale,6,1);SourceDriver(&stale,7,1);
+	SourceFixtureInit(&f);
+	for(uint8_t n=0;n<8;n++)f.tracker.driversInRaceOrder[n]=FD(&stale,(uint8_t)(7u-n));
+	memset(&input,0x33,sizeof(input));before=input;
+	if(MainCanonicalDrivers_ExtractRosterInput(&f.tracker,sd,&input)||memcmp(&input,&before,sizeof(input))!=0)return 0;
+	memset(&preRace,0x5a,sizeof(preRace));
+	if(!MainCanonicalDrivers_ExtractRosterInputPreRace(&f.tracker,sd,&preRace)||preRace.raceOrderCount!=0||preRace.winnerCount!=0)return 0;
+	f.tracker.numWinners=5;f.tracker.winnerIndex[0]=-3;f.tracker.winnerIndex[1]=99;
+	if(!MainCanonicalDrivers_ExtractRosterInputPreRace(&f.tracker,sd,&input)||memcmp(&input,&preRace,sizeof(input))!=0)return 0;
+	/* Restoring the live order makes both agree again. */
+	SourceFixtureInit(&f);
+	if(!MainCanonicalDrivers_ExtractRosterInput(&f.tracker,sd,&input)||!PreRaceMatchesInput(&preRace,&input))return 0;
+	/* Every other source gate still applies, output-atomic. */
+	before=preRace;
+	if(MainCanonicalDrivers_ExtractRosterInputPreRace(NULL,sd,&preRace)||MainCanonicalDrivers_ExtractRosterInputPreRace(&f.tracker,NULL,&preRace)||
+		MainCanonicalDrivers_ExtractRosterInputPreRace(&f.tracker,sd,NULL)||memcmp(&preRace,&before,sizeof(preRace))!=0)return 0;
+	#define FAIL_PRE_RACE(change) do { SourceFixtureInit(&f); change; before=preRace; if(MainCanonicalDrivers_ExtractRosterInputPreRace(&f.tracker,sd,&preRace)||memcmp(&preRace,&before,sizeof(preRace))!=0)return 0; } while(0)
+	FAIL_PRE_RACE(sd->gGT=&stale.tracker);
+	FAIL_PRE_RACE(FD(&f,2)->driverID=1);
+	FAIL_PRE_RACE(FT(&f,2)->funcThTick=UnknownThread);
+	FAIL_PRE_RACE(f.tracker.numLaps=-1);
+	FAIL_PRE_RACE(f.tracker.humanPlayerPositions[0]=8);
+	FAIL_PRE_RACE(FD(&f,2)->botData.botPath=1);
+	FAIL_PRE_RACE(FT(&f,2)->funcThTick=VehBirth_NullThread);
+	#undef FAIL_PRE_RACE
+	return 1;
+}
+
 static int PoolOwnershipTest(void)
 {
 	struct SourceFixture f;
@@ -1614,4 +1674,4 @@ static int RuntimeWorkspaceV4Test(void)
 	#undef RUNTIME_CHECK
 	return 1;
 }
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(ExtractRosterInputTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());C(PhysicsProjectionTest());C(DetailedAssemblyTest());C(RuntimeWorkspaceTest());C(RuntimeWorkspaceV4Test());puts("main_canonical_drivers_binding_test: passed");return 0;}
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(ExtractRosterInputTest());C(ExtractRosterInputPreRaceTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());C(PhysicsProjectionTest());C(DetailedAssemblyTest());C(RuntimeWorkspaceTest());C(RuntimeWorkspaceV4Test());puts("main_canonical_drivers_binding_test: passed");return 0;}

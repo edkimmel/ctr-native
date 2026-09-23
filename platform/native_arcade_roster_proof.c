@@ -25,11 +25,15 @@
 static const char k_proofOption[] = "--arcade-roster-proof";
 static const char k_seedOption[] = "--arcade-roster-proof-seed";
 static const char k_dwellOption[] = "--arcade-roster-proof-dwell";
+static const char k_exitAfterFrameOption[] = "--exit-after-frame";
+static const char k_exitAfterFrameEqualsOption[] = "--exit-after-frame=";
 
 struct NativeArcadeRosterProofSingleton
 {
 	uint8_t active;
-	uint8_t reserved[7];
+	uint8_t exitCodeRecorded; /* 1 once the game hook recorded the proof's exit code */
+	uint8_t reserved[2];
+	int32_t exitCode;
 	struct NativeArcadeRosterProofOptions options;
 	struct NativeMatchConfigV1 config;
 };
@@ -113,7 +117,7 @@ int NativeArcadeRosterProof_ParseSeed(const char *text, uint64_t *value)
 	return 1;
 }
 
-/* Decimal 0..NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL, 1..3 digits, nothing else. */
+/* Decimal 0..NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL, 1..4 digits, nothing else. */
 static int NativeArcadeRosterProof_ParseDwell(const char *text, uint32_t *value)
 {
 	uint32_t result = 0;
@@ -121,7 +125,7 @@ static int NativeArcadeRosterProof_ParseDwell(const char *text, uint32_t *value)
 
 	for (; text[digits] != '\0'; digits++)
 	{
-		if ((text[digits] < '0') || (text[digits] > '9') || (digits == 3u))
+		if ((text[digits] < '0') || (text[digits] > '9') || (digits == 4u))
 		{
 			return 0;
 		}
@@ -223,6 +227,25 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 	return 1;
 }
 
+int NativeArcadeRosterProof_NamesExitOption(int argc, char *argv[])
+{
+	if ((argc <= 0) || (argv == NULL))
+	{
+		return 0;
+	}
+	for (int index = 1; index < argc; index++)
+	{
+		const char *arg = argv[index];
+
+		if ((arg != NULL) && ((strcmp(arg, k_exitAfterFrameOption) == 0) ||
+		                      (strncmp(arg, k_exitAfterFrameEqualsOption, sizeof(k_exitAfterFrameEqualsOption) - 1u) == 0)))
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
+
 int NativeArcadeRosterProof_ProofBuildIdentity(uint8_t build[NATIVE_IDENTITY_DIGEST_BYTES])
 {
 	struct NativeSha256 sha;
@@ -304,6 +327,29 @@ int NativeArcadeRosterProof_Active(void)
 	return s_nativeArcadeRosterProof.active != 0u;
 }
 
+void NativeArcadeRosterProof_RecordExitCode(int exitCode)
+{
+	if ((s_nativeArcadeRosterProof.active == 0u) || (s_nativeArcadeRosterProof.exitCodeRecorded != 0u))
+	{
+		return;
+	}
+	s_nativeArcadeRosterProof.exitCode = (int32_t)exitCode;
+	s_nativeArcadeRosterProof.exitCodeRecorded = 1u;
+}
+
+int NativeArcadeRosterProof_ExitCode(int inactiveExitCode)
+{
+	if (s_nativeArcadeRosterProof.active == 0u)
+	{
+		return inactiveExitCode;
+	}
+	if (s_nativeArcadeRosterProof.exitCodeRecorded != 0u)
+	{
+		return (int)s_nativeArcadeRosterProof.exitCode;
+	}
+	return (int)NATIVE_ARCADE_ROSTER_PROOF_INCOMPLETE;
+}
+
 const struct NativeMatchConfigV1 *NativeArcadeRosterProof_Config(void)
 {
 	return (s_nativeArcadeRosterProof.active != 0u) ? &s_nativeArcadeRosterProof.config : NULL;
@@ -330,6 +376,8 @@ const char *NativeArcadeRosterProof_ResultName(uint32_t result)
 	{
 	case NATIVE_ARCADE_ROSTER_PROOF_PASS:
 		return "PASS";
+	case NATIVE_ARCADE_ROSTER_PROOF_INCOMPLETE:
+		return "INCOMPLETE";
 	case NATIVE_ARCADE_ROSTER_PROOF_REPORT_WRITE_FAILED:
 		return "REPORT_WRITE_FAILED";
 	case NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED:
@@ -344,6 +392,21 @@ const char *NativeArcadeRosterProof_ResultName(uint32_t result)
 		return "VALIDATE_TIMEOUT";
 	default:
 		return "UNKNOWN";
+	}
+}
+
+const char *NativeArcadeRosterProof_LaunchWindowName(uint32_t window)
+{
+	switch (window)
+	{
+	case NATIVE_ARCADE_ROSTER_PROOF_WINDOW_NONE:
+		return "none";
+	case NATIVE_ARCADE_ROSTER_PROOF_WINDOW_TITLE:
+		return "title";
+	case NATIVE_ARCADE_ROSTER_PROOF_WINDOW_DEMO_RACE:
+		return "demo race";
+	default:
+		return "unknown";
 	}
 }
 
@@ -449,7 +512,7 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_Name(report->setupStatusName, statusName);
 	NativeArcadeRosterProof_Name(report->setupFailureName, failureName);
 
-	NativeArcadeRosterProof_Append(&text, "arcade roster proof v1\n");
+	NativeArcadeRosterProof_Append(&text, "arcade roster proof v2\n");
 	NativeArcadeRosterProof_Append(&text, "result %s (%u)\n", NativeArcadeRosterProof_ResultName(report->result),
 		(unsigned)report->result);
 	NativeArcadeRosterProof_Append(&text, "setup status %s (%u)\n", statusName, (unsigned)report->setupStatus);
@@ -458,7 +521,9 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 		(unsigned)(uint32_t)(report->seed & 0xFFFFFFFFu));
 	NativeArcadeRosterProof_Append(&text, "dwell %u\n", (unsigned)report->dwellTicks);
 	NativeArcadeRosterProof_AppendTick(&text, "menu ready tick", report->menuReadyTick);
+	NativeArcadeRosterProof_AppendTick(&text, "demo race tick", report->demoRaceTick);
 	NativeArcadeRosterProof_AppendTick(&text, "launch tick", report->launchTick);
+	NativeArcadeRosterProof_Append(&text, "launch window %s\n", NativeArcadeRosterProof_LaunchWindowName(report->launchWindow));
 	NativeArcadeRosterProof_AppendTick(&text, "validated tick", report->validatedTick);
 	NativeArcadeRosterProof_AppendDigest(&text, "config digest", report->configDigest, digestsValid);
 	NativeArcadeRosterProof_AppendDigest(&text, "race plan digest", report->racePlanDigest, digestsValid);

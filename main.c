@@ -226,13 +226,16 @@ int main(int argc, char *argv[])
 	 * like the arcade-link options. It launches a race from the title and
 	 * owns its setup, so it is exclusive with link and preview mode, and a
 	 * recording would capture a race the replay could not set up, so it is
-	 * rejected with every replay option, before any replay parser runs. */
+	 * rejected with every replay option, before any replay parser runs. Its
+	 * result is the process exit code, so a frame-capture exit option
+	 * (--exit-after-frame), which would end the run on a frame count, is
+	 * rejected with it too. */
 	struct NativeArcadeRosterProofOptions rosterProofOptions;
 
 	NativeArcadeRosterProofOptions_SetDefaults(&rosterProofOptions);
 	if (!NativeArcadeRosterProofOptions_ApplyArgs(argc, argv, &rosterProofOptions))
 	{
-		fprintf(stderr, "[CTR Native] invalid arcade roster proof option; expected --arcade-roster-proof <log path> [--arcade-roster-proof-seed <u64, decimal or 0x hex>] [--arcade-roster-proof-dwell <0-600>].\n");
+		fprintf(stderr, "[CTR Native] invalid arcade roster proof option; expected --arcade-roster-proof <log path> [--arcade-roster-proof-seed <u64, decimal or 0x hex>] [--arcade-roster-proof-dwell <0-7200>].\n");
 		return NativeConsole_Return(1);
 	}
 #if !defined(CTR_INTERNAL)
@@ -243,9 +246,10 @@ int main(int argc, char *argv[])
 	}
 #endif
 	if ((rosterProofOptions.enabled != 0u) &&
-	    ((arcadeLinkOptions.enabled != 0u) || (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE) || NativeArg_NamesReplayOption(argc, argv)))
+	    ((arcadeLinkOptions.enabled != 0u) || (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE) || NativeArg_NamesReplayOption(argc, argv) ||
+	     NativeArcadeRosterProof_NamesExitOption(argc, argv)))
 	{
-		fprintf(stderr, "[CTR Native] --arcade-roster-proof cannot be combined with --arcade-link, --arcade-link-preview, or replay record or playback options.\n");
+		fprintf(stderr, "[CTR Native] --arcade-roster-proof cannot be combined with --arcade-link, --arcade-link-preview, --exit-after-frame, or replay record or playback options.\n");
 		return NativeConsole_Return(1);
 	}
 
@@ -443,7 +447,9 @@ int main(int argc, char *argv[])
 		fflush(stdout);
 	}
 
-	const int result = CTR_Main();
+	/* With the roster proof active, returning here without its report is
+	 * INCOMPLETE, never PASS; otherwise CTR_Main's own result. */
+	const int result = NativeArcadeRosterProof_ExitCode(CTR_Main());
 
 	NativeArcadeLinkHost_Shutdown();
 	Platform_Shutdown();

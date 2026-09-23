@@ -112,6 +112,17 @@ int MainCanonicalDrivers_ProjectPrelude(const struct NativeCanonicalDriversRoste
 int MainCanonicalDrivers_ExtractRosterInput(const struct GameTracker *gGT,
 	const struct sData *sdata,
 	struct NativeCanonicalDriversRosterInput *out);
+/* Pre-race variant for the live race setup adapter, which reads the roster
+ * right after MainInit_Drivers, before the first race tick rebuilds
+ * driversInRaceOrder (PlayLevel_UpdateLapStats): identical to
+ * ExtractRosterInput except that the race order and winner lists are recorded
+ * as not yet observed (raceOrderCount 0 and winnerCount 0, both lists at their
+ * empty encodings), and driversInRaceOrder, numWinners, and winnerIndex are
+ * never read, so a stale order left by the previous race cannot refuse it.
+ * Output-atomic. */
+int MainCanonicalDrivers_ExtractRosterInputPreRace(const struct GameTracker *gGT,
+	const struct sData *sdata,
+	struct NativeCanonicalDriversRosterInput *out);
 /* Dormant live-source adapter. It validates only the 64-byte roster prelude
  * and behavior/thread identities into a local candidate; it does not publish
  * a DRIVERS state or inspect the 520-byte slot payloads.  Equivalent to

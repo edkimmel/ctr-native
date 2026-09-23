@@ -688,7 +688,10 @@ void Platform_PollHostEvents(void)
 			break;
 		case SDL_EVENT_QUIT:
 #if defined(CTR_INTERNAL)
-			exit(s_requestedExitCode);
+			/* While the internal roster proof is active, every exit is nonzero
+			 * until the proof reported (docs/ROSTER_MILESTONE.md section 3.4);
+			 * otherwise the code Platform_RequestExit set, 0 by default. */
+			exit(NativeArcadeRosterProof_ExitCode(s_requestedExitCode));
 #else
 			exit(0);
 #endif
@@ -702,7 +705,13 @@ void Platform_PollHostEvents(void)
 			Platform_UpdateCursorVisibility();
 			break;
 		case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+#if defined(CTR_INTERNAL)
+			/* Closing the window during the internal roster proof must never
+			 * look like PASS; without the proof this is exit(0) as before. */
+			exit(NativeArcadeRosterProof_ExitCode(0));
+#else
 			exit(0);
+#endif
 			break;
 		case SDL_EVENT_KEY_DOWN:
 		case SDL_EVENT_KEY_UP:

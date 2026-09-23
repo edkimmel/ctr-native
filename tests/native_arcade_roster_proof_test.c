@@ -83,7 +83,7 @@ static int TestValidForms(void)
 	struct NativeArcadeRosterProofOptions options;
 	char *pathOnly[] = {"ctr_native", "--arcade-roster-proof", "C:/proof/run1.txt"};
 	char *decimal[] = {"ctr_native", "--arcade-roster-proof-seed", "18446744073709551615", "--arcade-roster-proof", "r.txt",
-		"--arcade-roster-proof-dwell", "600", "--windowed"};
+		"--arcade-roster-proof-dwell", "7200", "--windowed"};
 	char *hexLower[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-seed", "0xdeadbeef00c0ffee"};
 	char *hexUpper[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-seed", "0XFFFFFFFFFFFFFFFF",
 		"--arcade-roster-proof-dwell", "45"};
@@ -101,7 +101,7 @@ static int TestValidForms(void)
 
 	NativeArcadeRosterProofOptions_SetDefaults(&options);
 	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(decimal), decimal, &options) == 1);
-	CHECK((options.enabled == 1u) && (options.seed == UINT64_MAX) && (options.dwellTicks == 600u));
+	CHECK((options.enabled == 1u) && (options.seed == UINT64_MAX) && (options.dwellTicks == 7200u));
 	CHECK(strcmp(options.logPath, "r.txt") == 0);
 
 	NativeArcadeRosterProofOptions_SetDefaults(&options);
@@ -119,6 +119,19 @@ static int TestValidForms(void)
 	NativeArcadeRosterProofOptions_SetDefaults(&options);
 	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(leadingZeros), leadingZeros, &options) == 1);
 	CHECK((options.seed == 2u) && (options.dwellTicks == 7u));
+
+	/* Four digits reach past the attract demo race start. */
+	{
+		char *fourDigits[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-dwell", "2400"};
+		char *fourLeadingZero[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-dwell", "0601"};
+
+		NativeArcadeRosterProofOptions_SetDefaults(&options);
+		CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(fourDigits), fourDigits, &options) == 1);
+		CHECK(options.dwellTicks == 2400u);
+		NativeArcadeRosterProofOptions_SetDefaults(&options);
+		CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(fourLeadingZero), fourLeadingZero, &options) == 1);
+		CHECK(options.dwellTicks == 601u);
+	}
 
 	/* The longest path that fits with its NUL. */
 	memset(longPath, 'p', sizeof(longPath) - 1u);
@@ -149,8 +162,8 @@ static int TestInvalidValues(void)
 	char *seedHexLong[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-seed", "0x10000000000000000"};
 	char *seedHexBad[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-seed", "0xg1"};
 	char *dwellMissing[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-dwell"};
-	char *dwellTooLarge[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-dwell", "601"};
-	char *dwellTooManyDigits[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-dwell", "0001"};
+	char *dwellTooLarge[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-dwell", "7201"};
+	char *dwellTooManyDigits[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-dwell", "00001"};
 	char *dwellNegative[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-dwell", "-5"};
 	char *dwellHex[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-dwell", "0x10"};
 	char *dwellEmpty[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-dwell", ""};
@@ -218,6 +231,76 @@ static int TestUnknownCombinations(void)
 	CHECK(options.enabled == 0u);
 	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(prefixOnly), prefixOnly, &options) == 1);
 	CHECK(options.enabled == 0u);
+	return 0;
+}
+
+static int TestExitOptionNames(void)
+{
+	char *separate[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--exit-after-frame", "100"};
+	char *equals[] = {"ctr_native", "--exit-after-frame=100", "--arcade-roster-proof", "r.txt"};
+	char *equalsEmpty[] = {"ctr_native", "--exit-after-frame="};
+	char *captureOnly[] = {"ctr_native", "--capture-frame", "5=a.bmp", "--arcade-roster-proof", "r.txt"};
+	char *lookalikes[] = {"ctr_native", "--exit-after-frames", "--exit-after", "-exit-after-frame", "exit-after-frame"};
+	char *withNull[] = {"ctr_native", NULL, "--exit-after-frame", "3"};
+	char *programOnly[] = {"--exit-after-frame"};
+
+	CHECK(NativeArcadeRosterProof_NamesExitOption(ARGC(separate), separate) == 1);
+	CHECK(NativeArcadeRosterProof_NamesExitOption(ARGC(equals), equals) == 1);
+	CHECK(NativeArcadeRosterProof_NamesExitOption(ARGC(equalsEmpty), equalsEmpty) == 1);
+	CHECK(NativeArcadeRosterProof_NamesExitOption(ARGC(withNull), withNull) == 1);
+	CHECK(NativeArcadeRosterProof_NamesExitOption(ARGC(captureOnly), captureOnly) == 0);
+	CHECK(NativeArcadeRosterProof_NamesExitOption(ARGC(lookalikes), lookalikes) == 0);
+	/* argv[0] is the program, never an option. */
+	CHECK(NativeArcadeRosterProof_NamesExitOption(ARGC(programOnly), programOnly) == 0);
+	CHECK(NativeArcadeRosterProof_NamesExitOption(0, separate) == 0);
+	CHECK(NativeArcadeRosterProof_NamesExitOption(ARGC(separate), NULL) == 0);
+	return 0;
+}
+
+/* The proof failure codes never collide with main.c's startup failure 1 or abort()'s 3. */
+static int TestExitCodes(void)
+{
+	static const uint32_t failures[] = {NATIVE_ARCADE_ROSTER_PROOF_INCOMPLETE, NATIVE_ARCADE_ROSTER_PROOF_REPORT_WRITE_FAILED,
+		NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED, NATIVE_ARCADE_ROSTER_PROOF_ARM_FAILED, NATIVE_ARCADE_ROSTER_PROOF_LAUNCH_FAILED,
+		NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT, NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT};
+	struct NativeIdentityV1 identity;
+	struct NativeArcadeRosterProofOptions options;
+
+	CHECK(NATIVE_ARCADE_ROSTER_PROOF_PASS == 0);
+	for (uint32_t i = 0; i < (uint32_t)(sizeof(failures) / sizeof(failures[0])); i++)
+	{
+		CHECK(failures[i] == 20u + i);
+		CHECK(strcmp(NativeArcadeRosterProof_ResultName(failures[i]), "UNKNOWN") != 0);
+	}
+	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_INCOMPLETE), "INCOMPLETE") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_ResultName(1u), "UNKNOWN") == 0);
+
+	/* Inactive: every exit path keeps its own code (a default run is unchanged). */
+	NativeArcadeRosterProof_Shutdown();
+	CHECK(NativeArcadeRosterProof_ExitCode(0) == 0);
+	CHECK(NativeArcadeRosterProof_ExitCode(7) == 7);
+	NativeArcadeRosterProof_RecordExitCode(0);
+	CHECK(NativeArcadeRosterProof_ExitCode(5) == 5);
+
+	/* Active: nonzero until the proof reports, then the recorded code, once. */
+	TestIdentity(&identity);
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	options.enabled = 1u;
+	memcpy(options.logPath, "proof_report.txt", sizeof("proof_report.txt"));
+	CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeRosterProof_ExitCode(0) == (int)NATIVE_ARCADE_ROSTER_PROOF_INCOMPLETE);
+	CHECK(NativeArcadeRosterProof_ExitCode(1) == (int)NATIVE_ARCADE_ROSTER_PROOF_INCOMPLETE);
+	NativeArcadeRosterProof_RecordExitCode((int)NATIVE_ARCADE_ROSTER_PROOF_PASS);
+	CHECK(NativeArcadeRosterProof_ExitCode(1) == 0);
+	NativeArcadeRosterProof_RecordExitCode((int)NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED);
+	CHECK(NativeArcadeRosterProof_ExitCode(1) == 0);
+	/* A new Configure forgets the recorded code. */
+	CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeRosterProof_ExitCode(0) == (int)NATIVE_ARCADE_ROSTER_PROOF_INCOMPLETE);
+	NativeArcadeRosterProof_RecordExitCode((int)NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED);
+	CHECK(NativeArcadeRosterProof_ExitCode(0) == (int)NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED);
+	NativeArcadeRosterProof_Shutdown();
+	CHECK(NativeArcadeRosterProof_ExitCode(0) == 0);
 	return 0;
 }
 
@@ -361,7 +444,9 @@ static int TestSingletonAndReport(void)
 	report.seed = UINT64_C(0x0123456789ABCDEF);
 	report.dwellTicks = 45u;
 	report.menuReadyTick = 230u;
-	report.launchTick = 275u;
+	report.demoRaceTick = 1200u;
+	report.launchTick = 1275u;
+	report.launchWindow = NATIVE_ARCADE_ROSTER_PROOF_WINDOW_DEMO_RACE;
 	report.validatedTick = NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE;
 	report.digestsValid = 1u;
 	FillCounting(report.configDigest, sizeof(report.configDigest), 0u);
@@ -378,11 +463,12 @@ static int TestSingletonAndReport(void)
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(length == strlen(text));
 	{
-		static const char head[] = "arcade roster proof v1\nresult PASS (0)\nsetup status VALIDATED (4)\nsetup failure NONE (0)\n";
+		static const char head[] = "arcade roster proof v2\nresult PASS (0)\nsetup status VALIDATED (4)\nsetup failure NONE (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
 	}
-	CHECK(strstr(text, "seed 0x0123456789ABCDEF\ndwell 45\nmenu ready tick 230\nlaunch tick 275\nvalidated tick none\n") != NULL);
+	CHECK(strstr(text, "seed 0x0123456789ABCDEF\ndwell 45\nmenu ready tick 230\ndemo race tick 1200\nlaunch tick 1275\n"
+	                   "launch window demo race\nvalidated tick none\n") != NULL);
 	CHECK(strstr(text, "config digest 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n") != NULL);
 	CHECK(strstr(text, "slot 0 role CAB1_HUMAN character 0 difficulty 0x00 spawn 0 nav 0 accel 0\n") != NULL);
 	CHECK(strstr(text, "slot 2 role BOT character 6 difficulty 0xA0 spawn 2 nav 1 accel 3\n") != NULL);
@@ -390,8 +476,12 @@ static int TestSingletonAndReport(void)
 	report.digestsValid = 0u;
 	report.slotsValid = 0u;
 	report.result = NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED;
+	report.demoRaceTick = NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE;
+	report.launchTick = NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE;
+	report.launchWindow = NATIVE_ARCADE_ROSTER_PROOF_WINDOW_NONE;
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
-	CHECK(strstr(text, "result SETUP_FAILED (2)\n") != NULL);
+	CHECK(strstr(text, "result SETUP_FAILED (22)\n") != NULL);
+	CHECK(strstr(text, "menu ready tick 230\ndemo race tick none\nlaunch tick none\nlaunch window none\n") != NULL);
 	CHECK(strstr(text, "bank digest none\n") != NULL);
 	CHECK(strstr(text, "slot 5 none\n") != NULL);
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, small, sizeof(small), &length) == 0);
@@ -399,6 +489,8 @@ static int TestSingletonAndReport(void)
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, NULL, sizeof(text), &length) == 0);
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), NULL) == 0);
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(99u), "UNKNOWN") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_LaunchWindowName(NATIVE_ARCADE_ROSTER_PROOF_WINDOW_TITLE), "title") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_LaunchWindowName(9u), "unknown") == 0);
 
 	NativeArcadeRosterProof_Shutdown();
 	CHECK(NativeArcadeRosterProof_Active() == 0);
@@ -412,6 +504,8 @@ int main(void)
 	CHECK(TestValidForms() == 0);
 	CHECK(TestInvalidValues() == 0);
 	CHECK(TestUnknownCombinations() == 0);
+	CHECK(TestExitOptionNames() == 0);
+	CHECK(TestExitCodes() == 0);
 	CHECK(TestConfigBuilder() == 0);
 	CHECK(TestSingletonAndReport() == 0);
 	puts("native_arcade_roster_proof_test: ok");

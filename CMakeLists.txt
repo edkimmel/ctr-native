@@ -510,6 +510,20 @@ set_target_properties(ctr_native_arcade_race_setup_facts PROPERTIES
 target_include_directories(ctr_native_arcade_race_setup_facts PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 target_link_libraries(ctr_native_arcade_race_setup_facts PUBLIC ctr_native_arcade_bot_setup)
 
+# Race setup decision core (docs/ROSTER_MILESTONE.md section 3.2, R-5c): every
+# decision of the live race setup adapter as a pure step over a pointer-free
+# view, with caller-owned state and scratch. Linked into ctr_native for the
+# live adapter (game/MAIN/MainArcadeRaceSetup), its only game caller; never
+# unity-included.
+add_library(ctr_native_arcade_race_setup_core STATIC game/MAIN/MainArcadeRaceSetupCore.c)
+set_target_properties(ctr_native_arcade_race_setup_core PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_race_setup_core PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_link_libraries(ctr_native_arcade_race_setup_core PUBLIC ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts)
+
 # Internal live roster proof host glue (docs/ROSTER_MILESTONE.md section 3.4,
 # R-5b): the --arcade-roster-proof options, the proof config (the fixture
 # resolved through match select), a singleton, and the report writer.
@@ -937,7 +951,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_roster_proof)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_race_setup_core ctr_native_arcade_roster_proof)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -1507,8 +1521,25 @@ if(BUILD_TESTING)
     add_test(NAME main_arcade_race_setup_facts_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_setup_facts_isolation_test.cmake")
 
-    # R-5a2: MainCanonicalDrivers_ExtractRosterInput is named only by its own
-    # module, the live race setup adapter (R-5b), and tests/.
+    # Race setup decision core (R-5c): every adapter decision, unit-tested
+    # through its pointer-free views and ordered write lists; the isolation
+    # test keeps it pure and linked, never unity-included.
+    add_executable(main_arcade_race_setup_core_test tests/main_arcade_race_setup_core_test.c)
+    set_target_properties(main_arcade_race_setup_core_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(main_arcade_race_setup_core_test PRIVATE ctr_native_arcade_race_setup_core
+        ctr_native_arcade_bot_rules ctr_native_arcade_link_options)
+    add_test(NAME main_arcade_race_setup_core_unit COMMAND $<TARGET_FILE:main_arcade_race_setup_core_test>)
+
+    add_test(NAME main_arcade_race_setup_core_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_setup_core_isolation_test.cmake")
+
+    # R-5a2/R-5c: MainCanonicalDrivers_ExtractRosterInput and its pre-race
+    # variant are named only by their own module, the live race setup adapter
+    # (which must use the pre-race variant), and tests/.
     add_test(NAME main_canonical_drivers_roster_input_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_drivers_roster_input_isolation_test.cmake")
 

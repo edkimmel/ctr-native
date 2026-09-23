@@ -7,9 +7,11 @@
 #     MainArcadeRaceSetup_OnDriversInitialized sits immediately after
 #     MainInit_Drivers(gGT), each exactly once, each inside a CTR_NATIVE
 #     guard; no other file calls either hook;
-#  2. MainArcadeRaceSetup_Arm and MainArcadeRaceSetup_Launch are named only in
-#     MainArcadeRaceSetup.{c,h} and MainArcadeRosterProof.c (Task 7 adds its
-#     caller);
+#  2. MainArcadeRaceSetup_Arm, MainArcadeRaceSetup_Launch, and
+#     MainArcadeRaceSetup_Disarm are named only in MainArcadeRaceSetup.{c,h}
+#     and MainArcadeRosterProof.c (Task 7 adds its caller), and
+#     MainArcadeRosterProof_Frame only in MainArcadeRosterProof.{c,h} and
+#     MainFrame_RenderFrame.c;
 #  3. MainArcadeRaceSetup.c is one CTR_NATIVE block and MainArcadeRosterProof.c
 #     one CTR_NATIVE && CTR_INTERNAL block; the proof hook's first statement
 #     is its inactive early return; its MainFrame_RenderFrame call sits in a
@@ -17,23 +19,34 @@
 #     retail menu-input collect;
 #  4. no lease, topology capture, checkpoint, replay, lockstep, or
 #     match-select token in the adapter or the proof hook (sources and
-#     headers), and the adapter never writes gGT->levelID;
-#  5. the adapter state is file-scope static, and platform/native_checkpoint.c
-#     and every replay module never name MainArcadeRaceSetup;
+#     headers), and neither they nor the decision core write levelID in any
+#     spelling (gGT->levelID, sdata->gGT->levelID, (*gGT).levelID, compound
+#     assignment, increment, or taking its address); the one levelID store
+#     allowed is the adapter's copy into its pointer-free mirror;
+#  5. the adapter state and scratch are file-scope statics, the only objects
+#     of their types, and platform/native_checkpoint.c and every replay
+#     module never name MainArcadeRaceSetup;
 #  6. LOAD_Hub_ReadFile gains no hook;
 #  7. the unity chain includes the adapter after the MainCanonical* sources
 #     and before the arcade-link sources, and the proof hook after the
-#     arcade-link hook and before the 231 overlay;
-#  8. ctr_native links the plan, the facts, and the proof libraries, and
-#     neither ctr_native_arcade_setup_v4 nor a V4 projector directly; the
-#     proof library links exactly the link options, the match-select rules,
-#     and the bot rules, C17 with extensions off; neither game file names the
-#     V4 setup or projector;
+#     arcade-link hook and before the 231 overlay; the pure plan, facts, and
+#     decision core are linked, never unity-included;
+#  8. ctr_native links the plan, the facts, the decision core, and the proof
+#     libraries, and neither ctr_native_arcade_setup_v4 nor a V4 projector
+#     directly; the proof library links exactly the link options, the
+#     match-select rules, and the bot rules, C17 with extensions off; neither
+#     game file names the V4 setup or projector;
 #  9. main.c parses the proof options before any replay parser, rejects them
-#     with link, preview, or replay options, and configures the proof after
-#     the link host and before CTR_Main.
-# The ExtractRosterInput caller rule lives in
-# main_canonical_drivers_roster_input_isolation_test.cmake.
+#     with link, preview, --exit-after-frame, or replay options, and
+#     configures the proof after the link host and before CTR_Main;
+# 10. while the proof is active no exit looks like PASS: main.c returns
+#     NativeArcadeRosterProof_ExitCode(CTR_Main()), and both host exit paths
+#     (SDL quit and window close) exit through NativeArcadeRosterProof_ExitCode
+#     in internal builds; the proof hook records its code before it requests
+#     the exit.
+# The roster input caller rules live in
+# main_canonical_drivers_roster_input_isolation_test.cmake, and the decision
+# core's purity in main_arcade_race_setup_core_isolation_test.cmake.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "race setup isolation")
@@ -90,7 +103,9 @@ endfunction()
 
 # Counts the whole-identifier occurrences of name in code.
 function(ctr_count_identifier code name out_var)
-    string(REGEX MATCHALL "(^|[^A-Za-z0-9_])${name}([^A-Za-z0-9_]|$)" hits "${code}")
+    # ';' is masked first: a match holding it would count as two list items.
+    string(REPLACE ";" "@SEMI@" masked "${code}")
+    string(REGEX MATCHALL "(^|[^A-Za-z0-9_])${name}([^A-Za-z0-9_]|$)" hits "${masked}")
     list(LENGTH hits count)
     set(${out_var} ${count} PARENT_SCOPE)
 endfunction()
@@ -215,7 +230,7 @@ foreach(path IN LISTS scan_files)
             message(FATAL_ERROR "${prefix}: ${relative_path} names ${hook}; only ${init_path} calls it")
         endif()
     endforeach()
-    foreach(call IN ITEMS MainArcadeRaceSetup_Arm MainArcadeRaceSetup_Launch)
+    foreach(call IN ITEMS MainArcadeRaceSetup_Arm MainArcadeRaceSetup_Launch MainArcadeRaceSetup_Disarm)
         ctr_count_identifier("${code}" "${call}" hits)
         if(hits GREATER 0 AND NOT relative_path STREQUAL adapter_source AND NOT relative_path STREQUAL adapter_header
                 AND NOT relative_path STREQUAL proof_source)
@@ -225,6 +240,34 @@ foreach(path IN LISTS scan_files)
 endforeach()
 if(scanned LESS 300)
     message(FATAL_ERROR "${prefix}: scanned only ${scanned} files; the scan is broken")
+endif()
+ctr_count_identifier("${adapter_code}" "MainArcadeRaceSetup_Disarm" disarm_definitions)
+if(NOT disarm_definitions EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${adapter_source} must define MainArcadeRaceSetup_Disarm once and never call it (found ${disarm_definitions})")
+endif()
+# The proof hook's frame entry: only its own files and MainFrame_RenderFrame.c.
+set(frame_callers "${proof_source}" "${proof_header}" "game/MAIN/MainFrame_RenderFrame.c")
+set(frame_scanned 0)
+foreach(path IN LISTS scan_files)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    math(EXPR frame_scanned "${frame_scanned} + 1")
+    list(FIND frame_callers "${relative_path}" frame_caller_at)
+    if(NOT frame_caller_at EQUAL -1)
+        continue()
+    endif()
+    file(READ "${path}" source)
+    string(FIND "${source}" "MainArcadeRosterProof_Frame" raw_frame_hit)
+    if(raw_frame_hit EQUAL -1)
+        continue()
+    endif()
+    ctr_strip_comments("${source}" code)
+    ctr_count_identifier("${code}" "MainArcadeRosterProof_Frame" frame_hits)
+    if(frame_hits GREATER 0)
+        message(FATAL_ERROR "${prefix}: ${relative_path} names MainArcadeRosterProof_Frame; only ${frame_callers} may")
+    endif()
+endforeach()
+if(frame_scanned LESS 300)
+    message(FATAL_ERROR "${prefix}: scanned only ${frame_scanned} files for the frame hook; the scan is broken")
 endif()
 foreach(call IN ITEMS MainArcadeRaceSetup_Arm MainArcadeRaceSetup_Launch)
     ctr_count_identifier("${proof_code}" "${call}" proof_hits)
@@ -275,9 +318,63 @@ foreach(pair "${adapter_source}|adapter" "${adapter_header}|adapter_h" "${proof_
         ctr_forbid("${relative_path}" "${${variable}}" "${term}")
     endforeach()
 endforeach()
-if(adapter_code MATCHES "gGT->levelID[ \t]*=[^=]")
-    message(FATAL_ERROR "${prefix}: ${adapter_source} writes gGT->levelID; the load request carries it")
-endif()
+# Every levelID store, in any spelling: an assignment or compound assignment
+# (not ==, !=, <=, >=), an increment or decrement on either side, or its
+# address taken (a unary & after =, (, ",", ?, :, or return). out_var is the
+# list of matched stores.
+function(ctr_level_id_stores code out_var)
+    set(member "[A-Za-z_(*][A-Za-z0-9_]*[)]?([ \t]*(->|\\.)[ \t]*[A-Za-z_][A-Za-z0-9_]*[)]?)*[ \t]*(->|\\.)[ \t]*levelID")
+    string(REGEX MATCHALL "[A-Za-z0-9_>.()* \t-]*levelID[ \t\r\n]*(=[^=]|[-+*/%&|^]=|<<=|>>=|\\+\\+|--)" assignments "${code}")
+    string(REGEX MATCHALL "(\\+\\+|--)[ \t]*[(]?[ \t]*${member}" pre_increments "${code}")
+    string(REGEX MATCHALL "(^|[=(,?:][ \t]*|return[ \t]+)&[ \t]*[(]?[ \t]*${member}" addresses "${code}")
+    set(${out_var} ${assignments} ${pre_increments} ${addresses} PARENT_SCOPE)
+endfunction()
+# The store scan must itself work.
+foreach(probe IN ITEMS "gGT->levelID = 3;" "sdata->gGT->levelID = 3;" "gGT->levelID=3;" "(*gGT).levelID = 3;"
+        "gGT->levelID += 1;" "gGT->levelID |= 1;" "gGT->levelID++;" "++gGT->levelID;" "--sdata->gGT->levelID;"
+        "int *p = &gGT->levelID;" "int *p = &(sdata->gGT->levelID);" "tracker.levelID = 2;")
+    ctr_level_id_stores("${probe}" probe_stores)
+    list(LENGTH probe_stores probe_store_count)
+    if(NOT probe_store_count EQUAL 1)
+        message(FATAL_ERROR "${prefix}: the levelID store scan found ${probe_store_count} stores in '${probe}', expected 1")
+    endif()
+endforeach()
+foreach(probe IN ITEMS "if (gGT->levelID == 3)" "x = (gGT->levelID != MAIN_MENU_LEVEL) && (y <= 2);"
+        "a = gGT->levelID;" "if ((a && gGT->levelID >= 2) || (b & gGT->levelID))" "for (i = 0; i < 3; i++) { x = gGT->levelID; }")
+    ctr_level_id_stores("${probe}" probe_stores)
+    list(LENGTH probe_stores probe_store_count)
+    if(NOT probe_store_count EQUAL 0)
+        message(FATAL_ERROR "${prefix}: the levelID store scan flags a read in '${probe}' (${probe_stores})")
+    endif()
+endforeach()
+set(core_source "game/MAIN/MainArcadeRaceSetupCore.c")
+ctr_read_source("${core_source}" core)
+ctr_strip_comments("${core}" core_code)
+foreach(pair "${adapter_source}|adapter_code" "${proof_source}|proof_code" "${core_source}|core_code")
+    string(REPLACE "|" ";" pair_items "${pair}")
+    list(GET pair_items 0 relative_path)
+    list(GET pair_items 1 variable)
+    ctr_level_id_stores("${${variable}}" stores)
+    if(relative_path STREQUAL adapter_source)
+        # The one store allowed: the copy into the pointer-free mirror.
+        list(FIND stores "\tfields->levelID = " mirror_store_at)
+        if(mirror_store_at EQUAL -1)
+            message(FATAL_ERROR "${prefix}: the levelID store scan no longer sees the adapter's mirror copy; the scan is broken")
+        endif()
+        list(REMOVE_ITEM stores "\tfields->levelID = ")
+        # Count by marker: a match holds ';', which would split a MATCHALL list.
+        string(REPLACE "\n\tfields->levelID = (int32_t)gGT->levelID;\n" "\n@CTR_MIRROR_COPY@\n" marked "${${variable}}")
+        string(REGEX MATCHALL "@CTR_MIRROR_COPY@" mirror_copies "${marked}")
+        list(LENGTH mirror_copies mirror_copy_count)
+        if(NOT mirror_copy_count EQUAL 1)
+            message(FATAL_ERROR "${prefix}: ${adapter_source} must copy gGT->levelID into its mirror exactly once (found ${mirror_copy_count})")
+        endif()
+    endif()
+    list(LENGTH stores store_count)
+    if(NOT store_count EQUAL 0)
+        message(FATAL_ERROR "${prefix}: ${relative_path} stores to levelID (${stores}); the load request carries the level")
+    endif()
+endforeach()
 foreach(relative_path IN ITEMS "${adapter_source}" "${proof_source}")
     foreach(term IN ITEMS MainArcadeSetupV4 NativeCanonicalProjectorV4 canonical_projector_v4 MainCanonicalRuntime MainCanonicalStateV4)
         if(relative_path STREQUAL adapter_source)
@@ -289,7 +386,40 @@ foreach(relative_path IN ITEMS "${adapter_source}" "${proof_source}")
 endforeach()
 
 # 5. File-scope static state, never named by the checkpoint or replay modules.
-ctr_require("${adapter_source}" "${adapter_code}" "\nstatic struct MainArcadeRaceSetupState s_mainArcadeRaceSetup;")
+foreach(declaration IN ITEMS "MainArcadeRaceSetupCore|s_mainArcadeRaceSetup" "MainArcadeRaceSetupScratch|s_mainArcadeRaceSetupScratch")
+    string(REPLACE "|" ";" declaration_items "${declaration}")
+    list(GET declaration_items 0 type_name)
+    list(GET declaration_items 1 object_name)
+    ctr_require("${adapter_source}" "${adapter_code}" "\nstatic struct ${type_name} ${object_name};")
+    # Every object of the type, in any file of the adapter or the proof: a
+    # declarator after the struct name (not a pointer, not a member access).
+    foreach(pair "${adapter_source}|adapter_code" "${adapter_header}|adapter_h" "${proof_source}|proof_code")
+        string(REPLACE "|" ";" pair_items "${pair}")
+        list(GET pair_items 0 relative_path)
+        list(GET pair_items 1 variable)
+        # ';' is masked first: a match holding it would split the list.
+        string(REPLACE ";" "@SEMI@" masked "${${variable}}")
+        string(REGEX MATCHALL "struct[ \t\r\n]+${type_name}[ \t\r\n]+[A-Za-z_][A-Za-z0-9_]*[ \t\r\n]*(\\[[^]]*\\][ \t\r\n]*)?(@SEMI@|[=,)])" objects "${masked}")
+        list(LENGTH objects object_count)
+        if(relative_path STREQUAL adapter_source)
+            set(expected 1)
+        else()
+            set(expected 0)
+        endif()
+        if(NOT object_count EQUAL expected)
+            message(FATAL_ERROR "${prefix}: ${relative_path} declares ${object_count} objects of struct ${type_name}, expected ${expected} (the file-scope static)")
+        endif()
+    endforeach()
+    ctr_count_identifier("${adapter_code}" "${object_name}" object_hits)
+    if(object_hits LESS 2)
+        message(FATAL_ERROR "${prefix}: ${adapter_source} declares ${object_name} but never uses it")
+    endif()
+endforeach()
+string(FIND "${adapter_code}" "\nstatic struct MainArcadeRaceSetupCore s_mainArcadeRaceSetup;" state_at)
+string(FIND "${adapter_code}" ")\n{" first_function_at)
+if(first_function_at EQUAL -1 OR NOT state_at LESS first_function_at)
+    message(FATAL_ERROR "${prefix}: ${adapter_source} must declare its state at file scope, before the first function")
+endif()
 file(GLOB replay_paths
     "${repo}/platform/native_replay*.c" "${repo}/platform/native_replay*.h"
     "${repo}/include/platform/native_replay*.h" "${repo}/game/MAIN/MainReplay*.c" "${repo}/game/MAIN/MainReplay*.h")
@@ -346,6 +476,7 @@ foreach(term IN ITEMS "MainArcadeRaceSetup.c\"" "MainArcadeRosterProof.c\"")
 endforeach()
 ctr_forbid("${unity_path}" "${unity}" "MainArcadeRaceSetupPlan.c")
 ctr_forbid("${unity_path}" "${unity}" "MainArcadeRaceSetupFacts.c")
+ctr_forbid("${unity_path}" "${unity}" "MainArcadeRaceSetupCore.c")
 
 # 8. Link lines.
 ctr_read_source("CMakeLists.txt" cmake)
@@ -357,7 +488,8 @@ string(SUBSTRING "${cmake}" ${native_link_start} -1 native_link_tail)
 string(FIND "${native_link_tail}" ")" native_link_end)
 string(SUBSTRING "${native_link_tail}" 0 ${native_link_end} native_link_block)
 string(REGEX REPLACE "[ \t\r\n]+" ";" native_link_items "${native_link_block}")
-foreach(required IN ITEMS ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_roster_proof)
+foreach(required IN ITEMS ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_race_setup_core
+        ctr_native_arcade_roster_proof)
     list(FIND native_link_items "${required}" required_at)
     if(required_at EQUAL -1)
         message(FATAL_ERROR "${prefix}: ctr_native must link ${required}")
@@ -395,12 +527,12 @@ ctr_require_order("CMakeLists.txt (${proof_target})" "${proof_block}"
 # 9. main.c: options, rejection, and configuration order.
 ctr_read_source("main.c" main_source)
 ctr_strip_comments("${main_source}" main_code)
-set(proof_reject "if ((rosterProofOptions.enabled != 0u) &&\n\t    ((arcadeLinkOptions.enabled != 0u) || (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE) || NativeArg_NamesReplayOption(argc, argv)))")
+set(proof_reject "if ((rosterProofOptions.enabled != 0u) &&\n\t    ((arcadeLinkOptions.enabled != 0u) || (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE) || NativeArg_NamesReplayOption(argc, argv) ||\n\t     NativeArcadeRosterProof_NamesExitOption(argc, argv)))")
 ctr_find_block("main.c" "${main_code}" "${proof_reject}" reject_begin reject_end)
 math(EXPR reject_length "${reject_end} - ${reject_begin} + 1")
 string(SUBSTRING "${main_code}" ${reject_begin} ${reject_length} reject_block)
 ctr_require_order("main.c (proof rejection)" "${reject_block}"
-    "--arcade-roster-proof cannot be combined with --arcade-link, --arcade-link-preview, or replay record or playback options."
+    "--arcade-roster-proof cannot be combined with --arcade-link, --arcade-link-preview, --exit-after-frame, or replay record or playback options."
     "return NativeConsole_Return(1);")
 ctr_require_order("main.c" "${main_code}"
     "NativeArcadeLinkOptions_ApplyArgs(argc, argv, &arcadeLinkOptions)"
@@ -417,3 +549,36 @@ ctr_count_identifier("${main_code}" "NativeArcadeRosterProof_Configure" configur
 if(NOT configure_hits EQUAL 1)
     message(FATAL_ERROR "${prefix}: main.c must call NativeArcadeRosterProof_Configure exactly once (found ${configure_hits})")
 endif()
+
+# 10. No exit looks like PASS while the proof is active.
+ctr_require_order("main.c" "${main_code}"
+    "NativeArcadeRosterProof_Configure(&rosterProofOptions, &rosterProofIdentity)"
+    "const int result = NativeArcadeRosterProof_ExitCode(CTR_Main());")
+ctr_count_identifier("${main_code}" "CTR_Main" ctr_main_hits)
+if(NOT ctr_main_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: main.c must call CTR_Main exactly once, through NativeArcadeRosterProof_ExitCode (found ${ctr_main_hits})")
+endif()
+set(platform_path "platform/native_platform.c")
+ctr_read_source("${platform_path}" platform)
+ctr_strip_comments("${platform}" platform_code)
+ctr_require("${platform_path}" "${platform}" "#include \"platform/native_arcade_roster_proof.h\"")
+foreach(event_exit IN ITEMS
+        "case SDL_EVENT_QUIT:\n#if defined(CTR_INTERNAL)\n\t\t\t\n\t\t\texit(NativeArcadeRosterProof_ExitCode(s_requestedExitCode));\n#else\n\t\t\texit(0);\n#endif"
+        "case SDL_EVENT_WINDOW_CLOSE_REQUESTED:\n#if defined(CTR_INTERNAL)\n\t\t\t\n\t\t\texit(NativeArcadeRosterProof_ExitCode(0));\n#else\n\t\t\texit(0);\n#endif")
+    ctr_require("${platform_path}" "${platform_code}" "${event_exit}")
+endforeach()
+ctr_count_identifier("${platform_code}" "NativeArcadeRosterProof_ExitCode" platform_exit_hits)
+if(NOT platform_exit_hits EQUAL 2)
+    message(FATAL_ERROR "${prefix}: ${platform_path} must exit through NativeArcadeRosterProof_ExitCode exactly twice (found ${platform_exit_hits})")
+endif()
+ctr_find_block("${proof_source}" "${proof_code}" "static void MainArcadeRosterProof_Finish(" finish_begin finish_end)
+math(EXPR finish_length "${finish_end} - ${finish_begin} + 1")
+string(SUBSTRING "${proof_code}" ${finish_begin} ${finish_length} finish_body)
+ctr_require_order("${proof_source} (MainArcadeRosterProof_Finish)" "${finish_body}"
+    "NativeArcadeRosterProof_RecordExitCode(exitCode);" "Platform_RequestExit(exitCode);")
+foreach(term IN ITEMS NativeArcadeRosterProof_RecordExitCode Platform_RequestExit)
+    ctr_count_identifier("${proof_code}" "${term}" term_hits)
+    if(NOT term_hits EQUAL 1)
+        message(FATAL_ERROR "${prefix}: ${proof_source} must call ${term} exactly once, in MainArcadeRosterProof_Finish (found ${term_hits})")
+    endif()
+endforeach()

@@ -12,9 +12,11 @@
  * Race setup pure core (docs/ROSTER_MILESTONE.md section 3.2, task R-4).
  * Turns a validated TWO_CAB NativeMatchConfigV1 into the values of the retail
  * race-defining fields and applies them to a pointer-free mirror of those
- * fields. Not in game/game_unity.h; its one live caller is the R-5b adapter
- * (game/MAIN/MainArcadeRaceSetup.c), which copies the mirror to and from the
- * retail globals and requests the load (levelID goes through
+ * fields. Not in game/game_unity.h; its one live caller is the race setup
+ * decision core (game/MAIN/MainArcadeRaceSetupCore.c, R-5c), on behalf of the
+ * R-5b adapter (game/MAIN/MainArcadeRaceSetup.c), which copies the mirror
+ * from the retail globals, applies the core's writes, and requests the load
+ * (levelID goes through
  * MainRaceTrack_RequestLoad, which is what writes the retail levelID in
  * LOAD_LevelFile, game/LOAD/LOAD_Level.c:42-43).
  *
@@ -77,7 +79,7 @@
  * 0x00000200 P2_VIBRATE         HOST-LOCAL pause menu (MainFreeze.c:518); a set bit
  * 0x00000400 P3_VIBRATE         HOST-LOCAL disables rumble (GAMEPAD.c:1002, :1033, :1064,
  * 0x00000800 P4_VIBRATE         HOST-LOCAL output only); pinned to 0, the retail default
- * 0x00001000 WARPBALL_HELD      TRANSIENT  cleared at race init MainInit.c:416; sim
+ * 0x00001000 WARPBALL_HELD      TRANSIENT  cleared at race init MainInit.c:431; sim
  *                                          VehPhysGeneral.c:1919, :1927
  * 0x00002000 MAIN_MENU          TRANSIENT  LOAD_TenStages.c:128 clears, :144 sets for
  *                                          menu levels only; sim BOTS.c:320
@@ -85,17 +87,17 @@
  * 0x00008000 LIFE_LIMIT         MODE clear MM_Battle.c:544-553; sim VehPickState.c:324,
  * 0x00010000 TIME_LIMIT         MODE clear :343, RB_Player.c:22, :40, :67, MainGameEnd.c:556
  * 0x00020000 TIME_TRIAL         MODE clear retail clears MM_MenuFlow.c:152; sim BOTS.c:341,
- *                                          MainInit.c:386, MainGameEnd.c:43
+ *                                          MainInit.c:390, MainGameEnd.c:43
  * 0x00040000 BETA_UNLIMITED     MODE clear no reader or writer in game/
  * 0x00080000 ADVENTURE_MODE     MODE clear retail clears MM_MenuFlow.c:152; sim BOTS.c:357,
- *                                          MainInit.c:327
+ *                                          MainInit.c:331
  * 0x00100000 ADVENTURE_ARENA    MODE clear retail clears MM_MenuFlow.c:152 (and
- *                                          LOAD_TenStages.c:128); sim MainInit.c:180
+ *                                          LOAD_TenStages.c:128); sim MainInit.c:184
  * 0x00200000 END_OF_RACE        TRANSIENT  cleared LOAD_TenStages.c:128 and
  *                                          MainGameStart.c:34; set MainGameEnd.c:546;
  *                                          sim VehPhysProc.c:775
  * 0x00400000 ARCADE_MODE        MODE set   retail MM_MenuFlow.c:224; sim BOTS.c:219,
- *                                          MainInit.c:327, PlayLevel.c:433-437
+ *                                          MainInit.c:331, PlayLevel.c:433-437
  * 0x00800000 ROLLING_ITEM       MODE clear set in race RB_Crate.c:203, cleared only at race
  *                                          end or by the HUD (MainGameEnd.c:541,
  *                                          UI_RenderFrame.c:879, :1058), so a quit
@@ -161,7 +163,7 @@
  * domain (game/MAIN/MainMain.c:75-76), so pinning every non-transient bit
  * also makes them equal across cabinets. TRANSIENT bits are recomputed by
  * the load (LOAD_TenStages.c:128-129) and race init (MainGameStart.c:14-34,
- * MainInit.c:416) before the race reads them, or are never set here.
+ * MainInit.c:431) before the race reads them, or are never set here.
  *
  * Other race-defining fields on this path:
  * - levelID, numLaps, numPlyrNextGame, arcadeDifficulty, characterIDs[0..5]:
@@ -169,7 +171,7 @@
  *   game/LOAD/LOAD_Assets.c:21-59, with the same values, RS-4).
  * - boolDemoMode (char, include/namespace_Main.h:571): added and pinned to 0.
  *   The demo path sets it (MM_Title.c:167) and the race reads it
- *   (MainInit.c:547 converts every human driver to a bot; BOTS.c:1022,
+ *   (MainInit.c:567 converts every human driver to a bot; BOTS.c:1022,
  *   GAMEPAD.c:705); the arcade-link screens also run over a demo race
  *   (MainArcadeLink.c:239-245).
  * - Not owned: currLEV (only carries the menu's track to the load request,
@@ -193,8 +195,8 @@
  *   runs; the load request carries it and LOAD_LevelFile writes it
  *   (game/LOAD/LOAD_Level.c:42-43).
  * - ONE pre-drivers hook, at the very start of MainInit_FinalizeInit
- *   (game/MAIN/MainInit.c, before the WARPBALL_HELD clear at :416 and so
- *   before MainInit_Drivers at :466):
+ *   (game/MAIN/MainInit.c, before the WARPBALL_HELD clear at :431 and so
+ *   before MainInit_Drivers at :481):
  *   - VERIFIES the fields the load consumed and fails closed on a mismatch:
  *     levelID and numLaps equal the plan, numPlyrCurrGame is 2 (the load
  *     copies numPlyrNextGame, LOAD_TenStages.c:102), characterIDs[0..5]

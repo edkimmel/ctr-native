@@ -17,10 +17,12 @@ struct GamepadSystem;
  * immediately and has no side effect. Otherwise it waits for the title's
  * menu-ready frame (the arcade-link menu-ready condition,
  * MainArcadeLink_TitleMenuReady), then the configured dwell, then arms and
- * launches the race setup with the proof config and leaves the title the
- * way the retail demo route does; it then polls the setup, writes the report
- * 60 ticks after VALIDATED (or on a failure or watchdog), and requests the
- * process exit with the proof result as its code.
+ * launches the race setup with the proof config from the first launch window
+ * it sees: the title menu-ready window (then it leaves the title the way the
+ * retail demo route does) or the running attract demo race (then the demo
+ * race runs on until the requested load starts). It then polls the setup,
+ * writes the report 60 ticks after VALIDATED (or on a failure or watchdog),
+ * records the proof result as the exit code, and requests the process exit.
  */
 void MainArcadeRosterProof_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS);
 
