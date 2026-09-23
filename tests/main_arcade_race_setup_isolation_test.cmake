@@ -50,7 +50,18 @@
 #     holds no other store; outside MainArcadeRaceSetup_Apply the adapter
 #     stores to no retail field (gGT, sdata, data in any member spelling,
 #     compound assignment, increment, address taken, or mem* destination) and
-#     never calls PSX_BIOS_SetRandSeed or MainRaceTrack_RequestLoad.
+#     never calls PSX_BIOS_SetRandSeed or MainRaceTrack_RequestLoad;
+# 12. the proof's scripted pads and per-tick digests (R-6):
+#     MainArcadeRosterProof_Start is named only by main.c (once, in an
+#     internal-build guard, after the proof was configured and before
+#     CTR_Main), and _BeginFrame and _EndFrame only by MainMain.c (once each,
+#     BeginFrame before GAMEPAD_ProcessAnyoneVars and EndFrame after the frame
+#     was rendered); each returns first when the proof is inactive; every
+#     proof name in MainMain.c sits in a CTR_NATIVE && CTR_INTERNAL block; the
+#     proof's V1 state is local only (never handed to the replay scheduler);
+#     the proof hook extracts only the Meta drivers candidate, names no
+#     Physics symbol, encodes through NativeCanonicalDriversDetailedV1_Encode,
+#     and installs its pads in one place.
 # The roster input caller rules live in
 # main_canonical_drivers_roster_input_isolation_test.cmake, and the decision
 # core's purity in main_arcade_race_setup_core_isolation_test.cmake.
@@ -706,4 +717,136 @@ endforeach()
 ctr_retail_stores("${before_apply}${after_apply}" outside_stores)
 if(NOT "${outside_stores}" STREQUAL "")
     message(FATAL_ERROR "${prefix}: ${adapter_source} stores to retail state outside MainArcadeRaceSetup_Apply (${outside_stores})")
+endif()
+
+# 12. The proof's scripted pads and per-tick digests (R-6).
+set(mainmain_path "game/MAIN/MainMain.c")
+ctr_read_source("${mainmain_path}" mainmain)
+ctr_strip_comments("${mainmain}" mainmain_code)
+# Who names the new entry points: MainArcadeRosterProof_BeginFrame and
+# _EndFrame only the proof files and MainMain.c; _Start only the proof files
+# and main.c.
+set(proof_entry_callers_BeginFrame "${proof_source}" "${proof_header}" "${mainmain_path}")
+set(proof_entry_callers_EndFrame "${proof_source}" "${proof_header}" "${mainmain_path}")
+set(proof_entry_callers_Start "${proof_source}" "${proof_header}" "main.c")
+set(entry_scanned 0)
+foreach(path IN LISTS scan_files)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    math(EXPR entry_scanned "${entry_scanned} + 1")
+    file(READ "${path}" source)
+    string(FIND "${source}" "MainArcadeRosterProof_" raw_entry_hit)
+    if(raw_entry_hit EQUAL -1)
+        continue()
+    endif()
+    ctr_strip_comments("${source}" code)
+    foreach(entry IN ITEMS BeginFrame EndFrame Start)
+        list(FIND proof_entry_callers_${entry} "${relative_path}" entry_caller_at)
+        if(NOT entry_caller_at EQUAL -1)
+            continue()
+        endif()
+        ctr_count_identifier("${code}" "MainArcadeRosterProof_${entry}" entry_hits)
+        if(entry_hits GREATER 0)
+            message(FATAL_ERROR "${prefix}: ${relative_path} names MainArcadeRosterProof_${entry}; only ${proof_entry_callers_${entry}} may")
+        endif()
+    endforeach()
+endforeach()
+if(entry_scanned LESS 300)
+    message(FATAL_ERROR "${prefix}: scanned only ${entry_scanned} files for the proof entry points; the scan is broken")
+endif()
+# Each new entry point returns first, before touching anything, when the
+# proof is inactive.
+foreach(opener IN ITEMS "int MainArcadeRosterProof_Start(void)" "int MainArcadeRosterProof_BeginFrame(void)"
+        "void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct NativeCanonicalStateV1 *frameState)")
+    ctr_find_block("${proof_source}" "${proof_code}" "${opener}" entry_begin entry_end)
+    math(EXPR entry_length "${entry_end} - ${entry_begin} + 1")
+    string(SUBSTRING "${proof_code}" ${entry_begin} ${entry_length} entry_body)
+    if(NOT entry_body MATCHES "^\\{([ \t\r\n]*(const[ \t]+)?(struct[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*\\*?|u?int[0-9]*_t|int)[ \t]*[A-Za-z_][A-Za-z0-9_]*(\\[[A-Z_]+\\])?( = &s_[A-Za-z]+)?;)*[ \t\r\n]*if \\(!NativeArcadeRosterProof_Active\\(\\)\\)[ \t\r\n]*\\{[ \t\r\n]*return( [01])?;")
+        message(FATAL_ERROR "${prefix}: '${opener}' must return first, before touching anything, when the proof is inactive")
+    endif()
+endforeach()
+# MainMain.c: BeginFrame once, before GAMEPAD_ProcessAnyoneVars; EndFrame
+# once, after the frame was rendered; both inside CTR_NATIVE && CTR_INTERNAL.
+foreach(entry IN ITEMS MainArcadeRosterProof_BeginFrame MainArcadeRosterProof_EndFrame)
+    ctr_count_identifier("${mainmain_code}" "${entry}" entry_hits)
+    if(NOT entry_hits EQUAL 1)
+        message(FATAL_ERROR "${prefix}: ${mainmain_path} must call ${entry} exactly once (found ${entry_hits})")
+    endif()
+endforeach()
+ctr_require_order("${mainmain_path}" "${mainmain_code}"
+    "#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)\n#include \"MAIN/MainArcadeRosterProof.h\""
+    "NativeReplayScheduler_BeginFrame(&replayFrameInfo)"
+    "rosterProofActive = MainArcadeRosterProof_BeginFrame();"
+    "#endif"
+    "GAMEPAD_ProcessAnyoneVars(gGS);"
+    "MainFrame_RenderFrame(gGT, gGS);"
+    "canonicalStateArg = &canonicalState;"
+    "else if (rosterProofActive != 0)"
+    "MainArcadeRosterProof_EndFrame(gGT, rosterProofState);"
+    "NativeReplayScheduler_EndFrame(&replayFrameInfo, canonicalStateArg)")
+# Every use of the proof's names in MainMain.c sits inside a
+# CTR_NATIVE && CTR_INTERNAL block (the preprocessor lines are kept).
+string(REGEX MATCHALL "#[ \t]*(if|ifdef|ifndef|else|elif|endif)[^\n]*|MainArcadeRosterProof_[A-Za-z]+|rosterProof[A-Za-z]*" mainmain_tokens "${mainmain_code}")
+set(guard_stack "")
+foreach(token IN LISTS mainmain_tokens)
+    if(token MATCHES "^#[ \t]*(if|ifdef|ifndef)")
+        list(APPEND guard_stack "${token}")
+    elseif(token MATCHES "^#[ \t]*endif")
+        list(POP_BACK guard_stack)
+    elseif(token MATCHES "^#")
+        list(POP_BACK guard_stack)
+        list(APPEND guard_stack "${token}")
+    else()
+        list(FIND guard_stack "#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)" guard_at)
+        if(guard_at EQUAL -1)
+            message(FATAL_ERROR "${prefix}: ${mainmain_path} names ${token} outside #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)")
+        endif()
+    endif()
+endforeach()
+# The proof's V1 state is local only: the scheduler still gets exactly its own
+# state, assigned in one place, and the proof's never.
+ctr_count_identifier("${mainmain_code}" "canonicalStateArg" state_arg_hits)
+if(NOT state_arg_hits EQUAL 3)
+    message(FATAL_ERROR "${prefix}: ${mainmain_path} must declare, assign once, and pass canonicalStateArg (found ${state_arg_hits} names)")
+endif()
+ctr_count_identifier("${mainmain_code}" "rosterProofState" proof_state_hits)
+if(NOT proof_state_hits EQUAL 3)
+    message(FATAL_ERROR "${prefix}: ${mainmain_path} must name rosterProofState only to declare it, set it, and hand it to MainArcadeRosterProof_EndFrame (found ${proof_state_hits})")
+endif()
+# main.c installs the neutral pads once, after the proof was configured and
+# before CTR_Main, in internal builds only.
+ctr_count_identifier("${main_code}" "MainArcadeRosterProof_Start" start_hits)
+if(NOT start_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: main.c must call MainArcadeRosterProof_Start exactly once (found ${start_hits})")
+endif()
+ctr_require_order("main.c" "${main_code}"
+    "NativeArcadeRosterProof_Configure(&rosterProofOptions, &rosterProofIdentity)"
+    "#if defined(CTR_INTERNAL)\n\t\t\n\t\tif (!MainArcadeRosterProof_Start())"
+    "#endif"
+    "CTR_Main()")
+# The proof extracts only the Meta candidate (no Physics group, no detailed
+# assembly), exactly once, and hashes it only through the canonical encoder.
+ctr_count_identifier("${proof_code}" "MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta" meta_hits)
+if(NOT meta_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${proof_source} must call MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta exactly once (found ${meta_hits})")
+endif()
+string(REGEX MATCHALL "MainCanonicalDrivers_[A-Za-z]+" proof_driver_calls "${proof_code}")
+list(REMOVE_DUPLICATES proof_driver_calls)
+if(NOT "${proof_driver_calls}" STREQUAL "MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta")
+    message(FATAL_ERROR "${prefix}: ${proof_source} may name only MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta of the drivers module (found ${proof_driver_calls})")
+endif()
+foreach(term IN ITEMS NativeCanonicalDriversDetailedV1_BuildSummary "NativeCanonicalDriversV1 " NativeCanonicalStateV3
+        NativeCanonicalStateV4 Platform_InputCapturePadSnapshots NativeReplayScheduler)
+    ctr_forbid("${proof_source}" "${proof_code}" "${term}")
+endforeach()
+string(REGEX MATCHALL "[A-Za-z_]*Physics[A-Za-z_]*" physics_names "${proof_code}")
+if(NOT "${physics_names}" STREQUAL "")
+    message(FATAL_ERROR "${prefix}: ${proof_source} names a Physics symbol (${physics_names}); the proof's drivers digest excludes physics")
+endif()
+ctr_count_identifier("${proof_code}" "NativeCanonicalDriversDetailedV1_Encode" encode_hits)
+if(NOT encode_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${proof_source} must encode the drivers record with NativeCanonicalDriversDetailedV1_Encode exactly once (found ${encode_hits})")
+endif()
+ctr_count_identifier("${proof_code}" "Platform_InputInstallPadSnapshots" install_hits)
+if(NOT install_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${proof_source} must install its pads through Platform_InputInstallPadSnapshots in one place (found ${install_hits})")
 endif()

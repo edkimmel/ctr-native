@@ -18,13 +18,15 @@
  * process-wide singleton, like platform/native_arcade_link_host.c, so its
  * state lives in file-scope statics. It is internal-build evidence plumbing
  * and never touches game state: the game hook
- * (game/MAIN/MainArcadeRosterProof.c) reads the config and dwell from it and
- * hands it the report.
+ * (game/MAIN/MainArcadeRosterProof.c) reads the config, dwell, tick count, and
+ * scripted pads from it, hands it one digest line per race tick, and hands it
+ * the report.
  */
 
 static const char k_proofOption[] = "--arcade-roster-proof";
 static const char k_seedOption[] = "--arcade-roster-proof-seed";
 static const char k_dwellOption[] = "--arcade-roster-proof-dwell";
+static const char k_ticksOption[] = "--arcade-roster-proof-ticks";
 static const char k_exitAfterFrameOption[] = "--exit-after-frame";
 static const char k_exitAfterFrameEqualsOption[] = "--exit-after-frame=";
 
@@ -36,6 +38,8 @@ struct NativeArcadeRosterProofSingleton
 	int32_t exitCode;
 	struct NativeArcadeRosterProofOptions options;
 	struct NativeMatchConfigV1 config;
+	uint32_t tickLineCount;
+	struct NativeArcadeRosterProofTickLine tickLines[NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS];
 };
 
 static struct NativeArcadeRosterProofSingleton s_nativeArcadeRosterProof;
@@ -49,6 +53,7 @@ void NativeArcadeRosterProofOptions_SetDefaults(struct NativeArcadeRosterProofOp
 	memset(options, 0, sizeof(*options));
 	options->seed = NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_SEED;
 	options->dwellTicks = NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_DWELL;
+	options->tickCount = NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_TICKS;
 }
 
 static int NativeArcadeRosterProof_HexValue(char c, uint32_t *value)
@@ -117,8 +122,9 @@ int NativeArcadeRosterProof_ParseSeed(const char *text, uint64_t *value)
 	return 1;
 }
 
-/* Decimal 0..NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL, 1..4 digits, nothing else. */
-static int NativeArcadeRosterProof_ParseDwell(const char *text, uint32_t *value)
+/* Decimal minimum..maximum, 1..4 digits, nothing else (the dwell and the
+ * tick count; both maxima have four digits). */
+static int NativeArcadeRosterProof_ParseDecimal(const char *text, uint32_t minimum, uint32_t maximum, uint32_t *value)
 {
 	uint32_t result = 0;
 	size_t digits = 0;
@@ -131,7 +137,7 @@ static int NativeArcadeRosterProof_ParseDwell(const char *text, uint32_t *value)
 		}
 		result = (result * 10u) + (uint32_t)(text[digits] - '0');
 	}
-	if ((digits == 0u) || (result > NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL))
+	if ((digits == 0u) || (result < minimum) || (result > maximum))
 	{
 		return 0;
 	}
@@ -162,6 +168,7 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 	int seenProof = 0;
 	int seenSeed = 0;
 	int seenDwell = 0;
+	int seenTicks = 0;
 
 	if ((options == NULL) || (argc < 0) || ((argc > 0) && (argv == NULL)))
 	{
@@ -210,16 +217,28 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 		else if (strcmp(arg, k_dwellOption) == 0)
 		{
 			value = NativeArcadeRosterProof_Value(argc, argv, index);
-			if ((value == NULL) || seenDwell || !NativeArcadeRosterProof_ParseDwell(value, &candidate.dwellTicks))
+			if ((value == NULL) || seenDwell ||
+			    !NativeArcadeRosterProof_ParseDecimal(value, 0u, NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL, &candidate.dwellTicks))
 			{
 				return 0;
 			}
 			seenDwell = 1;
 			index++;
 		}
+		else if (strcmp(arg, k_ticksOption) == 0)
+		{
+			value = NativeArcadeRosterProof_Value(argc, argv, index);
+			if ((value == NULL) || seenTicks ||
+			    !NativeArcadeRosterProof_ParseDecimal(value, 1u, NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS, &candidate.tickCount))
+			{
+				return 0;
+			}
+			seenTicks = 1;
+			index++;
+		}
 	}
-	/* A seed or dwell without the proof would be silently ignored. */
-	if ((seenSeed || seenDwell) && !seenProof)
+	/* A seed, dwell, or tick count without the proof would be silently ignored. */
+	if ((seenSeed || seenDwell || seenTicks) && !seenProof)
 	{
 		return 0;
 	}
@@ -306,7 +325,8 @@ int NativeArcadeRosterProof_Configure(const struct NativeArcadeRosterProofOption
 		return 1;
 	}
 	if ((options->logPath[0] == '\0') || (memchr(options->logPath, '\0', sizeof(options->logPath)) == NULL) ||
-	    (options->dwellTicks > NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL) ||
+	    (options->dwellTicks > NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL) || (options->tickCount == 0u) ||
+	    (options->tickCount > NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS) ||
 	    !NativeArcadeRosterProof_BuildConfig(identity, options->seed, &config))
 	{
 		return 0;
@@ -360,6 +380,79 @@ uint32_t NativeArcadeRosterProof_Dwell(void)
 	return (s_nativeArcadeRosterProof.active != 0u) ? s_nativeArcadeRosterProof.options.dwellTicks : 0u;
 }
 
+uint32_t NativeArcadeRosterProof_Ticks(void)
+{
+	return (s_nativeArcadeRosterProof.active != 0u) ? s_nativeArcadeRosterProof.options.tickCount : 0u;
+}
+
+void NativeArcadeRosterProof_ScriptedPads(uint32_t raceTick,
+	struct NativeArcadeRosterProofPad pads[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT])
+{
+	uint16_t buttons[2] = {NATIVE_ARCADE_ROSTER_PROOF_BUTTONS_NONE, NATIVE_ARCADE_ROSTER_PROOF_BUTTONS_NONE};
+
+	if (pads == NULL)
+	{
+		return;
+	}
+	if (raceTick != NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE)
+	{
+		const uint32_t phase = raceTick % NATIVE_ARCADE_ROSTER_PROOF_STEER_PERIOD;
+
+		/* Active low: a held button clears its bit. */
+		buttons[0] = (uint16_t)(buttons[0] & ~NATIVE_ARCADE_ROSTER_PROOF_BUTTON_CROSS);
+		buttons[1] = (uint16_t)(buttons[1] & ~NATIVE_ARCADE_ROSTER_PROOF_BUTTON_CROSS);
+		if ((phase >= NATIVE_ARCADE_ROSTER_PROOF_STEER_BEGIN) && (phase < NATIVE_ARCADE_ROSTER_PROOF_STEER_END))
+		{
+			buttons[1] = (uint16_t)(buttons[1] & ~NATIVE_ARCADE_ROSTER_PROOF_BUTTON_RIGHT);
+		}
+	}
+	memset(pads, 0, sizeof(*pads) * NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT);
+	for (uint32_t pad = 0; pad < NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT; pad++)
+	{
+		struct NativeArcadeRosterProofPad *out = &pads[pad];
+
+		for (uint32_t axis = 0; axis < 4u; axis++)
+		{
+			out->analog[axis] = (uint8_t)NATIVE_ARCADE_ROSTER_PROOF_PAD_ANALOG_CENTRE;
+		}
+		if (pad < 2u)
+		{
+			out->status = 0u;
+			out->id = (uint8_t)NATIVE_ARCADE_ROSTER_PROOF_PAD_ID_DIGITAL;
+			out->buttons[0] = (uint8_t)(buttons[pad] & 0xFFu);
+			out->buttons[1] = (uint8_t)(buttons[pad] >> 8);
+			out->connected = 1u;
+		}
+		else
+		{
+			out->status = (uint8_t)NATIVE_ARCADE_ROSTER_PROOF_PAD_STATUS_DISCONNECTED;
+			out->id = (uint8_t)NATIVE_ARCADE_ROSTER_PROOF_PAD_ID_DISCONNECTED;
+			out->buttons[0] = 0xFFu;
+			out->buttons[1] = 0xFFu;
+			out->connected = 0u;
+		}
+	}
+}
+
+int NativeArcadeRosterProof_RecordTick(const struct NativeArcadeRosterProofTickLine *line)
+{
+	struct NativeArcadeRosterProofSingleton *proof = &s_nativeArcadeRosterProof;
+
+	if ((line == NULL) || (proof->active == 0u) || (line->tick != proof->tickLineCount) ||
+	    (proof->tickLineCount >= proof->options.tickCount) || (proof->tickLineCount >= NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS))
+	{
+		return 0;
+	}
+	proof->tickLines[proof->tickLineCount] = *line;
+	proof->tickLineCount++;
+	return 1;
+}
+
+uint32_t NativeArcadeRosterProof_TickCount(void)
+{
+	return (s_nativeArcadeRosterProof.active != 0u) ? s_nativeArcadeRosterProof.tickLineCount : 0u;
+}
+
 uint64_t NativeArcadeRosterProof_Seed(void)
 {
 	return (s_nativeArcadeRosterProof.active != 0u) ? s_nativeArcadeRosterProof.options.seed : 0u;
@@ -394,6 +487,12 @@ const char *NativeArcadeRosterProof_ResultName(uint32_t result)
 		return "SEED_MISMATCH";
 	case NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING:
 		return "EVIDENCE_MISSING";
+	case NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT:
+		return "RACE_TICK_TIMEOUT";
+	case NATIVE_ARCADE_ROSTER_PROOF_DRIVERS_FAILED:
+		return "DRIVERS_FAILED";
+	case NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED:
+		return "DIGEST_FAILED";
 	default:
 		return "UNKNOWN";
 	}
@@ -541,7 +640,8 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_Name(report->setupStatusName, statusName);
 	NativeArcadeRosterProof_Name(report->setupFailureName, failureName);
 
-	NativeArcadeRosterProof_Append(&text, "arcade roster proof v3\n");
+	NativeArcadeRosterProof_Append(&text, "arcade roster proof v4\n");
+	NativeArcadeRosterProof_Append(&text, "drivers digest excludes physics\n");
 	NativeArcadeRosterProof_Append(&text, "result %s (%u)\n", NativeArcadeRosterProof_ResultName(report->result),
 		(unsigned)report->result);
 	NativeArcadeRosterProof_Append(&text, "setup status %s (%u)\n", statusName, (unsigned)report->setupStatus);
@@ -549,11 +649,13 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_Append(&text, "seed 0x%08X%08X\n", (unsigned)(uint32_t)(report->seed >> 32),
 		(unsigned)(uint32_t)(report->seed & 0xFFFFFFFFu));
 	NativeArcadeRosterProof_Append(&text, "dwell %u\n", (unsigned)report->dwellTicks);
+	NativeArcadeRosterProof_Append(&text, "ticks %u\n", (unsigned)report->ticksRequested);
 	NativeArcadeRosterProof_AppendTick(&text, "menu ready tick", report->menuReadyTick);
 	NativeArcadeRosterProof_AppendTick(&text, "demo race tick", report->demoRaceTick);
 	NativeArcadeRosterProof_AppendTick(&text, "launch tick", report->launchTick);
 	NativeArcadeRosterProof_Append(&text, "launch window %s\n", NativeArcadeRosterProof_LaunchWindowName(report->launchWindow));
 	NativeArcadeRosterProof_AppendTick(&text, "validated tick", report->validatedTick);
+	NativeArcadeRosterProof_AppendTick(&text, "race tick 0 tick", report->raceTickZeroTick);
 	NativeArcadeRosterProof_AppendDigest(&text, "config digest", report->configDigest, digestsValid);
 	NativeArcadeRosterProof_AppendDigest(&text, "race plan digest", report->racePlanDigest, digestsValid);
 	NativeArcadeRosterProof_AppendDigest(&text, "bot setup plan digest", report->botSetupPlanDigest, digestsValid);
@@ -600,24 +702,67 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	return 1;
 }
 
+int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofTickLine *line, char *buffer,
+	size_t bufferSize, size_t *length)
+{
+	struct NativeArcadeRosterProofText text;
+
+	if ((line == NULL) || (buffer == NULL) || (bufferSize == 0u) || (length == NULL))
+	{
+		return 0;
+	}
+	text.buffer = buffer;
+	text.size = bufferSize;
+	text.length = 0;
+	text.ok = 1;
+	buffer[0] = '\0';
+	NativeArcadeRosterProof_Append(&text, "tick %u control %08x%08x rng %08x%08x input %08x%08x drivers ", (unsigned)line->tick,
+		(unsigned)(uint32_t)(line->control >> 32), (unsigned)(uint32_t)(line->control & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->rng >> 32), (unsigned)(uint32_t)(line->rng & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->input >> 32), (unsigned)(uint32_t)(line->input & 0xFFFFFFFFu));
+	for (uint32_t i = 0; i < NATIVE_SHA256_DIGEST_BYTES; i++)
+	{
+		NativeArcadeRosterProof_Append(&text, "%02x", (unsigned)line->drivers[i]);
+	}
+	NativeArcadeRosterProof_Append(&text, "\n");
+	if (!text.ok)
+	{
+		buffer[0] = '\0';
+		return 0;
+	}
+	*length = text.length;
+	return 1;
+}
+
 int NativeArcadeRosterProof_WriteReport(const struct NativeArcadeRosterProofReport *report)
 {
+	const struct NativeArcadeRosterProofSingleton *proof = &s_nativeArcadeRosterProof;
 	char text[4096];
 	size_t length = 0;
 	FILE *file;
 	int ok;
 
-	if ((s_nativeArcadeRosterProof.active == 0u) ||
-	    !NativeArcadeRosterProof_FormatReport(report, text, sizeof(text), &length))
+	if ((proof->active == 0u) || !NativeArcadeRosterProof_FormatReport(report, text, sizeof(text), &length))
 	{
 		return 0;
 	}
-	file = fopen(s_nativeArcadeRosterProof.options.logPath, "wb");
+	file = fopen(proof->options.logPath, "wb");
 	if (file == NULL)
 	{
 		return 0;
 	}
 	ok = (fwrite(text, 1u, length, file) == length);
+	for (uint32_t i = 0; ok && (i < proof->tickLineCount); i++)
+	{
+		ok = NativeArcadeRosterProof_FormatTickLine(&proof->tickLines[i], text, sizeof(text), &length) &&
+		     (fwrite(text, 1u, length, file) == length);
+	}
+	if (ok)
+	{
+		const int written = snprintf(text, sizeof(text), "end ticks %u\n", (unsigned)proof->tickLineCount);
+
+		ok = (written > 0) && ((size_t)written < sizeof(text)) && (fwrite(text, 1u, (size_t)written, file) == (size_t)written);
+	}
 	ok = (fclose(file) == 0) && ok;
 	return ok;
 }

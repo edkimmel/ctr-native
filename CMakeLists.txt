@@ -1621,6 +1621,25 @@ if(BUILD_TESTING)
             SKIP_RETURN_CODE 77
             TIMEOUT 420
             RUN_SERIAL TRUE)
+
+        # The live roster determinism proof (docs/ROSTER_MILESTONE.md section
+        # 3.4, R-6): four internal --arcade-roster-proof runs of ctr_native,
+        # one after another (same seed twice, same seed launched from inside
+        # the attract demo race, another seed), compared tick by tick.  Needs the
+        # user-supplied assets/ctr-u.bin, a desktop session with a display,
+        # and an internal build; skips (77) otherwise.  Reports and logs are
+        # written only under the build tree.
+        add_test(NAME arcade_roster_determinism
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/arcade-roster-proof-check.ps1"
+                -Executable "$<TARGET_FILE:ctr_native>"
+                -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_roster_proof/$<CONFIG>"
+                -Ticks 900
+                -TimeoutSeconds 600)
+        set_tests_properties(arcade_roster_determinism PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 2700
+            RUN_SERIAL TRUE)
     endif()
 
     add_executable(native_canonical_world_mine_registry_v1_test tests/native_canonical_world_mine_registry_v1_test.c)

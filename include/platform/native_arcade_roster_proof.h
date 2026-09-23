@@ -11,14 +11,18 @@
 
 /*
  * Live roster proof, internal builds only (docs/ROSTER_MILESTONE.md section
- * 3.4, R-5b's minimal launcher; R-6 adds scripted pads, per-tick digests,
- * and the ctest). Evidence plumbing: host-local options, the fixed proof
- * config, a game-facing singleton, and the report writer.
+ * 3.4; R-5b's launcher, R-6's scripted pads, per-tick digests, and the
+ * arcade_roster_determinism ctest, tools/arcade-roster-proof-check.ps1).
+ * Evidence plumbing: host-local options, the fixed proof config, the scripted
+ * pad pattern, a game-facing singleton that keeps the per-tick digest lines,
+ * and the report writer.
  *
  *   --arcade-roster-proof <log path>        enable the proof; the report is
  *                                           written to this path
  *   --arcade-roster-proof-seed <u64>        decimal, or 0x/0X hex; default 1
  *   --arcade-roster-proof-dwell <ticks>     decimal 0..7200; default 0
+ *   --arcade-roster-proof-ticks <N>         decimal 1..3600; default 900: the
+ *                                           race ticks logged before PASS
  *
  * The report path is opened as given when the report is written: a relative
  * path resolves against the base directory, because main.c changes into
@@ -26,10 +30,10 @@
  * working directory. Pass an absolute path to write elsewhere.
  *
  * Parsing is transactional: on any error the caller's options are left
- * untouched. Arguments that are not one of these three options are ignored,
+ * untouched. Arguments that are not one of these four options are ignored,
  * because other host parsers own them. An option whose value is missing (end
  * of argv, a NULL entry, or a next argument starting with '-'), repeated, or
- * malformed is an error, and so is a seed or dwell without
+ * malformed is an error, and so is a seed, dwell, or tick count without
  * --arcade-roster-proof. main.c rejects the proof together with any
  * arcade-link or replay option, and with --exit-after-frame (any frame-capture
  * exit option; NativeArcadeRosterProof_NamesExitOption), which would end the
@@ -50,10 +54,37 @@
  * dwell ends outside both windows (a load, the intro cutscene) the hook waits
  * up to LAUNCH_WAIT_TIMEOUT_TICKS for one.
  *
+ * Scripted pads (part of the proof definition). While the proof is active the
+ * game hook installs the pads of NativeArcadeRosterProof_ScriptedPads through
+ * Platform_InputInstallPadSnapshots from process start to exit, so no
+ * keyboard, pad, or G29 input reaches the game. Pads 0 and 1 (retail players
+ * 0 and 1, CAB1 and CAB2) are connected digital pads with centred analog
+ * values; pads 2 and 3 are disconnected (no multitap). Neutral means no button
+ * held. Race tick 0 is the first frame after VALIDATED on which the drivers
+ * extraction succeeds (the race order is rebuilt on the first race tick); it
+ * is known only once that frame was simulated, so every frame up to and
+ * including race tick 0 runs on neutral pads. The frame of race tick n >= 1
+ * runs on the pattern for n, a pure function of n:
+ * - both players hold CROSS (accelerate);
+ * - player 1 (CAB2) also holds RIGHT while (n mod STEER_PERIOD) is in
+ *   [STEER_BEGIN, STEER_END), that is [60, 90) of every 120 ticks.
+ * After the proof reported, the pads are neutral again until the exit.
+ *
+ * Per-tick digests. From race tick 0, for `ticks` race ticks, the game hook
+ * appends one line per tick after its frame was simulated:
+ *   tick <n> control <16 hex> rng <16 hex> input <16 hex> drivers <64 hex>
+ * control, rng, and input are the V1 canonical domain digests of that frame
+ * (the live V1 projection, MainCanonicalState_ProjectLive); drivers is the
+ * SHA-256 of the canonical encoding (NativeCanonicalDriversDetailedV1_Encode)
+ * of the topology-free drivers candidate, a detailed record whose Physics
+ * groups are all at their exact zero value (the report header says "drivers
+ * digest excludes physics"). The report ends with "end ticks <count>".
+ *
  * Process exit codes while the proof is active (enum
  * NativeArcadeRosterProofResult is also the report's result):
  *
- *    0  PASS                 VALIDATED, and the report was written
+ *    0  PASS                 VALIDATED, every requested race tick logged, and
+ *                            the report was written
  *    1  (startup failure)    main.c's generic failure: an invalid option or
  *                            combination, asset or platform initialisation,
  *                            or a proof that could not be configured; the
@@ -79,6 +110,14 @@
  *   28  EVIDENCE_MISSING     VALIDATED, but the digests, the slot facts, or
  *                            the seed readback could not be read; PASS needs
  *                            all three
+ *   29  RACE_TICK_TIMEOUT    no race tick 0 (the drivers extraction never
+ *                            succeeded) within RACE_TICK_TIMEOUT_TICKS of
+ *                            VALIDATED
+ *   30  DRIVERS_FAILED       the drivers extraction or its canonical encoding
+ *                            failed at a logged race tick after tick 0
+ *   31  DIGEST_FAILED        the frame's V1 canonical projection (or its input
+ *                            freeze) failed at a logged race tick, or a tick
+ *                            line could not be kept
  *
  * The failure codes start at 20 so that none collides with 1 or with the C
  * runtime's abort() code 3.
@@ -106,6 +145,8 @@
 #define NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_SEED UINT64_C(1)
 #define NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_DWELL 0u
 #define NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL 7200u
+#define NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_TICKS 900u
+#define NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS 3600u
 #define NATIVE_ARCADE_ROSTER_PROOF_NONCE_MIX UINT64_C(0x9E3779B97F4A7C15)
 #define NATIVE_ARCADE_ROSTER_PROOF_BUILD_TAG "CTRN arcade roster proof build v1"
 #define NATIVE_ARCADE_ROSTER_PROOF_SLOT_COUNT NATIVE_MATCH_CONFIG_V1_SLOT_COUNT
@@ -116,7 +157,21 @@
 #define NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT_TICKS 3000u
 #define NATIVE_ARCADE_ROSTER_PROOF_LAUNCH_WAIT_TIMEOUT_TICKS 3600u
 #define NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT_TICKS 1800u
-#define NATIVE_ARCADE_ROSTER_PROOF_POST_VALIDATED_TICKS 60u
+#define NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT_TICKS 1800u
+
+/* The scripted pads (see above). Buttons are the PSX pad's active-low word
+ * (buttons[0] is its low byte): a held button reads 0. */
+#define NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT 4u
+#define NATIVE_ARCADE_ROSTER_PROOF_PAD_ID_DIGITAL 0x41u
+#define NATIVE_ARCADE_ROSTER_PROOF_PAD_ID_DISCONNECTED 0xFFu
+#define NATIVE_ARCADE_ROSTER_PROOF_PAD_STATUS_DISCONNECTED 0xFFu
+#define NATIVE_ARCADE_ROSTER_PROOF_PAD_ANALOG_CENTRE 0x80u
+#define NATIVE_ARCADE_ROSTER_PROOF_BUTTONS_NONE 0xFFFFu
+#define NATIVE_ARCADE_ROSTER_PROOF_BUTTON_RIGHT 0x0020u
+#define NATIVE_ARCADE_ROSTER_PROOF_BUTTON_CROSS 0x4000u
+#define NATIVE_ARCADE_ROSTER_PROOF_STEER_PERIOD 120u
+#define NATIVE_ARCADE_ROSTER_PROOF_STEER_BEGIN 60u
+#define NATIVE_ARCADE_ROSTER_PROOF_STEER_END 90u
 
 struct NativeArcadeRosterProofOptions
 {
@@ -124,6 +179,8 @@ struct NativeArcadeRosterProofOptions
 	uint8_t reserved[3];
 	uint32_t dwellTicks;
 	uint64_t seed;
+	uint32_t tickCount; /* race ticks to log */
+	uint32_t reserved2;
 	char logPath[NATIVE_ARCADE_ROSTER_PROOF_PATH_BYTES];
 };
 
@@ -139,7 +196,32 @@ enum NativeArcadeRosterProofResult
 	NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT = 25,   /* no menu-ready frame within MENU_READY_TIMEOUT_TICKS ticks */
 	NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT = 26,     /* not VALIDATED within VALIDATE_TIMEOUT_TICKS ticks of launch */
 	NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH = 27,        /* a seeded retail field read back differs from the produced seed */
-	NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING = 28      /* VALIDATED without readable digests, slot facts, or seed readback */
+	NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING = 28,     /* VALIDATED without readable digests, slot facts, or seed readback */
+	NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT = 29,    /* no race tick 0 within RACE_TICK_TIMEOUT_TICKS of VALIDATED */
+	NATIVE_ARCADE_ROSTER_PROOF_DRIVERS_FAILED = 30,       /* the drivers extraction or encoding failed after race tick 0 */
+	NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED = 31         /* the V1 projection failed at a logged tick, or a line was not kept */
+};
+
+/* One scripted pad, in the shape of the host pad snapshot. */
+struct NativeArcadeRosterProofPad
+{
+	uint8_t status;
+	uint8_t id;
+	uint8_t buttons[2];
+	uint8_t analog[4];
+	uint8_t connected;
+	uint8_t reserved[3];
+};
+
+/* One logged race tick. */
+struct NativeArcadeRosterProofTickLine
+{
+	uint32_t tick;
+	uint32_t reserved;
+	uint64_t control; /* V1 CONTROL domain digest */
+	uint64_t rng;     /* V1 RNG domain digest */
+	uint64_t input;   /* V1 INPUT domain digest */
+	uint8_t drivers[NATIVE_SHA256_DIGEST_BYTES];
 };
 
 /* Where the proof launched from (the report's "launch window" line). */
@@ -186,6 +268,8 @@ struct NativeArcadeRosterProofReport
 	uint32_t launchTick;
 	uint32_t launchWindow; /* enum NativeArcadeRosterProofLaunchWindow */
 	uint32_t validatedTick;
+	uint32_t raceTickZeroTick; /* the proof tick of race tick 0 */
+	uint32_t ticksRequested;   /* --arcade-roster-proof-ticks */
 	uint8_t digestsValid;
 	uint8_t slotsValid;
 	uint8_t seedValid;
@@ -198,7 +282,7 @@ struct NativeArcadeRosterProofReport
 	struct NativeArcadeRosterProofSlotLine slots[NATIVE_ARCADE_ROSTER_PROOF_SLOT_COUNT];
 };
 
-/* NULL is a no-op. Otherwise: disabled, seed 1, dwell 0, empty path. */
+/* NULL is a no-op. Otherwise: disabled, seed 1, dwell 0, 900 ticks, empty path. */
 void NativeArcadeRosterProofOptions_SetDefaults(struct NativeArcadeRosterProofOptions *options);
 
 /* Returns 1 and updates *options on success; 0 with *options untouched otherwise. */
@@ -250,19 +334,45 @@ void NativeArcadeRosterProof_RecordExitCode(int exitCode);
  */
 int NativeArcadeRosterProof_ExitCode(int inactiveExitCode);
 
-/* The configured config, dwell, seed, and log path; NULL/0/empty when inactive. */
+/*
+ * The scripted pads for a frame (see above): raceTick is the race tick the
+ * frame will be logged as, or NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE (and 0)
+ * for the neutral pads. A pure function of raceTick; NULL is a no-op.
+ */
+void NativeArcadeRosterProof_ScriptedPads(uint32_t raceTick,
+	struct NativeArcadeRosterProofPad pads[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT]);
+
+/*
+ * Keeps one tick line for the report. Returns 1 only while active, when
+ * line->tick is the next tick (the count of lines kept so far), and fewer than
+ * the configured tick count are kept; 0 otherwise, with nothing kept.
+ */
+int NativeArcadeRosterProof_RecordTick(const struct NativeArcadeRosterProofTickLine *line);
+
+/* The number of tick lines kept; 0 when inactive. */
+uint32_t NativeArcadeRosterProof_TickCount(void);
+
+/* One tick line as text (see above), with its newline, NUL-terminated;
+ * *length excludes the NUL. 0 on NULL arguments or a buffer too small. */
+int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofTickLine *line, char *buffer,
+	size_t bufferSize, size_t *length);
+
+/* The configured config, dwell, tick count, seed, and log path; NULL/0/empty when inactive. */
 const struct NativeMatchConfigV1 *NativeArcadeRosterProof_Config(void);
 uint32_t NativeArcadeRosterProof_Dwell(void);
+uint32_t NativeArcadeRosterProof_Ticks(void);
 uint64_t NativeArcadeRosterProof_Seed(void);
 const char *NativeArcadeRosterProof_LogPath(void);
 
 /*
  * Formats the report as text into buffer (NUL-terminated) and stores its
  * length without the NUL. Returns 0 on NULL arguments or a buffer too small.
- * The format is line based: a header line ("arcade roster proof v3"), then
- * "result", "setup status", "setup failure", "seed", "dwell", "menu ready
- * tick", "demo race tick", "launch tick", "launch window" (title, demo race,
- * or none), "validated tick", the four digests as lowercase hex (or "none"),
+ * The format is line based: a header line ("arcade roster proof v4"), the
+ * line "drivers digest excludes physics", then "result", "setup status",
+ * "setup failure", "seed", "dwell", "ticks" (requested), "menu ready tick",
+ * "demo race tick", "launch tick", "launch window" (title, demo race, or
+ * none), "validated tick", "race tick 0 tick", the four digests as lowercase
+ * hex (or "none"),
  * the "seeded" line (the five retail seed fields as read back, and "match 1"
  * or "match 0"; "seeded none" without a readback), and one "slot" line per
  * slot.
@@ -282,8 +392,9 @@ int NativeArcadeRosterProof_SeedsMatch(const struct NativeArcadeRetailRngSeedsV1
  */
 uint32_t NativeArcadeRosterProof_FinalResult(uint32_t requested, const struct NativeArcadeRosterProofReport *report);
 
-/* Formats the report and writes it to the configured log path. 0 when
- * inactive or on any I/O failure. */
+/* Writes the formatted report, then every kept tick line in order, then
+ * "end ticks <count>", to the configured log path. 0 when inactive or on any
+ * I/O failure. */
 int NativeArcadeRosterProof_WriteReport(const struct NativeArcadeRosterProofReport *report);
 
 /* The fixed name of a result ("PASS", "SETUP_FAILED", ...); "UNKNOWN" otherwise. */

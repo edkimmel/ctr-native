@@ -1,6 +1,7 @@
 #include <common.h>
 
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+#include "MAIN/MainArcadeRosterProof.h"
 #include <platform/native_perf.h>
 #include <platform/native_canonical_projector.h>
 #include <platform/native_identity.h>
@@ -111,6 +112,7 @@ u32 main(void)
 	struct NativeCanonicalInputV1 canonicalInput;
 	s32 canonicalInputFrozen;
 	s32 canonicalRequired;
+	s32 rosterProofActive;
 	u32 canonicalReplayFrame = 0;
 #endif
 
@@ -391,6 +393,10 @@ u32 main(void)
 					return 0;
 				}
 			}
+			/* Internal roster proof (docs/ROSTER_MILESTONE.md section 3.4):
+			 * installs this frame's scripted pads; 0 and no side effect unless
+			 * --arcade-roster-proof was given. */
+			rosterProofActive = MainArcadeRosterProof_BeginFrame();
 			{
 				struct NativePerfFrameInfo perfFrameInfo = MainPerf_FrameInfo(gGT);
 
@@ -413,6 +419,15 @@ u32 main(void)
 					return 0;
 				}
 				canonicalInputFrozen = 1;
+			}
+			else if (rosterProofActive != 0)
+			{
+				/* The roster proof's frame input, frozen the same way; a
+				 * failure only leaves it unfrozen, which fails the proof. */
+				struct PlatformInputPadSnapshot snapshots[PLATFORM_INPUT_PAD_COUNT];
+
+				canonicalInputFrozen = (Platform_InputCapturePadSnapshots(snapshots, PLATFORM_INPUT_PAD_COUNT) != 0) &&
+				                       MainCanonicalState_FreezeInputV1(&canonicalInput, snapshots, PLATFORM_INPUT_PAD_COUNT);
 			}
 #endif
 
@@ -536,6 +551,22 @@ u32 main(void)
 						return 0;
 					}
 					canonicalStateArg = &canonicalState;
+				}
+				else if (rosterProofActive != 0)
+				{
+					/* The roster proof's per-tick V1 state, projected exactly
+					 * as for the scheduler but local only: it goes to the proof
+					 * and never to NativeReplayScheduler_EndFrame. Identity and
+					 * frame number do not enter the domain digests. */
+					const struct NativeCanonicalStateV1 *rosterProofState = NULL;
+
+					memset(&identity, 0, sizeof(identity));
+					if ((canonicalInputFrozen != 0) &&
+					    MainCanonicalState_ProjectLive(&canonicalState, &identity, &replayFrameInfo, gGT, &canonicalInput, 0u))
+					{
+						rosterProofState = &canonicalState;
+					}
+					MainArcadeRosterProof_EndFrame(gGT, rosterProofState);
 				}
 
 				if (NativeReplayScheduler_EndFrame(&replayFrameInfo, canonicalStateArg) != 0)
