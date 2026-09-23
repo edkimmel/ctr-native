@@ -35,15 +35,20 @@ Integration order:
    and fault-tolerant session logic complete; a real socket transport,
    connect/handshake protocol, and a lobby data/state layer exist and are
    tested, including live two-process, real-socket evidence (see Networking).
-   The arcade-link lobby, results, rematch, and exit screens, their host
-   adapter, and a dormant-by-default hook on the main-menu level exist and
-   are tested. Networked race launch and in-race lockstep driving remain
-   gated on step 3 and live V4 projection; physical two-cabinet validation
-   remains open before steps 6-7.
+   The arcade-link lobby, match-select, results, rematch, and exit screens,
+   their host adapter, and a dormant-by-default hook on the main-menu level
+   exist and are tested. Match select lets each player pick a character
+   and vote on the track and laps; a disagreement is a seeded draw, and
+   the resolved config is re-validated by a relink handshake and is what
+   START_RACE would launch (`docs/MATCH_SELECT_MILESTONE.md`). Networked
+   race launch and in-race lockstep driving remain gated on step 3 and live
+   V4 projection; physical two-cabinet validation remains open before steps
+   6-7.
 5. Failure handling, results, and rematch — stall-timeout policy, peer-drop
    roster, and rematch config builder complete and fault-tested against
    `native_virtual_datagram`; wired to the results/rematch screens through
-   the arcade-link adapter. The in-race driver that feeds it is gated
+   the arcade-link adapter, and every rematch goes back through match
+   select. The in-race driver that feeds it is gated
    (`docs/GAME_LOOP_UI_MILESTONE.md` Tasks 7-8).
 6. CAB1 G29/kiosk gate.
 7. Two-cabinet fleet acceptance.
@@ -53,7 +58,9 @@ Integration order:
    cabinets find each other on the subnet (a broadcast beacon is the
    preferred design), and the handshake still validates build and content
    identity. It needs a pairing rule (for example a configured cabinet group)
-   and 3-4 human slots in the roster and match config. It follows step 7.
+   and 3-4 human slots in the roster and match config. The match-select
+   rules, message, and session are already sized for 4 humans, while
+   `NativeMatchConfigV1` has two human roles. It follows step 7.
 
 ## Deterministic simulation
 
@@ -70,7 +77,9 @@ Integration order:
   the retail RNG.
 - **Match config.** Portable match identity with arcade two-cabinet and
   one-cabinet profiles, a reserved `protocolVersion`, eight role-fixed slots
-  (CAB1 human, CAB2 human, bot), and validated lifecycle transitions.
+  (CAB1 human, CAB2 human, bot), and validated lifecycle transitions. The
+  arcade race config is resolved per match by match select; the per-build
+  fixture is the lobby base it starts from.
 - **Input replay.** Replay schedulers with record and playback, per-domain
   canonical verification, and first-divergence masks for observation, VBlank
   parity, pad, canonical domain, and combined digest. Invalid submissions
@@ -181,22 +190,36 @@ the arcade-link screens and host adapter exist and are tested on top of it
 - **Arcade-link wiring** connects both layers to a small set of screens.
   `native_arcade_menu_input` turns one player's held buttons into
   release-to-arm, rising-edge wheel/pad navigation; `native_arcade_flow` is
-  the pure screen state machine (lobby, match found, racing, results,
-  rematch wait, exit); `native_arcade_netplay` is the only composition of the
-  lobby, outcome, roster, and rematch layers, and agrees a rematch
-  implicitly by deriving the new seed from the previous agreed config;
+  the pure screen state machine (lobby, match found, select, select result,
+  racing, results, rematch wait, exit); `native_arcade_netplay` is the only
+  composition of the lobby, outcome, roster, rematch, and match-select
+  layers, and agrees a rematch implicitly by deriving the new seed from the
+  proposal of the most recent lobby that reached READY;
   `native_arcade_link_options` parses the host-local CLI options and builds
-  the fixed fixture; `native_arcade_link_host` is the game-facing singleton.
+  the fixed fixture (the lobby base); `native_arcade_link_host` is the
+  game-facing singleton.
+  Match select runs between MATCH FOUND and the race: each player picks a
+  character and votes on the track and the lap count, and a disagreement
+  resolves to a draw seeded from both cabinets' nonces. Three pure modules
+  implement it: `native_match_select_rules` (tables, seed, draws, the
+  unique-character and retail 2P bot rules, and the resolved-config
+  builder), `native_match_select_message` (a 64-byte select record), and
+  `native_match_select_session` (one cabinet's select state machine). The
+  records travel on a generic 64-byte aux route of
+  `native_lockstep_peer_link`. The resolved config is re-validated by a
+  relink handshake and is what START_RACE would launch.
   Under `game/MAIN/`, `MainArcadeLinkLayout` (pure layout),
   `MainArcadeLinkPolicy` (pure frame-ownership policy), and `MainArcadeLink`
   (a thin `CTR_NATIVE` hook at the RECTMENU seam in
   `MainFrame_RenderFrame`) draw the screens with the retail menu primitives.
-  Game code names none of the lockstep or failure-handling modules, and
-  isolation tests enforce it. Everything is dormant unless `--arcade-link`
-  or `--arcade-link-preview` is given; both are rejected with any replay
+  Game code names none of the lockstep, failure-handling, or match-select
+  modules, and isolation tests enforce it. Everything is dormant unless
+  `--arcade-link` or `--arcade-link-preview` is given; both are rejected
+  with any replay
   option, and quick states are disabled while either is active. START_RACE
-  returns to the title until the networked race launch lands. See
-  `docs/GAME_LOOP_UI_MILESTONE.md`.
+  logs the agreed match and returns to the title until the networked race
+  launch (Task 7) exists. See `docs/GAME_LOOP_UI_MILESTONE.md` and
+  `docs/MATCH_SELECT_MILESTONE.md`.
 - None of this has been exercised over real two-cabinet LAN hardware or with
   a real G29 (only two real OS processes on one machine over loopback); that
   remains open before step 6.
@@ -223,9 +246,9 @@ ctest --test-dir build-msvc-x86 -C Debug --output-on-failure
 ```
 
 Use `build-msvc-x86`; other `build-msvc-x86-*` directories are from earlier
-milestones. The full suite (111 tests) passes. LF-to-CRLF warnings are
-benign. The `arcade_link_preview_render` test (Windows only) renders every
-arcade-link preview with `ctr_native.exe` and checks each capture; it skips
+milestones. The full suite (119 tests) passes. LF-to-CRLF warnings are
+benign. The `arcade_link_preview_render` test (Windows only) renders all 17
+arcade-link previews with `ctr_native.exe` and checks each capture; it skips
 when `assets/ctr-u.bin` is absent, no display is available, or the build
 rejects the internal-only preview option, and writes its captures and logs
 under `build-msvc-x86\arcade_link_preview_captures\<config>`.
@@ -268,7 +291,8 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `include/platform/native_lockstep_handshake.h` (connect/handshake
   protocol); `platform/native_lockstep_peer_link.c`,
   `include/platform/native_lockstep_peer_link.h` (real-transport session
-  integration); `platform/native_lobby_state.c`,
+  integration, and the 64-byte aux route: `NativeLockstepPeerLink_SendAux`,
+  `_TakeAux`); `platform/native_lobby_state.c`,
   `include/platform/native_lobby_state.h` (candidate-cycling lobby policy
   layer).
 - Arcade-link wiring: `platform/native_arcade_menu_input.c`,
@@ -283,7 +307,16 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `game/MAIN/MainArcadeLinkLayout.{c,h}` (screen layout),
   `game/MAIN/MainArcadeLinkPolicy.{c,h}` (frame-ownership policy),
   `game/MAIN/MainArcadeLink.{c,h}` (live hook, called from
-  `game/MAIN/MainFrame_RenderFrame.c`).
+  `game/MAIN/MainFrame_RenderFrame.c`);
+  `tests/main_arcade_link_view_layout_test.c` (every preview and live host
+  view passes the layout).
+- Match select: `platform/native_match_select_rules.c`,
+  `include/platform/native_match_select_rules.h` (tables, seed, draws,
+  resolution, resolved-config builder);
+  `platform/native_match_select_message.c`,
+  `include/platform/native_match_select_message.h` (64-byte select wire
+  codec); `platform/native_match_select_session.c`,
+  `include/platform/native_match_select_session.h` (select state machine).
 - Presentation options (host-local): `platform/native_display_config.c`,
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
@@ -293,7 +326,7 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   (RGB-only BMP checker for arcade-link preview captures);
   `tools/arcade_link_capture_check.c` (CLI
   `ctr_native_arcade_link_capture_check <capture.bmp> <screen>`);
-  `tools/arcade-link-preview-check.ps1` (renders and checks all 12 previews
+  `tools/arcade-link-preview-check.ps1` (renders and checks all 17 previews
   plus the default path; `-Png` writes alpha-stripped review PNGs, since the
   capture alpha byte is the PS1 mask bit).
 - Startup robustness: `platform/native_sdl_assert.c`,
@@ -303,7 +336,7 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   files here). Standalone libraries are declared in `CMakeLists.txt`.
 - Related docs: `docs/ARCADE_FORK.md`, `docs/TOPOLOGY_LEASE_AUTHORITY.md`,
   `docs/REPLAYS.md`, `docs/MEMORY_MODEL.md`, `docs/G29_INPUT.md`,
-  `docs/GAME_LOOP_UI_MILESTONE.md`.
+  `docs/GAME_LOOP_UI_MILESTONE.md`, `docs/MATCH_SELECT_MILESTONE.md`.
 
 ## Rules and constraints
 
@@ -326,24 +359,22 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
 
 ## Next work
 
-The game-loop/UI milestone is tracked in `docs/GAME_LOOP_UI_MILESTONE.md`.
-The operator has reviewed the 12 arcade-link preview screens and accepted
-them. The input and flow defaults UX-1 to UX-11 (section 3 of that document)
-still await an explicit operator decision; UX-8, the fixed fixture, is being
-replaced by match select.
+The game-loop/UI milestone is tracked in `docs/GAME_LOOP_UI_MILESTONE.md`
+and the match-select phase in `docs/MATCH_SELECT_MILESTONE.md`. The
+operator has reviewed the 12 arcade-link preview screens of the game-loop/UI
+milestone and accepted them.
 
-1. Active: the match-select milestone (`docs/MATCH_SELECT_MILESTONE.md`, to be
-   written as its first task). It adds a pre-race phase between MATCH FOUND
-   and START_RACE:
-   - each player picks their own character;
-   - the players vote on the track and on the lap count;
-   - a disagreement resolves to a random pick drawn from the shared match
-     seed.
-   Opponent cursors are display-only; only the final choices must agree. The
-   result becomes the agreed `NativeMatchConfigV1` that Task 7 launches,
-   replacing the fixed per-build fixture (UX-8). The design stays general
-   enough for up to 4 players (step 8).
-2. Task 7, networked race launch, gated on step 3 live roster/bot setup.
+1. Operator decisions: match select is built. Its UX defaults SEL-1 to
+   SEL-17 (section 4 of `docs/MATCH_SELECT_MILESTONE.md`) and the
+   game-loop/UI defaults UX-1 to UX-11 (section 3 of
+   `docs/GAME_LOOP_UI_MILESTONE.md`; UX-8, the fixed fixture, is superseded
+   by match select) await an explicit operator decision. The owner
+   decisions OD-1 to OD-3 (20 s per select item, unique characters, rematch
+   through select) are applied.
+2. Task 7, networked race launch of the resolved config, gated on step 3
+   live roster/bot setup, and on handling asymmetric relink completion (one
+   cabinet can reach START_RACE while the other times out to LINK ERROR;
+   `docs/MATCH_SELECT_MILESTONE.md` section 7).
 3. Task 8, in-race lockstep drive and failure handling, gated on Task 7 and
    live V4 projection.
 4. Real two-cabinet and G29 validation (actual wire, LAN switch,

@@ -195,7 +195,12 @@ ctr_native_sha256 only).
   slots' characterID by role, and the bot slots' characterID in slot order.
   Everything else (profile, tick rate, identity, difficulty, bot rules,
   gameMode and rules) is unchanged. The result must pass
-  NativeMatchConfigV1_Validate.
+  NativeMatchConfigV1_Validate. NativeMatchSelect_BuildConfig also requires
+  humanCount to equal the base's number of human-role slots (so only 2
+  builds today) and rejects any outcome Resolve cannot produce: tracks,
+  laps, or characters outside the tables, duplicate or stray characters, a
+  stale or zero seed, reassignment bit 0, and, for two humans and four bots,
+  anything but the first qualifying retail 2P AI set in set order.
 
 ### 2.2 Select wire message: native_match_select_message (pure codec)
 
@@ -227,7 +232,17 @@ offset size field
 ```
 
 RESOLVED requires currentItem 3. Decode reports a distinct, append-only
-fault cause per check, in wire order.
+fault cause per check (enum NativeMatchSelectMessageFaultCause). The checks
+run in a fixed, documented order, not wire order: size (BAD_SIZE), magic,
+version, encoded size, the trailer digest (BAD_DIGEST), then the shape
+checks of NativeMatchSelectMessageV1_ShapeCause: reserved bytes, humanCount,
+senderHuman < humanCount (BAD_SENDER), phase, lockMask bits, sequence,
+character, track, laps, currentItem, lockMask == (1 << currentItem) - 1
+(cause 17, BAD_ITEM_LOCK_MISMATCH), a zero resolvedDigest while PICKING,
+and currentItem 3 while RESOLVED (cause 18, BAD_RESOLVED_ITEM). Causes 17
+and 18 were appended, so the check order is not the numeric order. The
+reader's bytes are touched only after the reads have validated them, so a
+hand-built reader with NULL data is a size fault, not a crash.
 
 ### 2.3 Select session: native_match_select_session (pure)
 
@@ -246,14 +261,37 @@ status.
 - Compose: the current state with sequence + 1, sent every tick. This is
   state replication: loss only delays, and a lost cursor update just makes
   the opponent's cursor jump.
-- Accept drops, and counts, a malformed record, a foreign baseDigest (a
-  previous or later select), its own senderHuman, a sender >= humanCount,
-  and a sequence not above the last accepted from that sender (duplicate or
-  reordered). It latches FAILED for a humanCount mismatch on the same base,
-  a nonce change, a locked item that unlocks or changes value, a
-  resolvedDigest that differs from ours once both sides are resolved, and
-  peer silence: no accepted message from a peer for 90 ticks while not
-  CONFIRMED (SEL-9).
+- Accept checks, in order: a terminal session ignores the record; a
+  malformed record (any codec fault) is dropped and counted; a baseDigest
+  not ours is dropped and counted (DROPPED_FOREIGN); a humanCount not ours
+  latches FAILED/HUMAN_COUNT_MISMATCH; its own senderHuman is dropped and
+  counted; a sequence not above the last accepted from that sender
+  (duplicate or reordered) is dropped and counted (DROPPED_STALE); a nonce
+  change latches NONCE_CHANGED; a locked item that unlocks or changes
+  value, or a RESOLVED sender whose digest changes, latches LOCK_CHANGED.
+  There is no separate drop for a sender >= humanCount: with the record's
+  own humanCount it is a codec BAD_SENDER (a malformed drop), and against
+  ours it is a HUMAN_COUNT_MISMATCH failure.
+- The session also latches FAILED for a resolvedDigest that differs from
+  ours once both sides are resolved (DIGEST_MISMATCH), a Resolve failure
+  (RESOLVE_FAILED), and peer silence: no accepted message from a peer for
+  90 ticks while not CONFIRMED (PEER_SILENT, SEL-9).
+- The foreign-baseDigest filter separates selects on different bases only.
+  It does not separate two selects on the same base, and every first match
+  uses the fixture base. A stale record from an earlier select on the same
+  base fails safe, never a wrong agreement: NONCE_CHANGED when a fresh
+  record follows it, DIGEST_MISMATCH when the local side resolves against
+  it first, or PEER_SILENT when its sequence is above anything the fresh
+  peer sends in time (every fresh record is then dropped as stale); a stale
+  record below the fresh sequence is simply dropped. The fault test pins
+  each case. Three mitigations keep such records from arriving at all: the
+  peer link resets its aux inbox on Open and Close, it drops aux datagrams
+  while not RUNNING, and the adapter discards the inbox at BEGIN_SELECT.
+- Accessors: NativeMatchSelectSession_Status, _Fault, _CurrentItem,
+  _TicksLeft, _Human, _CharacterLockedByPeer, _PeerLockedCharacterMask,
+  _Base, _HumanCount, _LocalHuman, _Outcome, _ResolvedDigest, and the four
+  drop counters (_DroppedMalformed, _DroppedForeign, _DroppedSelf,
+  _DroppedStale). The adapter reads the session only through them.
 - Status: PICKING; WAITING (local done, a peer is not); RESOLVED (every
   human locked, resolved locally, awaiting every peer's RESOLVED);
   CONFIRMED (every peer RESOLVED with an equal resolvedDigest); FAILED.
@@ -271,15 +309,31 @@ re-checks the full 32-byte config digest.
 ### 2.4 Peer-link aux channel (edit of native_lockstep_peer_link)
 
 The peer link routes datagrams by exact size (284 bytes handshake, 128
-bytes bundle, anything else dropped). It gains a third, generic route: a
+bytes bundle, anything else dropped). It has a third, generic route: a
 datagram of exactly NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES (64) from the peer
-address while RUNNING goes to a bounded aux inbox (16 entries; when full,
-the oldest is discarded and counted); while not RUNNING it is dropped.
-New calls: SendAux (RUNNING only, exactly 64 bytes) and TakeAux (pops the
-oldest). Open and Close reset the inbox. The aux route never touches the
-handshake or the session. The peer link names no select type; the select
-codec static-asserts that its width equals the aux width. The handshake,
-bundle, and NativeMatchConfigV1 formats are unchanged.
+address while RUNNING is copied, opaque, to a bounded aux inbox of
+NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY (16) entries. The inbox is
+newest-wins: when it is full, Poll discards the oldest entry to make room
+and counts it. While HANDSHAKING a 64-byte datagram is dropped uncounted;
+once the link is terminal Poll receives nothing, so the inbox keeps what
+it held.
+
+- NativeLockstepPeerLink_SendAux: RUNNING only, exactly 64 bytes; a failed
+  send is lossy and changes no state.
+- NativeLockstepPeerLink_TakeAux: pops the oldest entry; works in every
+  mode.
+- NativeLockstepPeerLink_AuxCount: entries waiting.
+- NativeLockstepPeerLink_DroppedAuxCount: overflow discards since the last
+  successful Open or Close.
+
+A successful Open and every Close empty the inbox and zero the overflow
+count. The aux route never touches the handshake, the session, or the link
+mode, and it passes the same sender-address filter as the other routes.
+The peer link names no select type, and an isolation test keeps select
+tokens out of it. The codec may not name the peer link, so the static
+assert that the select width equals the aux width lives in
+platform/native_arcade_netplay.c, the one module that names both. The
+handshake, bundle, and NativeMatchConfigV1 formats are unchanged.
 
 ### 2.5 Flow: SELECT and SELECT_RESULT (native_arcade_flow)
 
@@ -292,78 +346,176 @@ values are unchanged.
 - MATCH_FOUND: after the hold, moves to SELECT and returns BEGIN_SELECT
   (instead of moving to RACING and returning START_RACE).
 - SELECT: menu events go to the select session, not the flow (BACK is
-  ignored). A lobby status other than READY, or selectStatus FAILED, moves
-  to RESULTS with LINK_ERROR (the existing LINK ERROR path); CONFIRMED
-  moves to SELECT_RESULT.
-- SELECT_RESULT: shows the resolved match for selectResultHoldTicks while
-  select messages keep flowing (the linger), then returns RELINK: the
-  adapter closes the link and begins the lobby on the resolved config. Then
-  READY moves to RACING and returns START_RACE; REJECTED, or
-  launchTimeoutTicks without READY, moves to RESULTS with LINK_ERROR;
-  WAITING or LOST returns RESTART_LOBBY after lobbyRetryPauseTicks. BACK is
-  ignored.
-- REMATCH is unchanged up to READY -> MATCH_FOUND, which now leads to
-  SELECT (OD-3).
+  ignored). Checked in order: a lobby status other than READY, then
+  selectStatus FAILED, each move to RESULTS with LINK_ERROR and return
+  CLOSE_LINK; CONFIRMED moves to SELECT_RESULT.
+- SELECT_RESULT: phase 1 shows the resolved match for
+  selectResultHoldTicks, ignoring the lobby status, while select messages
+  keep flowing (the linger), then returns RELINK: the adapter closes the
+  link and begins the lobby on the resolved config. Phase 2 starts on the
+  tick after RELINK, because a READY still seen on the RELINK tick belongs
+  to the old link. Then READY moves to RACING and returns START_RACE;
+  REJECTED, or launchTimeoutTicks without READY, moves to RESULTS with
+  LINK_ERROR and returns CLOSE_LINK; WAITING or LOST returns RESTART_LOBBY
+  after lobbyRetryPauseTicks; CONNECTING stays. BACK is ignored.
+- Every pre-race LINK_ERROR (from SELECT or SELECT_RESULT) returns
+  CLOSE_LINK, so a relink handshake the peer completes later cannot reach
+  READY in the background behind the results screen and replace the
+  config a rematch derives from (2.6). RACING -> RESULTS still returns
+  NONE: the link stays open so the race driver can read the latched
+  session report.
+- REMATCH is unchanged up to READY -> MATCH_FOUND, which leads to SELECT
+  (OD-3). MATCH_FOUND never starts a race.
 
 ### 2.6 Adapter: native_arcade_netplay
 
 The adapter owns one select session.
 
-- BEGIN_SELECT starts it on the agreed lobby config (the base), with
+- BEGIN_SELECT discards every datagram waiting in the aux inbox, then
+  starts the session on the agreed lobby config (the base), with humanCount
+  the base's number of human-role slots, the local human localRole - 1,
   initial cursors from the base config's own slot character, track, and
   laps (the fixture on a first match; the previous picks on a rematch,
-  OD-3), and a per-select nonce: the first LE 8 bytes of
-  SHA-256("CTRN match select nonce v1" || selectEntropy (8 bytes LE) ||
-  localRole (1 byte) || selectSerial (4 bytes LE)), where selectSerial
-  counts the selects this adapter has begun.
-- selectEntropy is host-local: main.c reads the wall clock and a
-  performance counter once at startup; it is 0 in tests and previews. It
-  reaches identity only through the exchanged nonces and the agreed
-  masterSeed.
+  OD-3; each replaced by the first table entry if it is not a table
+  value), and a per-select nonce (NativeArcadeNetplay_DeriveSelectNonce):
+  the first LE 8 bytes of SHA-256("CTRN match select nonce v1" ||
+  selectEntropy (8 bytes LE) || localRole (1 byte) || selectSerial (4
+  bytes LE)), where selectSerial counts the selects this adapter has begun
+  since Init. If the session cannot start, the flow is told FAILED and
+  shows LINK ERROR.
+- selectEntropy is host-local and never parsed from argv. main.c reads the
+  wall clock and SDL's performance counter once, only with --arcade-link
+  ((time << 32) XOR counter); default and preview runs leave it 0. The host
+  mixes a process-local epoch into it on every LINK Configure and every
+  AbortToTitle, before it initializes the adapter:
+  NativeArcadeLinkHost_MixSelectEntropy = entropy XOR (epoch *
+  0x9E3779B97F4A7C15). AbortToTitle re-runs the adapter's Init (restarting
+  selectSerial) after every START_RACE, so without the epoch the
+  first-select nonces would repeat; with it they vary. Previews never
+  derive a nonce. The entropy reaches identity only through the exchanged
+  nonces and the agreed masterSeed.
 - Each tick in SELECT, and in SELECT_RESULT before RELINK: drain the aux
   inbox into the session, feed the menu event (SELECT only), tick the
   countdown, map the session status into the observation, run the flow,
   then compose and SendAux.
-- RELINK builds the resolved config, makes it the current config, closes
-  the lobby, and begins it on that config; the relink handshake is the full
-  byte-identity check. A build failure blocks like a failed rematch and
-  ends in LINK_ERROR at the launch timeout.
+- RELINK closes the lobby and builds the resolved config with
+  NativeMatchSelect_BuildConfig on the session's own base
+  (NativeMatchSelectSession_Base, the config its exchanged base digest
+  covers) and outcome. On success it becomes the current config and a new
+  lobby is begun on it; the relink handshake is the full byte-identity
+  check. A failed build begins nothing and blocks every restart, so the
+  flow ends in LINK_ERROR at the launch timeout and never races on the
+  base.
 - START_RACE arms the race on the resolved config.
-- NativeArcadeNetplay_AgreedConfig is non-NULL on RACING and RESULTS only
-  (it was also non-NULL on MATCH_FOUND, when the lobby config was the race
-  config).
+- BEGIN_REMATCH derives from lastReadyConfig, the proposal of the most
+  recent lobby that reached READY. The handshake guarantees both sides hold
+  it byte-identically, whatever happened after it: after a finished race it
+  is the resolved config; after a pre-race failure (a select failure, a
+  failed build, or a launch timeout) it is the select base both held at
+  MATCH_FOUND, even when one side relinked and the other did not, so both
+  sides rematch from the base.
+- NativeArcadeNetplay_AgreedConfig is non-NULL on RACING, and on RESULTS
+  only after START_RACE armed a race on it. A RESULTS screen reached
+  without a race reads NULL.
 
 ### 2.7 Host, options, preview, logging
 
-- The host view gains flat select fields: the current item, the countdown,
-  humanCount, localHuman, per-human cursor, locks, current item, and seen
-  flag, and the resolved outcome with its draw and reassignment flags. A
-  GetAgreedMatch call returns track, laps, seed, and slot characters for
-  logging.
-- The options gain selectEntropy (not parsed from the command line; set by
-  main.c).
+- The adapter view carries a flat select sub-view, copied field for field
+  into the host view (NativeArcadeLinkHostView.select, struct
+  NativeArcadeLinkHostSelectView): active, humanCount, localHuman, the
+  local current item, ticksLeft (the countdown), status, and the resolved
+  outcome (resolved, trackID, lapCount, trackDrawn, lapsDrawn,
+  characterReassignedMask, botCount, humanCharacter, botCharacter), the
+  peerLockedCharacterMask, and per human
+  (NativeArcadeLinkHostSelectHumanView) present, characterID, trackID,
+  lapCount, lockMask, and currentItem. The
+  view is active on SELECT and SELECT_RESULT while a select session exists
+  and all zero otherwise. The host static-asserts every field offset
+  against the adapter's view.
+- Host API additions: NativeArcadeLinkHost_GetAgreedMatch (track, laps,
+  seed, and slot roles and characters of the agreed race config, only when
+  NativeArcadeNetplay_AgreedConfig is non-NULL);
+  NativeArcadeLinkHost_MixSelectEntropy (2.6); and value names game code
+  can use without naming the select or match-config modules:
+  NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_*, _SELECT_LOCK_*, _SELECT_STATUS_*,
+  _ROLE_* (INACTIVE, CAB1, CAB2, BOT), and the view capacities, each
+  static-asserted against the value it mirrors.
+  include/platform/native_arcade_link_host_internal.h is a test-only
+  read-back (NativeArcadeLinkHost_InternalSelectEntropy) that no game
+  source may include.
+- The options gain selectEntropy (never parsed from the command line; set
+  by main.c).
 - New previews: `select-character`, `select-track`, `select-laps`,
-  `select-wait`, `select-result`. In each, the opponent cursor moves on a
-  fixed tick schedule, so captures are deterministic.
-- START_RACE still returns to the title (Task 7 is gated), after the hook
-  logs the resolved match with Platform_Log.
+  `select-wait`, `select-result`. Each shows two humans, the local cabinet
+  as P1. Cursors start on the fixture: P1 CRASH, P2 CORTEX, both on CRASH
+  COVE and 3 laps. The countdown runs from 20 s over each 600 preview
+  ticks while picking. On the picking screens and select-wait the
+  opponent's cursor on its current item steps one entry every 30 ticks
+  through its list, so a capture at a given frame is deterministic.
+  - select-character: both on the character item; P2's cursor walks the 8
+    characters.
+  - select-track: both have locked their characters (the view reports
+    CORTEX peer-locked); P2's cursor walks the 16 tracks.
+  - select-laps: P1 has locked CRASH and CRASH COVE; P2 has locked CORTEX
+    and TIGER TEMPLE, and its laps cursor walks 3, 5, 7.
+  - select-wait: as select-laps, but P1 is done (3 laps), status WAITING,
+    no countdown.
+  - select-result: SELECT_RESULT, CONFIRMED: TIGER TEMPLE drawn (the votes
+    differ), 3 laps agreed, P1 CRASH, P2 CORTEX, no reassignment, and the
+    bots of retail 2P AI set 0 (POLAR, N. GIN, TINY, COCO).
+- START_RACE still returns to the title (Task 7 is gated). Before the
+  "not wired yet" line, the hook logs the agreed match with Platform_Log:
+  "arcade link: agreed match track <id> laps <n> seed 0x<16 hex> slots
+  <8 characters> (<8 roles>)", the roles as 1, 2, B (bot), or - (inactive).
 
 ### 2.8 Screens (MainArcadeLinkLayout and drawer)
 
-Same style as the accepted screens: the retail panel, DecalFont text, the
-retail row highlight for the local cursor, a "P1"/"P2" text marker per
-human cursor (opponent markers in a distinct, high-contrast retail colour),
-locked items marked, the countdown in whole seconds, and a footer with the
-opponent's progress.
+Same style as the accepted screens: the retail panel, DecalFont text, and
+the retail row highlight. The select screens use a widened panel (x 4, w
+504, y 28, h 176; the accepted screens keep x 56, w 400), so two columns of
+names fit with a marker slot on each side of every name. The layout owns
+its own name tables and select-order lists and names no select module;
+MainArcadeLinkLayout_InputFromHostView maps the host view onto the layout
+input field for field, and the drawer calls it.
 
-- Character: 8 names, 2 columns x 4 rows.
-- Track: 16 names, 2 columns x 8 rows, FONT_SMALL.
-- Laps: 3 rows.
-- Wait: your picks and the opponent's progress.
-- Result: track, laps, each human's character, the bots, "RANDOM" beside a
-  drawn value, and a note on a reassigned character.
+- Picking screens (the local human on character, track, or laps): the
+  title (SELECT CHARACTER, VOTE TRACK, VOTE LAPS) in FONT_BIG orange;
+  "TIME s" in FONT_SMALL, s = ceil(ticksLeft / 30); the list; the retail row
+  highlight on the local cursor's cell; and the footer with each
+  opponent's progress in its player colour ("P2: CHOOSING CHARACTER",
+  "VOTING TRACK", "VOTING LAPS", "READY", or "CONNECTING" before it is
+  heard; with two or three opponents, short entries such as "P2 TRACK" or
+  "P2 JOINING").
+  - Character: 8 names, 2 columns x 4 rows, FONT_BIG.
+  - Track: 16 names, 2 columns x 8 rows, FONT_SMALL.
+  - Laps: 3 rows, one centred column, FONT_BIG.
+- Markers: each present human at or past the item has a marker on its
+  cursor's (or locked value's) cell, in the retail multiplayer player
+  colours (PLAYER_BLUE, PLAYER_RED, PLAYER_GREEN, PLAYER_YELLOW for
+  P1..P4). With two humans they read "P1" left and "P2" right of the name;
+  with three or four they are digits, 1 then 3 from the left, 2 then 4
+  from the right.
+- Locks by colour, not a marker suffix: names are ORANGE like retail rows;
+  a track or lap count some human has locked as a vote is WHITE; a
+  character a peer has locked is GRAY (taken; CONFIRM on it is refused).
+- Wait (the local human done, on SELECT): "WAITING FOR P2" (two humans) or
+  "WAITING FOR PLAYERS", with the dot animation; "YOUR CHARACTER: ...",
+  "YOUR TRACK VOTE: ...", "YOUR LAP VOTE: N LAPS"; then one line per
+  opponent in its colour, its progress and live cursor (for example "P2:
+  VOTING LAPS  5 LAPS"), "READY" when done, or "CONNECTING" before it is
+  heard. No countdown or footer.
+- Result (SELECT_RESULT): title "MATCH SET"; "TRACK <name>" and "LAPS <n>",
+  each followed by " - RANDOM" when drawn; one line per human in its
+  colour, "P1 CRASH", followed by " - REASSIGNED" when its pick was taken
+  (for example "P2 CORTEX - REASSIGNED"); the bots as "CPU <name>, ..."
+  wrapped at 36 characters; footer "GET READY".
+- Strings use only glyphs the retail font has (checked by the layout
+  isolation test against font_characterIconID). The font has no
+  parentheses, hence " - REASSIGNED" rather than a parenthesised note;
+  names use the full stop and the apostrophe ("N. GIN", "PAPU'S
+  PYRAMID"), which it has.
 
-The draw-list capacity grows as needed.
+The draw-list capacity is 32 items (it was 10).
 
 Reusing the retail character and track select was evaluated and declined.
 MM_Characters and MM_TrackSelect (overlay 230) are local multi-pad menus
@@ -446,6 +598,21 @@ for the operator to confirm or change after seeing the built flow.
 13. SEL-13: A cabinet can choose its nonce after seeing its peer's (there is
     no commit-reveal). This is acceptable for a trusted kiosk fleet.
 
+Added when the screens were built (MS-9), also flagged for operator
+review:
+
+14. SEL-14: With 3-4 humans the cursor markers are coloured digits (1..4)
+    instead of "P1".."P4", so four markers fit beside one name.
+15. SEL-15: A locked pick is shown by the name's colour (WHITE for a locked
+    track or lap vote, GRAY for a character a peer has taken) rather than
+    by a marker suffix.
+16. SEL-16: The select screens use a widened panel (x 4 to 508) instead of
+    the accepted screens' panel, so two columns of names and their markers
+    fit.
+17. SEL-17: Marker colours are the retail multiplayer player colours
+    (PLAYER_BLUE, _RED, _GREEN, _YELLOW for P1..P4). Blue P1 has the weakest
+    contrast over the blue CTR ring behind the panel, but is legible.
+
 ## 5. Constraints
 
 1. The topology lease is untouched: no acquire, activate, capture, or
@@ -470,75 +637,107 @@ for the operator to confirm or change after seeing the built flow.
 ## 6. Task list
 
 Baseline before this milestone: 111 tests, 100% passing (commit a4995975d).
+Current state: 119 tests, 100% passing. MS-1 to MS-11 are done. Every
+review found nothing blocking; the follow-up commits named below closed
+the should-fix items and nits.
 
 ### MS-1 -- this document
 
-Status: done (this document). No review required.
+Status: done (dc91e044a). No review required.
 
 ### MS-2 -- selection rules (native_match_select_rules)
 
-Status: open. Header, implementation, unit test (including every ordered
-pair of distinct base characters against the bot rule), and an isolation
-test (pure; the 2P AI set mirror checked against game/zGlobal_DATA.c).
-Review required: it decides the agreed config's contents.
+Status: done (06e7157b8). Header, implementation, unit test (including
+every ordered pair of distinct base characters against the bot rule), and
+an isolation test (pure; the 2P AI set mirror checked against
+game/zGlobal_DATA.c). Review outcome: nothing blocking.
+- 6bf2453c4 (MS-2b): BuildConfig requires humanCount to equal the base's
+  human slots and validates the outcome; the isolation test bans
+  NativeMatchSelect/native_match_select tokens under game/ and checks the
+  retail default-character mirror.
+- d9edda9ef (MS-3b): BuildConfig rejects outcomes Resolve cannot produce
+  (reassignment mask bit 0; anything but the first qualifying 2P AI set).
 
 ### MS-3 -- select message codec (native_match_select_message)
 
-Status: open. Header, implementation, unit test (every field, every fault
-cause in wire order), and an isolation test. Review required: it is a wire
-format.
+Status: done (85b196ec8). Header, implementation, unit test (every field,
+every fault cause and the check order, every single-byte flip), and an
+isolation test. Review outcome: nothing blocking.
+- d9edda9ef (MS-3b): fault causes 17 BAD_ITEM_LOCK_MISMATCH and 18
+  BAD_RESOLVED_ITEM (one cause per check), the documented check order, a
+  NULL-data reader guard, and a digest-carrying writer test.
 
 ### MS-4 -- select session (native_match_select_session)
 
-Status: open. Header, implementation, unit test, a fault-injection test over
-native_virtual_datagram (loss, duplication, reordering, delay, corruption,
-lock change, nonce change, digest mismatch, silence; 2 humans, and 4 humans
-over pairwise harnesses), and an isolation test. Review required.
+Status: done (bca5636ad). Header, implementation, unit test, a
+fault-injection test over native_virtual_datagram (loss, duplication,
+reordering, delay, corruption, lock change, nonce change, digest mismatch,
+silence, stale selects; 2 humans, and 4 humans over pairwise harnesses),
+and an isolation test. Review outcome: nothing blocking.
+- c74f6926b (MS-4b): stale-record scenarios, including a stale record with
+  a high sequence that ends in PEER_SILENT, never CONFIRMED; reorders
+  counted apart from duplicates; padding-safe outcome compares.
 
 ### MS-5 -- peer-link aux channel
 
-Status: open. The aux route, SendAux, and TakeAux (2.4), loopback tests, and
-an isolation test (the peer link names no select token). Review required:
-it edits a lockstep module and the wire routing.
+Status: done (a0f695012). The aux route, SendAux, TakeAux, AuxCount, and
+DroppedAuxCount (2.4), loopback tests, and isolation checks (frozen aux
+widths; the peer link names no select token). Review outcome: nothing
+blocking.
+- c74f6926b (MS-5b): tests of Open's aux reset and of aux retention across
+  a terminal transition; lease, allocation, and higher-layer token bans on
+  the peer link; the Poll terminal-mode doc corrected (no drain).
 
-### MS-6 -- flow SELECT and SELECT_RESULT
+### MS-6 and MS-7 -- flow SELECT and SELECT_RESULT, netplay integration
 
-Status: open. The appended screens, actions, observation field, and timings
-(2.5), with unit tests of every new transition. Reviewed with MS-7.
-
-### MS-7 -- netplay integration
-
-Status: open. The adapter's select session, nonce, relink, and launch
-timeout (2.6), with loopback tests: a full select to READY on the resolved
-config, a disagreement draw identical on both sides, an idle auto-pick,
-simultaneous locks on the same character, silence, and a rematch through
-select with the previous picks pre-focused and a new seed. Review
-required.
+Status: done, landed together in 5f869c165: with MATCH_FOUND -> SELECT in
+the flow, every netplay path to START_RACE was broken until the adapter
+drove the session. The appended screens, actions, observation field, and
+timings (2.5), with unit tests of every new transition; the adapter's
+select session, nonce, relink, and launch timeout (2.6), with loopback
+tests (scripted, idle, same-tick, silence, launch-timeout, blocked-relink,
+and rematch selects, and a golden nonce). Review outcome: nothing
+blocking.
+- 319f30201 (MS-7b): AgreedConfig on RESULTS only after a started race;
+  BEGIN_REMATCH derives from lastReadyConfig; RELINK builds on the
+  session's own base.
+- a95623e4e (MS-8b): a pre-race LINK_ERROR returns CLOSE_LINK; the adapter
+  reads the session only through accessors (new _Base, _HumanCount,
+  _LocalHuman, _PeerLockedCharacterMask).
 
 ### MS-8 -- host, preview, options, entropy, logging
 
-Status: open. The host view select fields and GetAgreedMatch, the five
-previews, the options' selectEntropy, main.c's entropy read, and the hook's
-Platform_Log of the resolved match (2.7). Review required: it touches the
-game loop.
+Status: done (eb5db1c29). The host view select fields and GetAgreedMatch,
+the five previews, the options' selectEntropy, main.c's entropy read, the
+host epoch mix, and the hook's Platform_Log of the agreed match (2.7).
+Review outcome: nothing blocking.
+- a95623e4e (MS-8b): host-named select and role constants with static
+  asserts, and offsetof checks on every select-view field; the hook uses
+  the host role constants, and no MainArcadeLink game file names the
+  match-config roles.
 
 ### MS-9 -- select screens
 
-Status: open. Layout and drawer for the five select screens (2.8), with
-layout unit tests and a visual check. No review required unless the visual
-check finds a problem.
+Status: done (949cbfeaa). Layout and drawer for the five select screens
+(2.8), with layout unit tests, isolation checks of the order lists, font
+advances, glyphs, and colour ordinals against the retail tables, and a
+visual check. No review required.
 
 ### MS-10 -- preview captures
 
-Status: open. The capture checker, the preview script, and the
-arcade_link_preview_render ctest cover the five new previews;
+Status: done (c345fc149). The capture checker, the preview script, and the
+arcade_link_preview_render ctest cover the five new previews (17 in all);
 alpha-stripped review PNGs checked. No review required.
+- 52992d383 (MS-10b): the host-view -> layout-input mapping moved into the
+  layout library as MainArcadeLinkLayout_InputFromHostView, and a
+  cross-seam ctest (main_arcade_link_view_layout_unit) proves every
+  preview and live host view passes the layout.
 
 ### MS-11 -- docs close-out
 
-Status: open. This document's statuses, docs/HANDOFF.md, and the
-docs/GAME_LOOP_UI_MILESTONE.md UX-8 and section 2.2 cross-references. No
-review required.
+Status: done (this change). This document's statuses and design sections,
+docs/HANDOFF.md, the docs/GAME_LOOP_UI_MILESTONE.md cross-references, and
+the docs/LOBBY_MILESTONE.md peer-link note. No review required.
 
 ## 7. Risks and open questions
 
@@ -555,3 +754,24 @@ review required.
    run remains the step 6/7 gate.
 6. The capture checker cannot tell select screens with a similar layout
    apart beyond their band structure (like GAME_LOOP_UI risk 14).
+7. Asymmetric relink completion (a Task 7 gate item). Each side's relink
+   handshake completes independently, so one cabinet can reach READY and
+   START_RACE on the resolved config while the other times out to LINK
+   ERROR. Today START_RACE aborts to the title, so no race runs, but Task 7
+   must handle it: a lone racer would stall into PEER TIMEOUT, and a later
+   rematch may be rejected.
+8. A stale select record from an earlier select on the same base is not
+   filtered by baseDigest (2.3). It fails safe (NONCE_CHANGED,
+   DIGEST_MISMATCH, or PEER_SILENT), never a wrong agreement, and the aux
+   inbox resets and the BEGIN_SELECT discard keep it from arriving.
+9. One-frame blank: on the single tick where the select session fails to
+   start, the flow is on SELECT with an inactive select view, the layout
+   rejects it, and nothing is drawn before LINK ERROR on the next tick.
+10. MAIN_ARCADE_LINK_SELECT_TICKS_PER_SECOND (30) hard-codes the 30 Hz loop
+    for the countdown, like every tick count here (GAME_LOOP_UI risk 3).
+11. The title scene behind the translucent panel differs between parallel
+    and one-at-a-time preview renders; the capture checker was calibrated
+    to pass both (native_capture_check.c records the ranges).
+12. Until Task 7, a live `--arcade-link` run shows up to about 60 s of
+    select (three 20 s items), the 2 s result, and the relink before
+    START_RACE logs the agreed match and returns to the title.

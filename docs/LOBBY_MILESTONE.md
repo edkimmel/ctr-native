@@ -132,6 +132,12 @@ separate caller-invoked retransmit call on whatever cadence the caller tick
 loop decides), consistent with the rest of the tick-driven determinism
 stack.
 
+The peer link also routes datagrams of exactly 64 bytes from the peer,
+while RUNNING, to a bounded aux inbox that higher layers drain with
+NativeLockstepPeerLink_TakeAux (they send with _SendAux); the match-select
+phase uses it (docs/MATCH_SELECT_MILESTONE.md section 2.4). Handshake and
+bundle routing are unchanged.
+
 ### 2.4 Lobby / waiting-flow state layer: native_lobby_state
 
 A new leaf library, platform/native_lobby_state.c /

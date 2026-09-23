@@ -110,9 +110,11 @@ Transitions:
   RESTART_LOBBY (no automatic retry, matching native_lobby_state's own rule
   of never auto-retrying a rejection); BACK in any status moves to EXIT and
   returns CLOSE_LINK.
-- MATCH_FOUND: input ignored; after matchFoundHoldTicks moves to RACING and
-  returns START_RACE; any lobby status other than READY during the hold (not
-  only LOST) moves back to LOBBY and returns RESTART_LOBBY.
+- MATCH_FOUND: input ignored; after matchFoundHoldTicks moves to SELECT and
+  returns BEGIN_SELECT (match select, below); any lobby status other than
+  READY during the hold (not only LOST) moves back to LOBBY and returns
+  RESTART_LOBBY. MATCH_FOUND never starts a race: the race starts from
+  SELECT_RESULT, with START_RACE on READY of the relink.
 - RACING: input ignored (race input belongs to the game). A link-failure
   reason moves to RESULTS with that reason; otherwise a LOST lobby status
   moves to RESULTS with LINK_ERROR; otherwise raceFinished moves to RESULTS
@@ -133,6 +135,15 @@ Transitions:
   than retrying.
 - EXIT: after exitHoldTicks (opponentLeftNoticeTicks when the reason is
   OPPONENT_LEFT) moves to OFF and returns RETURN_TO_TITLE.
+
+Match select (docs/MATCH_SELECT_MILESTONE.md section 2.5) appends the
+screens SELECT and SELECT_RESULT, the actions BEGIN_SELECT and RELINK, the
+observation's selectStatus, and the timings selectResultHoldTicks (60) and
+launchTimeoutTicks (300); existing values are unchanged. SELECT_RESULT
+returns RELINK after its hold, and READY of the relinked lobby moves to
+RACING with START_RACE. A pre-race failure from SELECT or SELECT_RESULT
+moves to RESULTS with LINK_ERROR and returns CLOSE_LINK. That document has
+the screens, actions, and timings in full.
 
 ### 2.3 Host adapter: native_arcade_netplay
 
@@ -178,9 +189,13 @@ NativeLockstepRematch_BuildConfig and re-run the ordinary handshake on it.
 Two peers that both chose REMATCH therefore propose byte-identical configs
 and reach READY; a peer that chose EXIT has closed its socket, so the other
 side's handshake goes unanswered until rematchWaitTimeoutTicks and it shows
-OPPONENT LEFT. Every rematch opens a brand-new peer link and session, per
-the native_lockstep_rematch.h contract; nothing from a finished, diverged,
-or faulted session is reused. If the seed or the rematch config cannot be
+OPPONENT LEFT. With match select, the previous config is lastReadyConfig
+(the proposal of the most recent lobby that reached READY), and the
+rematch config is the base of the next select rather than the next race
+config (docs/MATCH_SELECT_MILESTONE.md section 2.6). Every rematch opens a
+brand-new peer link and session, per the native_lockstep_rematch.h
+contract; nothing from a finished, diverged, or faulted session is
+reused. If the seed or the rematch config cannot be
 built (defensive only), the adapter begins no lobby and refuses every
 RESTART_LOBBY until the rematch wait times out to OPPONENT LEFT; it never
 proposes the old config (and old seed) again. Enter, Shutdown, and
@@ -246,17 +261,23 @@ replay, and canonical-state behaviour is unchanged by default:
 - `--arcade-link cab1|cab2`, `--arcade-link-port <port>`, and one or more
   `--arcade-link-peer <ipv4>:<port>` enable the adapter. Like the display
   options, these are host-local launch configuration, not match identity.
-- The race fixture both cabinets propose is fixed by the build (UX-8), not
-  chosen per cabinet in a menu, because the handshake is validate-and-reject,
-  not negotiation (docs/LOBBY_MILESTONE.md section 2.2).
+- The fixture both cabinets propose to the first lobby is fixed by the
+  build, not chosen per cabinet in a menu, because the handshake is
+  validate-and-reject, not negotiation (docs/LOBBY_MILESTONE.md section
+  2.2). It is the lobby base config; the race config is the one match
+  select resolves from it and re-validates with a relink handshake
+  (docs/MATCH_SELECT_MILESTONE.md).
 - `--arcade-link-preview <screen>` (internal builds only) drives the flow
   through scripted observations with no socket, so every screen can be
   captured with the existing `--capture-frame` and `--exit-after-frame`
   options for operator review. The screen names are `title`, `lobby`,
   `lobby-connecting`, `lobby-rejected`, `match-found`, `results`,
   `results-timeout`, `results-desync`, `results-link-error`, `rematch`,
-  `exit`, and `exit-opponent-left`. A preview is exclusive with
-  `--arcade-link`, and a port or peer without `--arcade-link` is an error.
+  `exit`, and `exit-opponent-left`, and the five match-select previews
+  `select-character`, `select-track`, `select-laps`, `select-wait`, and
+  `select-result` (docs/MATCH_SELECT_MILESTONE.md section 2.7). A preview
+  is exclusive with `--arcade-link`, and a port or peer without
+  `--arcade-link` is an error.
 
 Exact command lines (Task 6b-2), run from the build directory:
 
@@ -346,7 +367,9 @@ outputs, ticks the host, and draws:
   already on its way); NativeArcadeLinkHost_Tick runs every owned frame with
   player 0's held buttons mapped to the logical menu bits (BTN_CROSS_one and
   BTN_SQUARE_one, not the combined bits). A button already held when the
-  layer takes the frame is not a press. START_RACE logs (Platform_Log) that
+  layer takes the frame is not a press. START_RACE first logs the agreed
+  match ("arcade link: agreed match track .. laps .. seed 0x.. slots ..",
+  from NativeArcadeLinkHost_GetAgreedMatch), then logs (Platform_Log) that
   the networked race launch is not wired yet (Task 7) and calls
   NativeArcadeLinkHost_AbortToTitle, back to the attract screen; if that
   falls back to mode OFF (the link cannot reopen), the hook gives the retail
@@ -417,6 +440,14 @@ same build and disc build byte-identical fixtures; different builds or discs
 build configs the handshake rejects with CONFIG_MISMATCH, which is the
 intended "LINK REFUSED: SETTINGS DO NOT MATCH" path.
 
+The fixture is the lobby base config of a first match, not the race
+config. Match select starts its cursors on the fixture's characters,
+track, and laps, and the race runs on the config it resolves: the picked
+track, laps, and characters, the retail 2P bot set, and a masterSeed
+derived from both cabinets' nonces. UX-8's fixed first seed is therefore
+superseded by SEL-12 (docs/MATCH_SELECT_MILESTONE.md section 4); the
+fixture seed "CTRNARC1" seeds only the lobby base.
+
 ### 2.6 Host glue
 
 platform/native_arcade_link_host.c and include/platform/native_arcade_link_host.h
@@ -426,9 +457,13 @@ socket) unless NativeArcadeLinkHost_Configure is given enabled or preview
 options and, for a link, the caller's identity. Game code calls only
 Configure, Mode, ScreenActive, Enter, Tick (held NATIVE_ARCADE_MENU_BUTTON_*
 bits and a race-finished flag in, a flow action out), GetView (a flat view
-with the local cabinet, whether the results rows accept input, and whether
-the title attract layout applies), AbortToTitle (close the link and return
-to screen OFF when START_RACE cannot be honoured yet), and Shutdown. Its
+with the local cabinet, whether the results rows accept input, whether the
+title attract layout applies, and the select view of the match-select
+screens), GetAgreedMatch (track, laps, seed, and slot roles and characters
+of the agreed race config, for the START_RACE log), AbortToTitle (close
+the link and return to screen OFF when START_RACE cannot be honoured yet),
+and Shutdown. docs/MATCH_SELECT_MILESTONE.md section 2.7 lists the select
+view fields and the host value names that go with them. Its
 header includes no adapter header and names no lockstep, failure-handling,
 or lobby token, which tests/native_arcade_link_host_isolation_test.cmake
 enforces.
@@ -463,8 +498,11 @@ for the operator to confirm or change after seeing the built flow.
    default focus on the results screen. The rematch wait times out after
    rematchWaitTimeoutTicks = 300 (10 s) and shows OPPONENT LEFT for
    opponentLeftNoticeTicks = 90 (3 s).
-8. UX-8: One fixed fixture per build (track, laps, characters, bot
-   difficulty), not a per-cabinet selection menu. The fixture is track 3
+8. UX-8 (superseded by match select, docs/MATCH_SELECT_MILESTONE.md; the
+   fixture below is now only the lobby base config, and SEL-12 replaces
+   the fixed first seed): One fixed fixture per build (track, laps,
+   characters, bot difficulty), not a per-cabinet selection menu. The
+   fixture is track 3
    (CRASH_COVE), 3 laps, a 30/1 tick rate, CAB1 Crash (character 0), CAB2
    Cortex (character 1), bots on characters 2..5, and bot difficulty 0. The
    first match always uses the fixed seed 0x4354524e41524331 ("CTRNARC1");
@@ -498,8 +536,9 @@ shows most of the screen, including the whole panel rectangle, as white or
 transparent with only fragments of the title art. That is a viewing
 artefact, not a rendering bug; review the RGB only.
 
-The recommended path is one command. It renders all 12 previews plus the
-default path in parallel (about 45 seconds wall time), captures frame 1320 of
+The recommended path is one command. It renders all 17 previews (the 12
+screens of section 2.4 and the five match-select screens) plus the default
+path in parallel (about 45 seconds wall time), captures frame 1320 of
 each, checks each capture with the RGB checker, and with -Png writes
 alpha-stripped review PNGs. -OutputDirectory must be an absolute path:
 
@@ -509,7 +548,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\arcade-link-preview-ch
 
 Open the `<screen>-review.png` files in debug\captures. Each preview should
 show a dark translucent panel with a grey frame behind the text, the section
-2.4 strings, and, on the four results screens, the REMATCH highlight.
+2.4 strings, and, on the four results screens, the REMATCH highlight. The
+five select previews show the widened select panel and the screens of
+docs/MATCH_SELECT_MILESTONE.md section 2.8, with the cursor highlight on
+select-character, select-track, and select-laps.
 `default-review.png` is the default path (no arcade-link option) at the same
 frame, showing the retail title and main-menu box, for comparison; the
 checker must reject it. The script exits 0 on pass, 1 on fail, and 77 (skip)
@@ -538,6 +580,11 @@ build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview results-link-error --c
 build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview rematch --capture-frame 1320=debug\captures\link-rematch.bmp --exit-after-frame 1330
 build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview exit --capture-frame 1320=debug\captures\link-exit.bmp --exit-after-frame 1330
 build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview exit-opponent-left --capture-frame 1320=debug\captures\link-exit-opponent-left.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview select-character --capture-frame 1320=debug\captures\link-select-character.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview select-track --capture-frame 1320=debug\captures\link-select-track.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview select-laps --capture-frame 1320=debug\captures\link-select-laps.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview select-wait --capture-frame 1320=debug\captures\link-select-wait.bmp --exit-after-frame 1330
+build-msvc-x86\Debug\ctr_native.exe --arcade-link-preview select-result --capture-frame 1320=debug\captures\link-select-result.bmp --exit-after-frame 1330
 ```
 
 To try the live lobby on one machine, start two instances of the same build
@@ -556,8 +603,10 @@ focus its window, and if a connected pad has claimed player 1 and moved the
 keyboard off it, press F4 (internal builds) until the log reports "Keyboard
 assigned to player 1". The default keys are Enter for START, C for CROSS,
 and Z for TRIANGLE. Once both have entered the lobby, each should show
-OPPONENT FOUND and then return to the title, because START_RACE aborts to
-the title until Task 7.
+OPPONENT FOUND, then the match-select screens (each item auto-locks after
+20 s, so an idle run takes about a minute), MATCH SET, and after the
+relink return to the title, because START_RACE logs the agreed match and
+aborts to the title until Task 7.
 
 ## 4. Constraints
 
@@ -582,8 +631,10 @@ the title until Task 7.
 ## 5. Task list
 
 Baseline before this milestone: 91 tests, 100% passing (commit 52976808c).
-Current state: 111 tests, 100% passing. Tasks 1-6b-6 are done; Tasks 7 and 8
-are gated (see their entries); this document stays open until they land.
+Current state: 111 tests, 100% passing, at the close of Tasks 1-6b-6; 119
+after the match-select milestone (docs/MATCH_SELECT_MILESTONE.md). Tasks
+1-6b-6 are done; Tasks 7 and 8 are gated (see their entries); this
+document stays open until they land.
 
 ### Task 1 -- this document
 
@@ -828,7 +879,14 @@ replay, canonical-state, or lease change.
 
 Status: gated on integration step 3 (live two-human-plus-bot roster). On
 START_RACE, configure and load the race described by the agreed
-NativeMatchConfigV1 through the arcade roster and bot setup. Task 7 must
+NativeMatchConfigV1 through the arcade roster and bot setup. The agreed
+config is the one match select resolved and the relink handshake
+validated (docs/MATCH_SELECT_MILESTONE.md sections 2.6 and 7): track,
+laps, per-slot characters, the retail 2P AI set, and the derived seed.
+Task 7 must also handle asymmetric relink completion: each side's relink
+handshake completes independently, so one cabinet can reach START_RACE
+while the other times out to LINK ERROR; a lone racer would stall into
+PEER TIMEOUT, and a later rematch may be rejected. Task 7 must
 reset gameMode2 cheat bits from the fixture: retail cheat entry stays
 possible during the title intro before the menu-ready frame, which the layer
 leaves to retail so the intro skip keeps working (section 2.5, residual
@@ -854,8 +912,8 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
 ## 6. Risks and open questions
 
 1. Tasks 7 and 8 are gated on step-3 roster wiring and live V4 projection.
-   Until then the live hook can reach LOBBY, MATCH_FOUND, and the preview
-   screens, but not a real networked race.
+   Until then the live hook can reach LOBBY, MATCH_FOUND, the match-select
+   screens, and the preview screens, but not a real networked race.
 2. Stale bundles from a just-finished session that arrive after a rematch
    link has opened on the same port would be staged by the peer link and
    fault the new session on its match identity. Both peers stop sending
@@ -901,10 +959,13 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
     the dark panel. On the results screens the EXIT row overlaps the title
     art's CTR logo and TM mark behind the translucent panel; it is still
     legible.
-14. The preview capture checker cannot tell apart screens that share a
-    layout: the four results screens, exit and exit-opponent-left, and lobby
-    and lobby-connecting. It does not check title wording or colour. Its
-    thresholds were calibrated on 800x600 nearest-filter captures only.
+14. The preview capture checker covers all 17 preview screens, including
+    the five match-select screens. Its limits are unchanged in kind: it
+    cannot tell apart screens that share a layout (the four results
+    screens, exit and exit-opponent-left, lobby and lobby-connecting, and
+    select screens beyond their band structure). It does not check title
+    wording or colour. Its thresholds were calibrated on 800x600
+    nearest-filter captures only.
 15. Every game run, including each run of the preview check script, writes
     `Crash Team Racing.log` into the repository root, because main.c changes
     into the base directory. The file is gitignored.
