@@ -278,8 +278,10 @@ int MainArcadeRaceSetupCore_OnFinalizeInitBegin(struct MainArcadeRaceSetupCore *
 	}
 	for (uint32_t slot = 0; slot < MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT; slot++)
 	{
-		/* characterIDs[2..5] are the bots as LOAD_Robots2P wrote them; the
-		 * plan holds exactly those (RS-4). Slots 6 and 7 are not owned. */
+		/* The owned slots: the humans, and the bots as the load wrote them,
+		 * which the plan holds exactly. ARCADE_TWO_CAB: characterIDs[2..5]
+		 * by LOAD_Robots2P (RS-4), slots 6 and 7 not owned. ARCADE_ONE_CAB:
+		 * characterIDs[1..7] by LOAD_Robots1P (RS-20), every slot owned. */
 		if (((((uint32_t)core->plan.characterWriteMask >> slot) & 1u) != 0u) &&
 		    (view->fields.characterIDs[slot] != core->plan.characterIDs[slot]))
 		{

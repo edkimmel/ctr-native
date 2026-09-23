@@ -51,8 +51,11 @@
  * no levelID target: the load request (REQUEST_LOAD) carries the plan's level
  * and LOAD_LevelFile writes it. The ops are:
  * - Launch: GAME_MODE1, GAME_MODE2, ARCADE_DIFFICULTY, BOOL_DEMO_MODE,
- *   NUM_LAPS, NUM_PLYR_NEXT_GAME, CHARACTER_ID 0..7 (slots 6 and 7 with their
- *   observed values), then REQUEST_LOAD.
+ *   NUM_LAPS, NUM_PLYR_NEXT_GAME, CHARACTER_ID 0..7 (each slot of the plan's
+ *   characterWriteMask with the plan's value, every other slot with its
+ *   observed value: ARCADE_TWO_CAB writes 0..5 and rewrites 6 and 7 as
+ *   observed, ARCADE_ONE_CAB writes all eight), then REQUEST_LOAD. The count
+ *   is the same for both profiles (LAUNCH_OP_COUNT, 15).
  * - OnFinalizeInitBegin (LAUNCHED): GAME_MODE1, GAME_MODE2, ARCADE_DIFFICULTY,
  *   BOOL_DEMO_MODE (the re-apply), then TIMER and FRAME_TIMER_CONFETTI (the
  *   pinned boot-relative counters, RS-17, see "Boot-relative counters"
@@ -81,7 +84,9 @@
  *   with LEVEL_MISMATCH;
  * - nothing written at Launch is trusted at race init: the pre-drivers hook
  *   re-verifies every field the load consumed (levelID, numLaps,
- *   numPlyrCurrGame, characterIDs[0..5]; LOAD_FIELDS_MISMATCH) and re-applies
+ *   numPlyrCurrGame, and the characterIDs of the plan's characterWriteMask:
+ *   0..5 for ARCADE_TWO_CAB, 0..7 for ARCADE_ONE_CAB; LOAD_FIELDS_MISMATCH)
+ *   and re-applies
  *   the mode words, arcadeDifficulty, and boolDemoMode after the demo race
  *   ended, so nothing the demo race did in those frames reaches the race;
  * - the demo race's drivers were spawned from its own characterIDs at its own
@@ -222,7 +227,7 @@ enum MainArcadeRaceSetupFailure
 	MAIN_ARCADE_RACE_SETUP_FAILURE_BANK,                 /* the bank could not be derived */
 	MAIN_ARCADE_RACE_SETUP_FAILURE_PRECONDITION,         /* a Launch precondition failed */
 	MAIN_ARCADE_RACE_SETUP_FAILURE_LEVEL_MISMATCH,       /* the loaded levelID is not the plan's */
-	MAIN_ARCADE_RACE_SETUP_FAILURE_LOAD_FIELDS_MISMATCH, /* numLaps, numPlyrCurrGame, or characterIDs[0..5] */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_LOAD_FIELDS_MISMATCH, /* numLaps, numPlyrCurrGame, or an owned characterIDs slot */
 	MAIN_ARCADE_RACE_SETUP_FAILURE_SEED,                 /* the retail seeds could not be derived */
 	MAIN_ARCADE_RACE_SETUP_FAILURE_FACTS,                /* the live facts could not be read or built */
 	MAIN_ARCADE_RACE_SETUP_FAILURE_ROSTER,               /* the roster plan or its validation failed */
@@ -428,9 +433,11 @@ int MainArcadeRaceSetupCore_HookReadsView(const struct MainArcadeRaceSetupCore *
 
 /*
  * The pre-drivers hook. In LAUNCHED with a tracker: verifies levelID
- * (LEVEL_MISMATCH), numLaps and numPlyrCurrGame (LOAD_FIELDS_MISMATCH), and
- * characterIDs[i] for every bit i of the plan's characterWriteMask
- * (LOAD_FIELDS_MISMATCH); re-applies the plan to the view's fields (PLAN);
+ * (LEVEL_MISMATCH), numLaps and numPlyrCurrGame against the plan's numLaps
+ * and numPlyrNextGame (2 ARCADE_TWO_CAB, 1 ARCADE_ONE_CAB;
+ * LOAD_FIELDS_MISMATCH), and characterIDs[i] for every bit i of the plan's
+ * characterWriteMask (LOAD_FIELDS_MISMATCH: slots 0..5 for ARCADE_TWO_CAB,
+ * 0..7 for ARCADE_ONE_CAB); re-applies the plan to the view's fields (PLAN);
  * derives the retail seeds from a copy of the bank in scratch (SEED); only then
  * emits its ops (the mode fields, the pinned counters, the seeds), keeps the
  * post-seed bank, and moves to SEEDED. Every failure writes nothing. Returns 1
@@ -446,7 +453,9 @@ int MainArcadeRaceSetupCore_OnFinalizeInitBegin(struct MainArcadeRaceSetupCore *
  * (FACTS); MainArcadeRaceSetupFacts_Build (FACTS); MainArcadeRoster_BuildPlan
  * and _ValidateNativeFacts (ROSTER); MainArcadeBotSetup_Plan on the post-seed
  * bank (BOT_SETUP, with botSetupResult). On success it keeps the bot setup
- * plan, the setup facts, and the post-setup bank, and moves to VALIDATED.
+ * plan, the setup facts, and the post-setup bank (MATCH_SETUP drawn 5 times
+ * for the seeds plus once per bot: 9 for ARCADE_TWO_CAB, 12 for
+ * ARCADE_ONE_CAB, RS-22), and moves to VALIDATED.
  * It never writes a retail field. Returns 1 when it moved to VALIDATED.
  */
 int MainArcadeRaceSetupCore_OnDriversInitialized(struct MainArcadeRaceSetupCore *core,

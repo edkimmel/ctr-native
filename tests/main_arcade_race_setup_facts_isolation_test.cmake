@@ -19,7 +19,12 @@
 #     (game/MAIN/MainArcadeRaceSetup.{c,h}, R-5b) and its decision core
 #     (game/MAIN/MainArcadeRaceSetupCore.{c,h}, R-5c) names
 #     MainArcadeRaceSetupFacts, it is not in game/game_unity.h, and only its
-#     unit test, the core library, and ctr_native (for the adapter) link it.
+#     unit test, the core library, and ctr_native (for the adapter) link it;
+#  7. the config is used only for its profile (the header's promise): in the
+#     module source, comments stripped, every `config->` access is
+#     `config->profile`, and the identifier `config` appears nowhere else but
+#     its parameter declaration and its NULL check (so the config is neither
+#     passed on nor aliased).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "race setup facts isolation")
@@ -98,6 +103,61 @@ function(ctr_mutable_statics code out_var)
     endforeach()
     set(${out_var} "${violations}" PARENT_SCOPE)
 endfunction()
+
+# Sets out_var to "" when code (comments stripped) uses the identifier
+# `config` only as its parameter declaration "const struct NativeMatchConfigV1
+# *config", "config == NULL", and "config->profile" (at least one), else to a
+# description of the violation.
+function(ctr_config_profile_only code out_var)
+    set(violation "")
+    string(REGEX MATCHALL "config[ \t\r\n]*->[ \t\r\n]*[A-Za-z_][A-Za-z0-9_]*" accesses "${code}")
+    set(profile_reads 0)
+    foreach(access IN LISTS accesses)
+        string(REGEX REPLACE "^config[ \t\r\n]*->[ \t\r\n]*" "" field "${access}")
+        if(field STREQUAL "profile")
+            math(EXPR profile_reads "${profile_reads} + 1")
+        else()
+            string(APPEND violation "config->${field} ")
+        endif()
+    endforeach()
+    string(REGEX MATCHALL "[A-Za-z_][A-Za-z0-9_]*" identifiers "${code}")
+    set(config_tokens 0)
+    foreach(identifier IN LISTS identifiers)
+        if(identifier STREQUAL "config")
+            math(EXPR config_tokens "${config_tokens} + 1")
+        endif()
+    endforeach()
+    string(REGEX MATCHALL "config[ \t\r\n]*==[ \t\r\n]*NULL" null_checks "${code}")
+    list(LENGTH null_checks null_check_count)
+    string(REGEX MATCHALL "const[ \t\r\n]+struct[ \t\r\n]+NativeMatchConfigV1[ \t\r\n]*\\*[ \t\r\n]*config[ \t\r\n]*[,)]" declarations "${code}")
+    list(LENGTH declarations declaration_count)
+    math(EXPR allowed "${profile_reads} + ${null_check_count} + ${declaration_count}")
+    if(profile_reads EQUAL 0)
+        string(APPEND violation "no config->profile read ")
+    endif()
+    if(NOT declaration_count EQUAL 1)
+        string(APPEND violation "${declaration_count} config parameter declarations ")
+    endif()
+    if(NOT config_tokens EQUAL allowed)
+        string(APPEND violation "${config_tokens} uses of config, only ${allowed} of them the declaration, NULL check, or config->profile ")
+    endif()
+    set(${out_var} "${violation}" PARENT_SCOPE)
+endfunction()
+
+# The config scan must itself work.
+set(config_probe_good "int F(const struct NativeMatchConfigV1 *config, int x)\n{\n\tif (config == NULL) { return 0; }\n\treturn (int)config->profile + x;\n}\n")
+ctr_config_profile_only("${config_probe_good}" config_probe_result)
+if(NOT config_probe_result STREQUAL "")
+    message(FATAL_ERROR "${prefix}: the config scan rejects a profile-only use ('${config_probe_result}')")
+endif()
+foreach(config_probe_bad_line IN ITEMS "\treturn config->slots[0].characterID;\n" "\tG(config);\n"
+        "\tconst struct NativeMatchConfigV1 *alias = config;\n" "\treturn (*config).lapCount;\n"
+        "\treturn config -> trackID;\n")
+    ctr_config_profile_only("${config_probe_good}${config_probe_bad_line}" config_probe_result)
+    if(config_probe_result STREQUAL "")
+        message(FATAL_ERROR "${prefix}: the config scan accepts '${config_probe_bad_line}'")
+    endif()
+endforeach()
 
 # The mutable-static scan must itself work.
 ctr_mutable_statics("static int counter;\nstatic uint8_t buffer[4] = {0};\nstatic const uint8_t *cursor;\nstatic int (*hook)(void);\nvoid F(void) { static int calls; }\n" probe_bad)
@@ -305,4 +365,12 @@ foreach(link_call IN LISTS all_link_calls)
 endforeach()
 if(NOT linked_by_test)
     message(FATAL_ERROR "${prefix}: main_arcade_race_setup_facts_test must link ${target}")
+endif()
+
+# 7. The config is used only for its profile.
+ctr_read_source("${module_source}" facts_source)
+ctr_strip_comments("${facts_source}" facts_code)
+ctr_config_profile_only("${facts_code}" config_violation)
+if(NOT config_violation STREQUAL "")
+    message(FATAL_ERROR "${prefix}: ${module_source} must use the config only for config->profile (${config_violation})")
 endif()

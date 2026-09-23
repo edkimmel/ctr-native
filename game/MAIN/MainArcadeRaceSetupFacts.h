@@ -9,7 +9,8 @@
 #include <stdint.h>
 
 /*
- * Race setup facts builder (docs/ROSTER_MILESTONE.md section 3.2, task R-5a).
+ * Race setup facts builder (docs/ROSTER_MILESTONE.md section 3.2, task R-5a;
+ * ARCADE_TWO_CAB and, since OC-2, ARCADE_ONE_CAB).
  * Turns a pointer-free snapshot of the retail race, taken after
  * MainInit_Drivers, into the observed facts MainArcadeRoster_ValidateNativeFacts
  * and MainArcadeBotSetup_Plan validate against the plan. Not in
@@ -27,13 +28,13 @@
  * ---------------------------------------------------------------------------
  * Audit (R-5a): what the retail source holds after MainInit_Drivers in a
  * 2-human arcade race (game/MAIN/MainInit.c:288-406), drivers 0..1 humans,
- * 2..5 bots, 6..7 absent.
+ * 2..5 bots, 6..7 absent (the 1-human race is the "1P" paragraph at the end).
  *
  * Order inside MainInit_Drivers: drivers[0..7] = NULL (:294-297);
  * numBotsNextGame = 0 (:299); BOTS_Adv_AdjustDifficulty (:303, skipped only
  * in a cutscene, the adventure arena, or the main menu); humans
  * drivers[i] = VehBirth_Player(i) for i = numPlyrCurrGame-1 .. 0 (:316-319);
- * numDrivers = 6 for 2 humans (:359); BOTS_Driver_Init(i) for i = 2..5 (:364-367).
+ * numDrivers = 6 for 2 humans (:359); BOTS_Driver_Init(i) for i = 2..5 (:363-366).
  *
  * kartSpawnOrderArray (include/regionsEXE.h:3113, char[8]): all 8 entries are
  * written this race init by BOTS_Adv_AdjustDifficulty through
@@ -72,8 +73,8 @@
  *
  * None of the three arrays is written again between MainInit_Drivers and
  * the first race tick (other writers: race end MainGameEnd.c:532, adventure
- * warp pads AH_WarpPad.c:508-552). Entries 6..7 are written too but belong
- * to no driver.
+ * warp pads AH_WarpPad.c:508-552). In a 2P race, entries 6..7 are written too
+ * but belong to no driver.
  *
  * driverID: VehBirth_NonGhost sets driver->driverID = playerIndex
  * (game/Vehicle/VehBirth.c:835), called with the slot by VehBirth_Player
@@ -94,6 +95,22 @@
  * that every present slot, humans included, has spawnOrder < 8,
  * navPathIndex < 3, accelerationOrder < 8, and unique spawn and acceleration
  * orders all hold for retail values; no validator rule is corrected.
+ *
+ * 1P (ARCADE_ONE_CAB, OC-2): a 1-human arcade race, driver 0 human, 1..7
+ * bots, all 8 present. MainInit_Drivers gives numPlyrCurrGame 1 in arcade
+ * numDrivers = 8 (game/MAIN/MainInit.c:352-355) and calls BOTS_Driver_Init(i)
+ * for i = 1..7 (:363-366, the loop from numPlyrCurrGame), after the one human
+ * VehBirth_Player(0) (:316-319). In BOTS_Adv_AdjustDifficulty no VS spawn
+ * copy runs for 1 human (the numPlyrCurrGame == 2 and > 2 branches,
+ * game/BOTS.c:332-339), and the mode chain copies arcade_1/arcade_2 whenever
+ * ADVENTURE_MODE is clear (:357-360): kartSpawnOrderArray is the identity
+ * {0..7} (game/zGlobal_DATA.c:955-956, .arcade_1 = 0x3020100,
+ * .arcade_2 = 0x7060504), as in 2P. driver_pathIndexIDs (:377-380) and
+ * accelerateOrder (:411-414) use the same formulas as 2P, so every entry is
+ * again 0..2 and a permutation of 0..7 respectively, and here every entry
+ * belongs to a present driver. driverID == slot and the ACTION_BOT
+ * recognition hold as above. So the range and uniqueness rules hold for the
+ * 1P retail values too; no validator rule needed a change for ONE_CAB.
  * ---------------------------------------------------------------------------
  */
 
@@ -123,12 +140,14 @@ struct MainArcadeRaceSetupLiveSnapshot
 };
 
 /*
- * Builds the observed facts. The config is used only to reject a profile
- * other than ARCADE_TWO_CAB; nothing is copied from it.
+ * Builds the observed facts. The config is used only for its profile: a
+ * profile other than ARCADE_TWO_CAB or ARCADE_ONE_CAB fails; nothing else is
+ * copied from it.
  *
  * Per slot, from observation: a present non-bot driver in slot 0 is
- * CAB1_HUMAN and in slot 1 CAB2_HUMAN (TWO_CAB maps retail players 0 and 1
- * one to one); a present bot is BOT; a non-bot in any other slot fails.
+ * CAB1_HUMAN and, for ARCADE_TWO_CAB only, in slot 1 CAB2_HUMAN (TWO_CAB maps
+ * retail players 0 and 1 one to one, ONE_CAB maps retail player 0); a present
+ * bot is BOT; a non-bot in any other slot (TWO_CAB: 2..7, ONE_CAB: 1..7) fails.
  * Present drivers are ACTIVE, carry their driverID and characterIDs[slot]
  * (fails unless 0..255), difficulty arcadeDifficulty for bots (fails unless
  * 0..255) and 0 for humans, spawnOrder kartSpawnOrderArray[slot],

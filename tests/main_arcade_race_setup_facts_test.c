@@ -152,6 +152,36 @@ static void BuildFixtureSnapshot(const struct NativeMatchConfigV1 *config, struc
 	BuildRosterInput(race, (int8_t)config->lapCount);
 }
 
+/*
+ * A retail 1P arcade race after MainInit_Drivers (the header's 1P audit):
+ * driver 0 the human, 1..7 bots, all 8 present, characterIDs as the config
+ * (LOAD_Robots1P's result), arcade spawn order 0..7, and the same pathOrder
+ * and accelOrder formulas as BuildFixtureSnapshot (f = 1, s = 0; front
+ * rotation 2, rear rotation 1).
+ */
+static void BuildOneCabSnapshot(const struct NativeMatchConfigV1 *config, struct Race *race)
+{
+	static const int8_t paths[SLOTS] = { 0, 1, 1, 2, 0, 0, 2, 2 };
+	static const uint8_t accel[SLOTS] = { 2, 3, 0, 1, 5, 4, 7, 6 };
+	struct MainArcadeRaceSetupLiveSnapshot *snapshot = &race->snapshot;
+
+	memset(snapshot, 0, sizeof(*snapshot));
+	snapshot->numPlyrCurrGame = (uint8_t)NATIVE_ARCADE_BOT_RULES_1P_HUMAN_COUNT;
+	snapshot->numBotsNextGame = (uint8_t)NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT;
+	for (uint8_t slot = 0; slot < SLOTS; slot++)
+	{
+		snapshot->driverPresent[slot] = 1u;
+		snapshot->driverID[slot] = slot;
+		snapshot->driverIsBot[slot] = (uint8_t)(slot >= NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT);
+		snapshot->characterIDs[slot] = (int16_t)config->slots[slot].characterID;
+		snapshot->kartSpawnOrderArray[slot] = slot;
+		snapshot->driver_pathIndexIDs[slot] = paths[slot];
+		snapshot->accelerateOrder[slot] = accel[slot];
+	}
+	snapshot->arcadeDifficulty = (int32_t)config->slots[NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT].difficulty;
+	BuildRosterInput(race, (int8_t)config->lapCount);
+}
+
 static uint64_t MatchSetupDraws(const struct NativeDeterministicRngBankV1 *bank)
 {
 	for (uint32_t i = 0; i < NATIVE_DETERMINISTIC_RNG_STREAM_COUNT; i++)
@@ -383,8 +413,8 @@ static int TestRejections(void)
 
 	/*
 	 * A well-formed ONE_CAB config over a retail 1P race snapshot (slot 0 human,
-	 * slots 1..7 bots): valid under the bot rules, but the facts builder is
-	 * TWO_CAB-only for now.
+	 * slots 1..7 bots): valid under the bot rules, and the facts builder
+	 * accepts it (OC-2; TestOneCabRace validates it end to end).
 	 */
 	CHECK(BuildOneCab(&config, 2u, NATIVE_ARCADE_BOT_RULES_DIFFICULTY_HARD, &oneCab) == 1);
 	CHECK(NativeMatchConfigV1_Validate(&oneCab) == 1);
@@ -401,6 +431,12 @@ static int TestRejections(void)
 	}
 	race.snapshot.arcadeDifficulty = (int32_t)oneCab.slots[NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT].difficulty;
 	BuildRosterInput(&race, (int8_t)oneCab.lapCount);
+	CHECK(MainArcadeRaceSetupFacts_Build(&oneCab, &race.snapshot, &race.rosterInput, &rosterFacts, &setupFacts) == 1);
+
+	/* A profile the builder has no shape for. */
+	oneCab.profile = 3u;
+	CHECK(ExpectBuildReject(&oneCab, &race) == 0);
+	oneCab.profile = 0u;
 	CHECK(ExpectBuildReject(&oneCab, &race) == 0);
 
 	/* A human in slot 3: no TWO_CAB role. */
@@ -530,10 +566,151 @@ static int TestRejections(void)
 	return 0;
 }
 
+/* A retail 1P race: the facts build, then pass the roster and bot setup validators. */
+static int TestOneCabRace(void)
+{
+	struct NativeMatchConfigV1 twoCab;
+	struct NativeMatchConfigV1 config;
+	struct Race race;
+	struct MainArcadeRosterNativeFacts rosterFacts;
+	struct MainArcadeBotSetupSourceFacts setupFacts;
+	struct MainArcadeRosterNativeFacts again;
+	struct MainArcadeBotSetupSourceFacts setupAgain;
+	struct MainArcadeRosterPlan rosterPlan;
+	struct MainArcadeRosterValidated validated;
+	struct NativeDeterministicRngBankV1 bank;
+	struct NativeDeterministicRngBankV1 after;
+	struct NativeArcadeRetailRngSeedsV1 seeds;
+	struct MainArcadeBotSetupPlan plan;
+
+	CHECK(BuildFixtureRace(&twoCab) == 1);
+	CHECK(BuildOneCab(&twoCab, 0u, NATIVE_ARCADE_BOT_RULES_DIFFICULTY_MEDIUM, &config) == 1);
+	CHECK(NativeArcadeBotRules_ValidateConfigV1(&config) == 1);
+	BuildOneCabSnapshot(&config, &race);
+
+	memset(&rosterFacts, SENTINEL_BYTE, sizeof(rosterFacts));
+	memset(&setupFacts, SENTINEL_BYTE, sizeof(setupFacts));
+	CHECK(MainArcadeRaceSetupFacts_Build(&config, &race.snapshot, &race.rosterInput, &rosterFacts, &setupFacts) == 1);
+
+	/* Exact roster facts: slot 0 CAB1, 1..7 bots at the table difficulty. */
+	CHECK(memcmp(&rosterFacts.rosterInput, &race.rosterInput, sizeof(race.rosterInput)) == 0);
+	CHECK((rosterFacts.numPlyrCurrGame == 1u) && (rosterFacts.numBotsNextGame == 7u) && (rosterFacts.nativeDriverCount == 8u));
+	for (uint8_t slot = 0; slot < SLOTS; slot++)
+	{
+		const struct MainArcadeRosterNativeSlotFacts *observed = &rosterFacts.slots[slot];
+
+		CHECK(rosterFacts.nativeDriverSlots[slot] == slot);
+		CHECK((observed->present == 1u) && (observed->driverID == slot));
+		CHECK(observed->role == config.slots[slot].role);
+		CHECK(observed->role == (slot == 0u ? NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN : NATIVE_MATCH_SLOT_ROLE_BOT));
+		CHECK(observed->initialLifecycle == NATIVE_MATCH_SLOT_LIFECYCLE_ACTIVE);
+		CHECK(observed->characterID == config.slots[slot].characterID);
+		CHECK(observed->characterID == slot); /* human Crash (0), then LOAD_Robots1P's 1..7 */
+		CHECK(observed->difficulty == (slot == 0u ? 0u : 0xa0u));
+	}
+
+	/* Exact setup facts: every slot present. */
+	CHECK(setupFacts.factCount == 8u);
+	for (uint8_t slot = 0; slot < SLOTS; slot++)
+	{
+		const struct MainArcadeBotSetupSourceSlot *fact = &setupFacts.facts[slot];
+
+		CHECK((fact->stableSlot == slot) && (fact->present == 1u) && (fact->nativeDriverSlot == slot));
+		CHECK((fact->role == config.slots[slot].role) && (fact->characterID == config.slots[slot].characterID) &&
+		      (fact->difficulty == config.slots[slot].difficulty));
+		CHECK(fact->spawnOrder == slot);
+		CHECK(fact->navPathIndex == (uint8_t)race.snapshot.driver_pathIndexIDs[slot]);
+		CHECK(fact->accelerationOrder == race.snapshot.accelerateOrder[slot]);
+	}
+
+	/* Deterministic. */
+	CHECK(MainArcadeRaceSetupFacts_Build(&config, &race.snapshot, &race.rosterInput, &again, &setupAgain) == 1);
+	CHECK(memcmp(&again, &rosterFacts, sizeof(again)) == 0);
+	CHECK(memcmp(&setupAgain, &setupFacts, sizeof(setupAgain)) == 0);
+
+	/* The roster and bot setup validators accept them: 7 bots, 12 MATCH_SETUP draws. */
+	CHECK(MainArcadeRoster_BuildPlan(&config, &rosterPlan) == 1);
+	CHECK(MainArcadeRoster_ValidateNativeFacts(&rosterPlan, &config, &rosterFacts, &validated) == 1);
+	CHECK((validated.humanCount == 1u) && (validated.botCount == 7u) && (validated.driverCount == 8u) &&
+	      (validated.presenceMask == 0xffu));
+	CHECK(NativeDeterministicRngBankV1_Init(&bank, config.masterSeed, config.rngDerivationVersion) == 1);
+	CHECK(NativeArcadeBotRules_DeriveRetailSeedsV1(&bank, &seeds) == 1);
+	CHECK(MatchSetupDraws(&bank) == 5u);
+	CHECK(MainArcadeBotSetup_Plan(&config, &rosterPlan, &validated, &setupFacts, &bank, &plan, &after) ==
+	      MAIN_ARCADE_BOT_SETUP_OK);
+	CHECK((plan.botCount == 7u) && (plan.botMask == 0xfeu) && (plan.locked == 1u));
+	CHECK(MatchSetupDraws(&after) == 12u);
+	for (uint8_t slot = 1; slot < SLOTS; slot++)
+	{
+		CHECK(plan.assignments[slot].enabled == 1u);
+		CHECK(plan.assignments[slot].navPathIndex == (uint8_t)race.snapshot.driver_pathIndexIDs[slot]);
+		CHECK(plan.assignments[slot].accelerationOrder == race.snapshot.accelerateOrder[slot]);
+		CHECK(plan.assignments[slot].characterID == config.slots[slot].characterID);
+	}
+	CHECK(plan.assignments[0].enabled == 0u);
+
+	/* Malformed ONE_CAB races. A human in slot 1 or slot 7: no ONE_CAB role. */
+	{
+		struct Race bad;
+
+		bad = race;
+		bad.snapshot.driverIsBot[1] = 0u;
+		bad.snapshot.numPlyrCurrGame = 2u;
+		bad.snapshot.numBotsNextGame = 6u;
+		BuildRosterInput(&bad, (int8_t)config.lapCount);
+		CHECK(ExpectBuildReject(&config, &bad) == 0);
+		bad = race;
+		bad.snapshot.driverIsBot[7] = 0u;
+		bad.snapshot.numPlyrCurrGame = 2u;
+		bad.snapshot.numBotsNextGame = 6u;
+		BuildRosterInput(&bad, (int8_t)config.lapCount);
+		CHECK(ExpectBuildReject(&config, &bad) == 0);
+
+		/* Slot 7 absent (7 drivers): observed, then refused by the roster validator. */
+		bad = race;
+		bad.snapshot.driverPresent[7] = 0u;
+		bad.snapshot.driverIsBot[7] = 0u;
+		bad.snapshot.driverID[7] = 0u;
+		bad.snapshot.numBotsNextGame = 6u;
+		BuildRosterInput(&bad, (int8_t)config.lapCount);
+		CHECK(ExpectRosterReject(&config, &bad) == 0);
+
+		/* A TWO_CAB race (2 humans, 6 drivers) under the ONE_CAB config: a human in slot 1. */
+		BuildFixtureSnapshot(&twoCab, &bad);
+		CHECK(ExpectBuildReject(&config, &bad) == 0);
+
+		/* The ONE_CAB race under a TWO_CAB config: slot 1 is observed as a
+		 * bot, and the roster validator refuses it. */
+		CHECK(MainArcadeRaceSetupFacts_Build(&twoCab, &race.snapshot, &race.rosterInput, &rosterFacts, &setupFacts) == 1);
+		CHECK(rosterFacts.slots[1].role == NATIVE_MATCH_SLOT_ROLE_BOT);
+		CHECK(ExpectRosterReject(&twoCab, &race) == 0);
+
+		/* A bot in slot 0: observed as BOT, refused by the roster validator. */
+		bad = race;
+		bad.snapshot.driverIsBot[0] = 1u;
+		bad.snapshot.numPlyrCurrGame = 0u;
+		bad.snapshot.numBotsNextGame = 8u;
+		BuildRosterInput(&bad, (int8_t)config.lapCount);
+		CHECK(ExpectRosterReject(&config, &bad) == 0);
+
+		/* A bot character other than LOAD_Robots1P's. */
+		bad = race;
+		bad.snapshot.characterIDs[7] = 0;
+		CHECK(ExpectRosterReject(&config, &bad) == 0);
+
+		/* A repeated acceleration order among the eight drivers. */
+		bad = race;
+		bad.snapshot.accelerateOrder[7] = bad.snapshot.accelerateOrder[0];
+		CHECK(ExpectSetupReject(&config, &bad, MAIN_ARCADE_BOT_SETUP_DUPLICATE_ACCELERATION) == 0);
+	}
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestFixtureRace() == 0);
 	CHECK(TestRejections() == 0);
+	CHECK(TestOneCabRace() == 0);
 	puts("main_arcade_race_setup_facts_test: ok");
 	return 0;
 }

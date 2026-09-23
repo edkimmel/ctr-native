@@ -9,10 +9,11 @@
 #include <stdint.h>
 
 /*
- * Race setup pure core (docs/ROSTER_MILESTONE.md section 3.2, task R-4).
- * Turns a validated TWO_CAB NativeMatchConfigV1 into the values of the retail
- * race-defining fields and applies them to a pointer-free mirror of those
- * fields. Not in game/game_unity.h; its one live caller is the race setup
+ * Race setup pure core (docs/ROSTER_MILESTONE.md section 3.2, task R-4; both
+ * profiles since OC-2). Turns a validated ARCADE_TWO_CAB or ARCADE_ONE_CAB
+ * NativeMatchConfigV1 into the values of the retail race-defining fields and
+ * applies them to a pointer-free mirror of those fields. Not in
+ * game/game_unity.h; its one live caller is the race setup
  * decision core (game/MAIN/MainArcadeRaceSetupCore.c, R-5c), on behalf of the
  * R-5b adapter (game/MAIN/MainArcadeRaceSetup.c), which copies the mirror
  * from the retail globals, applies the core's writes, and requests the load
@@ -33,6 +34,9 @@
  * ---------------------------------------------------------------------------
  * Audit (R-4): every gameMode1 and gameMode2 bit on the retail Arcade ->
  * Single Race -> 2 players -> difficulty -> characters -> track -> laps path.
+ * The audit is profile-independent: the retail 1-player path runs the same
+ * menu writes and differs only in numPlyrNextGame (row + 1 = 1, :345), so the
+ * mode masks below serve ARCADE_ONE_CAB unchanged.
  *
  * The retail menu path writes, in order: gameMode1 &= ~(BATTLE_MODE |
  * ADVENTURE_MODE | TIME_TRIAL | ADVENTURE_ARENA | ARCADE_MODE | ADVENTURE_CUP),
@@ -166,9 +170,35 @@
  * MainInit.c:431) before the race reads them, or are never set here.
  *
  * Other race-defining fields on this path:
- * - levelID, numLaps, numPlyrNextGame, arcadeDifficulty, characterIDs[0..5]:
- *   owned (characterIDs[2..5] are rewritten by LOAD_Robots2P,
- *   game/LOAD/LOAD_Assets.c:21-59, with the same values, RS-4).
+ * - levelID, numLaps, numPlyrNextGame, arcadeDifficulty, and the
+ *   characterIDs of the profile's characterWriteMask: owned.
+ *   ARCADE_TWO_CAB owns characterIDs[0..5]; [2..5] are rewritten by
+ *   LOAD_Robots2P (game/LOAD/LOAD_Assets.c:21-59) with the same values
+ *   (RS-4), and [6..7] are untouched (a 6-driver race never reads them).
+ *   ARCADE_ONE_CAB owns all eight: [0] is the human, and [1..7] are exactly
+ *   what LOAD_Robots1P (LOAD_Assets.c:61-76) writes for that human
+ *   (NativeArcadeBotRules_ExpectedBots1P, RS-20). On the 1P arcade path the
+ *   load always runs it: for a track level, load stage 0 clears MAIN_MENU,
+ *   GAME_CUTSCENE, ADVENTURE_ARENA (gameMode1) and CREDITS (gameMode2)
+ *   (game/LOAD/LOAD_TenStages.c:128-129) and sets none of them back (the
+ *   sets at :131-166 apply only to the ndi, ending, intro, screen, garage,
+ *   hub, and credit level names), and with TIME_TRIAL and RELIC_RACE clear and
+ *   numPlyrCurrGame 1 (:102) it picks levelLOD 1P (:184-187), all before
+ *   load stage 4 calls LOAD_DriverMPK (:316). There the call
+ *   LOAD_Robots1P(characterIDs[0]) (LOAD_Assets.c:150-153) is skipped only
+ *   when gameMode1 masked with TIME_TRIAL | MAIN_MENU is exactly MAIN_MENU,
+ *   which stage 0 has ruled out. The other 1P-only branches before it are
+ *   unreachable: TIME_TRIAL (:105-108), ADVENTURE_BOSS (:124-127), and the
+ *   ADVENTURE_CUP purple gem cup (:129-148) test mode bits the plan clears;
+ *   the cutscene/arena/credits/garage branch (:110-122) tests the bits stage
+ *   0 cleared and levelID ADVENTURE_GARAGE, which a match-select table track
+ *   never is. No unowned race-defining field differs between the 1P and 2P
+ *   arcade paths: the menu writes are the same (the audit above), and what
+ *   differs downstream (numPlyrCurrGame, levelLOD, numDrivers, the bots)
+ *   the load and race init derive from the owned numPlyrNextGame and
+ *   characterIDs. MainInit_Drivers (game/MAIN/MainInit.c:288-406) then gives
+ *   numPlyrCurrGame 1 in arcade numDrivers = 8 (:352-355) and calls
+ *   BOTS_Driver_Init(i) for i = 1..7 (:363-366), which read characterIDs[1..7].
  * - boolDemoMode (char, include/namespace_Main.h:571): added and pinned to 0.
  *   The demo path sets it (MM_Title.c:167) and the race reads it
  *   (MainInit.c:567 converts every human driver to a bot; BOTS.c:1022,
@@ -188,6 +218,29 @@
  * memory card), so a cabinet's saved rumble preference does not apply to a
  * linked race; boolDemoMode pinned to 0.
  * ---------------------------------------------------------------------------
+ * Owner decisions (OC-2; docs/ROSTER_MILESTONE.md section 4 takes them over):
+ *
+ * RS-21: race setup plan encoding v2, tag "CTRN arcade race setup plan v2"
+ * (30 bytes, the same length as v1), for BOTH profiles. v2 adds the uint32
+ * profile and the uint8 firstBotSlot and botCount, and widens expectedBots to
+ * NATIVE_ARCADE_BOT_RULES_MAX_BOT_COUNT (7) entries, the unused tail 0.
+ * ARCADE_TWO_CAB field values are unchanged; its plan digest changes only
+ * because the encoding version (tag and layout) changes. The plan digest is
+ * proof evidence only: it is not canonical state, not replayed, and never
+ * sent on the network.
+ *
+ * RS-22: the per-profile plan shape.
+ * - ARCADE_TWO_CAB: numPlyrNextGame 2, characterWriteMask 0x3F (slots 0..5),
+ *   firstBotSlot 2, botCount 4, aiSetIndex the retail 2P AI set of the bots
+ *   (below AI_SET_COUNT), characterIDs[6..7] 0, expectedBots[4..6] 0.
+ * - ARCADE_ONE_CAB: numPlyrNextGame 1, characterWriteMask 0xFF (all eight
+ *   characterIDs: slot 0 the human, 1..7 the LOAD_Robots1P bots),
+ *   firstBotSlot 1, botCount 7, aiSetIndex AI_SET_NONE (0xFF: 1P uses no AI
+ *   set).
+ * The post-setup bank of an ARCADE_ONE_CAB race has drawn MATCH_SETUP 12
+ * times (the 5 retail seeds, then one setupRandom per bot, 7 bots), versus 9
+ * for ARCADE_TWO_CAB.
+ * ---------------------------------------------------------------------------
  * Contract for the R-5 live adapter (game/MAIN/MainArcadeRaceSetup):
  * - Launch runs the first Apply on a snapshot of the live fields before
  *   MainRaceTrack_RequestLoad and writes back every owned field except
@@ -198,10 +251,13 @@
  *   (game/MAIN/MainInit.c, before the WARPBALL_HELD clear at :431 and so
  *   before MainInit_Drivers at :481):
  *   - VERIFIES the fields the load consumed and fails closed on a mismatch:
- *     levelID and numLaps equal the plan, numPlyrCurrGame is 2 (the load
- *     copies numPlyrNextGame, LOAD_TenStages.c:102), characterIDs[0..5]
- *     equal the plan, which holds the bots exactly as LOAD_Robots2P wrote
- *     them (LOAD_Assets.c:21-59, RS-4);
+ *     levelID and numLaps equal the plan, numPlyrCurrGame equals the plan's
+ *     numPlyrNextGame (2 for ARCADE_TWO_CAB, 1 for ARCADE_ONE_CAB; the load
+ *     copies numPlyrNextGame, LOAD_TenStages.c:102), and the characterIDs of
+ *     the plan's characterWriteMask slots equal the plan, which holds the
+ *     bots exactly as the load wrote them: LOAD_Robots2P for ARCADE_TWO_CAB
+ *     (LOAD_Assets.c:21-59, RS-4, slots 0..5), LOAD_Robots1P for
+ *     ARCADE_ONE_CAB (LOAD_Assets.c:61-76, RS-20, slots 0..7);
  *   - RE-APPLIES only the mode words, arcadeDifficulty, and boolDemoMode. The
  *     demo race behind the link screens keeps running until LOADING and can
  *     set ROLLING_ITEM and AKU_SONG/UKA_SONG, and the pending OnBegin mode
@@ -313,13 +369,27 @@
 #define MAIN_ARCADE_RACE_SETUP_GM2_SET_MASK UINT32_C(0)
 #define MAIN_ARCADE_RACE_SETUP_GM2_CLEAR_MASK (UINT32_C(0xFFFFFFFF) & ~MAIN_ARCADE_RACE_SETUP_GM2_TRANSIENT_MASK)
 
-#define MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT 8u        /* retail characterIDs[8] */
-#define MAIN_ARCADE_RACE_SETUP_CHARACTER_WRITE_MASK 0x3Fu /* slots 0..5; 6 and 7 untouched */
-#define MAIN_ARCADE_RACE_SETUP_NUM_PLAYERS 2u
+#define MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT 8u /* retail characterIDs[8] */
+
+/* The per-profile plan shape (RS-22). The bot slots and counts are the bot
+ * rules' own (NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT/_BOT_COUNT and
+ * _1P_FIRST_BOT_SLOT/_1P_BOT_COUNT); the plan source static-asserts that each
+ * write mask covers exactly the humans and the bots. */
+#define MAIN_ARCADE_RACE_SETUP_NUM_PLAYERS_TWO_CAB 2u
+#define MAIN_ARCADE_RACE_SETUP_CHARACTER_WRITE_MASK_TWO_CAB 0x3Fu /* slots 0..5; 6 and 7 untouched */
+#define MAIN_ARCADE_RACE_SETUP_NUM_PLAYERS_ONE_CAB 1u
+#define MAIN_ARCADE_RACE_SETUP_CHARACTER_WRITE_MASK_ONE_CAB 0xFFu /* slots 0..7 */
+/* aiSetIndex: a retail 2P AI set index is below AI_SET_COUNT (mirrors
+ * NATIVE_MATCH_SELECT_AI_SET_COUNT, the seven sets of game/zGlobal_DATA.c);
+ * ARCADE_ONE_CAB uses no AI set and carries AI_SET_NONE (mirrors
+ * NATIVE_MATCH_SELECT_AI_SET_NONE). The plan unit test checks both mirrors. */
+#define MAIN_ARCADE_RACE_SETUP_AI_SET_COUNT 7u
+#define MAIN_ARCADE_RACE_SETUP_AI_SET_NONE 0xFFu
+
 #define MAIN_ARCADE_RACE_SETUP_TICK_RATE_NUMERATOR 30u
 #define MAIN_ARCADE_RACE_SETUP_TICK_RATE_DENOMINATOR 1u
-#define MAIN_ARCADE_RACE_SETUP_PLAN_V1_TAG "CTRN arcade race setup plan v1"
-#define MAIN_ARCADE_RACE_SETUP_PLAN_V1_ENCODED_BYTES 126u
+#define MAIN_ARCADE_RACE_SETUP_PLAN_V2_TAG "CTRN arcade race setup plan v2"
+#define MAIN_ARCADE_RACE_SETUP_PLAN_V2_ENCODED_BYTES 135u
 
 /*
  * Pointer-free mirror of the retail fields the plan owns, at the retail
@@ -341,20 +411,26 @@ struct MainArcadeRaceSetupRetailFields
 struct MainArcadeRaceSetupPlan
 {
 	uint8_t locked;           /* 1 once built */
-	uint8_t numPlyrNextGame;  /* MAIN_ARCADE_RACE_SETUP_NUM_PLAYERS */
+	uint8_t numPlyrNextGame;  /* NUM_PLAYERS_TWO_CAB (2) or NUM_PLAYERS_ONE_CAB (1) */
 	int8_t numLaps;           /* config lapCount */
 	uint8_t boolDemoMode;     /* 0 */
+	uint32_t profile;         /* config profile: ARCADE_TWO_CAB or ARCADE_ONE_CAB */
 	int32_t levelID;          /* config trackID */
 	uint32_t gameMode1ClearMask;
 	uint32_t gameMode1SetMask;
 	uint32_t gameMode2ClearMask;
 	uint32_t gameMode2SetMask;
 	int32_t arcadeDifficulty; /* the bots' shared difficulty */
-	uint8_t characterWriteMask; /* MAIN_ARCADE_RACE_SETUP_CHARACTER_WRITE_MASK */
-	uint8_t aiSetIndex;       /* the retail 2P AI set of the bots */
+	uint8_t characterWriteMask; /* CHARACTER_WRITE_MASK_TWO_CAB (0x3F) or _ONE_CAB (0xFF) */
+	uint8_t aiSetIndex;       /* TWO_CAB: the retail 2P AI set of the bots; ONE_CAB: AI_SET_NONE */
+	uint8_t firstBotSlot;     /* the profile's first bot slot: 2 (TWO_CAB) or 1 (ONE_CAB) */
+	uint8_t botCount;         /* the profile's bot count: 4 (TWO_CAB) or 7 (ONE_CAB) */
 	uint8_t reserved[2];      /* 0 */
-	int16_t characterIDs[MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT]; /* slot i's character for i < 6, else 0 */
-	uint8_t expectedBots[NATIVE_ARCADE_BOT_RULES_BOT_COUNT];      /* NativeArcadeBotRules_ExpectedBots2P */
+	/* slot i's character where bit i of characterWriteMask is set, else 0 */
+	int16_t characterIDs[MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT];
+	/* expectedBots[i] is slot firstBotSlot + i's bot for i < botCount, else 0:
+	 * NativeArcadeBotRules_ExpectedBots2P (TWO_CAB) or _ExpectedBots1P (ONE_CAB) */
+	uint8_t expectedBots[NATIVE_ARCADE_BOT_RULES_MAX_BOT_COUNT];
 	uint64_t masterSeed;      /* for the R-5 bank */
 	uint32_t rngDerivationVersion;
 	uint8_t configDigest[NATIVE_SHA256_DIGEST_BYTES]; /* NativeMatchConfigV1_Digest */
@@ -362,9 +438,17 @@ struct MainArcadeRaceSetupPlan
 
 /*
  * Builds the plan. Fails unless NativeArcadeBotRules_ValidateConfigV1(config)
- * passes, the tick rate is exactly TICK_RATE_NUMERATOR/TICK_RATE_DENOMINATOR
- * (RS-14), and the CAB1_HUMAN and CAB2_HUMAN roles are slots 0 and 1 (retail
- * players 0 and 1). The bots, slots 2..5, are retail drivers 2..5.
+ * passes (an ARCADE_TWO_CAB or ARCADE_ONE_CAB config; any other profile
+ * fails), the tick rate is exactly TICK_RATE_NUMERATOR/TICK_RATE_DENOMINATOR
+ * (RS-14), and the humans are retail players 0 (and 1):
+ * - ARCADE_TWO_CAB: the CAB1_HUMAN and CAB2_HUMAN roles are slots 0 and 1;
+ *   the bots, slots 2..5, are retail drivers 2..5 (ExpectedBots2P, and
+ *   aiSetIndex its set);
+ * - ARCADE_ONE_CAB: the CAB1_HUMAN role is slot 0 and there is no CAB2_HUMAN
+ *   slot; the bots, slots 1..7, are retail drivers 1..7 (ExpectedBots1P, and
+ *   aiSetIndex AI_SET_NONE).
+ * arcadeDifficulty is the first bot slot's difficulty (ValidateConfigV1: every
+ * bot slot carries the same table value). The result is well-formed (below).
  */
 int MainArcadeRaceSetupPlan_Build(const struct NativeMatchConfigV1 *config, struct MainArcadeRaceSetupPlan *out);
 
@@ -372,18 +456,58 @@ int MainArcadeRaceSetupPlan_Build(const struct NativeMatchConfigV1 *config, stru
  * *after = *before with the plan applied: levelID, numLaps, numPlyrNextGame,
  * arcadeDifficulty, and boolDemoMode replaced; each mode word cleared by its
  * clear mask and ORed with its set mask; characterIDs[i] replaced where bit i
- * of characterWriteMask is set. before and after may alias. Fails on a plan
- * that is not locked, whose fixed fields differ from the policy above, whose
- * characterIDs[2..5] differ from expectedBots, or whose arcadeDifficulty is
- * not a bot-rules table value (NativeArcadeBotRules_IsDifficulty).
+ * of characterWriteMask is set. before and after may alias.
+ *
+ * Fails on a plan that is not well-formed: not locked; boolDemoMode or a mode
+ * mask off the policy above; reserved not 0; arcadeDifficulty not a bot-rules
+ * table value (NativeArcadeBotRules_IsDifficulty); profile neither
+ * ARCADE_TWO_CAB nor ARCADE_ONE_CAB; numPlyrNextGame, characterWriteMask,
+ * firstBotSlot, or botCount not exactly the profile's (RS-22, so a plan
+ * mixing the two profiles' fields fails); a human characterID
+ * (characterIDs[0], and [1] for TWO_CAB) outside 0..255; bots that are not
+ * the humans' bots: for TWO_CAB, NativeArcadeBotRules_ExpectedBots2P(
+ * characterIDs[0], characterIDs[1]) fails or its bots differ from
+ * expectedBots[0..3] or its set from aiSetIndex; for ONE_CAB,
+ * NativeArcadeBotRules_ExpectedBots1P(characterIDs[0]) fails or its bots
+ * differ from expectedBots[0..6], or aiSetIndex is not AI_SET_NONE; a
+ * characterIDs slot outside characterWriteMask not 0; an unused expectedBots
+ * entry (i >= botCount) not 0; or characterIDs[firstBotSlot + i] !=
+ * expectedBots[i] for i < botCount. Every plan Build returns is well-formed.
  */
 int MainArcadeRaceSetupPlan_Apply(const struct MainArcadeRaceSetupPlan *plan,
 	const struct MainArcadeRaceSetupRetailFields *before, struct MainArcadeRaceSetupRetailFields *after);
 
 /*
- * SHA-256 of the V1 encoding: the tag (30 bytes ASCII, no NUL), then every
- * plan field in declaration order, little-endian, signed fields as their
- * two's-complement pattern (126 bytes). Fails like Apply on a bad plan.
+ * SHA-256 of the V2 encoding (RS-21): every plan field in declaration order,
+ * little-endian through NativeCodecWriter, signed fields as their
+ * two's-complement pattern, PLAN_V2_ENCODED_BYTES bytes (the plan source
+ * static-asserts the sum). Fails like Apply on a plan that is not
+ * well-formed.
+ *
+ *   offset size field
+ *   0      30   tag "CTRN arcade race setup plan v2" (ASCII, no NUL)
+ *   30     1    locked 1
+ *   31     1    numPlyrNextGame (2 TWO_CAB, 1 ONE_CAB)
+ *   32     1    numLaps (s8)
+ *   33     1    boolDemoMode 0
+ *   34     4    profile (NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_*)
+ *   38     4    levelID (s32)
+ *   42     4    gameMode1ClearMask
+ *   46     4    gameMode1SetMask
+ *   50     4    gameMode2ClearMask
+ *   54     4    gameMode2SetMask
+ *   58     4    arcadeDifficulty (s32)
+ *   62     1    characterWriteMask (0x3F TWO_CAB, 0xFF ONE_CAB)
+ *   63     1    aiSetIndex (0..6 TWO_CAB, 0xFF ONE_CAB)
+ *   64     1    firstBotSlot (2 TWO_CAB, 1 ONE_CAB)
+ *   65     1    botCount (4 TWO_CAB, 7 ONE_CAB)
+ *   66     2    reserved 0, 0
+ *   68     16   characterIDs[0..7], s16 each
+ *   84     7    expectedBots[0..6] (unused tail 0)
+ *   91     8    masterSeed
+ *   99     4    rngDerivationVersion
+ *   103    32   configDigest
+ *   135         end
  */
 int MainArcadeRaceSetupPlan_Digest(const struct MainArcadeRaceSetupPlan *plan, uint8_t digest[NATIVE_SHA256_DIGEST_BYTES]);
 

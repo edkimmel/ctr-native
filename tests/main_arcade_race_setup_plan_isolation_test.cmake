@@ -11,7 +11,9 @@
 #  4. the target is C17 with extensions off;
 #  5. the mirrored GameMode1, ADVENTURE_BOSS, and GameMode2 values equal
 #     include/namespace_Main.h, every retail name is mirrored, and every
-#     mirror names a retail value;
+#     mirror names a retail value; the AI set mirrors (RS-22) equal
+#     include/platform/native_match_select_rules.h, and the v2 encoding
+#     (RS-21) is the declared one with its size static-asserted;
 #  6. the retail field widths the mirror struct assumes still hold
 #     (include/namespace_Main.h GameTracker, include/regionsEXE.h);
 #  7. it is confined: no game/ or platform/ file other than the module
@@ -276,6 +278,33 @@ foreach(prefix IN ITEMS GM1 GM2)
         endif()
     endforeach()
 endforeach()
+
+# The AI set mirrors equal match select's values (the plan may not name match
+# select, so it mirrors them), and the v2 encoding is declared once with its
+# size static-asserted in the source.
+ctr_read_source("include/platform/native_match_select_rules.h" match_select)
+foreach(name IN ITEMS AI_SET_COUNT AI_SET_NONE)
+    string(REGEX MATCH "#define NATIVE_MATCH_SELECT_${name}[ \t]+(0x[0-9A-Fa-f]+|[0-9]+)u?[\r\n]" retail_line "${match_select}")
+    if(NOT retail_line)
+        message(FATAL_ERROR "race setup plan isolation: NATIVE_MATCH_SELECT_${name} not found in include/platform/native_match_select_rules.h")
+    endif()
+    math(EXPR retail_value "${CMAKE_MATCH_1}")
+    string(REGEX MATCHALL "#define MAIN_ARCADE_RACE_SETUP_${name}[ \t]+(0x[0-9A-Fa-f]+|[0-9]+)u?[\r\n]" mirror_lines "${header}")
+    list(LENGTH mirror_lines mirror_count)
+    if(NOT mirror_count EQUAL 1)
+        message(FATAL_ERROR "race setup plan isolation: ${module_header} must define MAIN_ARCADE_RACE_SETUP_${name} exactly once (found ${mirror_count})")
+    endif()
+    string(REGEX MATCH "[ \t]+(0x[0-9A-Fa-f]+|[0-9]+)u?[\r\n]" mirror_value "${mirror_lines}")
+    math(EXPR mirror_decimal "${CMAKE_MATCH_1}")
+    if(NOT mirror_decimal EQUAL retail_value)
+        message(FATAL_ERROR "race setup plan isolation: MAIN_ARCADE_RACE_SETUP_${name} is ${mirror_decimal}, NATIVE_MATCH_SELECT_${name} is ${retail_value}")
+    endif()
+endforeach()
+ctr_require("${module_header}" "${header}" "#define MAIN_ARCADE_RACE_SETUP_PLAN_V2_TAG \"CTRN arcade race setup plan v2\"")
+ctr_require("${module_header}" "${header}" "#define MAIN_ARCADE_RACE_SETUP_PLAN_V2_ENCODED_BYTES 135u")
+ctr_forbid("${module_header}" "${header}" "PLAN_V1_")
+ctr_read_source("${module_source}" plan_source)
+ctr_require("${module_source}" "${plan_source}" "_Static_assert(MAIN_ARCADE_RACE_SETUP_PLAN_V2_ENCODED_BYTES ==")
 
 # 6. Retail field widths behind struct MainArcadeRaceSetupRetailFields.
 string(FIND "${retail_main_code}" "struct GameTracker\n{" tracker_at)

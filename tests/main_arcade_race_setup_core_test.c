@@ -100,7 +100,9 @@ static void TitleLaunchView(struct MainArcadeRaceSetupCoreLaunchView *view)
 	view->fields.boolDemoMode = 1u;
 }
 
-/* The race-init live values after the load of the plan's race. */
+/* The race-init live values after the load of the plan's race: the plan's
+ * characterIDs in its owned slots (0..5 TWO_CAB, 0..7 ONE_CAB), stale values
+ * elsewhere. */
 static void LoadedBeginView(const struct MainArcadeRaceSetupPlan *plan, struct MainArcadeRaceSetupCoreBeginView *view)
 {
 	memset(view, 0, sizeof(*view));
@@ -112,7 +114,9 @@ static void LoadedBeginView(const struct MainArcadeRaceSetupPlan *plan, struct M
 	view->fields.arcadeDifficulty = 0x7777;
 	for (uint32_t slot = 0; slot < MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT; slot++)
 	{
-		view->fields.characterIDs[slot] = (slot < 6u) ? plan->characterIDs[slot] : (int16_t)(200 + (int)slot);
+		view->fields.characterIDs[slot] = ((((uint32_t)plan->characterWriteMask >> slot) & 1u) != 0u) ?
+		                                      plan->characterIDs[slot] :
+		                                      (int16_t)(200 + (int)slot);
 	}
 	view->fields.numLaps = plan->numLaps;
 	view->fields.numPlyrNextGame = 9u;
@@ -121,8 +125,10 @@ static void LoadedBeginView(const struct MainArcadeRaceSetupPlan *plan, struct M
 
 /*
  * The race after MainInit_Drivers, as tests/main_arcade_race_setup_facts_test.c
- * builds it: humans 0..1, bots 2..5 on the nav list of their path, and the
- * roster input as the pre-race extractor reads it (no race order, no winners).
+ * builds it, from the config's slot roles: TWO_CAB humans 0..1 and bots 2..5
+ * (6..7 absent), ONE_CAB human 0 and bots 1..7; each bot on the nav list of
+ * its path, and the roster input as the pre-race extractor reads it (no race
+ * order, no winners).
  */
 static void DriversView(const struct NativeMatchConfigV1 *config, struct MainArcadeRaceSetupCoreDriversView *view)
 {
@@ -130,25 +136,34 @@ static void DriversView(const struct NativeMatchConfigV1 *config, struct MainArc
 	static const uint8_t accel[SLOTS] = { 2, 3, 0, 1, 5, 4, 7, 6 };
 	struct MainArcadeRaceSetupLiveSnapshot *snapshot = &view->snapshot;
 	struct NativeCanonicalDriversRosterInput *input = &view->rosterInput;
+	int difficultySet = 0;
 
 	memset(view, 0, sizeof(*view));
 	view->trackerPresent = 1u;
 	view->rosterInputValid = 1u;
 	view->gameMode1 = MAIN_ARCADE_RACE_SETUP_GM1_ARCADE_MODE | MAIN_ARCADE_RACE_SETUP_GM1_START_OF_RACE;
 	view->gameMode2 = 0u;
-	snapshot->numPlyrCurrGame = 2;
-	snapshot->numBotsNextGame = 4;
 	for (uint8_t slot = 0; slot < SLOTS; slot++)
 	{
-		snapshot->driverPresent[slot] = (uint8_t)(slot < 6u);
-		snapshot->driverID[slot] = slot < 6u ? slot : 0u;
-		snapshot->driverIsBot[slot] = (uint8_t)((slot >= 2u) && (slot < 6u));
-		snapshot->characterIDs[slot] = slot < 6u ? (int16_t)config->slots[slot].characterID : (int16_t)(slot + 4u);
+		const uint8_t role = config->slots[slot].role;
+		const uint8_t present = (uint8_t)(role != NATIVE_MATCH_SLOT_ROLE_INACTIVE);
+		const uint8_t isBot = (uint8_t)(role == NATIVE_MATCH_SLOT_ROLE_BOT);
+
+		snapshot->driverPresent[slot] = present;
+		snapshot->driverID[slot] = present ? slot : 0u;
+		snapshot->driverIsBot[slot] = isBot;
+		snapshot->characterIDs[slot] = present ? (int16_t)config->slots[slot].characterID : (int16_t)(slot + 4u);
 		snapshot->kartSpawnOrderArray[slot] = slot;
 		snapshot->driver_pathIndexIDs[slot] = paths[slot];
 		snapshot->accelerateOrder[slot] = accel[slot];
+		snapshot->numPlyrCurrGame = (uint8_t)(snapshot->numPlyrCurrGame + ((present != 0u) && (isBot == 0u)));
+		snapshot->numBotsNextGame = (uint8_t)(snapshot->numBotsNextGame + isBot);
+		if ((isBot != 0u) && !difficultySet)
+		{
+			snapshot->arcadeDifficulty = (int32_t)config->slots[slot].difficulty;
+			difficultySet = 1;
+		}
 	}
-	snapshot->arcadeDifficulty = (int32_t)config->slots[2].difficulty;
 
 	memset(input->raceOrder, 0xff, sizeof(input->raceOrder));
 	memset(input->winnerDriverIDs, 0xff, sizeof(input->winnerDriverIDs));
@@ -984,6 +999,270 @@ static int TestPinsOnlyWhenSeeding(void)
 	return 0;
 }
 
+/*
+ * An ARCADE_ONE_CAB config from the fixture config: its track, laps,
+ * identities, and seed; CAB1 `human` at difficulty 0, slots 1..7 exactly
+ * ExpectedBots1P at medium, and the 1P bot rules digest (RS-19, RS-20).
+ */
+static int BuildOneCabConfig(const struct NativeMatchConfigV1 *valid, uint8_t human, struct NativeMatchConfigV1 *config)
+{
+	uint8_t bots[NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT];
+
+	if (!NativeArcadeBotRules_ExpectedBots1P(human, bots))
+	{
+		return 0;
+	}
+	memset(config, 0, sizeof(*config));
+	NativeMatchConfigV1_InitArcadeOneCab(config);
+	config->trackID = valid->trackID;
+	config->lapCount = valid->lapCount;
+	config->tickRateNumerator = 30u;
+	config->tickRateDenominator = 1u;
+	config->masterSeed = valid->masterSeed;
+	memcpy(config->buildIdentity, valid->buildIdentity, sizeof(config->buildIdentity));
+	memcpy(config->contentIdentity, valid->contentIdentity, sizeof(config->contentIdentity));
+	config->slots[0].characterID = human;
+	config->slots[0].difficulty = 0u;
+	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT; i++)
+	{
+		config->slots[NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT + i].characterID = bots[i];
+		config->slots[NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT + i].difficulty = NATIVE_ARCADE_BOT_RULES_DIFFICULTY_MEDIUM;
+	}
+	return NativeArcadeBotRules_Digest1PV1(config->botRulesDigest) && NativeArcadeBotRules_ValidateConfigV1(config);
+}
+
+/* Arm with config from the title, and Launch. */
+static int ArmAndLaunchConfig(struct MainArcadeRaceSetupCore *core, const struct NativeMatchConfigV1 *config)
+{
+	struct MainArcadeRaceSetupCoreLaunchView launch;
+
+	TitleLaunchView(&launch);
+	MainArcadeRaceSetupCore_Reset(core);
+	return MainArcadeRaceSetupCore_Arm(core, config, launch.fields.gameMode1, &s_outcome) &&
+	       MainArcadeRaceSetupCore_Launch(core, &launch, &s_outcome);
+}
+
+/* ... then the pre-drivers hook on the loaded race and the post-drivers hook on its drivers. */
+static int RunToValidated(struct MainArcadeRaceSetupCore *core, const struct NativeMatchConfigV1 *config)
+{
+	struct MainArcadeRaceSetupCoreBeginView begin;
+
+	if (!ArmAndLaunchConfig(core, config))
+	{
+		return 0;
+	}
+	LoadedBeginView(&core->plan, &begin);
+	DriversView(config, &s_drivers);
+	return MainArcadeRaceSetupCore_OnFinalizeInitBegin(core, &begin, &s_scratch, &s_outcome) &&
+	       MainArcadeRaceSetupCore_OnDriversInitialized(core, &s_drivers, &s_scratch, &s_outcome);
+}
+
+/* The draw count of one bank stream, or UINT64_MAX if the bank has no such stream. */
+static uint64_t StreamDraws(const struct NativeDeterministicRngBankV1 *bank, uint32_t tag)
+{
+	for (uint32_t i = 0; i < NATIVE_DETERMINISTIC_RNG_STREAM_COUNT; i++)
+	{
+		if (bank->streams[i].tag == tag)
+		{
+			return bank->streams[i].drawCount;
+		}
+	}
+	return UINT64_MAX;
+}
+
+/* An ARCADE_ONE_CAB setup end to end (OC-2), and what differs from TWO_CAB. */
+static int TestOneCab(void)
+{
+	static struct NativeMatchConfigV1 oneCab;
+	static struct NativeMatchConfigV1 reseeded;
+	static struct MainArcadeRaceSetupPlan plan;
+	static const uint8_t expectedLaunchTargets[] = {
+		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_GAME_MODE1, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_GAME_MODE2,
+		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ARCADE_DIFFICULTY, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_BOOL_DEMO_MODE,
+		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_NUM_LAPS, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_NUM_PLYR_NEXT_GAME,
+		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CHARACTER_ID, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CHARACTER_ID,
+		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CHARACTER_ID, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CHARACTER_ID,
+		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CHARACTER_ID, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CHARACTER_ID,
+		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CHARACTER_ID, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CHARACTER_ID,
+		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_REQUEST_LOAD};
+	static const int64_t goldenSeeds[5] = {GOLDEN_RANDOM_NUMBER, GOLDEN_ADV_RNG0, GOLDEN_ADV_RNG1, GOLDEN_PSX_RAND, GOLDEN_AUDIO_RNG};
+	struct MainArcadeRaceSetupCoreBeginView begin;
+	struct MainArcadeRaceSetupCoreBeginView broken;
+	struct MainArcadeRaceSetupCoreLaunchView launch;
+	struct MainArcadeBotSetupSourceFacts facts;
+	uint8_t digests[4][NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t again[4][NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t expected[NATIVE_SHA256_DIGEST_BYTES];
+
+	/* The TWO_CAB drivers view is unchanged: humans 0..1, bots 2..5, 6..7 absent. */
+	DriversView(&s_config, &s_drivers);
+	CHECK(s_drivers.snapshot.numPlyrCurrGame == 2u && s_drivers.snapshot.numBotsNextGame == 4u);
+	CHECK(s_drivers.snapshot.driverPresent[5] == 1u && s_drivers.snapshot.driverPresent[6] == 0u);
+	CHECK(s_drivers.snapshot.characterIDs[6] == 10 && s_drivers.snapshot.arcadeDifficulty == 0xA0);
+
+	/* Launch has one op count for both profiles, within MAX_OPS. */
+	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_LAUNCH_OP_COUNT == 15u);
+	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_LAUNCH_OP_COUNT <= MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS);
+	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT <= MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS);
+
+	/* Human Crash (0) on the fixture's track, laps, and golden seed. */
+	CHECK(BuildOneCabConfig(&s_config, 0u, &oneCab) == 1);
+	CHECK(MainArcadeRaceSetupPlan_Build(&oneCab, &plan) == 1);
+	CHECK(plan.profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB && plan.numPlyrNextGame == 1u);
+	CHECK(plan.characterWriteMask == 0xFFu && plan.firstBotSlot == 1u && plan.botCount == 7u);
+
+	/* Arm. */
+	MainArcadeRaceSetupCore_Reset(&s_core);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &oneCab, 0u, &s_outcome) == 1);
+	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_ARMED);
+	CHECK(memcmp(&s_core.plan, &plan, sizeof(plan)) == 0);
+	CHECK(MainArcadeRaceSetupPlan_Digest(&plan, expected) == 1 && memcmp(s_core.racePlanDigest, expected, sizeof(expected)) == 0);
+
+	/* Launch: numPlyrNextGame 1 and all eight characterIDs from the plan. The
+	 * live numPlyrNextGame and characterIDs differ from the plan, so each op
+	 * value below is the plan's write, not a pass-through. */
+	TitleLaunchView(&launch);
+	launch.fields.numPlyrNextGame = 4u;
+	for (uint32_t slot = 0; slot < 8u; slot++)
+	{
+		launch.fields.characterIDs[slot] = (int16_t)(40 + (int)slot);
+	}
+	CHECK(MainArcadeRaceSetupCore_Launch(&s_core, &launch, &s_outcome) == 1);
+	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_LAUNCHED);
+	CHECK(s_outcome.opCount == (uint32_t)sizeof(expectedLaunchTargets));
+	CHECK(s_outcome.opCount == MAIN_ARCADE_RACE_SETUP_CORE_LAUNCH_OP_COUNT && s_outcome.overflowed == 0u);
+	for (uint32_t i = 0; i < s_outcome.opCount; i++)
+	{
+		CHECK(s_outcome.ops[i].target == expectedLaunchTargets[i]);
+		CHECK(s_outcome.ops[i].index == ((i >= 6u && i < 14u) ? (uint8_t)(i - 6u) : 0u));
+	}
+	CHECK(s_outcome.ops[0].value ==
+	      (int64_t)((launch.fields.gameMode1 & MAIN_ARCADE_RACE_SETUP_GM1_TRANSIENT_MASK) | MAIN_ARCADE_RACE_SETUP_GM1_ARCADE_MODE));
+	CHECK(s_outcome.ops[1].value == (int64_t)(launch.fields.gameMode2 & MAIN_ARCADE_RACE_SETUP_GM2_TRANSIENT_MASK));
+	CHECK(s_outcome.ops[2].value == 0xA0 && s_outcome.ops[3].value == 0);
+	CHECK(s_outcome.ops[4].value == (int64_t)plan.numLaps);
+	CHECK(s_outcome.ops[5].value == 1);
+	CHECK(s_outcome.ops[5].value != (int64_t)launch.fields.numPlyrNextGame);
+	for (uint32_t slot = 0; slot < 8u; slot++)
+	{
+		CHECK(s_outcome.ops[6u + slot].value == (int64_t)plan.characterIDs[slot]);
+		CHECK(s_outcome.ops[6u + slot].value == (int64_t)slot); /* Crash, then LOAD_Robots1P's 1..7 */
+		CHECK(s_outcome.ops[6u + slot].value != (int64_t)launch.fields.characterIDs[slot]);
+	}
+	CHECK(s_outcome.ops[14].value == (int64_t)plan.levelID);
+
+	/* The pre-drivers hook: every owned slot is verified, slot 7 included. */
+	LoadedBeginView(&plan, &begin);
+	CHECK(begin.numPlyrCurrGame == 1u && begin.fields.characterIDs[7] == 7);
+	for (uint32_t slot = 0; slot < 8u; slot++)
+	{
+		broken = begin;
+		broken.fields.characterIDs[slot] = (int16_t)(broken.fields.characterIDs[slot] + 1);
+		CHECK(ArmAndLaunchConfig(&s_core, &oneCab) == 1);
+		CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_core, &broken, &s_scratch, &s_outcome) == 0);
+		CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_LOAD_FIELDS_MISMATCH) == 0);
+		CHECK(strcmp(s_outcome.detail, "characterIDs") == 0);
+	}
+	/* numPlyrCurrGame 2 (a 2P load) fails. */
+	broken = begin;
+	broken.numPlyrCurrGame = 2u;
+	CHECK(ArmAndLaunchConfig(&s_core, &oneCab) == 1);
+	CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_core, &broken, &s_scratch, &s_outcome) == 0);
+	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_LOAD_FIELDS_MISMATCH) == 0);
+	CHECK(strcmp(s_outcome.detail, "numLaps or numPlyrCurrGame") == 0);
+	/* The same characterIDs[7] mismatch is ignored under TWO_CAB (slot 7 not owned). */
+	{
+		struct MainArcadeRaceSetupCoreBeginView twoCab;
+
+		LoadedBeginView(&s_plan, &twoCab);
+		twoCab.fields.characterIDs[6] = 7;
+		twoCab.fields.characterIDs[7] = (int16_t)(begin.fields.characterIDs[7] + 1);
+		CHECK(ArmAndLaunch(&s_core) == 1);
+		CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_core, &twoCab, &s_scratch, &s_outcome) == 1);
+		CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_SEEDED);
+	}
+
+	/* Success: the same seeds as TWO_CAB for the same master seed (the seeds
+	 * are profile-independent), five MATCH_SETUP draws in. */
+	CHECK(ArmAndLaunchConfig(&s_core, &oneCab) == 1);
+	CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_core, &begin, &s_scratch, &s_outcome) == 1);
+	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_SEEDED);
+	CHECK(s_outcome.opCount == MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT && s_outcome.overflowed == 0u);
+	for (uint32_t i = 0; i < 5u; i++)
+	{
+		CHECK(s_outcome.ops[6u + i].value == goldenSeeds[i]);
+	}
+	CHECK(StreamDraws(&s_core.bank, NATIVE_DETERMINISTIC_RNG_STREAM_MATCH_SETUP) == 5u);
+
+	/* The post-drivers hook on the 8-driver race: VALIDATED, nothing written. */
+	DriversView(&oneCab, &s_drivers);
+	CHECK(s_drivers.snapshot.numPlyrCurrGame == 1u && s_drivers.snapshot.numBotsNextGame == 7u);
+	CHECK(MainArcadeRaceSetupCore_OnDriversInitialized(&s_core, &s_drivers, &s_scratch, &s_outcome) == 1);
+	CHECK(s_outcome.opCount == 0u && s_outcome.botSetupResult == (int32_t)MAIN_ARCADE_BOT_SETUP_OK);
+	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_VALIDATED);
+	CHECK(s_core.botSetupPlan.botCount == 7u && s_core.botSetupPlan.botMask == 0xFEu);
+	CHECK(MainArcadeRaceSetupCore_SlotFacts(&s_core, &facts) == 1);
+	for (uint32_t slot = 0; slot < 8u; slot++)
+	{
+		CHECK(facts.facts[slot].present == 1u);
+		CHECK(facts.facts[slot].role == (slot == 0u ? NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN : NATIVE_MATCH_SLOT_ROLE_BOT));
+	}
+	/* The post-setup bank: MATCH_SETUP drawn exactly 12 times (5 seeds + 7 bots), every other stream untouched. */
+	CHECK(MainArcadeRaceSetupCore_Bank(&s_core) == &s_core.bank);
+	for (uint32_t i = 0; i < NATIVE_DETERMINISTIC_RNG_STREAM_COUNT; i++)
+	{
+		const struct NativeDeterministicRngStreamV1 *stream = &s_core.bank.streams[i];
+
+		CHECK(stream->drawCount ==
+		      ((stream->tag == (uint32_t)NATIVE_DETERMINISTIC_RNG_STREAM_MATCH_SETUP) ? UINT64_C(12) : UINT64_C(0)));
+	}
+	CHECK(StreamDraws(&s_core.bank, NATIVE_DETERMINISTIC_RNG_STREAM_MATCH_SETUP) == 12u);
+	CHECK(MainArcadeRaceSetupCore_Digests(&s_core, digests[0], digests[1], digests[2], digests[3]) == 1);
+	CHECK(MainArcadeRaceSetupPlan_Digest(&plan, expected) == 1 && memcmp(digests[1], expected, sizeof(expected)) == 0);
+
+	/* Deterministic: a second run from the same config gives the same digests. */
+	CHECK(RunToValidated(&s_other, &oneCab) == 1);
+	CHECK(MainArcadeRaceSetupCore_Digests(&s_other, again[0], again[1], again[2], again[3]) == 1);
+	CHECK(memcmp(again, digests, sizeof(again)) == 0);
+	CHECK(memcmp(&s_other.seeds, &s_core.seeds, sizeof(s_core.seeds)) == 0);
+
+	/* A different master seed: different seeds, bank, config, and plan digests. */
+	reseeded = oneCab;
+	reseeded.masterSeed ^= UINT64_C(0x8000000000000001);
+	CHECK(RunToValidated(&s_other, &reseeded) == 1);
+	CHECK(MainArcadeRaceSetupCore_Digests(&s_other, again[0], again[1], again[2], again[3]) == 1);
+	CHECK(memcmp(&s_other.seeds, &s_core.seeds, sizeof(s_core.seeds)) != 0);
+	CHECK(memcmp(again[3], digests[3], sizeof(again[3])) != 0);
+	CHECK(memcmp(again[0], digests[0], sizeof(again[0])) != 0 && memcmp(again[1], digests[1], sizeof(again[1])) != 0);
+	CHECK(StreamDraws(&s_other.bank, NATIVE_DETERMINISTIC_RNG_STREAM_MATCH_SETUP) == 12u);
+
+	/* The TWO_CAB run from the same master seed differs in its plan and bank (9 draws). */
+	CHECK(RunToValidated(&s_other, &s_config) == 1);
+	CHECK(StreamDraws(&s_other.bank, NATIVE_DETERMINISTIC_RNG_STREAM_MATCH_SETUP) == 9u);
+	CHECK(memcmp(&s_other.seeds, &s_core.seeds, sizeof(s_core.seeds)) == 0);
+	CHECK(MainArcadeRaceSetupCore_Digests(&s_other, again[0], again[1], again[2], again[3]) == 1);
+	CHECK(memcmp(again[1], digests[1], sizeof(again[1])) != 0 && memcmp(again[3], digests[3], sizeof(again[3])) != 0);
+
+	/* Drivers views that are not a 1P race fail closed with FACTS or ROSTER. */
+	{
+		struct MainArcadeRaceSetupCore *core = &s_core;
+
+		CHECK(ArmAndLaunchConfig(core, &oneCab) == 1);
+		CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(core, &begin, &s_scratch, &s_outcome) == 1);
+		DriversView(&s_config, &s_drivers); /* the 2P race: a human in slot 1 */
+		CHECK(MainArcadeRaceSetupCore_OnDriversInitialized(core, &s_drivers, &s_scratch, &s_outcome) == 0);
+		CHECK(ExpectFailed(core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_FACTS) == 0);
+
+		CHECK(ArmAndLaunchConfig(core, &oneCab) == 1);
+		CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(core, &begin, &s_scratch, &s_outcome) == 1);
+		DriversView(&oneCab, &s_drivers);
+		s_drivers.snapshot.characterIDs[7] = 0; /* not LOAD_Robots1P's bot */
+		CHECK(MainArcadeRaceSetupCore_OnDriversInitialized(core, &s_drivers, &s_scratch, &s_outcome) == 0);
+		CHECK(ExpectFailed(core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_ROSTER) == 0);
+	}
+	return 0;
+}
+
 static int TestNames(void)
 {
 	CHECK(strcmp(MainArcadeRaceSetupCore_StatusName(MAIN_ARCADE_RACE_SETUP_IDLE), "IDLE") == 0);
@@ -1018,6 +1297,7 @@ int main(void)
 	CHECK(TestDriversInitialized() == 0);
 	CHECK(TestDisarm() == 0);
 	CHECK(TestPinsOnlyWhenSeeding() == 0);
+	CHECK(TestOneCab() == 0);
 	CHECK(TestNames() == 0);
 	puts("main_arcade_race_setup_core_test: ok");
 	return 0;

@@ -9,9 +9,27 @@
 #include <stdint.h>
 #include <string.h>
 
+/*
+ * The number of retail player slots that may hold a human: ARCADE_TWO_CAB
+ * players 0 and 1 (CAB1 and CAB2), ARCADE_ONE_CAB player 0 (CAB1); 0 for any
+ * other profile.
+ */
+static uint32_t MainArcadeRaceSetupFacts_HumanSlots(uint32_t profile)
+{
+	if (profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB)
+	{
+		return 2u;
+	}
+	if (profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB)
+	{
+		return 1u;
+	}
+	return 0u;
+}
+
 /* The snapshot is well formed and agrees with the roster input. */
-static int MainArcadeRaceSetupFacts_SnapshotIsConsistent(const struct MainArcadeRaceSetupLiveSnapshot *snapshot,
-	const struct NativeCanonicalDriversRosterInput *rosterInput)
+static int MainArcadeRaceSetupFacts_SnapshotIsConsistent(uint32_t humanSlots,
+	const struct MainArcadeRaceSetupLiveSnapshot *snapshot, const struct NativeCanonicalDriversRosterInput *rosterInput)
 {
 	int anyBot = 0;
 
@@ -37,8 +55,9 @@ static int MainArcadeRaceSetupFacts_SnapshotIsConsistent(const struct MainArcade
 			}
 			continue;
 		}
-		/* TWO_CAB: retail players 0 and 1 are the two cabinets; any other human has no role. */
-		if ((isBot == 0u) && (slot > 1u))
+		/* TWO_CAB: retail players 0 and 1 are the two cabinets; ONE_CAB: player
+		 * 0 is the one cabinet. Any other human has no role. */
+		if ((isBot == 0u) && (slot >= humanSlots))
 		{
 			return 0;
 		}
@@ -62,10 +81,14 @@ int MainArcadeRaceSetupFacts_Build(const struct NativeMatchConfigV1 *config,
 {
 	struct MainArcadeRosterNativeFacts roster;
 	struct MainArcadeBotSetupSourceFacts setup;
+	uint32_t humanSlots;
 
-	if ((config == NULL) || (snapshot == NULL) || (rosterInput == NULL) || (rosterFacts == NULL) ||
-	    (setupFacts == NULL) || (config->profile != NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB) ||
-	    !MainArcadeRaceSetupFacts_SnapshotIsConsistent(snapshot, rosterInput))
+	if ((config == NULL) || (snapshot == NULL) || (rosterInput == NULL) || (rosterFacts == NULL) || (setupFacts == NULL))
+	{
+		return 0;
+	}
+	humanSlots = MainArcadeRaceSetupFacts_HumanSlots(config->profile);
+	if ((humanSlots == 0u) || !MainArcadeRaceSetupFacts_SnapshotIsConsistent(humanSlots, snapshot, rosterInput))
 	{
 		return 0;
 	}
@@ -103,6 +126,7 @@ int MainArcadeRaceSetupFacts_Build(const struct NativeMatchConfigV1 *config,
 		}
 		else
 		{
+			/* Slot 0 is CAB1; slot 1 (TWO_CAB only: the check above) is CAB2. */
 			role = (uint8_t)(slot == 0u ? NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN : NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN);
 			difficulty = 0u;
 		}
