@@ -106,6 +106,19 @@
 #define TEST_SELECT_BLOCKED_A_PORT 48446u
 #define TEST_SELECT_BLOCKED_B_PORT 48447u
 
+/* MS-7b: review follow-ups. */
+#define TEST_SELECT_ASYM_REMATCH_A_PORT 48448u
+#define TEST_SELECT_ASYM_REMATCH_B_PORT 48449u
+
+#define TEST_SELECT_NO_START_A_PORT 48450u
+#define TEST_SELECT_NO_START_B_PORT 48451u
+
+#define TEST_SELECT_BACK_A_PORT 48452u
+#define TEST_SELECT_BACK_B_PORT 48453u
+
+#define TEST_SELECT_LINK_LOST_A_PORT 48454u
+#define TEST_SELECT_LINK_LOST_B_PORT 48455u
+
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
 #define ATTEMPT_TICKS_PER_CANDIDATE 20u
@@ -777,6 +790,9 @@ static int TestPure(void)
 	CHECK(g_probe.relinkBlocked == 0u);
 	CHECK(g_probe.selectSerial == 0u);
 	CHECK(g_probe.outcomeValid == 0u);
+	CHECK(g_probe.raceConfigValid == 0u);
+	CHECK(g_probe.lobbyReadySeen == 0u);
+	CHECK(g_probe.lastReadyValid == 0u);
 	CHECK(NativeArcadeNetplay_Select(&g_probe) == NULL);
 	CHECK(g_probe.matchCount == 0u);
 	CHECK(g_probe.pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_NONE);
@@ -984,9 +1000,19 @@ static int TestBothRematch(void)
 
 	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
 	CHECK(EnterAndRace(&fixture, TEST_REMATCH_A_PORT, TEST_REMATCH_B_PORT));
-	CHECK(FinishAndDwell());
 	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) != NULL);
 	first = *NativeArcadeNetplay_AgreedConfig(&g_a);
+	CHECK(FinishAndDwell());
+	/* RESULTS after a finished race still returns exactly the raced config,
+	 * on both sides; it is also the last READY proposal (the relink's). */
+	CHECK(g_a.raceConfigValid == 1u);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) != NULL);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_b) != NULL);
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), &first, sizeof(first)) == 0);
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_b), &first, sizeof(first)) == 0);
+	CHECK(g_a.lastReadyValid == 1u);
+	CHECK(memcmp(&g_a.lastReadyConfig, &first, sizeof(first)) == 0);
+	CHECK(memcmp(&g_b.lastReadyConfig, &first, sizeof(first)) == 0);
 	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&first, &expectedSeed) == 1);
 
 	TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
@@ -995,6 +1021,7 @@ static int TestBothRematch(void)
 	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
 	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
 	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(g_a.raceConfigValid == 0u);
 	/* A brand-new link is handshaking on the rematch config, which carries
 	 * the derived seed. */
 	CHECK(NativeLockstepPeerLink_Mode(NativeArcadeNetplay_Link(&g_a)) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
@@ -1642,10 +1669,11 @@ static int TestInRaceDivergenceFromPoll(void)
 }
 
 /* 13. S2: a rematch whose config cannot be built never reuses the old seed.
- * A's current config is corrupted after the race (lapCount 0), so neither
- * the seed nor the config can be built. A opens no lobby at all, refuses
- * every restart (even once the old valid config is put back), and times out
- * to OPPONENT LEFT; RETURN_TO_TITLE clears the block. */
+ * A's rematch source, the last READY proposal, is corrupted after the race
+ * (lapCount 0), so neither the seed nor the config can be built. A opens no
+ * lobby at all, refuses every restart (its current config, the old valid
+ * config with the old seed, is untouched, and the valid source is put back
+ * too), and times out to OPPONENT LEFT; RETURN_TO_TITLE clears the block. */
 static int TestRematchBuildFailureBlocks(void)
 {
 	struct NativeMatchConfigV1 fixture;
@@ -1664,7 +1692,8 @@ static int TestRematchBuildFailureBlocks(void)
 	CHECK(FinishAndDwell());
 	agreed = *NativeArcadeNetplay_AgreedConfig(&g_a);
 
-	g_a.currentConfig.lapCount = 0u;
+	CHECK(memcmp(&g_a.lastReadyConfig, &agreed, sizeof(agreed)) == 0);
+	g_a.lastReadyConfig.lapCount = 0u;
 	TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
 	CHECK(actionA == ACT_BEGIN_REMATCH);
 	CHECK(actionB == ACT_BEGIN_REMATCH);
@@ -1672,13 +1701,14 @@ static int TestRematchBuildFailureBlocks(void)
 	CHECK(g_a.rematchBlocked == 1u);
 	CHECK(g_a.lobbyBegun == 0u);
 	CHECK(NativeArcadeNetplay_Link(&g_a) == NULL);
-	/* The corrupted config was not replaced by a guess either. */
-	CHECK(g_a.currentConfig.lapCount == 0u);
+	/* The current config was not replaced by a guess either: it is still the
+	 * old, valid agreed config with the old seed. */
+	CHECK(memcmp(&g_a.currentConfig, &agreed, sizeof(agreed)) == 0);
 	CHECK(NativeArcadeNetplay_Link(&g_b) != NULL);
-	/* Put the old, valid agreed config (with the old seed) back: from here on
-	 * only the block itself stops a restart from beginning a lobby on the old
-	 * seed, so a Link that stays NULL proves RestartLobby refuses. */
-	g_a.currentConfig = agreed;
+	/* Put the valid rematch source back as well: from here on only the block
+	 * itself stops a restart from beginning a lobby on the old seed, so a
+	 * Link that stays NULL proves RestartLobby refuses. */
+	g_a.lastReadyConfig = agreed;
 
 	for (tick = 0; (tick < DRIVE_BUDGET) && !titleA; tick++)
 	{
@@ -2317,9 +2347,11 @@ static int TestSelectPeerSilence(void)
 	CHECK(g_a.relinked == 0u);
 	CHECK(g_a.outcomeValid == 0u);
 	CHECK(NativeArcadeNetplay_Select(&g_a) == NULL);
-	/* RESULTS shows the select base: nothing was resolved. */
-	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) != NULL);
-	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), &fixture, sizeof(fixture)) == 0);
+	/* No race ran, so RESULTS has no agreed config; the rematch source is the
+	 * select base both held at MATCH_FOUND. */
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(g_a.lastReadyValid == 1u);
+	CHECK(memcmp(&g_a.lastReadyConfig, &fixture, sizeof(fixture)) == 0);
 
 	/* Nothing starts afterwards either. */
 	for (tick = 0; tick < 50u; tick++)
@@ -2383,6 +2415,10 @@ static int TestSelectLaunchTimeout(void)
 	CHECK(DriveBothIntoSelect());
 	CHECK(DriveBothToSelectResult());
 	NativeArcadeNetplay_Shutdown(&g_b);
+	/* RELINK builds on the session's own base (what the exchanged digest
+	 * covers), never on currentConfig: a perturbed currentConfig must not
+	 * change the resolved config. */
+	g_a.currentConfig.masterSeed ^= UINT64_C(1);
 
 	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT); tick++)
 	{
@@ -2417,19 +2453,25 @@ static int TestSelectLaunchTimeout(void)
 	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
 	CHECK(g_a.raceArmed == 0u);
 	CHECK(g_a.matchCount == 0u);
-	/* RESULTS shows the resolved config the relink proposed. */
-	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), &expected, sizeof(expected)) == 0);
+	/* The relink's handshake never completed and no race ran: RESULTS has no
+	 * agreed config, although the current config is the unanswered relink
+	 * proposal. The rematch source is still the select base. */
+	CHECK(memcmp(&g_a.currentConfig, &expected, sizeof(expected)) == 0);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(g_a.lastReadyValid == 1u);
+	CHECK(memcmp(&g_a.lastReadyConfig, &fixture, sizeof(fixture)) == 0);
 
 	ShutdownBoth();
 	return 0;
 }
 
 /* 22b. MS-7: a resolved config that cannot be built blocks the relink. A's
- * current config is corrupted during the result hold (lapCount 0), so
- * RELINK cannot build: A closes the old link, begins nothing, refuses every
- * restart (even once the valid base is put back), and shows LINK ERROR at
- * the launch timeout; it never races on the base config. BEGIN_REMATCH
- * clears the block. */
+ * select session base (what RELINK builds on) is corrupted during the result
+ * hold (lapCount 0), so RELINK cannot build: A closes the old link, begins
+ * nothing, refuses every restart (its current config is still the valid
+ * base, so only the block stops a restart), and shows LINK ERROR at the
+ * launch timeout; it never races on the base config, and RESULTS has no
+ * agreed config. BEGIN_REMATCH clears the block. */
 static int TestSelectRelinkBuildFailureBlocks(void)
 {
 	struct NativeMatchConfigV1 fixture;
@@ -2446,7 +2488,7 @@ static int TestSelectRelinkBuildFailureBlocks(void)
 	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
 	CHECK(DriveBothIntoSelect());
 	CHECK(DriveBothToSelectResult());
-	g_a.currentConfig.lapCount = 0u;
+	g_a.select.base.lapCount = 0u;
 
 	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT); tick++)
 	{
@@ -2469,10 +2511,9 @@ static int TestSelectRelinkBuildFailureBlocks(void)
 			CHECK(g_a.outcomeValid == 0u);
 			CHECK(g_a.lobbyBegun == 0u);
 			CHECK(NativeArcadeNetplay_Link(&g_a) == NULL);
-			/* Not replaced by a guess. */
-			CHECK(g_a.currentConfig.lapCount == 0u);
-			/* The valid base back: only the block stops a restart now. */
-			g_a.currentConfig = fixture;
+			/* Not replaced by a guess: still the valid base, so only the
+			 * block stops a restart from beginning a lobby on it. */
+			CHECK(memcmp(&g_a.currentConfig, &fixture, sizeof(fixture)) == 0);
 		}
 		else
 		{
@@ -2486,6 +2527,7 @@ static int TestSelectRelinkBuildFailureBlocks(void)
 	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
 	CHECK(g_a.relinkBlocked == 1u);
 	CHECK(g_a.matchCount == 0u);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
 
 	/* BEGIN_REMATCH clears the block. */
 	for (tick = 0; tick <= RESULTS_DWELL_TICKS; tick++)
@@ -2608,7 +2650,9 @@ static int TestSelectRematchThroughSelect(void)
 
 /* 24. MS-7: the select nonce (golden values computed independently with
  * .NET System.Security.Cryptography.SHA256 over the documented 39-byte
- * input), and the stale-datagram guard at BEGIN_SELECT. */
+ * input), and the aux-inbox discard at BEGIN_SELECT: whatever is waiting
+ * then is dropped unread, while a datagram arriving after it reaches the
+ * session. */
 static int TestSelectNonceAndAuxDiscard(void)
 {
 	struct NativeMatchConfigV1 fixture;
@@ -2698,14 +2742,440 @@ static int TestSelectNonceAndAuxDiscard(void)
 	CHECK(NativeArcadeNetplay_Link(&g_a) == linkA);
 	CHECK(NativeLockstepPeerLink_AuxCount(linkA) == 0u);
 	CHECK(NativeArcadeNetplay_Select(&g_a) != NULL);
-	/* The junk was discarded unread, never fed to the session. */
-	CHECK(NativeMatchSelectSession_DroppedMalformed(&g_a.select) == 0u);
+	CHECK(NativeMatchSelectSession_Status(&g_a.select) == (uint32_t)NATIVE_MATCH_SELECT_STATUS_PICKING);
+
+	/* One more junk datagram after BEGIN_SELECT does reach the session on
+	 * A's next tick and counts as malformed: the counter witnesses every
+	 * datagram fed, so exactly 1 (not 6) proves the five queued before
+	 * BEGIN_SELECT were discarded unread. */
+	CHECK(NativeLockstepPeerLink_SendAux(linkB, junk, sizeof(junk)) == 1);
+	for (tick = 0; (tick < DRIVE_BUDGET) && (NativeLockstepPeerLink_AuxCount(linkA) < 1u); tick++)
+	{
+		NativeLockstepPeerLink_Poll(linkA);
+	}
+	CHECK(NativeLockstepPeerLink_AuxCount(linkA) == 1u);
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(NativeLockstepPeerLink_AuxCount(linkA) == 0u);
+	CHECK(NativeMatchSelectSession_DroppedMalformed(&g_a.select) == 1u);
 	CHECK(NativeMatchSelectSession_Status(&g_a.select) == (uint32_t)NATIVE_MATCH_SELECT_STATUS_PICKING);
 
 	/* The select still completes and both race. */
 	CHECK(DriveBothUntil(ACT_START_RACE));
 	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), NativeArcadeNetplay_AgreedConfig(&g_b),
 			  sizeof(struct NativeMatchConfigV1)) == 0);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* Sends the peer on toPort one cleanly composed bundle from from's session
+ * with a corrupted body byte and a stale digest, over from's real socket
+ * (the technique of TestInRaceFaultFromPoll): the receiver's next lobby poll
+ * faults its link (BAD_DIGEST) and its lobby reads PEER_LOST. */
+static int SendCorruptBundle(struct NativeArcadeNetplay *from, uint32_t toPort)
+{
+	struct NativeUdpTransportAddress to;
+	struct NativeLockstepPeerLink *link = NativeArcadeNetplay_Link(from);
+	uint8_t bundleBytes[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	size_t bundleSize = 0;
+
+	if ((link == NULL) || !NativeUdpTransport_MakeAddress(&to, "127.0.0.1", (uint16_t)toPort))
+	{
+		return 0;
+	}
+	if (!NativeLockstepSession_ComposeBundle(NativeLockstepPeerLink_Session(link), 0u, bundleBytes, sizeof(bundleBytes),
+			&bundleSize) ||
+		(bundleSize != NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES))
+	{
+		return 0;
+	}
+	bundleBytes[40] ^= 0x01u; /* A pad-region body byte; the trailing digest goes stale. */
+	return NativeUdpTransport_Send(&link->transport, &to, bundleBytes, bundleSize) != 0;
+}
+
+/* 25. MS-7b: a rematch after an asymmetric pre-race failure. Both reach
+ * SELECT on the fixture. A locks all three items and B two; B then locks its
+ * last item on a tick of its own, so B has resolved but cannot confirm (A
+ * has not ticked since, so no resolved record from A exists). B's old link
+ * is then faulted by a corrupted bundle: B shows LINK ERROR still holding the
+ * base and never relinks. A, ticked alone, confirms on B's resolved record,
+ * relinks on the resolved config, and shows LINK ERROR at the launch
+ * timeout. The two current configs now differ (resolved vs base), but the
+ * last READY proposal is the base on both, so the two REMATCH proposals are
+ * byte-identical: both reach READY, go through SELECT again, and race on one
+ * config. Deriving from the current configs would propose two different
+ * configs, which the rematch handshake rejects. */
+static int TestSelectFailureRematchAgrees(void)
+{
+	static const uint32_t lockA[3] = {BTN_CROSS, BTN_CROSS, BTN_CROSS};
+	static const uint32_t lockB[3] = {BTN_CROSS, BTN_CROSS, 0u};
+	static const uint8_t characters[2] = {0u, 1u};
+	static const uint8_t tracks[2] = {FIXTURE_TRACK_CURSOR, FIXTURE_TRACK_CURSOR};
+	static const uint8_t laps[2] = {FIXTURE_LAP_CURSOR, FIXTURE_LAP_CURSOR};
+	const uint8_t allLocks = (uint8_t)(NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK |
+		NATIVE_MATCH_SELECT_LOCK_LAPS);
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 resolved;
+	struct NativeMatchConfigV1 rematchBase;
+	struct NativeMatchConfigV1 expected;
+	const struct NativeMatchConfigV1 *agreedA;
+	const struct NativeMatchConfigV1 *agreedB;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	enum NativeArcadeFlowAction action;
+	uint64_t rematchSeed = 0u;
+	uint32_t tick;
+	int relinkedA = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(ExpectedResolvedConfig(&fixture, characters, tracks, laps, 1u, NULL, &resolved));
+	CHECK(memcmp(&resolved, &fixture, sizeof(fixture)) != 0);
+	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&fixture, &rematchSeed) == 1);
+	CHECK(NativeLockstepRematch_BuildConfig(&fixture, rematchSeed, &rematchBase) == 1);
+	CHECK(ExpectedResolvedConfig(&rematchBase, characters, tracks, laps, 2u, NULL, &expected));
+
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_ASYM_REMATCH_A_PORT, TEST_SELECT_ASYM_REMATCH_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	CHECK(PressScripts(lockA, lockB, 3u));
+	CHECK(NativeMatchSelectSession_Human(&g_a.select, 0u)->lockMask == allLocks);
+	CHECK(NativeMatchSelectSession_Human(&g_b.select, 1u)->lockMask ==
+		(uint8_t)(NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK));
+	/* B has seen all of A's locks (a few idle ticks at most; B's lap item is
+	 * far from its auto-lock). */
+	for (tick = 0; (tick < 10u) && (NativeMatchSelectSession_Human(&g_b.select, 0u)->lockMask != allLocks); tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+	}
+	CHECK(NativeMatchSelectSession_Human(&g_b.select, 0u)->lockMask == allLocks);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+
+	/* B locks its last item alone: resolved, not confirmed. */
+	CHECK(NativeArcadeNetplay_Tick(&g_b, BTN_CROSS, 0u) == ACT_NONE);
+	CHECK(NativeMatchSelectSession_Human(&g_b.select, 1u)->lockMask == allLocks);
+	CHECK(NativeMatchSelectSession_Status(&g_b.select) == (uint32_t)NATIVE_MATCH_SELECT_STATUS_RESOLVED);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+
+	/* B's old link faults before A ticks again: B fails on the base. */
+	CHECK(SendCorruptBundle(&g_a, TEST_SELECT_ASYM_REMATCH_B_PORT));
+	CHECK(TickUntilLeft(&g_b, NATIVE_ARCADE_FLOW_SCREEN_SELECT));
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(NativeLobbyState_Mode(&g_b.lobby) == NATIVE_LOBBY_STATE_PEER_LOST);
+	CHECK(NativeMatchSelectSession_Status(&g_b.select) != (uint32_t)NATIVE_MATCH_SELECT_STATUS_CONFIRMED);
+	CHECK(g_b.relinked == 0u);
+	CHECK(memcmp(&g_b.currentConfig, &fixture, sizeof(fixture)) == 0);
+
+	/* A alone: confirms on B's resolved record, relinks on the resolved
+	 * config, and nobody answers. */
+	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT); tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	}
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+	CHECK(NativeMatchSelectSession_Status(&g_a.select) == (uint32_t)NATIVE_MATCH_SELECT_STATUS_CONFIRMED);
+	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK(action != ACT_START_RACE);
+		if (action == ACT_RELINK)
+		{
+			relinkedA = 1;
+			CHECK(g_a.relinkBlocked == 0u);
+			CHECK(memcmp(&g_a.currentConfig, &resolved, sizeof(resolved)) == 0);
+		}
+	}
+	CHECK(relinkedA);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(g_a.matchCount == 0u);
+	CHECK(g_b.matchCount == 0u);
+
+	/* The asymmetry: different current configs, one shared READY proposal,
+	 * and no agreed race config on either side. */
+	CHECK(memcmp(&g_a.currentConfig, &resolved, sizeof(resolved)) == 0);
+	CHECK(memcmp(&g_a.currentConfig, &g_b.currentConfig, sizeof(g_a.currentConfig)) != 0);
+	CHECK(g_a.lastReadyValid == 1u);
+	CHECK(g_b.lastReadyValid == 1u);
+	CHECK(memcmp(&g_a.lastReadyConfig, &fixture, sizeof(fixture)) == 0);
+	CHECK(memcmp(&g_b.lastReadyConfig, &fixture, sizeof(fixture)) == 0);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_b) == NULL);
+
+	/* Through the results dwell, then both choose REMATCH. */
+	for (tick = 0; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+	}
+	TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_BEGIN_REMATCH);
+	CHECK(actionB == ACT_BEGIN_REMATCH);
+	CHECK(memcmp(&g_a.currentConfig, &rematchBase, sizeof(rematchBase)) == 0);
+	CHECK(memcmp(&g_b.currentConfig, &rematchBase, sizeof(rematchBase)) == 0);
+
+	/* READY on the rematch config, MATCH_FOUND, and SELECT again. */
+	CHECK(DriveBothIntoSelect());
+	CHECK(g_a.selectSerial == 2u);
+	CHECK(g_b.selectSerial == 2u);
+	CHECK(memcmp(&g_a.lastReadyConfig, &rematchBase, sizeof(rematchBase)) == 0);
+	CHECK(memcmp(&g_b.lastReadyConfig, &rematchBase, sizeof(rematchBase)) == 0);
+	CHECK(memcmp(&g_a.select.base, &rematchBase, sizeof(rematchBase)) == 0);
+	CHECK(memcmp(&g_b.select.base, &rematchBase, sizeof(rematchBase)) == 0);
+
+	/* And on to one race. */
+	CHECK(DriveBothToRaceChecked());
+	agreedA = NativeArcadeNetplay_AgreedConfig(&g_a);
+	agreedB = NativeArcadeNetplay_AgreedConfig(&g_b);
+	CHECK(agreedA != NULL);
+	CHECK(agreedB != NULL);
+	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
+	CHECK(memcmp(agreedA, &expected, sizeof(expected)) == 0);
+	CHECK(g_a.matchCount == 1u);
+	CHECK(g_b.matchCount == 1u);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* 26. MS-7b: the select session cannot start. A's current config (the
+ * select base) is corrupted during MATCH_FOUND (lapCount 0), so the
+ * session's Init rejects it at BEGIN_SELECT: selectActive stays 0 and no
+ * session is exposed, the next tick reads FAILED and shows LINK ERROR, and
+ * nothing goes out on the aux route: B's link, polled directly, receives
+ * only a control datagram A sends afterwards. */
+static int TestSelectCannotStart(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeLockstepPeerLink *linkA;
+	struct NativeLockstepPeerLink *linkB;
+	uint8_t control[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	uint8_t bytes[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	size_t size = 0u;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	enum NativeArcadeFlowAction action = ACT_NONE;
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_NO_START_A_PORT, TEST_SELECT_NO_START_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) != NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND); tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK((actionB == ACT_NONE) || (actionB == ACT_BEGIN_SELECT));
+	}
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND);
+	for (tick = 0; (tick < DRIVE_BUDGET) && (LobbyStatusOf(&g_b) != (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY); tick++)
+	{
+		(void)NativeArcadeNetplay_Tick(&g_b, 0u, 0u);
+	}
+	/* B is not ticked again: its aux inbox is only read directly below. */
+	linkA = NativeArcadeNetplay_Link(&g_a);
+	linkB = NativeArcadeNetplay_Link(&g_b);
+	CHECK(NativeLockstepPeerLink_Mode(linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_Mode(linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	while (NativeLockstepPeerLink_TakeAux(linkB, bytes, sizeof(bytes), &size))
+	{
+		/* Nothing from A is expected before its select; start empty. */
+	}
+
+	g_a.currentConfig.lapCount = 0u;
+	for (tick = 0; (tick < DRIVE_BUDGET) && (action != ACT_BEGIN_SELECT); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK((action == ACT_NONE) || (action == ACT_BEGIN_SELECT));
+	}
+	CHECK(action == ACT_BEGIN_SELECT);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(g_a.selectActive == 0u);
+	CHECK(g_a.selectSerial == 1u);
+	CHECK(NativeArcadeNetplay_Select(&g_a) == NULL);
+
+	/* The next tick reads FAILED: LINK ERROR on the still healthy link. */
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	CHECK(NativeArcadeNetplay_Link(&g_a) == linkA);
+	CHECK(g_a.relinked == 0u);
+	CHECK(g_a.outcomeValid == 0u);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	for (tick = 0; tick < 5u; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	}
+
+	/* A control datagram sent now is the first and only one B receives, so
+	 * A sent nothing on the aux route before it. */
+	memset(control, 0x5C, sizeof(control));
+	CHECK(NativeLockstepPeerLink_SendAux(linkA, control, sizeof(control)) == 1);
+	for (tick = 0; (tick < DRIVE_BUDGET) && (NativeLockstepPeerLink_AuxCount(linkB) < 1u); tick++)
+	{
+		NativeLockstepPeerLink_Poll(linkB);
+	}
+	for (tick = 0; tick < 20u; tick++)
+	{
+		NativeLockstepPeerLink_Poll(linkB);
+	}
+	CHECK(NativeLockstepPeerLink_AuxCount(linkB) == 1u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_TakeAux(linkB, bytes, sizeof(bytes), &size) == 1);
+	CHECK(size == sizeof(control));
+	CHECK(memcmp(bytes, control, sizeof(control)) == 0);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* 27. MS-7b: BACK (TRIANGLE) is ignored on SELECT and on SELECT_RESULT at
+ * the adapter level. An armed press and then a held TRIANGLE return NONE
+ * (never CLOSE_LINK), keep the screen and the link, and leave the local
+ * selection exactly as it was; the select still runs on to START_RACE. */
+static int TestSelectBackIgnored(void)
+{
+	static const uint32_t lockCharacter[1] = {BTN_CROSS};
+	static const uint8_t characters[2] = {0u, 1u};
+	static const uint8_t tracks[2] = {FIXTURE_TRACK_CURSOR, FIXTURE_TRACK_CURSOR};
+	static const uint8_t laps[2] = {FIXTURE_LAP_CURSOR, FIXTURE_LAP_CURSOR};
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	struct NativeMatchSelectHumanState beforeA;
+	struct NativeMatchSelectHumanState beforeB;
+	const struct NativeMatchSelectHumanState *human;
+	const struct NativeMatchConfigV1 *agreedA;
+	const struct NativeMatchConfigV1 *agreedB;
+	struct NativeArcadeNetplayView view;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(ExpectedResolvedConfig(&fixture, characters, tracks, laps, 1u, NULL, &expected));
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_BACK_A_PORT, TEST_SELECT_BACK_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	CHECK(PressScripts(lockCharacter, lockCharacter, 1u));
+	beforeA = *NativeMatchSelectSession_Human(&g_a.select, 0u);
+	beforeB = *NativeMatchSelectSession_Human(&g_b.select, 1u);
+	CHECK(beforeA.lockMask == (uint8_t)NATIVE_MATCH_SELECT_LOCK_CHARACTER);
+	CHECK(beforeB.lockMask == (uint8_t)NATIVE_MATCH_SELECT_LOCK_CHARACTER);
+
+	/* SELECT: an armed TRIANGLE press, then TRIANGLE held. */
+	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+	CHECK(view.menuArmed == 1u);
+	CHECK(NativeArcadeNetplay_GetView(&g_b, &view) == 1);
+	CHECK(view.menuArmed == 1u);
+	for (tick = 0; tick < 4u; tick++)
+	{
+		TickBoth(BTN_TRIANGLE, BTN_TRIANGLE, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+		CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+		CHECK(NativeArcadeNetplay_Link(&g_a) != NULL);
+		CHECK(NativeArcadeNetplay_Link(&g_b) != NULL);
+		human = NativeMatchSelectSession_Human(&g_a.select, 0u);
+		CHECK((human->lockMask == beforeA.lockMask) && (human->currentItem == beforeA.currentItem) &&
+			(human->characterID == beforeA.characterID) && (human->trackID == beforeA.trackID) &&
+			(human->lapCount == beforeA.lapCount));
+		human = NativeMatchSelectSession_Human(&g_b.select, 1u);
+		CHECK((human->lockMask == beforeB.lockMask) && (human->currentItem == beforeB.currentItem) &&
+			(human->characterID == beforeB.characterID) && (human->trackID == beforeB.trackID) &&
+			(human->lapCount == beforeB.lapCount));
+	}
+	TickBoth(0u, 0u, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_NONE);
+	CHECK(actionB == ACT_NONE);
+
+	/* SELECT_RESULT, before RELINK: one released tick arms the new screen,
+	 * then an armed TRIANGLE press and a held one. */
+	CHECK(DriveBothToSelectResult());
+	TickBoth(0u, 0u, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_NONE);
+	CHECK(actionB == ACT_NONE);
+	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+	CHECK(view.menuArmed == 1u);
+	CHECK(NativeArcadeNetplay_GetView(&g_b, &view) == 1);
+	CHECK(view.menuArmed == 1u);
+	for (tick = 0; tick < 2u; tick++)
+	{
+		TickBoth(BTN_TRIANGLE, BTN_TRIANGLE, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+		CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+		CHECK(g_a.relinked == 0u);
+		CHECK(g_b.relinked == 0u);
+		CHECK(NativeArcadeNetplay_Link(&g_a) != NULL);
+		CHECK(NativeArcadeNetplay_Link(&g_b) != NULL);
+	}
+
+	/* The select runs on to the race as if nothing was pressed. */
+	CHECK(DriveBothToRaceChecked());
+	agreedA = NativeArcadeNetplay_AgreedConfig(&g_a);
+	agreedB = NativeArcadeNetplay_AgreedConfig(&g_b);
+	CHECK(agreedA != NULL);
+	CHECK(agreedB != NULL);
+	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
+	CHECK(memcmp(agreedA, &expected, sizeof(expected)) == 0);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* 28. MS-7b: the old link is lost during SELECT. B sends A a corrupted
+ * bundle over its real socket; A's lobby poll faults the link and reads
+ * PEER_LOST, and the flow leaves SELECT for LINK ERROR on the lobby status
+ * alone (A's select session is still PICKING, not FAILED). A never relinks
+ * or races, and RESULTS has no agreed config. */
+static int TestSelectOldLinkLost(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	enum NativeArcadeFlowAction action;
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_LINK_LOST_A_PORT, TEST_SELECT_LINK_LOST_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	for (tick = 0; tick < 5u; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+	}
+
+	CHECK(SendCorruptBundle(&g_b, TEST_SELECT_LINK_LOST_A_PORT));
+	CHECK(TickUntilLeft(&g_a, NATIVE_ARCADE_FLOW_SCREEN_SELECT));
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(NativeLobbyState_Mode(&g_a.lobby) == NATIVE_LOBBY_STATE_PEER_LOST);
+	CHECK(NativeLockstepPeerLink_Mode(NativeArcadeNetplay_Link(&g_a)) == NATIVE_LOCKSTEP_PEER_LINK_FAULTED);
+	CHECK(NativeMatchSelectSession_Status(&g_a.select) == (uint32_t)NATIVE_MATCH_SELECT_STATUS_PICKING);
+	CHECK(g_a.relinked == 0u);
+	CHECK(g_a.outcomeValid == 0u);
+	CHECK(NativeArcadeNetplay_Select(&g_a) == NULL);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(memcmp(&g_a.lastReadyConfig, &fixture, sizeof(fixture)) == 0);
+
+	for (tick = 0; tick < 20u; tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK(action != ACT_START_RACE);
+		CHECK(action != ACT_RELINK);
+	}
 
 	ShutdownBoth();
 	return 0;
@@ -2738,6 +3208,10 @@ int main(void)
 	CHECK(TestSelectRelinkBuildFailureBlocks() == 0);
 	CHECK(TestSelectRematchThroughSelect() == 0);
 	CHECK(TestSelectNonceAndAuxDiscard() == 0);
+	CHECK(TestSelectFailureRematchAgrees() == 0);
+	CHECK(TestSelectCannotStart() == 0);
+	CHECK(TestSelectBackIgnored() == 0);
+	CHECK(TestSelectOldLinkLost() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }

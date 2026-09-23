@@ -116,6 +116,7 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
  * which reads as WAITING, so the flow's retry pause tries again. */
 static void NativeArcadeNetplay_BeginLobby(struct NativeArcadeNetplay *netplay)
 {
+	netplay->lobbyReadySeen = 0u;
 	netplay->lobbyBegun = (uint8_t)(NativeLobbyState_Begin(&netplay->lobby, netplay->config.localPort,
 										netplay->config.candidates, netplay->config.candidateCount,
 										&netplay->currentConfig, netplay->config.localRole,
@@ -127,6 +128,7 @@ static void NativeArcadeNetplay_CloseLobby(struct NativeArcadeNetplay *netplay)
 {
 	NativeLobbyState_Close(&netplay->lobby);
 	netplay->lobbyBegun = 0u;
+	netplay->lobbyReadySeen = 0u;
 	netplay->raceArmed = 0u;
 }
 
@@ -144,6 +146,7 @@ static void NativeArcadeNetplay_RestartLobby(struct NativeArcadeNetplay *netplay
 	}
 	if ((netplay->lobbyBegun != 0u) && NativeLobbyState_RestartCycle(&netplay->lobby))
 	{
+		netplay->lobbyReadySeen = 0u;
 		return;
 	}
 	NativeArcadeNetplay_CloseLobby(netplay);
@@ -195,6 +198,8 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
 		netplay->currentConfig = netplay->config.fixture;
 		netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 		netplay->rematchBlocked = 0u;
+		netplay->raceConfigValid = 0u;
+		netplay->lastReadyValid = 0u;
 		NativeArcadeNetplay_ClearSelect(netplay);
 		NativeArcadeNetplay_BeginLobby(netplay);
 	}
@@ -202,14 +207,19 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
 }
 
 /*
- * BEGIN_REMATCH (UX-7): both cabinets derive the same seed from the same
- * agreed config, so both propose the same rematch config on a brand-new
- * lobby, link, and session. If the seed or the config cannot be built (a
- * defensive path only: the current config was validated when it was
- * proposed), no lobby is begun and the rematch is blocked: RestartLobby
- * begins nothing while rematchBlocked is set, so the flow reads WAITING
- * until the rematch wait times out to OPPONENT LEFT. The old config, and so
- * the old seed, is never proposed again, and nothing races on a guess.
+ * BEGIN_REMATCH (UX-7): both cabinets derive the same seed from
+ * lastReadyConfig, the proposal of the last lobby that reached READY, which
+ * the handshake proved both hold byte-identically. The current config is not
+ * used: after a pre-race failure it can differ between the two sides (one
+ * relinked on the resolved config, the other still holds the base). Both
+ * therefore propose the same rematch config on a brand-new lobby, link, and
+ * session. If no lobby reached READY since Enter, or the seed or the config
+ * cannot be built (a defensive path only: the READY proposal was validated
+ * when it was proposed), no lobby is begun and the rematch is blocked:
+ * RestartLobby begins nothing while rematchBlocked is set, so the flow reads
+ * WAITING until the rematch wait times out to OPPONENT LEFT. The old config,
+ * and so the old seed, is never proposed again, and nothing races on a
+ * guess.
  */
 static void NativeArcadeNetplay_BeginRematch(struct NativeArcadeNetplay *netplay)
 {
@@ -217,12 +227,13 @@ static void NativeArcadeNetplay_BeginRematch(struct NativeArcadeNetplay *netplay
 	uint64_t seed = 0u;
 	int built = 0;
 
-	if (NativeArcadeNetplay_DeriveRematchSeed(&netplay->currentConfig, &seed))
+	if ((netplay->lastReadyValid != 0u) && NativeArcadeNetplay_DeriveRematchSeed(&netplay->lastReadyConfig, &seed))
 	{
-		built = NativeLockstepRematch_BuildConfig(&netplay->currentConfig, seed, &next);
+		built = NativeLockstepRematch_BuildConfig(&netplay->lastReadyConfig, seed, &next);
 	}
 	NativeArcadeNetplay_CloseLobby(netplay);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+	netplay->raceConfigValid = 0u;
 	NativeArcadeNetplay_ClearSelect(netplay);
 	if (!built)
 	{
@@ -287,8 +298,10 @@ static uint8_t NativeArcadeNetplay_LapsOrFirst(uint32_t value)
 
 /*
  * BEGIN_SELECT (docs/MATCH_SELECT_MILESTONE.md section 2.6): a fresh select
- * on the agreed lobby config. Stale aux datagrams are discarded first (the
- * peer resends its full state every tick). humanCount is the base's number
+ * on the agreed lobby config. The aux inbox is emptied first. On a fresh
+ * link that mostly discards the peer's early, valid records (it entered
+ * SELECT first), which is harmless because the peer resends its full state
+ * every tick; it also discards anything stale. humanCount is the base's number
  * of human-role slots, which is exactly the count BuildConfig accepts for
  * this base; the session's own Init rejects a count or local human it
  * cannot serve, and then selectActive stays 0 and the flow reads FAILED.
@@ -305,6 +318,7 @@ static void NativeArcadeNetplay_BeginSelect(struct NativeArcadeNetplay *netplay)
 	NativeArcadeNetplay_DiscardAux(netplay);
 	NativeArcadeNetplay_ClearSelect(netplay);
 	netplay->outcomeValid = 0u;
+	netplay->raceConfigValid = 0u;
 	netplay->selectSerial += 1u;
 
 	for (slot = 0u; slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; slot++)
@@ -331,7 +345,9 @@ static void NativeArcadeNetplay_BeginSelect(struct NativeArcadeNetplay *netplay)
 
 /*
  * RELINK: the old link is closed in every case, so a READY from it can never
- * start a race. On success the resolved config becomes the current config
+ * start a race. The resolved config is built on the session's own base, the
+ * config its exchanged base digest covers, so both cabinets build on what
+ * the select agreed. On success the resolved config becomes the current config
  * and a new lobby is begun on it; the relink handshake re-checks it byte for
  * byte. On failure nothing is begun and the relink is blocked, so the flow
  * reads WAITING until its launch timeout shows LINK ERROR: it never races on
@@ -349,7 +365,7 @@ static void NativeArcadeNetplay_Relink(struct NativeArcadeNetplay *netplay)
 	}
 	if (outcome != NULL)
 	{
-		built = NativeMatchSelect_BuildConfig(&netplay->currentConfig, outcome, &resolved);
+		built = NativeMatchSelect_BuildConfig(&netplay->select.base, outcome, &resolved);
 	}
 	NativeArcadeNetplay_CloseLobby(netplay);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
@@ -479,6 +495,7 @@ static void NativeArcadeNetplay_ArmRace(struct NativeArcadeNetplay *netplay)
 	(void)NativeLockstepMatchRoster_Init(&netplay->roster, &netplay->currentConfig);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 	netplay->raceArmed = 1u;
+	netplay->raceConfigValid = 1u;
 	netplay->matchCount += 1u;
 }
 
@@ -501,6 +518,17 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	if (netplay->lobbyBegun != 0u)
 	{
 		NativeLobbyState_Poll(&netplay->lobby);
+	}
+
+	/* 2a. The first READY of this lobby: its proposal (the current config,
+	 * which is what BeginLobby proposed) is now held byte-identically by the
+	 * peer. Kept as the rematch source. */
+	if ((netplay->lobbyBegun != 0u) && (netplay->lobbyReadySeen == 0u) &&
+		(NativeLobbyState_Mode(&netplay->lobby) == NATIVE_LOBBY_STATE_READY))
+	{
+		netplay->lastReadyConfig = netplay->currentConfig;
+		netplay->lastReadyValid = 1u;
+		netplay->lobbyReadySeen = 1u;
 	}
 
 	/* 2b. That poll drains bundles into the session. If it found the link
@@ -571,6 +599,7 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 		NativeArcadeNetplay_CloseLobby(netplay);
 		netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 		netplay->rematchBlocked = 0u;
+		netplay->raceConfigValid = 0u;
 		NativeArcadeNetplay_ClearSelect(netplay);
 		break;
 	case NATIVE_ARCADE_FLOW_ACTION_NONE:
@@ -633,11 +662,14 @@ int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struc
 }
 
 /*
- * The current proposal is the agreed config: the handshake only reaches
- * COMPLETE when both proposals are byte-identical (docs/LOBBY_MILESTONE.md
- * section 2.2; validate-and-reject, not negotiation), and the flow only
- * reaches RACING on READY of the relink, whose proposal is the resolved
- * config. MATCH_FOUND and the select screens hold only the select base.
+ * The current proposal is the agreed config once a race was armed on it: the
+ * handshake only reaches COMPLETE when both proposals are byte-identical
+ * (docs/LOBBY_MILESTONE.md section 2.2; validate-and-reject, not
+ * negotiation), and the flow only reaches RACING on READY of the relink,
+ * whose proposal is the resolved config. MATCH_FOUND and the select screens
+ * hold only the select base, and RESULTS reached without START_RACE (a
+ * select failure, a blocked relink, a launch timeout) holds a config no
+ * race ran on, so all of those read NULL.
  */
 const struct NativeMatchConfigV1 *NativeArcadeNetplay_AgreedConfig(const struct NativeArcadeNetplay *netplay)
 {
@@ -648,7 +680,11 @@ const struct NativeMatchConfigV1 *NativeArcadeNetplay_AgreedConfig(const struct 
 		return NULL;
 	}
 	screen = NativeArcadeFlow_Screen(&netplay->flow);
-	if ((screen == NATIVE_ARCADE_FLOW_SCREEN_RACING) || (screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS))
+	if (screen == NATIVE_ARCADE_FLOW_SCREEN_RACING)
+	{
+		return &netplay->currentConfig;
+	}
+	if ((screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (netplay->raceConfigValid != 0u))
 	{
 		return &netplay->currentConfig;
 	}
@@ -778,6 +814,9 @@ void NativeArcadeNetplay_Shutdown(struct NativeArcadeNetplay *netplay)
 	netplay->lobbyBegun = 0u;
 	netplay->raceArmed = 0u;
 	netplay->rematchBlocked = 0u;
+	netplay->raceConfigValid = 0u;
+	netplay->lobbyReadySeen = 0u;
+	netplay->lastReadyValid = 0u;
 	NativeArcadeNetplay_ClearSelect(netplay);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 }
