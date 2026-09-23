@@ -493,6 +493,8 @@ const char *NativeArcadeRosterProof_ResultName(uint32_t result)
 		return "DRIVERS_FAILED";
 	case NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED:
 		return "DIGEST_FAILED";
+	case NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH:
+		return "PIN_MISMATCH";
 	default:
 		return "UNKNOWN";
 	}
@@ -506,19 +508,31 @@ int NativeArcadeRosterProof_SeedsMatch(const struct NativeArcadeRetailRngSeedsV1
 	       (produced->psxRandSeed == stored->psxRandSeed) && (produced->audioRNG == stored->audioRNG);
 }
 
+int NativeArcadeRosterProof_PinsMatch(const struct NativeArcadeRosterProofPins *produced,
+	const struct NativeArcadeRosterProofPins *stored)
+{
+	return (produced != NULL) && (stored != NULL) && (produced->timer == stored->timer) &&
+	       (produced->frameTimerConfetti == stored->frameTimerConfetti);
+}
+
 uint32_t NativeArcadeRosterProof_FinalResult(uint32_t requested, const struct NativeArcadeRosterProofReport *report)
 {
 	if (requested != (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PASS)
 	{
 		return requested;
 	}
-	if ((report == NULL) || (report->digestsValid == 0u) || (report->slotsValid == 0u) || (report->seedValid == 0u))
+	if ((report == NULL) || (report->digestsValid == 0u) || (report->slotsValid == 0u) || (report->seedValid == 0u) ||
+	    (report->pinValid == 0u))
 	{
 		return (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING;
 	}
 	if (report->seedMatch == 0u)
 	{
 		return (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH;
+	}
+	if (report->pinMatch == 0u)
+	{
+		return (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH;
 	}
 	return (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PASS;
 }
@@ -640,7 +654,7 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_Name(report->setupStatusName, statusName);
 	NativeArcadeRosterProof_Name(report->setupFailureName, failureName);
 
-	NativeArcadeRosterProof_Append(&text, "arcade roster proof v4\n");
+	NativeArcadeRosterProof_Append(&text, "arcade roster proof v5\n");
 	NativeArcadeRosterProof_Append(&text, "drivers digest excludes physics\n");
 	NativeArcadeRosterProof_Append(&text, "result %s (%u)\n", NativeArcadeRosterProof_ResultName(report->result),
 		(unsigned)report->result);
@@ -660,17 +674,19 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_AppendDigest(&text, "race plan digest", report->racePlanDigest, digestsValid);
 	NativeArcadeRosterProof_AppendDigest(&text, "bot setup plan digest", report->botSetupPlanDigest, digestsValid);
 	NativeArcadeRosterProof_AppendDigest(&text, "bank digest", report->bankDigest, digestsValid);
-	if (report->seedValid == 0u)
+	if ((report->seedValid == 0u) || (report->pinValid == 0u))
 	{
 		NativeArcadeRosterProof_Append(&text, "seeded none\n");
 	}
 	else
 	{
 		NativeArcadeRosterProof_Append(&text,
-			"seeded randomNumber 0x%04X advRng0 0x%08X advRng1 0x%08X psxRand 0x%08X audioRNG 0x%08X match %u\n",
+			"seeded randomNumber 0x%04X advRng0 0x%08X advRng1 0x%08X psxRand 0x%08X audioRNG 0x%08X "
+			"timer %ld frameTimerConfetti %ld match %u\n",
 			(unsigned)report->seedStored.randomNumber, (unsigned)report->seedStored.advRng0,
 			(unsigned)report->seedStored.advRng1, (unsigned)report->seedStored.psxRandSeed,
-			(unsigned)report->seedStored.audioRNG, (report->seedMatch != 0u) ? 1u : 0u);
+			(unsigned)report->seedStored.audioRNG, (long)report->pinStored.timer, (long)report->pinStored.frameTimerConfetti,
+			((report->seedMatch != 0u) && (report->pinMatch != 0u)) ? 1u : 0u);
 	}
 	for (uint32_t slot = 0; slot < NATIVE_ARCADE_ROSTER_PROOF_SLOT_COUNT; slot++)
 	{

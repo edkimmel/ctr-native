@@ -308,7 +308,7 @@ static int TestExitCodes(void)
 		NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT, NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT,
 		NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH, NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING,
 		NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT, NATIVE_ARCADE_ROSTER_PROOF_DRIVERS_FAILED,
-		NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED};
+		NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED, NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH};
 	struct NativeIdentityV1 identity;
 	struct NativeArcadeRosterProofOptions options;
 
@@ -324,6 +324,7 @@ static int TestExitCodes(void)
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT), "RACE_TICK_TIMEOUT") == 0);
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_DRIVERS_FAILED), "DRIVERS_FAILED") == 0);
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED), "DIGEST_FAILED") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH), "PIN_MISMATCH") == 0);
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(1u), "UNKNOWN") == 0);
 
 	/* Inactive: every exit path keeps its own code (a default run is unchanged). */
@@ -599,7 +600,7 @@ static int TestTickLines(void)
 	(void)fclose(file);
 	(void)remove(path);
 	text[length] = '\0';
-	CHECK(strncmp(text, "arcade roster proof v4\ndrivers digest excludes physics\nresult PASS (0)\n", 71u) == 0);
+	CHECK(strncmp(text, "arcade roster proof v5\ndrivers digest excludes physics\nresult PASS (0)\n", 71u) == 0);
 	CHECK(strstr(text, "\ndwell 0\nticks 3\nmenu ready tick 732\n") != NULL);
 	CHECK(strstr(text, "\nvalidated tick 762\nrace tick 0 tick 762\nconfig digest none\n") != NULL);
 	CHECK(strstr(text, "slot 7 none\n"
@@ -618,6 +619,8 @@ static int TestSeedsAndFinalResult(void)
 {
 	struct NativeArcadeRetailRngSeedsV1 produced;
 	struct NativeArcadeRetailRngSeedsV1 stored;
+	struct NativeArcadeRosterProofPins pinsProduced;
+	struct NativeArcadeRosterProofPins pinsStored;
 	struct NativeArcadeRosterProofReport report;
 
 	produced.randomNumber = 0x7D2Eu;
@@ -660,12 +663,32 @@ static int TestSeedsAndFinalResult(void)
 	CHECK(NativeArcadeRosterProof_SeedsMatch(NULL, &stored) == 0);
 	CHECK(NativeArcadeRosterProof_SeedsMatch(&produced, NULL) == 0);
 
-	/* PASS needs the digests, the slot facts, and a matching readback. */
+	/* The pinned counters (RS-17): either one differing, or swapped, is a mismatch. */
+	pinsProduced.timer = 0;
+	pinsProduced.frameTimerConfetti = 0;
+	pinsStored = pinsProduced;
+	CHECK(NativeArcadeRosterProof_PinsMatch(&pinsProduced, &pinsStored) == 1);
+	pinsStored.timer = 37;
+	CHECK(NativeArcadeRosterProof_PinsMatch(&pinsProduced, &pinsStored) == 0);
+	pinsStored = pinsProduced;
+	pinsStored.frameTimerConfetti = -1;
+	CHECK(NativeArcadeRosterProof_PinsMatch(&pinsProduced, &pinsStored) == 0);
+	pinsProduced.timer = 1;
+	pinsStored.timer = 0;
+	pinsStored.frameTimerConfetti = 1;
+	pinsProduced.frameTimerConfetti = 0;
+	CHECK(NativeArcadeRosterProof_PinsMatch(&pinsProduced, &pinsStored) == 0);
+	CHECK(NativeArcadeRosterProof_PinsMatch(NULL, &pinsStored) == 0);
+	CHECK(NativeArcadeRosterProof_PinsMatch(&pinsProduced, NULL) == 0);
+
+	/* PASS needs the digests, the slot facts, and matching seed and pin readbacks. */
 	memset(&report, 0, sizeof(report));
 	report.digestsValid = 1u;
 	report.slotsValid = 1u;
 	report.seedValid = 1u;
 	report.seedMatch = 1u;
+	report.pinValid = 1u;
+	report.pinMatch = 1u;
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_PASS);
 	report.digestsValid = 0u;
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
@@ -676,7 +699,14 @@ static int TestSeedsAndFinalResult(void)
 	report.seedValid = 0u;
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
 	report.seedValid = 1u;
+	report.pinValid = 0u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.pinValid = 1u;
+	report.pinMatch = 0u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH);
 	report.seedMatch = 0u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH);
+	report.pinMatch = 1u;
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH);
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, NULL) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
 	/* A failure is reported as requested, whatever the evidence. */
@@ -759,10 +789,14 @@ static int TestSingletonAndReport(void)
 	report.seedStored.advRng1 = 0x78DFDBA8u;
 	report.seedStored.psxRandSeed = 0x1472E10Bu;
 	report.seedStored.audioRNG = 0x75599A57u;
+	report.pinValid = 1u;
+	report.pinMatch = 1u;
+	report.pinStored.timer = 0;
+	report.pinStored.frameTimerConfetti = 0;
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(length == strlen(text));
 	{
-		static const char head[] = "arcade roster proof v4\ndrivers digest excludes physics\nresult PASS (0)\n"
+		static const char head[] = "arcade roster proof v5\ndrivers digest excludes physics\nresult PASS (0)\n"
 		                           "setup status VALIDATED (4)\nsetup failure NONE (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
@@ -774,11 +808,23 @@ static int TestSingletonAndReport(void)
 	CHECK(strstr(text, "slot 2 role BOT character 6 difficulty 0xA0 spawn 2 nav 1 accel 3\n") != NULL);
 	CHECK(strstr(text, "slot 7 role INACTIVE\n") != NULL);
 	CHECK(strstr(text, "bank digest 0000000000000000000000000000000000000000000000000000000000000000\n"
-	                   "seeded randomNumber 0x7D2E advRng0 0x60C79386 advRng1 0x78DFDBA8 psxRand 0x1472E10B audioRNG 0x75599A57 match 1\n"
+	                   "seeded randomNumber 0x7D2E advRng0 0x60C79386 advRng1 0x78DFDBA8 psxRand 0x1472E10B audioRNG 0x75599A57 "
+	                   "timer 0 frameTimerConfetti 0 match 1\n"
 	                   "slot 0 ") != NULL);
+	/* "match" is 1 only when both the seeds and the pins match. */
 	report.seedMatch = 0u;
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
-	CHECK(strstr(text, "audioRNG 0x75599A57 match 0\n") != NULL);
+	CHECK(strstr(text, "audioRNG 0x75599A57 timer 0 frameTimerConfetti 0 match 0\n") != NULL);
+	report.seedMatch = 1u;
+	report.pinMatch = 0u;
+	report.pinStored.timer = -37;
+	report.pinStored.frameTimerConfetti = 74;
+	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, "audioRNG 0x75599A57 timer -37 frameTimerConfetti 74 match 0\n") != NULL);
+	report.pinValid = 0u;
+	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, "\nseeded none\n") != NULL);
+	report.pinValid = 1u;
 	report.seedValid = 0u;
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(strstr(text, "\nseeded none\n") != NULL);

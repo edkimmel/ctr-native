@@ -50,7 +50,11 @@
 #     holds no other store; outside MainArcadeRaceSetup_Apply the adapter
 #     stores to no retail field (gGT, sdata, data in any member spelling,
 #     compound assignment, increment, address taken, or mem* destination) and
-#     never calls PSX_BIOS_SetRandSeed or MainRaceTrack_RequestLoad;
+#     never calls PSX_BIOS_SetRandSeed or MainRaceTrack_RequestLoad; the core
+#     names the two boot-relative pin targets (gGT->timer,
+#     gGT->frameTimer_Confetti; RS-17, R-6c) exactly once each, only in its
+#     seeding step, after the load-field verification and before the first
+#     seed, at their documented values;
 # 12. the proof's scripted pads and per-tick digests (R-6):
 #     MainArcadeRosterProof_Start is named only by main.c (once, in an
 #     internal-build guard, after the proof was configured and before
@@ -665,9 +669,11 @@ set(expected_ADV_RNG0 "sdata->advRng.state0 = (uint32_t)op->value;")
 set(expected_ADV_RNG1 "sdata->advRng.state1 = (uint32_t)op->value;")
 set(expected_PSX_RAND_SEED "PSX_BIOS_SetRandSeed((uint32_t)op->value);")
 set(expected_AUDIO_RNG "sdata->audioRNG = (uint32_t)op->value;")
+set(expected_TIMER "gGT->timer = (int)(int32_t)op->value;")
+set(expected_FRAME_TIMER_CONFETTI "gGT->frameTimer_Confetti = (int)(int32_t)op->value;")
 list(LENGTH declared_targets declared_target_count)
-if(NOT declared_target_count EQUAL 13)
-    message(FATAL_ERROR "${prefix}: ${core_header_path} declares ${declared_target_count} write targets besides NONE, expected 13; map every new target here and in MainArcadeRaceSetup_Apply")
+if(NOT declared_target_count EQUAL 15)
+    message(FATAL_ERROR "${prefix}: ${core_header_path} declares ${declared_target_count} write targets besides NONE, expected 15; map every new target here and in MainArcadeRaceSetup_Apply")
 endif()
 set(apply_remaining "${apply_body}")
 foreach(target IN LISTS declared_targets)
@@ -718,6 +724,33 @@ ctr_retail_stores("${before_apply}${after_apply}" outside_stores)
 if(NOT "${outside_stores}" STREQUAL "")
     message(FATAL_ERROR "${prefix}: ${adapter_source} stores to retail state outside MainArcadeRaceSetup_Apply (${outside_stores})")
 endif()
+
+# 11, continued. The boot-relative pins (RS-17, R-6c): the core names each pin target
+# exactly once, inside MainArcadeRaceSetupCore_OnFinalizeInitBegin, after the
+# load-field verification and the seed derivation and between the re-applied
+# mode fields and the first seed, with the documented values.
+ctr_find_block("${core_source}" "${core_code}" "int MainArcadeRaceSetupCore_OnFinalizeInitBegin(" begin_body_begin begin_body_end)
+math(EXPR begin_body_length "${begin_body_end} - ${begin_body_begin} + 1")
+string(SUBSTRING "${core_code}" ${begin_body_begin} ${begin_body_length} begin_body)
+foreach(pin IN ITEMS MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI)
+    ctr_count_identifier("${core_code}" "${pin}" pin_hits)
+    ctr_count_identifier("${begin_body}" "${pin}" pin_body_hits)
+    if(NOT pin_hits EQUAL 1 OR NOT pin_body_hits EQUAL 1)
+        message(FATAL_ERROR "${prefix}: ${core_source} must name ${pin} exactly once, in MainArcadeRaceSetupCore_OnFinalizeInitBegin (found ${pin_hits}, ${pin_body_hits} there)")
+    endif()
+endforeach()
+ctr_require_order("${core_source} (MainArcadeRaceSetupCore_OnFinalizeInitBegin)" "${begin_body}"
+    "if (core->status != (uint32_t)MAIN_ARCADE_RACE_SETUP_LAUNCHED)"
+    "view->fields.levelID != core->plan.levelID"
+    "NativeArcadeBotRules_DeriveRetailSeedsV1(&scratch->seedBank, &seeds)"
+    "pins.timer = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_TIMER;"
+    "pins.frameTimerConfetti = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_FRAME_TIMER_CONFETTI;"
+    "MainArcadeRaceSetupCore_PushModeFields(outcome, &fields);"
+    "MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER, 0u, (int64_t)pins.timer);"
+    "MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI, 0u,"
+    "MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RANDOM_NUMBER")
+ctr_require("${core_header_path}" "${core_header_code}" "#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_TIMER 0\n")
+ctr_require("${core_header_path}" "${core_header_code}" "#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_FRAME_TIMER_CONFETTI 0\n")
 
 # 12. The proof's scripted pads and per-tick digests (R-6).
 set(mainmain_path "game/MAIN/MainMain.c")

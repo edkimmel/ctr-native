@@ -541,6 +541,7 @@ static int TestFinalizeInitBegin(void)
 	static const uint8_t expectedTargets[] = {
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_GAME_MODE1, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_GAME_MODE2,
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ARCADE_DIFFICULTY, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_BOOL_DEMO_MODE,
+		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI,
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RANDOM_NUMBER, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG0,
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG1, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_PSX_RAND_SEED,
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_AUDIO_RNG};
@@ -614,9 +615,13 @@ static int TestFinalizeInitBegin(void)
 	CHECK(s_outcome.ops[1].value == (int64_t)MAIN_ARCADE_RACE_SETUP_GM2_TRANSIENT_MASK);
 	CHECK(s_outcome.ops[2].value == (int64_t)s_plan.arcadeDifficulty);
 	CHECK(s_outcome.ops[3].value == 0);
+	/* The pinned boot-relative counters (RS-17): both at 0, before the seeds. */
+	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_PIN_TIMER == 0 && MAIN_ARCADE_RACE_SETUP_CORE_PIN_FRAME_TIMER_CONFETTI == 0);
+	CHECK(s_outcome.ops[4].value == 0 && s_outcome.ops[5].value == 0);
+	CHECK(s_outcome.pins.timer == 0 && s_outcome.pins.frameTimerConfetti == 0);
 	for (uint32_t i = 0; i < 5u; i++)
 	{
-		CHECK(s_outcome.ops[4u + i].value == goldenSeeds[i]);
+		CHECK(s_outcome.ops[6u + i].value == goldenSeeds[i]);
 	}
 	CHECK((int64_t)s_outcome.seeds.randomNumber == goldenSeeds[0] && (int64_t)s_outcome.seeds.audioRNG == goldenSeeds[4]);
 	/* The core keeps the post-seed bank: five draws in. */
@@ -652,6 +657,42 @@ static int TestFinalizeInitBegin(void)
 	CHECK(ArmLaunchSeedValidate(&s_other) == 1);
 	CHECK(MainArcadeRaceSetupCore_RecordSeedReadback(&s_other, &stored) == 0);
 	CHECK(MainArcadeRaceSetupCore_SeedReadback(&s_other, &produced, &readback) == 0);
+
+	/* The pin readback (RS-17), with the same rules: recorded once, only in
+	 * SEEDED, returned with the produced pins; the core only stores it. */
+	{
+		struct MainArcadeRaceSetupPins pinsProduced;
+		struct MainArcadeRaceSetupPins pinsReadback;
+		struct MainArcadeRaceSetupPins pinsStored;
+
+		CHECK(MainArcadeRaceSetupCore_PinReadback(&s_core, &pinsProduced, &pinsReadback) == 0);
+		pinsStored = s_outcome.pins;
+		pinsStored.frameTimerConfetti = 74;
+		CHECK(MainArcadeRaceSetupCore_RecordPinReadback(&s_core, NULL) == 0);
+		CHECK(MainArcadeRaceSetupCore_RecordPinReadback(NULL, &pinsStored) == 0);
+		CHECK(MainArcadeRaceSetupCore_RecordPinReadback(&s_core, &pinsStored) == 1);
+		CHECK(MainArcadeRaceSetupCore_RecordPinReadback(&s_core, &s_outcome.pins) == 0);
+		CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_SEEDED);
+		CHECK(MainArcadeRaceSetupCore_PinReadback(&s_core, &pinsProduced, &pinsReadback) == 1);
+		CHECK(pinsProduced.timer == 0 && pinsProduced.frameTimerConfetti == 0);
+		CHECK(pinsReadback.timer == 0 && pinsReadback.frameTimerConfetti == 74);
+		CHECK(MainArcadeRaceSetupCore_PinReadback(&s_core, NULL, &pinsReadback) == 0);
+		CHECK(MainArcadeRaceSetupCore_PinReadback(&s_core, &pinsProduced, NULL) == 0);
+		CHECK(MainArcadeRaceSetupCore_PinReadback(NULL, &pinsProduced, &pinsReadback) == 0);
+		CHECK(ArmAndLaunch(&s_other) == 1);
+		CHECK(MainArcadeRaceSetupCore_RecordPinReadback(&s_other, &pinsStored) == 0);
+		CHECK(MainArcadeRaceSetupCore_PinReadback(&s_other, &pinsProduced, &pinsReadback) == 0);
+		/* VALIDATED keeps it; a readback arriving only now is refused. */
+		CHECK(ArmLaunchSeed(&s_other) == 1);
+		CHECK(MainArcadeRaceSetupCore_RecordPinReadback(&s_other, &s_outcome.pins) == 1);
+		DriversView(&s_config, &s_drivers);
+		CHECK(MainArcadeRaceSetupCore_OnDriversInitialized(&s_other, &s_drivers, &s_scratch, &s_outcome) == 1);
+		CHECK(MainArcadeRaceSetupCore_PinReadback(&s_other, &pinsProduced, &pinsReadback) == 1);
+		CHECK(memcmp(&pinsProduced, &pinsReadback, sizeof(pinsProduced)) == 0);
+		CHECK(ArmLaunchSeedValidate(&s_other) == 1);
+		CHECK(MainArcadeRaceSetupCore_RecordPinReadback(&s_other, &pinsStored) == 0);
+		CHECK(MainArcadeRaceSetupCore_PinReadback(&s_other, &pinsProduced, &pinsReadback) == 0);
+	}
 
 	/* SEEDED: the drivers hook reads its view; without a tracker it latches NO_TRACKER. */
 	CHECK(MainArcadeRaceSetupCore_HookReadsView(&s_core, MAIN_ARCADE_RACE_SETUP_CORE_HOOK_DRIVERS_INITIALIZED) == 1);
@@ -843,6 +884,106 @@ static int TestDisarm(void)
 	return 0;
 }
 
+/* The number of ops that write a pinned boot-relative counter (RS-17). */
+static uint32_t PinOpCount(const struct MainArcadeRaceSetupCoreOutcome *outcome)
+{
+	uint32_t count = 0;
+
+	for (uint32_t i = 0; (i < outcome->opCount) && (i < MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS); i++)
+	{
+		if ((outcome->ops[i].target == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER) ||
+		    (outcome->ops[i].target == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI))
+		{
+			count++;
+		}
+	}
+	return count;
+}
+
+/*
+ * Every step, from a copy of *core, writes no pinned counter: Arm, Launch,
+ * both hooks with and without a tracker, and Disarm (restoring or not). Only
+ * the pre-drivers hook in LAUNCHED with a tracker and the verified fields
+ * pins; seeds is 1 when *core is that LAUNCHED state, and then that one step
+ * must write each pin exactly once.
+ */
+static int ExpectPinsOnlyWhenSeeding(const struct MainArcadeRaceSetupCore *core, int seeds)
+{
+	struct MainArcadeRaceSetupCoreLaunchView launch;
+	struct MainArcadeRaceSetupCoreBeginView begin;
+	struct MainArcadeRaceSetupCoreDisarmView disarm;
+
+	TitleLaunchView(&launch);
+	for (uint8_t tracker = 0; tracker < 2u; tracker++)
+	{
+		s_other = *core;
+		LoadedBeginView(&s_plan, &begin);
+		begin.trackerPresent = tracker;
+		(void)MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_other, &begin, &s_scratch, &s_outcome);
+		if ((seeds != 0) && (tracker != 0u))
+		{
+			CHECK(s_outcome.result == 1u && PinOpCount(&s_outcome) == MAIN_ARCADE_RACE_SETUP_CORE_PIN_OP_COUNT);
+		}
+		else
+		{
+			CHECK(PinOpCount(&s_outcome) == 0u);
+		}
+		/* A refused load (the wrong level) never pins either. */
+		s_other = *core;
+		begin.fields.levelID = LIVE_MAIN_MENU_LEVEL;
+		(void)MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_other, &begin, &s_scratch, &s_outcome);
+		CHECK(PinOpCount(&s_outcome) == 0u);
+		s_other = *core;
+		DriversView(&s_config, &s_drivers);
+		s_drivers.trackerPresent = tracker;
+		(void)MainArcadeRaceSetupCore_OnDriversInitialized(&s_other, &s_drivers, &s_scratch, &s_outcome);
+		CHECK(PinOpCount(&s_outcome) == 0u);
+	}
+	s_other = *core;
+	(void)MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, &s_outcome);
+	CHECK(PinOpCount(&s_outcome) == 0u);
+	s_other = *core;
+	(void)MainArcadeRaceSetupCore_Launch(&s_other, &launch, &s_outcome);
+	CHECK(PinOpCount(&s_outcome) == 0u);
+	for (uint32_t restore = 0; restore < 2u; restore++)
+	{
+		s_other = *core;
+		disarm.currentLevel = (restore != 0u) ? LIVE_MAIN_MENU_LEVEL : (int32_t)s_plan.levelID;
+		disarm.loadingStage = LIVE_STAGE_IDLE;
+		disarm.gameMode1 = 0u;
+		(void)MainArcadeRaceSetupCore_Disarm(&s_other, &disarm, &s_outcome);
+		CHECK(PinOpCount(&s_outcome) == 0u);
+	}
+	return 0;
+}
+
+/* RS-17: the pins are written only by the seeding step of a launched setup;
+ * default boot (IDLE) and every other state never pin. */
+static int TestPinsOnlyWhenSeeding(void)
+{
+	struct MainArcadeRaceSetupCoreLaunchView launch;
+
+	TitleLaunchView(&launch);
+	MainArcadeRaceSetupCore_Reset(&s_core);
+	CHECK(ExpectPinsOnlyWhenSeeding(&s_core, 0) == 0);
+	CHECK(Arm(&s_core, 0u) == 1);
+	CHECK(ExpectPinsOnlyWhenSeeding(&s_core, 0) == 0);
+	CHECK(ArmAndLaunch(&s_core) == 1);
+	CHECK(ExpectPinsOnlyWhenSeeding(&s_core, 1) == 0);
+	CHECK(ArmLaunchSeed(&s_core) == 1);
+	CHECK(ExpectPinsOnlyWhenSeeding(&s_core, 0) == 0);
+	CHECK(ArmLaunchSeedValidate(&s_core) == 1);
+	CHECK(ExpectPinsOnlyWhenSeeding(&s_core, 0) == 0);
+	CHECK(ArmAndLaunch(&s_core) == 1);
+	CHECK(MainArcadeRaceSetupCore_Launch(&s_core, &launch, &s_outcome) == 0);
+	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_FAILED);
+	CHECK(ExpectPinsOnlyWhenSeeding(&s_core, 0) == 0);
+	/* The op count covers exactly the two pins. */
+	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_PIN_OP_COUNT == 2u);
+	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT == 11u);
+	return 0;
+}
+
 static int TestNames(void)
 {
 	CHECK(strcmp(MainArcadeRaceSetupCore_StatusName(MAIN_ARCADE_RACE_SETUP_IDLE), "IDLE") == 0);
@@ -876,6 +1017,7 @@ int main(void)
 	CHECK(TestFinalizeInitBegin() == 0);
 	CHECK(TestDriversInitialized() == 0);
 	CHECK(TestDisarm() == 0);
+	CHECK(TestPinsOnlyWhenSeeding() == 0);
 	CHECK(TestNames() == 0);
 	puts("main_arcade_race_setup_core_test: ok");
 	return 0;

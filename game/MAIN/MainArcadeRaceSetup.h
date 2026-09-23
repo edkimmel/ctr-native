@@ -44,9 +44,11 @@
  *   below.
  * - OnFinalizeInitBegin (the very start of MainInit_FinalizeInit) acts only
  *   in LAUNCHED: it verifies the fields the load consumed, re-applies the
- *   mode words, arcadeDifficulty, and boolDemoMode, and seeds the retail RNG
- *   states from the bank's MATCH_SETUP stream, then reads the five seeded
- *   fields back for MainArcadeRaceSetup_SeedReadback.
+ *   mode words, arcadeDifficulty, and boolDemoMode, pins the boot-relative
+ *   counters that feed the race (gGT->timer and gGT->frameTimer_Confetti,
+ *   RS-17), and seeds the retail RNG states from the bank's MATCH_SETUP
+ *   stream, then reads the five seeded fields and the two pinned counters
+ *   back for MainArcadeRaceSetup_SeedReadback and _PinReadback.
  * - OnDriversInitialized (right after MainInit_Drivers) acts only in SEEDED:
  *   it builds the facts from the live race, reading the roster input with
  *   MainCanonicalDrivers_ExtractRosterInputPreRace (the race order is not
@@ -112,6 +114,12 @@ int MainArcadeRaceSetup_SlotFacts(struct MainArcadeBotSetupSourceFacts *out);
  * and audioRNG right after they were written (MainArcadeRaceSetupCore_SeedReadback).
  * Returns 0 with both outputs untouched otherwise. */
 int MainArcadeRaceSetup_SeedReadback(struct NativeArcadeRetailRngSeedsV1 *produced, struct NativeArcadeRetailRngSeedsV1 *stored);
+
+/* In SEEDED or VALIDATED: the boot-relative counters the setup pinned (RS-17)
+ * and the values read back from gGT->timer and gGT->frameTimer_Confetti right
+ * after they were written (MainArcadeRaceSetupCore_PinReadback). Returns 0
+ * with both outputs untouched otherwise. */
+int MainArcadeRaceSetup_PinReadback(struct MainArcadeRaceSetupPins *produced, struct MainArcadeRaceSetupPins *stored);
 
 /* The post-setup bank when VALIDATED, else NULL (Task 8 projects it). */
 const struct NativeDeterministicRngBankV1 *MainArcadeRaceSetup_Bank(void);

@@ -258,11 +258,23 @@ A pure core plus a thin live adapter.
 11. RS-11: Setup state is game-owned static, never checkpointed, replayed,
     or canonical; quick states are disabled in proof mode.
 12. RS-12: Boot-relative control counters are not altered by the setup in
-    v1. If the dwell run shows they feed the simulation, resetting them at
-    the setup point becomes its own reviewed task.
+    v1, except the ones that feed the race simulation, which the setup pins
+    (RS-17).
 13. RS-13: The proof digests V1 control/RNG/input plus the topology-free
     DRIVERS candidate; Physics, WORLD, TOPOLOGY, and live V4 projection
     stay with Task 8.
+14. RS-17 (R-6c): At race init, after the load-field verification and
+    before the seeds, the setup pins the boot-relative counters that feed
+    the race simulation or its RNG: gGT->timer = 0 (exhaust, terrain, warp
+    dust, bubble, and flame particles pick frames by it, and those particles
+    draw MixRNG) and gGT->frameTimer_Confetti = 0 (particle oscillators).
+    The adapter reads both back and the proof checks them (the "seeded"
+    line; PIN_MISMATCH). sdata->frameCounter and
+    gGT->frameTimer_VsyncCallback feed only presentation and the platform
+    (the VBlank counter is also not safe to reset: the load queue compares
+    it with a stored timestamp), so they stay boot-relative and the full V1
+    control digest stays informational. The audit of every counter, its
+    readers, and its verdict is in game/MAIN/MainArcadeRaceSetupCore.h.
 
 ## 5. Constraints
 

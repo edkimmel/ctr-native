@@ -240,6 +240,7 @@ int MainArcadeRaceSetupCore_OnFinalizeInitBegin(struct MainArcadeRaceSetupCore *
 {
 	struct MainArcadeRaceSetupRetailFields fields;
 	struct NativeArcadeRetailRngSeedsV1 seeds;
+	struct MainArcadeRaceSetupPins pins;
 
 	if ((core == NULL) || (view == NULL) || (scratch == NULL) || (outcome == NULL))
 	{
@@ -301,7 +302,14 @@ int MainArcadeRaceSetupCore_OnFinalizeInitBegin(struct MainArcadeRaceSetupCore *
 		MainArcadeRaceSetupCore_Fail(core, MAIN_ARCADE_RACE_SETUP_FAILURE_SEED, "the retail seeds could not be derived", outcome);
 		return 0;
 	}
+	/* 4. The ops: the re-applied mode fields, the pinned boot-relative
+	 * counters (RS-17), then the seeds. */
+	pins.timer = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_TIMER;
+	pins.frameTimerConfetti = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_FRAME_TIMER_CONFETTI;
 	MainArcadeRaceSetupCore_PushModeFields(outcome, &fields);
+	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER, 0u, (int64_t)pins.timer);
+	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI, 0u,
+		(int64_t)pins.frameTimerConfetti);
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RANDOM_NUMBER, 0u, (int64_t)seeds.randomNumber);
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG0, 0u, (int64_t)seeds.advRng0);
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG1, 0u, (int64_t)seeds.advRng1);
@@ -314,7 +322,9 @@ int MainArcadeRaceSetupCore_OnFinalizeInitBegin(struct MainArcadeRaceSetupCore *
 	}
 	core->bank = scratch->seedBank;
 	core->seeds = seeds;
+	core->pins = pins;
 	outcome->seeds = seeds;
+	outcome->pins = pins;
 	MainArcadeRaceSetupCore_Enter(core, MAIN_ARCADE_RACE_SETUP_SEEDED, outcome);
 	outcome->result = 1u;
 	return 1;
@@ -452,6 +462,32 @@ int MainArcadeRaceSetupCore_SeedReadback(const struct MainArcadeRaceSetupCore *c
 	}
 	*produced = core->seeds;
 	*readback = core->seedReadback;
+	return 1;
+}
+
+int MainArcadeRaceSetupCore_RecordPinReadback(struct MainArcadeRaceSetupCore *core,
+	const struct MainArcadeRaceSetupPins *readback)
+{
+	if ((core == NULL) || (readback == NULL) || (core->status != (uint32_t)MAIN_ARCADE_RACE_SETUP_SEEDED) ||
+	    (core->pinReadbackRecorded != 0u))
+	{
+		return 0;
+	}
+	core->pinReadback = *readback;
+	core->pinReadbackRecorded = 1u;
+	return 1;
+}
+
+int MainArcadeRaceSetupCore_PinReadback(const struct MainArcadeRaceSetupCore *core,
+	struct MainArcadeRaceSetupPins *produced, struct MainArcadeRaceSetupPins *readback)
+{
+	if ((core == NULL) || (produced == NULL) || (readback == NULL) || (core->pinReadbackRecorded == 0u) ||
+	    ((core->status != (uint32_t)MAIN_ARCADE_RACE_SETUP_SEEDED) && (core->status != (uint32_t)MAIN_ARCADE_RACE_SETUP_VALIDATED)))
+	{
+		return 0;
+	}
+	*produced = core->pins;
+	*readback = core->pinReadback;
 	return 1;
 }
 

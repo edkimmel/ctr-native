@@ -12,7 +12,8 @@
 /*
  * Live roster proof, internal builds only (docs/ROSTER_MILESTONE.md section
  * 3.4; R-5b's launcher, R-6's scripted pads, per-tick digests, and the
- * arcade_roster_determinism ctest, tools/arcade-roster-proof-check.ps1).
+ * arcade_roster_determinism ctest, tools/arcade-roster-proof-check.ps1;
+ * R-6c's pin readback).
  * Evidence plumbing: host-local options, the fixed proof config, the scripted
  * pad pattern, a game-facing singleton that keeps the per-tick digest lines,
  * and the report writer.
@@ -108,8 +109,8 @@
  *                            seed the setup produced (the adapter's field
  *                            mapping is wrong)
  *   28  EVIDENCE_MISSING     VALIDATED, but the digests, the slot facts, or
- *                            the seed readback could not be read; PASS needs
- *                            all three
+ *                            the seed or pin readback could not be read; PASS
+ *                            needs all of them
  *   29  RACE_TICK_TIMEOUT    no race tick 0 (the drivers extraction never
  *                            succeeded) within RACE_TICK_TIMEOUT_TICKS of
  *                            VALIDATED
@@ -118,6 +119,10 @@
  *   31  DIGEST_FAILED        the frame's V1 canonical projection (or its input
  *                            freeze) failed at a logged race tick, or a tick
  *                            line could not be kept
+ *   32  PIN_MISMATCH         VALIDATED, but a pinned boot-relative counter
+ *                            (gGT->timer, gGT->frameTimer_Confetti; RS-17)
+ *                            read back right after the SEEDED writes differs
+ *                            from the value the setup pinned
  *
  * The failure codes start at 20 so that none collides with 1 or with the C
  * runtime's abort() code 3.
@@ -199,7 +204,8 @@ enum NativeArcadeRosterProofResult
 	NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING = 28,     /* VALIDATED without readable digests, slot facts, or seed readback */
 	NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT = 29,    /* no race tick 0 within RACE_TICK_TIMEOUT_TICKS of VALIDATED */
 	NATIVE_ARCADE_ROSTER_PROOF_DRIVERS_FAILED = 30,       /* the drivers extraction or encoding failed after race tick 0 */
-	NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED = 31         /* the V1 projection failed at a logged tick, or a line was not kept */
+	NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED = 31,        /* the V1 projection failed at a logged tick, or a line was not kept */
+	NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH = 32          /* a pinned counter read back differs from the pinned value */
 };
 
 /* One scripted pad, in the shape of the host pad snapshot. */
@@ -245,6 +251,14 @@ struct NativeArcadeRosterProofSlotLine
 	uint8_t reserved;
 };
 
+/* The boot-relative counters the race setup pins at its seeding point
+ * (RS-17): gGT->timer and gGT->frameTimer_Confetti. */
+struct NativeArcadeRosterProofPins
+{
+	int32_t timer;
+	int32_t frameTimerConfetti;
+};
+
 /*
  * The report the game hook fills. Status and failure are the race setup's
  * own codes and names (the platform module does not include game headers).
@@ -252,7 +266,9 @@ struct NativeArcadeRosterProofSlotLine
  * slotsValid say whether the digests and slot lines are filled (only once
  * VALIDATED). seedValid says whether seedStored holds the retail seed fields
  * read back right after the SEEDED writes, and seedMatch whether they equal
- * the seeds the setup produced (NativeArcadeRosterProof_SeedsMatch).
+ * the seeds the setup produced (NativeArcadeRosterProof_SeedsMatch); pinValid,
+ * pinStored, and pinMatch say the same of the pinned counters
+ * (NativeArcadeRosterProof_PinsMatch).
  */
 struct NativeArcadeRosterProofReport
 {
@@ -274,7 +290,11 @@ struct NativeArcadeRosterProofReport
 	uint8_t slotsValid;
 	uint8_t seedValid;
 	uint8_t seedMatch;
+	uint8_t pinValid;
+	uint8_t pinMatch;
+	uint8_t reserved[2];
 	struct NativeArcadeRetailRngSeedsV1 seedStored;
+	struct NativeArcadeRosterProofPins pinStored;
 	uint8_t configDigest[NATIVE_SHA256_DIGEST_BYTES];
 	uint8_t racePlanDigest[NATIVE_SHA256_DIGEST_BYTES];
 	uint8_t botSetupPlanDigest[NATIVE_SHA256_DIGEST_BYTES];
@@ -367,15 +387,16 @@ const char *NativeArcadeRosterProof_LogPath(void);
 /*
  * Formats the report as text into buffer (NUL-terminated) and stores its
  * length without the NUL. Returns 0 on NULL arguments or a buffer too small.
- * The format is line based: a header line ("arcade roster proof v4"), the
+ * The format is line based: a header line ("arcade roster proof v5"), the
  * line "drivers digest excludes physics", then "result", "setup status",
  * "setup failure", "seed", "dwell", "ticks" (requested), "menu ready tick",
  * "demo race tick", "launch tick", "launch window" (title, demo race, or
  * none), "validated tick", "race tick 0 tick", the four digests as lowercase
  * hex (or "none"),
- * the "seeded" line (the five retail seed fields as read back, and "match 1"
- * or "match 0"; "seeded none" without a readback), and one "slot" line per
- * slot.
+ * the "seeded" line (the five retail seed fields and the two pinned counters,
+ * timer and frameTimerConfetti as signed decimal, as read back, then
+ * "match 1" when every one equals what the setup wrote, else "match 0";
+ * "seeded none" without both readbacks), and one "slot" line per slot.
  */
 int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofReport *report, char *buffer,
 	size_t bufferSize, size_t *length);
@@ -385,10 +406,16 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 int NativeArcadeRosterProof_SeedsMatch(const struct NativeArcadeRetailRngSeedsV1 *produced,
 	const struct NativeArcadeRetailRngSeedsV1 *stored);
 
+/* 1 when both pinned counters equal their readback; 0 otherwise (also for
+ * NULL). */
+int NativeArcadeRosterProof_PinsMatch(const struct NativeArcadeRosterProofPins *produced,
+	const struct NativeArcadeRosterProofPins *stored);
+
 /*
  * The result a finished proof reports: requested unless it is PASS, and PASS
- * only when the digests, the slot facts, and the seed readback are all valid
- * (else EVIDENCE_MISSING) and the readback matches (else SEED_MISMATCH).
+ * only when the digests, the slot facts, and the seed and pin readbacks are
+ * all valid (else EVIDENCE_MISSING), the seed readback matches (else
+ * SEED_MISMATCH), and the pin readback matches (else PIN_MISMATCH).
  */
 uint32_t NativeArcadeRosterProof_FinalResult(uint32_t requested, const struct NativeArcadeRosterProofReport *report);
 

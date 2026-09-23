@@ -23,7 +23,7 @@ struct NativeCanonicalStateV1;
  * it sees: the title menu-ready window (then it leaves the title the way the
  * retail demo route does) or the running attract demo race (then the demo
  * race runs on until the requested load starts). It then polls the setup
- * until VALIDATED, checks the seed readback, and waits for race tick 0
+ * until VALIDATED, checks the seed and pin readbacks, and waits for race tick 0
  * (MainArcadeRosterProof_EndFrame logs the ticks and reports PASS). On a
  * failure or watchdog it writes the report, records the proof result as the
  * exit code, and requests the process exit.

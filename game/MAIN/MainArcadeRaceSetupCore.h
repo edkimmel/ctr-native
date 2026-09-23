@@ -54,8 +54,10 @@
  *   NUM_LAPS, NUM_PLYR_NEXT_GAME, CHARACTER_ID 0..7 (slots 6 and 7 with their
  *   observed values), then REQUEST_LOAD.
  * - OnFinalizeInitBegin (LAUNCHED): GAME_MODE1, GAME_MODE2, ARCADE_DIFFICULTY,
- *   BOOL_DEMO_MODE (the re-apply), then RANDOM_NUMBER, ADV_RNG0, ADV_RNG1,
- *   PSX_RAND_SEED, AUDIO_RNG (the seeds, RS-7, in this order).
+ *   BOOL_DEMO_MODE (the re-apply), then TIMER and FRAME_TIMER_CONFETTI (the
+ *   pinned boot-relative counters, RS-17, see "Boot-relative counters"
+ *   below), then RANDOM_NUMBER, ADV_RNG0, ADV_RNG1, PSX_RAND_SEED, AUDIO_RNG
+ *   (the seeds, RS-7, in this order).
  * - Disarm: GAME_MODE1 only when the vibration bits are restored.
  * Every other step writes nothing. LAUNCH_OP_COUNT and BEGIN_OP_COUNT below
  * are those exact counts; a static assert proves each fits MAX_OPS, and a step
@@ -93,6 +95,83 @@
  * replaced by the setup's own, and its last frames run before the setup's
  * race exists. The Launch mode write is the one the retail menu itself makes
  * (MM_MenuFlow.c:152, :224) on the way out of the attract loop.
+ *
+ * Boot-relative counters (RS-17, the R-6c audit). Two cabinets never share a
+ * boot history, so every frame or time counter that survives into the race
+ * with a boot-relative value was audited: its race readers (simulation,
+ * retail RNG, particles that can draw retail RNG), any stored timestamp later
+ * compared with it (a reset would make a bogus delta), and the platform.
+ * Verdicts: PIN (feeds the simulation or its RNG and is safe to set), LEAVE
+ * (presentation or platform only), UNSAFE (feeds the simulation but cannot
+ * be reset safely; none found). File:line as of R-6c.
+ *
+ * - gGT->timer (V1 control "timer"): +1 per MainFrame_GameLogic
+ *   (MainFrame.c:184), never reset by a load. Race readers: the exhaust
+ *   emitter picks each human's frames by parity in 2P and the bots' by
+ *   timer & 3 (Vehicle/VehEmitter.c:1613, :1631, :1636); the terrain emitter
+ *   picks its even or odd set (VehEmitter.c:1351); the warp dust spawns on
+ *   even frames (VehStuckProc.c:1610), the bubbles every 8 frames
+ *   (231/RB_Bubbles.c:50), the flame jet particles by timer
+ *   (231/RB_FlameJet.c:304, :310); each of those particles can draw MixRNG
+ *   (Particle.c:199-217, the underwater bubble pop: with an odd timer offset
+ *   the live roster proof saw randomNumber diverge at race tick 399 on Crash
+ *   Cove). Also the
+ *   airborne speedometer needle, Driver state (VehPhysGeneral.c:1618, read
+ *   by VehStuckProc.c:1265), and the bot wiggle under a cloud (BOTS.c:2520).
+ *   Stored timestamp: HOWL_Voiceline.c:280 stores it in a voiceline, never
+ *   compared with it again. The rest is presentation (UI, water, texture
+ *   cycling, DecalMP.c:110, rumble at GAMEPAD.c:720, :763, :851, the frozen
+ *   clock tick sound at MainFrame.c:232). Platform: not read. PIN 0.
+ * - gGT->frameTimer_Confetti: +1 per emitted VBlank while not paused (the
+ *   VBlank callback, MainDrawCb.c:25), never reset by a load. Race readers:
+ *   every particle oscillator's value (Particle.c:247) and each new
+ *   oscillator's now-relative phase (Particle.c:1390), so it moves particle
+ *   axes, positions included, and with them the particles whose position
+ *   decides a MixRNG draw (Particle.c:199-217, :131-137); the end-of-race
+ *   confetti (MainFrame_RenderFrame.c:524). Stored timestamps: only the
+ *   oscillator phases, whose pool the load rebuilt (LOAD_TenStages.c:202,
+ *   :503) and MainInit_FinalizeInit clears again right after the hook
+ *   (MainInit.c:468), so no live phase spans the pin. Platform: native VSync
+ *   emits the callback on the game thread (native_platform.c,
+ *   Native_EmitVBlank) and never reads the field; the platform keeps its own
+ *   VBlank count. PIN 0.
+ * - sdata->frameCounter (V1 control "frameCounter"): +1 per main-loop frame
+ *   (MainMain.c:359). Readers: menu, pause, hub, and profile screens only
+ *   (230.c:54, MainFrame_RenderFrame.c:475, MainFreeze.c:57, :135, :179,
+ *   SelectProfile.c:1165, :1261, 232/AH_*.c); no race simulation or RNG
+ *   reader. LEAVE.
+ * - gGT->frameTimer_VsyncCallback (V1 control "frameTimer"): +1 per emitted
+ *   VBlank (MainDrawCb.c:22). Readers: frameTimer_notPaused (written at
+ *   MainFrame_RenderFrame.c:1372, never read), the level audio distortion
+ *   (HOWL_LevelAudio.c:52), and the load queue's VRAM release delay, which
+ *   compares it with a stored timestamp whose 0 means "none"
+ *   (LOAD_File.c:222, LOAD_Queue.c:75-77): a reset would release a pending
+ *   VRAM file early or, pinned to 0 with a VRAM file finishing before the
+ *   next VBlank, never. No race simulation or RNG reader. LEAVE (and not
+ *   safe to reset).
+ * - gGT->frameTimer_MainFrame_ResetDB: +1 per frame (MainFrame.c:64). Audio
+ *   only, each against a stored timestamp: the crash feedback cooldown
+ *   (VehPhysCrash.c:259, :521-527; it gates sounds and voicelines, which
+ *   draw audioRNG only), the voiceline cooldown (HOWL_Voiceline.c:179), XA
+ *   seeks (HOWL_AudioState.c:297), channel durations (HOWL_Channel.c:95).
+ *   LEAVE (a reset would also make bogus deltas).
+ * - gGT->clockFrameStart and clockDurationStall: root-counter snapshots
+ *   (MainFrame.c:188, MainFrame_RenderFrame.c:1265, :1333); only their
+ *   deltas matter, as the per-tick elapsedTimeMS, which is not
+ *   boot-relative. A reset would make a bogus first delta. LEAVE.
+ * - gGT->frameTimer_notPaused (never read) and gGT->vSync_between_drawSync
+ *   (platform, reset every frame, MainMain.c:513). LEAVE.
+ * - Already race- or level-relative, nothing to pin: framesInThisLEV and
+ *   msInThisLEV (reset at the end of the load, LOAD_TenStages.c:708-709),
+ *   elapsedEventTime (0 while the traffic lights run, MainFrame.c:250),
+ *   elapsedTimeMS (per frame), trafficLightsTimer, and
+ *   sdata->aiCollisionDelayFrameCount (reset by the bot init, BOTS.c:308,
+ *   :2999). The retail RNG states are seeded instead (RS-7).
+ *
+ * The pins are written only by OnFinalizeInitBegin in LAUNCHED, after the
+ * load-field verification and before the seeds, so default boot and every
+ * load not launched here never see them. The adapter reads both fields back
+ * right after it applied them (MainArcadeRaceSetupCore_RecordPinReadback).
  */
 
 /* Mirrors of retail values the steps compare against; the adapter
@@ -105,8 +184,14 @@
 #define MAIN_ARCADE_RACE_SETUP_CORE_MODE_OP_COUNT 4u /* GAME_MODE1, GAME_MODE2, ARCADE_DIFFICULTY, BOOL_DEMO_MODE */
 #define MAIN_ARCADE_RACE_SETUP_CORE_LAUNCH_OP_COUNT \
 	(MAIN_ARCADE_RACE_SETUP_CORE_MODE_OP_COUNT + 2u + MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT + 1u)
+#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_OP_COUNT 2u /* TIMER, FRAME_TIMER_CONFETTI */
 #define MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT \
-	(MAIN_ARCADE_RACE_SETUP_CORE_MODE_OP_COUNT + NATIVE_ARCADE_BOT_RULES_SEED_TARGET_COUNT)
+	(MAIN_ARCADE_RACE_SETUP_CORE_MODE_OP_COUNT + MAIN_ARCADE_RACE_SETUP_CORE_PIN_OP_COUNT + \
+		NATIVE_ARCADE_BOT_RULES_SEED_TARGET_COUNT)
+/* The pinned values of the boot-relative counters (RS-17, "Boot-relative
+ * counters" above). 0 is no sentinel for either field. */
+#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_TIMER 0
+#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_FRAME_TIMER_CONFETTI 0
 #define MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES 32u
 
 enum MainArcadeRaceSetupStatus
@@ -154,7 +239,16 @@ enum MainArcadeRaceSetupCoreTarget
 	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG0,           /* advRng state0 */
 	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG1,           /* advRng state1 */
 	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_PSX_RAND_SEED,      /* the PSX BIOS rand seed */
-	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_AUDIO_RNG           /* the audio RNG */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_AUDIO_RNG,          /* the audio RNG */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER,              /* gGT->timer (int), RS-17 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI /* gGT->frameTimer_Confetti (int), RS-17 */
+};
+
+/* The pinned boot-relative counters (RS-17), each at 32 bits. */
+struct MainArcadeRaceSetupPins
+{
+	int32_t timer;              /* gGT->timer */
+	int32_t frameTimerConfetti; /* gGT->frameTimer_Confetti */
 };
 
 struct MainArcadeRaceSetupCoreOp
@@ -197,6 +291,7 @@ struct MainArcadeRaceSetupCoreOutcome
 	int32_t botSetupResult; /* MainArcadeBotSetupResult of the failed bot setup, else OK */
 	uint32_t savedVibration;                   /* Disarm: the bits saved at Arm */
 	struct NativeArcadeRetailRngSeedsV1 seeds; /* SEEDED: the seeds the ops write */
+	struct MainArcadeRaceSetupPins pins;   /* SEEDED: the pinned counters the ops write */
 };
 
 /* The live values Launch reads. */
@@ -252,8 +347,9 @@ enum MainArcadeRaceSetupCoreHook
  * file-scope static instance, outside every saved-state region, never
  * recorded or canonical, RS-11). bank is the post-Arm bank, then the
  * post-seed bank from SEEDED, then the post-setup bank from VALIDATED. seeds
- * are the retail seeds the SEEDED step produced, and seedReadback what the
- * adapter read back from the retail fields right after it applied them.
+ * and pins are the retail seeds and pinned counters the SEEDED step produced,
+ * and seedReadback and pinReadback what the adapter read back from the retail
+ * fields right after it applied them.
  */
 struct MainArcadeRaceSetupCore
 {
@@ -262,9 +358,12 @@ struct MainArcadeRaceSetupCore
 	uint32_t savedVibration; /* gameMode1 & HOST_LOCAL_MASK at Arm */
 	uint8_t fieldsWritten;   /* 1 once Launch wrote the live fields */
 	uint8_t seedReadbackRecorded; /* 1 once RecordSeedReadback stored seedReadback */
-	uint8_t reserved[2];
+	uint8_t pinReadbackRecorded;  /* 1 once RecordPinReadback stored pinReadback */
+	uint8_t reserved;
 	struct NativeArcadeRetailRngSeedsV1 seeds;
 	struct NativeArcadeRetailRngSeedsV1 seedReadback;
+	struct MainArcadeRaceSetupPins pins;
+	struct MainArcadeRaceSetupPins pinReadback;
 	struct NativeMatchConfigV1 config;
 	struct MainArcadeRaceSetupPlan plan;
 	struct NativeDeterministicRngBankV1 bank;
@@ -323,8 +422,9 @@ int MainArcadeRaceSetupCore_HookReadsView(const struct MainArcadeRaceSetupCore *
  * characterIDs[i] for every bit i of the plan's characterWriteMask
  * (LOAD_FIELDS_MISMATCH); re-applies the plan to the view's fields (PLAN);
  * derives the retail seeds from a copy of the bank in scratch (SEED); only then
- * emits its ops, keeps the post-seed bank, and moves to SEEDED. Every failure
- * writes nothing. Returns 1 when it moved to SEEDED.
+ * emits its ops (the mode fields, the pinned counters, the seeds), keeps the
+ * post-seed bank, and moves to SEEDED. Every failure writes nothing. Returns 1
+ * when it moved to SEEDED.
  */
 int MainArcadeRaceSetupCore_OnFinalizeInitBegin(struct MainArcadeRaceSetupCore *core,
 	const struct MainArcadeRaceSetupCoreBeginView *view, struct MainArcadeRaceSetupCoreScratch *scratch,
@@ -369,6 +469,18 @@ int MainArcadeRaceSetupCore_RecordSeedReadback(struct MainArcadeRaceSetupCore *c
  * untouched otherwise. */
 int MainArcadeRaceSetupCore_SeedReadback(const struct MainArcadeRaceSetupCore *core,
 	struct NativeArcadeRetailRngSeedsV1 *produced, struct NativeArcadeRetailRngSeedsV1 *readback);
+
+/* The same for the pinned counters (RS-17): gGT->timer and
+ * gGT->frameTimer_Confetti as read back right after the SEEDED writes.
+ * Accepted once, only in SEEDED (returns 1); otherwise 0 and nothing changes. */
+int MainArcadeRaceSetupCore_RecordPinReadback(struct MainArcadeRaceSetupCore *core,
+	const struct MainArcadeRaceSetupPins *readback);
+
+/* In SEEDED or VALIDATED, once the pin readback was recorded: the pinned
+ * values the SEEDED step produced and the values read back. 0 with both
+ * outputs untouched otherwise. */
+int MainArcadeRaceSetupCore_PinReadback(const struct MainArcadeRaceSetupCore *core,
+	struct MainArcadeRaceSetupPins *produced, struct MainArcadeRaceSetupPins *readback);
 
 /* IDLE for NULL. */
 enum MainArcadeRaceSetupStatus MainArcadeRaceSetupCore_Status(const struct MainArcadeRaceSetupCore *core);

@@ -45,6 +45,8 @@ _Static_assert(MAIN_ARCADE_RACE_SETUP_FACTS_SLOT_COUNT == sizeof(sdata->driver_p
 _Static_assert(MAIN_ARCADE_RACE_SETUP_FACTS_SLOT_COUNT == sizeof(sdata->accelerateOrder), "the facts snapshot must hold every accelerateOrder entry");
 _Static_assert(MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES == NATIVE_SHA256_DIGEST_BYTES, "MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES must match NATIVE_SHA256_DIGEST_BYTES");
 _Static_assert(MAIN_ARCADE_BOT_SETUP_NAV_PATH_COUNT == sizeof(sdata->NavPath_ptrHeader) / sizeof(sdata->NavPath_ptrHeader[0]), "MAIN_ARCADE_BOT_SETUP_NAV_PATH_COUNT must match NavPath_ptrHeader");
+_Static_assert(sizeof(sdata->gGT->timer) == sizeof(int32_t), "the TIMER pin is a 32-bit field");
+_Static_assert(sizeof(sdata->gGT->frameTimer_Confetti) == sizeof(int32_t), "the FRAME_TIMER_CONFETTI pin is a 32-bit field");
 
 #define MAIN_ARCADE_RACE_SETUP_LOG "[CTR Native] arcade race setup: "
 
@@ -171,6 +173,12 @@ static void MainArcadeRaceSetup_Apply(struct GameTracker *gGT, const struct Main
 		case MAIN_ARCADE_RACE_SETUP_CORE_TARGET_AUDIO_RNG:
 			sdata->audioRNG = (uint32_t)op->value;
 			break;
+		case MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER:
+			gGT->timer = (int)(int32_t)op->value;
+			break;
+		case MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI:
+			gGT->frameTimer_Confetti = (int)(int32_t)op->value;
+			break;
 		default:
 			break;
 		}
@@ -187,6 +195,15 @@ static void MainArcadeRaceSetup_ReadSeeds(struct NativeArcadeRetailRngSeedsV1 *s
 	stored->advRng1 = (uint32_t)sdata->advRng.state1;
 	stored->psxRandSeed = (uint32_t)PSX_BIOS_GetRandSeed();
 	stored->audioRNG = (uint32_t)sdata->audioRNG;
+}
+
+/* The pinned counters as they are now stored (RS-17), read right after
+ * MainArcadeRaceSetup_Apply wrote them. */
+static void MainArcadeRaceSetup_ReadPins(const struct GameTracker *gGT, struct MainArcadeRaceSetupPins *stored)
+{
+	memset(stored, 0, sizeof(*stored));
+	stored->timer = (int32_t)gGT->timer;
+	stored->frameTimerConfetti = (int32_t)gGT->frameTimer_Confetti;
 }
 
 /* One log line per state change or failure, as the core reports it. */
@@ -290,12 +307,18 @@ void MainArcadeRaceSetup_OnFinalizeInitBegin(struct GameTracker *gGT)
 	if (outcome->opCount != 0u)
 	{
 		struct NativeArcadeRetailRngSeedsV1 stored;
+		struct MainArcadeRaceSetupPins pinsStored;
 
 		MainArcadeRaceSetup_Apply(gGT, outcome);
 		/* Nothing runs between the writes and this readback; the proof
-		 * compares it with the seeds the core produced. */
+		 * compares it with the seeds and pins the core produced. */
 		MainArcadeRaceSetup_ReadSeeds(&stored);
+		MainArcadeRaceSetup_ReadPins(gGT, &pinsStored);
 		(void)MainArcadeRaceSetupCore_RecordSeedReadback(&s_mainArcadeRaceSetup, &stored);
+		(void)MainArcadeRaceSetupCore_RecordPinReadback(&s_mainArcadeRaceSetup, &pinsStored);
+		Platform_Log(MAIN_ARCADE_RACE_SETUP_LOG "pinned timer %ld frameTimer_Confetti %ld; read back %ld %ld\n",
+			(long)outcome->pins.timer, (long)outcome->pins.frameTimerConfetti, (long)pinsStored.timer,
+			(long)pinsStored.frameTimerConfetti);
 		Platform_Log(MAIN_ARCADE_RACE_SETUP_LOG "seeded randomNumber 0x%04X advRng 0x%08X 0x%08X psxRand 0x%08X audioRNG 0x%08X\n",
 			(unsigned)outcome->seeds.randomNumber, (unsigned)outcome->seeds.advRng0, (unsigned)outcome->seeds.advRng1,
 			(unsigned)outcome->seeds.psxRandSeed, (unsigned)outcome->seeds.audioRNG);
@@ -359,6 +382,11 @@ int MainArcadeRaceSetup_SlotFacts(struct MainArcadeBotSetupSourceFacts *out)
 int MainArcadeRaceSetup_SeedReadback(struct NativeArcadeRetailRngSeedsV1 *produced, struct NativeArcadeRetailRngSeedsV1 *stored)
 {
 	return MainArcadeRaceSetupCore_SeedReadback(&s_mainArcadeRaceSetup, produced, stored);
+}
+
+int MainArcadeRaceSetup_PinReadback(struct MainArcadeRaceSetupPins *produced, struct MainArcadeRaceSetupPins *stored)
+{
+	return MainArcadeRaceSetupCore_PinReadback(&s_mainArcadeRaceSetup, produced, stored);
 }
 
 const struct NativeDeterministicRngBankV1 *MainArcadeRaceSetup_Bank(void)

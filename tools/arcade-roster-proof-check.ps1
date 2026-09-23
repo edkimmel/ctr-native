@@ -185,8 +185,8 @@ function Read-Report($Run) {
             $report.Header[$Matches[1]] = $Matches[2]
         }
     }
-    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v4') -or ($lines[1] -ne 'drivers digest excludes physics')) {
-        $report.Problems += 'the report does not start with the v4 header and "drivers digest excludes physics"'
+    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v5') -or ($lines[1] -ne 'drivers digest excludes physics')) {
+        $report.Problems += 'the report does not start with the v5 header and "drivers digest excludes physics"'
     }
     if ($report.Header['result'] -ne 'PASS (0)') {
         $report.Problems += "result is '$($report.Header['result'])', not 'PASS (0)'"

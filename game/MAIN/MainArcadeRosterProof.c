@@ -110,6 +110,25 @@ static int MainArcadeRosterProof_ReadSeeds(struct NativeArcadeRetailRngSeedsV1 *
 	return 1;
 }
 
+/* The pin readback of the setup (RS-17), the same way. */
+static int MainArcadeRosterProof_ReadPins(struct NativeArcadeRosterProofPins *stored, uint8_t *match)
+{
+	struct MainArcadeRaceSetupPins setupProduced;
+	struct MainArcadeRaceSetupPins setupStored;
+	struct NativeArcadeRosterProofPins produced;
+
+	if (!MainArcadeRaceSetup_PinReadback(&setupProduced, &setupStored))
+	{
+		return 0;
+	}
+	produced.timer = setupProduced.timer;
+	produced.frameTimerConfetti = setupProduced.frameTimerConfetti;
+	stored->timer = setupStored.timer;
+	stored->frameTimerConfetti = setupStored.frameTimerConfetti;
+	*match = NativeArcadeRosterProof_PinsMatch(&produced, stored) ? 1u : 0u;
+	return 1;
+}
+
 /* Writes the report for `requested` (PASS only with valid evidence,
  * NativeArcadeRosterProof_FinalResult), logs it, records the exit code, and
  * requests the exit. */
@@ -162,6 +181,7 @@ static void MainArcadeRosterProof_Finish(uint32_t requested)
 		report.slotsValid = 1u;
 	}
 	report.seedValid = MainArcadeRosterProof_ReadSeeds(&report.seedStored, &report.seedMatch) ? 1u : 0u;
+	report.pinValid = MainArcadeRosterProof_ReadPins(&report.pinStored, &report.pinMatch) ? 1u : 0u;
 	result = NativeArcadeRosterProof_FinalResult(requested, &report);
 	report.result = result;
 	exitCode = (int)result;
@@ -348,11 +368,13 @@ void MainArcadeRosterProof_Frame(struct GameTracker *gGT, struct GamepadSystem *
 		if (status == MAIN_ARCADE_RACE_SETUP_VALIDATED)
 		{
 			struct NativeArcadeRetailRngSeedsV1 stored;
+			struct NativeArcadeRosterProofPins pinsStored;
 			uint8_t match = 0u;
+			uint8_t pinMatch = 0u;
 
-			/* Pin the adapter's field mapping: the seeds as stored must be
-			 * the seeds the setup produced. */
-			if (!MainArcadeRosterProof_ReadSeeds(&stored, &match))
+			/* Pin the adapter's field mapping: the seeds and the pinned
+			 * counters as stored must be what the setup produced. */
+			if (!MainArcadeRosterProof_ReadSeeds(&stored, &match) || !MainArcadeRosterProof_ReadPins(&pinsStored, &pinMatch))
 			{
 				MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
 				return;
@@ -360,6 +382,11 @@ void MainArcadeRosterProof_Frame(struct GameTracker *gGT, struct GamepadSystem *
 			if (match == 0u)
 			{
 				MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH);
+				return;
+			}
+			if (pinMatch == 0u)
+			{
+				MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH);
 				return;
 			}
 			state->validatedTick = state->tick;
