@@ -33,6 +33,9 @@ _Static_assert(NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT + NATIVE_ARCADE_BOT_RULES_
 _Static_assert(NATIVE_ARCADE_BOT_RULES_HUMAN_COUNT == NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT, "the humans hold slots 0 and 1");
 _Static_assert(NATIVE_ARCADE_BOT_RULES_BOT_COUNT == NATIVE_MATCH_SELECT_AI_SET_RACERS, "one bot per 2P AI set racer");
 _Static_assert(NATIVE_ARCADE_BOT_RULES_DRIVER_COUNT <= NATIVE_MATCH_CONFIG_V1_SLOT_COUNT, "every driver has a config slot");
+/* The digest encodes the RNG derivation version; the config validator checks its own copy of it. */
+_Static_assert(NATIVE_MATCH_CONFIG_V1_RNG_DERIVATION_VERSION == NATIVE_DETERMINISTIC_RNG_DERIVATION_VERSION,
+	"the config and the bank must agree on the RNG derivation version");
 
 /*
  * The difficulty table stays a simple one-line initializer so the isolation

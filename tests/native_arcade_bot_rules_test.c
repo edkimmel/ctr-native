@@ -105,6 +105,40 @@ static int IsAllByte(const void *memory, size_t size, uint8_t value)
 	return 1;
 }
 
+/*
+ * Field by field: NativeDeterministicRngStreamV1 has padding after
+ * streamIndex, so a whole-struct memcmp would compare indeterminate bytes.
+ */
+static int StreamsEqual(const struct NativeDeterministicRngStreamV1 *a, const struct NativeDeterministicRngStreamV1 *b)
+{
+	for (uint32_t i = 0; i < 4u; i++)
+	{
+		if (a->state[i] != b->state[i])
+		{
+			return 0;
+		}
+	}
+	return (a->tag == b->tag) && (a->stableSlot == b->stableSlot) && (a->streamIndex == b->streamIndex) &&
+	       (a->drawCount == b->drawCount);
+}
+
+static int BanksEqual(const struct NativeDeterministicRngBankV1 *a, const struct NativeDeterministicRngBankV1 *b)
+{
+	if ((a->bankVersion != b->bankVersion) || (a->derivationVersion != b->derivationVersion) ||
+	    (a->masterSeed != b->masterSeed))
+	{
+		return 0;
+	}
+	for (uint32_t i = 0; i < NATIVE_DETERMINISTIC_RNG_STREAM_COUNT; i++)
+	{
+		if (!StreamsEqual(&a->streams[i], &b->streams[i]))
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
 static int SeedsEqual(const struct NativeArcadeRetailRngSeedsV1 *a, const struct NativeArcadeRetailRngSeedsV1 *b)
 {
 	return (a->randomNumber == b->randomNumber) && (a->advRng0 == b->advRng0) && (a->advRng1 == b->advRng1) &&
@@ -453,7 +487,7 @@ static int TestDeriveRetailSeeds(void)
 	CHECK(memcmp(bank.streams[0].state, fresh.streams[0].state, sizeof(fresh.streams[0].state)) != 0);
 	for (uint32_t i = 1; i < NATIVE_DETERMINISTIC_RNG_STREAM_COUNT; i++)
 	{
-		CHECK(memcmp(&bank.streams[i], &fresh.streams[i], sizeof(fresh.streams[i])) == 0);
+		CHECK(StreamsEqual(&bank.streams[i], &fresh.streams[i]));
 	}
 	CHECK((bank.bankVersion == fresh.bankVersion) && (bank.derivationVersion == fresh.derivationVersion) &&
 	      (bank.masterSeed == fresh.masterSeed));
@@ -466,13 +500,13 @@ static int TestDeriveRetailSeeds(void)
 		          NATIVE_DETERMINISTIC_RNG_GLOBAL_SLOT, NATIVE_DETERMINISTIC_RNG_GLOBAL_SLOT, &draws[i]) == 1);
 		CHECK(draws[i] == k_goldenSetupDraws[i]);
 	}
-	CHECK(memcmp(&manual, &bank, sizeof(bank)) == 0);
+	CHECK(BanksEqual(&manual, &bank));
 
 	/* Two fresh banks give identical results. */
 	CHECK(NativeDeterministicRngBankV1_Init(&other, FIXTURE_SEED, NATIVE_DETERMINISTIC_RNG_DERIVATION_VERSION) == 1);
 	CHECK(NativeArcadeBotRules_DeriveRetailSeedsV1(&other, &otherSeeds) == 1);
 	CHECK(SeedsEqual(&seeds, &otherSeeds));
-	CHECK(memcmp(&other, &bank, sizeof(bank)) == 0);
+	CHECK(BanksEqual(&other, &bank));
 
 	/* A second derivation continues the stream. */
 	CHECK(NativeArcadeBotRules_DeriveRetailSeedsV1(&other, &otherSeeds) == 1);
@@ -491,27 +525,27 @@ static int TestDeriveRetailSeeds(void)
 	before = other;
 	seeds = untouched;
 	CHECK(NativeArcadeBotRules_DeriveRetailSeedsV1(&other, &seeds) == 0);
-	CHECK(memcmp(&other, &before, sizeof(other)) == 0);
+	CHECK(BanksEqual(&other, &before));
 	CHECK(memcmp(&seeds, &untouched, sizeof(seeds)) == 0);
 
 	other = fresh;
 	other.streams[0].tag = (uint32_t)NATIVE_DETERMINISTIC_RNG_STREAM_ITEMS;
 	before = other;
 	CHECK(NativeArcadeBotRules_DeriveRetailSeedsV1(&other, &seeds) == 0);
-	CHECK(memcmp(&other, &before, sizeof(other)) == 0);
+	CHECK(BanksEqual(&other, &before));
 	CHECK(memcmp(&seeds, &untouched, sizeof(seeds)) == 0);
 
 	other = fresh;
 	memset(other.streams[0].state, 0, sizeof(other.streams[0].state));
 	before = other;
 	CHECK(NativeArcadeBotRules_DeriveRetailSeedsV1(&other, &seeds) == 0);
-	CHECK(memcmp(&other, &before, sizeof(other)) == 0);
+	CHECK(BanksEqual(&other, &before));
 	CHECK(memcmp(&seeds, &untouched, sizeof(seeds)) == 0);
 
 	/* NULL output leaves the bank untouched; NULL bank is refused. */
 	other = fresh;
 	CHECK(NativeArcadeBotRules_DeriveRetailSeedsV1(&other, NULL) == 0);
-	CHECK(memcmp(&other, &fresh, sizeof(other)) == 0);
+	CHECK(BanksEqual(&other, &fresh));
 	CHECK(NativeArcadeBotRules_DeriveRetailSeedsV1(NULL, &seeds) == 0);
 	CHECK(memcmp(&seeds, &untouched, sizeof(seeds)) == 0);
 	return 0;
@@ -644,12 +678,15 @@ static int TestValidateConfig(void)
 	config.lapCount = 0x105u; /* 5 in the low byte */
 	CHECK(ExpectRulesReject(&config) == 0);
 
-	/* Equal human characters, and a non-base human character. */
+	/* Equal human characters, and a non-base character in either human slot. */
 	config = valid;
 	config.slots[1].characterID = config.slots[0].characterID;
 	CHECK(ExpectRulesReject(&config) == 0);
 	config = valid;
 	config.slots[1].characterID = 8;
+	CHECK(ExpectRulesReject(&config) == 0);
+	config = valid;
+	config.slots[0].characterID = 8;
 	CHECK(ExpectRulesReject(&config) == 0);
 
 	/* Nonzero human difficulty. */

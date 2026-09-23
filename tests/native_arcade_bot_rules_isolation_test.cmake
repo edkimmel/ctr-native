@@ -225,13 +225,25 @@ ctr_require_equal("difficulty table vs .cupDifficulty.speed" "${module_difficult
 ctr_require_equal("difficulty table" "${module_difficulty}" "80;160;240")
 
 # 12. advRng fallback: game/BOTS.c assigns one constant to each advRng word,
-#     exactly once each, under the both-words-zero condition.
+#     exactly once each, inside the block guarded by the both-words-zero
+#     condition `if ((sdata->advRng.state0 == 0) && (sdata->advRng.state1 ==
+#     0))`. Each zero comparison is exact: `== 0` followed only by blanks and
+#     `)`, so `== 0x...` or `== 01` cannot match.
 ctr_read_source("game/BOTS.c" bots)
-string(REGEX MATCHALL "advRng\\.state0[ \t]*==[ \t]*0[ \t]*\\)[ \t]*&&[ \t]*\\([^()]*advRng\\.state1[ \t]*==[ \t]*0" guards "${bots}")
+set(guard_pattern
+    "if[ \t]*\\([ \t]*\\([ \t]*sdata->advRng\\.state0[ \t]*==[ \t]*0[ \t]*\\)[ \t]*&&[ \t]*\\([ \t]*sdata->advRng\\.state1[ \t]*==[ \t]*0[ \t]*\\)[ \t]*\\)")
+string(REGEX MATCHALL "${guard_pattern}" guards "${bots}")
 list(LENGTH guards guard_count)
 if(NOT guard_count EQUAL 1)
     message(FATAL_ERROR "${prefix}: expected exactly one both-words-zero advRng guard in game/BOTS.c (found ${guard_count})")
 endif()
+# The guarded block: the guard line, its opening brace, and the matching
+# closing brace (the block holds no nested braces).
+string(REGEX MATCH "${guard_pattern}[ \t\r\n]*\\{([^{}]*)\\}" guarded_block "${bots}")
+if(guarded_block STREQUAL "")
+    message(FATAL_ERROR "${prefix}: the both-words-zero advRng guard in game/BOTS.c must open a brace block without nested braces")
+endif()
+set(guarded_body "${CMAKE_MATCH_1}")
 foreach(word IN ITEMS 0 1)
     # No trailing ';' in the pattern: it would split the CMake list.
     string(REGEX MATCHALL "advRng\\.state${word}[ \t]*=[ \t]*(0[xX][0-9a-fA-F]+|[0-9]+)[uU]?" assignments "${bots}")
@@ -242,15 +254,14 @@ foreach(word IN ITEMS 0 1)
     string(REGEX MATCH "=[ \t]*(0[xX][0-9a-fA-F]+|[0-9]+)" found "${assignments}")
     ctr_parse_numbers("game/BOTS.c advRng.state${word}" "${CMAKE_MATCH_1}" retail_state${word})
 endforeach()
-# The guard must precede both assignments.
-string(FIND "${bots}" "${guards}" guard_at)
-string(REGEX MATCH "advRng\\.state0[ \t]*=[ \t]*(0[xX][0-9a-fA-F]+|[0-9]+)" assignment0 "${bots}")
-string(REGEX MATCH "advRng\\.state1[ \t]*=[ \t]*(0[xX][0-9a-fA-F]+|[0-9]+)" assignment1 "${bots}")
-string(FIND "${bots}" "${assignment0}" assignment0_at)
-string(FIND "${bots}" "${assignment1}" assignment1_at)
-if(NOT (guard_at LESS assignment0_at AND guard_at LESS assignment1_at))
-    message(FATAL_ERROR "${prefix}: the advRng constant assignments in game/BOTS.c must follow the both-words-zero guard")
-endif()
+# Both assignments (each the only constant assignment to its word in the
+# file) must sit inside the guarded block.
+foreach(word IN ITEMS 0 1)
+    string(REGEX MATCH "advRng\\.state${word}[ \t]*=[ \t]*(0[xX][0-9a-fA-F]+|[0-9]+)" inside "${guarded_body}")
+    if(inside STREQUAL "")
+        message(FATAL_ERROR "${prefix}: the advRng.state${word} constant assignment in game/BOTS.c must sit inside the both-words-zero guarded block")
+    endif()
+endforeach()
 ctr_require_equal("NATIVE_ARCADE_BOT_RULES_ADV_RNG_FALLBACK0 vs advRng.state0" "${header_fallback0}" "${retail_state0}")
 ctr_require_equal("NATIVE_ARCADE_BOT_RULES_ADV_RNG_FALLBACK1 vs advRng.state1" "${header_fallback1}" "${retail_state1}")
 ctr_require_equal("NATIVE_ARCADE_BOT_RULES_ADV_RNG_FALLBACK0" "${header_fallback0}" "807490560")
