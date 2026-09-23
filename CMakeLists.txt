@@ -390,6 +390,19 @@ set_target_properties(ctr_native_arcade_link_options PROPERTIES
 target_include_directories(ctr_native_arcade_link_options PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_config ctr_native_sha256)
 
+# Match-select resolution rules (docs/MATCH_SELECT_MILESTONE.md section 2.1,
+# MS-2): pure tables mirrored from retail, seed derivation, tie draws, vote,
+# character, and bot resolution, the outcome digest, and the resolved config
+# builder. Not linked into ctr_native yet.
+add_library(ctr_native_match_select_rules STATIC platform/native_match_select_rules.c)
+set_target_properties(ctr_native_match_select_rules PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_match_select_rules PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_match_select_rules PUBLIC ctr_native_match_config ctr_native_sha256)
+
 # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6, Task
 # 6b-1): a process-wide singleton owning one arcade-link host adapter (link
 # mode) or a scripted screen preview (preview mode), behind a small
@@ -1243,6 +1256,20 @@ if(BUILD_TESTING)
 
     add_test(NAME native_arcade_link_options_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_link_options_isolation_test.cmake")
+
+    # Match-select resolution rules (docs/MATCH_SELECT_MILESTONE.md section
+    # 2.1, MS-2): pure; the isolation test checks the retail table mirrors.
+    add_executable(native_match_select_rules_test tests/native_match_select_rules_test.c)
+    set_target_properties(native_match_select_rules_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_match_select_rules_test PRIVATE ctr_native_match_select_rules)
+    add_test(NAME native_match_select_rules_unit COMMAND $<TARGET_FILE:native_match_select_rules_test>)
+
+    add_test(NAME native_match_select_rules_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_match_select_rules_isolation_test.cmake")
 
     # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6,
     # Task 6b-1): the singleton in every mode, one loopback socket on a dead
