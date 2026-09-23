@@ -9,7 +9,11 @@
  * Live race setup adapter (docs/ROSTER_MILESTONE.md section 3.2, tasks R-5b
  * and R-5c). Native only: game/MAIN/MainArcadeRaceSetup.c is compiled only
  * with CTR_NATIVE and is dormant unless MainArcadeRaceSetup_Arm is called. It
- * turns a validated TWO_CAB NativeMatchConfigV1 into a retail 2P arcade race
+ * turns a validated NativeMatchConfigV1 of either supported profile into a
+ * retail arcade race: ARCADE_TWO_CAB into the retail 2P arcade race (two
+ * humans, six drivers), ARCADE_ONE_CAB into the retail 1P arcade race (one
+ * human, seven bots, eight drivers). The per-profile shape (RS-21, RS-22) is
+ * the pure plan's and the core's; the adapter holds no profile logic. It works
  * through the pure plan (MAIN/MainArcadeRaceSetupPlan.h, whose R-5 contract
  * comment this module implements), seeds the retail RNGs from the match's
  * deterministic bank, and validates the live roster and bot setup facts

@@ -251,6 +251,20 @@ static void MainArcadeRaceSetup_LogNavHeaders(void)
 	}
 }
 
+/* The plan's profile, for the "armed" log line only. */
+static const char *MainArcadeRaceSetup_ProfileName(uint32_t profile)
+{
+	switch (profile)
+	{
+	case NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB:
+		return "TWO_CAB";
+	case NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB:
+		return "ONE_CAB";
+	default:
+		return "UNKNOWN";
+	}
+}
+
 int MainArcadeRaceSetup_Arm(const struct NativeMatchConfigV1 *config)
 {
 	struct MainArcadeRaceSetupCoreOutcome *outcome = &s_mainArcadeRaceSetupScratch.outcome;
@@ -259,11 +273,13 @@ int MainArcadeRaceSetup_Arm(const struct NativeMatchConfigV1 *config)
 
 	if (armed)
 	{
-		Platform_Log(MAIN_ARCADE_RACE_SETUP_LOG "armed track %d laps %d seed 0x%08X%08X difficulty 0x%X characters %d %d %d %d %d %d\n",
-			(int)plan->levelID, (int)plan->numLaps, (unsigned)(uint32_t)(plan->masterSeed >> 32),
-			(unsigned)(uint32_t)(plan->masterSeed & 0xFFFFFFFFu), (unsigned)plan->arcadeDifficulty,
-			(int)plan->characterIDs[0], (int)plan->characterIDs[1], (int)plan->characterIDs[2],
-			(int)plan->characterIDs[3], (int)plan->characterIDs[4], (int)plan->characterIDs[5]);
+		Platform_Log(MAIN_ARCADE_RACE_SETUP_LOG
+			"armed %s track %d laps %d seed 0x%08X%08X difficulty 0x%X characters %d %d %d %d %d %d %d %d\n",
+			MainArcadeRaceSetup_ProfileName(plan->profile), (int)plan->levelID, (int)plan->numLaps,
+			(unsigned)(uint32_t)(plan->masterSeed >> 32), (unsigned)(uint32_t)(plan->masterSeed & 0xFFFFFFFFu),
+			(unsigned)plan->arcadeDifficulty, (int)plan->characterIDs[0], (int)plan->characterIDs[1],
+			(int)plan->characterIDs[2], (int)plan->characterIDs[3], (int)plan->characterIDs[4],
+			(int)plan->characterIDs[5], (int)plan->characterIDs[6], (int)plan->characterIDs[7]);
 	}
 	MainArcadeRaceSetup_Log(outcome);
 	return armed;

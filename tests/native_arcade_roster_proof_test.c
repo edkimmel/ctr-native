@@ -16,6 +16,8 @@
 #define CHECK(expression) do { if (!(expression)) { fprintf(stderr, "%d: %s\n", __LINE__, #expression); return 1; } } while (0)
 
 #define ARGC(array) ((int)(sizeof(array) / sizeof((array)[0])))
+#define TWO_CAB NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB
+#define ONE_CAB NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB
 #define SENTINEL_BYTE 0x5au
 
 static void FillCounting(uint8_t *bytes, size_t size, uint8_t start)
@@ -68,6 +70,10 @@ static int TestDefaults(void)
 	CHECK(options.seed == UINT64_C(1));
 	CHECK(options.dwellTicks == 0u);
 	CHECK(options.tickCount == 900u && options.tickCount == NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_TICKS);
+	CHECK(options.profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB);
+	CHECK(NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_PROFILE == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB);
+	CHECK(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB);
+	CHECK(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB);
 	CHECK(IsAllByte(options.logPath, sizeof(options.logPath), 0u));
 	CHECK(IsAllByte(options.reserved, sizeof(options.reserved), 0u));
 	NativeArcadeRosterProofOptions_SetDefaults(NULL);
@@ -75,7 +81,7 @@ static int TestDefaults(void)
 	/* Unrelated arguments leave the defaults. */
 	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(none), none, &options) == 1);
 	CHECK((options.enabled == 0u) && (options.seed == 1u) && (options.dwellTicks == 0u) && (options.logPath[0] == '\0'));
-	CHECK(options.tickCount == 900u);
+	CHECK(options.tickCount == 900u && options.profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB);
 	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(1, none, &options) == 1);
 	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(none), none, NULL) == 0);
 	return 0;
@@ -278,6 +284,87 @@ static int TestUnknownCombinations(void)
 	return 0;
 }
 
+/* --arcade-roster-proof-profile (RS-23): two-cab by default, one-cab, or an error. */
+static int TestProfileOption(void)
+{
+	struct NativeArcadeRosterProofOptions options;
+	char *noProfile[] = {"ctr_native", "--arcade-roster-proof", "r.txt"};
+	char *oneCab[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "one-cab"};
+	char *twoCab[] = {"ctr_native", "--arcade-roster-proof-profile", "two-cab", "--arcade-roster-proof", "r.txt"};
+	char *allOptions[] = {"ctr_native", "--arcade-roster-proof-profile", "one-cab", "--arcade-roster-proof", "r.txt",
+		"--arcade-roster-proof-seed", "0x5EEE", "--arcade-roster-proof-dwell", "37", "--arcade-roster-proof-ticks", "900",
+		"--windowed"};
+	char *profileMissing[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile"};
+	char *profileOption[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "--windowed"};
+	char *profileNull[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", NULL};
+	char *profileEmpty[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", ""};
+	char *profileUnknown[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "three-cab"};
+	char *profileUpper[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "ONE-CAB"};
+	char *profileMixed[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "One-Cab"};
+	char *profileEnumName[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "ONE_CAB"};
+	char *profileUnderscore[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "one_cab"};
+	char *profileTrailing[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "one-cab "};
+	char *profilePrefix[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "one"};
+	char *profileNumber[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "2"};
+	char *profileRepeated[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "one-cab",
+		"--arcade-roster-proof-profile", "one-cab"};
+	char *profileRepeatedMixed[] = {"ctr_native", "--arcade-roster-proof-profile", "two-cab", "--arcade-roster-proof", "r.txt",
+		"--arcade-roster-proof-profile", "one-cab"};
+	char *profileAlone[] = {"ctr_native", "--arcade-roster-proof-profile", "one-cab"};
+	char *profileAloneTwo[] = {"ctr_native", "--arcade-roster-proof-profile", "two-cab", "--windowed"};
+	/* A valid profile before a bad seed: the whole parse fails, nothing applied. */
+	char *profileThenBadSeed[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-profile", "one-cab",
+		"--arcade-roster-proof-seed", "x"};
+
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(noProfile), noProfile, &options) == 1);
+	CHECK(options.enabled == 1u && options.profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB);
+
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(oneCab), oneCab, &options) == 1);
+	CHECK(options.enabled == 1u && options.profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB);
+	CHECK(options.seed == 1u && options.dwellTicks == 0u && options.tickCount == 900u);
+
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(twoCab), twoCab, &options) == 1);
+	CHECK(options.enabled == 1u && options.profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB);
+
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(allOptions), allOptions, &options) == 1);
+	CHECK(options.profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB && options.seed == UINT64_C(0x5EEE));
+	CHECK(options.dwellTicks == 37u && options.tickCount == 900u && strcmp(options.logPath, "r.txt") == 0);
+
+	CHECK(ExpectReject(ARGC(profileMissing), profileMissing) == 0);
+	CHECK(ExpectReject(ARGC(profileOption), profileOption) == 0);
+	CHECK(ExpectReject(ARGC(profileNull), profileNull) == 0);
+	CHECK(ExpectReject(ARGC(profileEmpty), profileEmpty) == 0);
+	CHECK(ExpectReject(ARGC(profileUnknown), profileUnknown) == 0);
+	CHECK(ExpectReject(ARGC(profileUpper), profileUpper) == 0);
+	CHECK(ExpectReject(ARGC(profileMixed), profileMixed) == 0);
+	CHECK(ExpectReject(ARGC(profileEnumName), profileEnumName) == 0);
+	CHECK(ExpectReject(ARGC(profileUnderscore), profileUnderscore) == 0);
+	CHECK(ExpectReject(ARGC(profileTrailing), profileTrailing) == 0);
+	CHECK(ExpectReject(ARGC(profilePrefix), profilePrefix) == 0);
+	CHECK(ExpectReject(ARGC(profileNumber), profileNumber) == 0);
+	CHECK(ExpectReject(ARGC(profileRepeated), profileRepeated) == 0);
+	CHECK(ExpectReject(ARGC(profileRepeatedMixed), profileRepeatedMixed) == 0);
+	CHECK(ExpectReject(ARGC(profileAlone), profileAlone) == 0);
+	CHECK(ExpectReject(ARGC(profileAloneTwo), profileAloneTwo) == 0);
+	CHECK(ExpectReject(ARGC(profileThenBadSeed), profileThenBadSeed) == 0);
+
+	/* Transactional on real options too: a rejected parse keeps the old profile. */
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(profileThenBadSeed), profileThenBadSeed, &options) == 0);
+	CHECK(options.enabled == 0u && options.profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB);
+
+	/* The profile names. */
+	CHECK(strcmp(NativeArcadeRosterProof_ProfileName(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB), "TWO_CAB") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_ProfileName(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB), "ONE_CAB") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_ProfileName(0u), "UNKNOWN") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_ProfileName(3u), "UNKNOWN") == 0);
+	return 0;
+}
+
 static int TestExitOptionNames(void)
 {
 	char *separate[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--exit-after-frame", "100"};
@@ -394,20 +481,54 @@ static int TestConfigBuilder(void)
 	CHECK(NativeArcadeLinkFixture_Build(&identity, &base) == 1);
 
 	/* Same identity and seed: byte-identical encoded configs. */
-	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, UINT64_C(1), &a) == 1);
-	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, UINT64_C(1), &b) == 1);
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, TWO_CAB, UINT64_C(1), &a) == 1);
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, TWO_CAB, UINT64_C(1), &b) == 1);
 	CHECK(EncodeConfig(&a, bytesA, sizeof(bytesA), &lengthA) == 1);
 	CHECK(EncodeConfig(&b, bytesB, sizeof(bytesB), &lengthB) == 1);
 	CHECK((lengthA == lengthB) && (lengthA > 0u) && (memcmp(bytesA, bytesB, lengthA) == 0));
 
 	/* A different seed differs in masterSeed, and only there. */
-	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, UINT64_C(2), &c) == 1);
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, TWO_CAB, UINT64_C(2), &c) == 1);
 	CHECK(c.masterSeed != a.masterSeed);
 	CHECK(EncodeConfig(&c, bytesC, sizeof(bytesC), &lengthC) == 1);
 	CHECK((lengthC == lengthA) && (memcmp(bytesC, bytesA, lengthA) != 0));
 	c.masterSeed = a.masterSeed;
 	CHECK(EncodeConfig(&c, bytesC, sizeof(bytesC), &lengthC) == 1);
 	CHECK(memcmp(bytesC, bytesA, lengthA) == 0);
+
+	/* TWO_CAB is unchanged by the profile parameter (RS-23): the masterSeed and
+	 * config digest the builder gave before OC-3 (computed at 30d5a1c71) for
+	 * this identity. */
+	{
+		static const struct
+		{
+			uint64_t seed;
+			uint64_t masterSeed;
+			uint8_t digest[NATIVE_SHA256_DIGEST_BYTES];
+		} golden[] = {
+			{UINT64_C(1), UINT64_C(0x95B5E53F2586F411),
+				{0xd0, 0x41, 0xe8, 0x82, 0xc9, 0xc5, 0x65, 0x65, 0x30, 0xd6, 0xc8, 0x72, 0xab, 0xc3, 0xc3, 0xd6, 0xd2, 0xa3,
+					0xd2, 0xa5, 0x8d, 0xe6, 0xcb, 0x31, 0x9c, 0x42, 0x0a, 0x6e, 0xd9, 0xed, 0xc7, 0x0c}},
+			{UINT64_C(0x5EED), UINT64_C(0xBE8D3076EF263FC8),
+				{0x16, 0xcd, 0x0f, 0x09, 0x3d, 0xcd, 0x71, 0xd5, 0xd0, 0x96, 0x89, 0x39, 0x30, 0x6b, 0x58, 0x18, 0x91, 0xc6,
+					0x74, 0xb5, 0xd3, 0xb6, 0x31, 0xd1, 0x93, 0xef, 0x79, 0xdb, 0x1b, 0x35, 0xec, 0xfa}},
+			{UINT64_C(9), UINT64_C(0xF7E8821AE8D200FD),
+				{0xc4, 0xa6, 0x52, 0x9a, 0xaa, 0x1a, 0xb8, 0xb5, 0x98, 0x7d, 0xdf, 0x7d, 0x53, 0x0a, 0x2c, 0x7f, 0x2a, 0xfa,
+					0x8f, 0x6c, 0x82, 0xf3, 0x94, 0x77, 0x52, 0x13, 0xcb, 0x08, 0x76, 0x58, 0x35, 0xd3}},
+		};
+
+		for (uint32_t i = 0; i < (uint32_t)(sizeof(golden) / sizeof(golden[0])); i++)
+		{
+			struct NativeMatchConfigV1 pinned;
+			uint8_t digest[NATIVE_SHA256_DIGEST_BYTES];
+
+			CHECK(NativeArcadeRosterProof_BuildConfig(&identity, TWO_CAB, golden[i].seed, &pinned) == 1);
+			CHECK(pinned.profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB);
+			CHECK(pinned.masterSeed == golden[i].masterSeed);
+			CHECK(NativeMatchConfigV1_Digest(&pinned, digest) == 1);
+			CHECK(memcmp(digest, golden[i].digest, sizeof(digest)) == 0);
+		}
+	}
 
 	/* The fixture's choices: characters, track, and laps kept; a fresh seed. */
 	CHECK((a.trackID == base.trackID) && (a.lapCount == base.lapCount));
@@ -430,11 +551,11 @@ static int TestConfigBuilder(void)
 
 	/* Rejections leave the output untouched. */
 	memset(&untouched, SENTINEL_BYTE, sizeof(untouched));
-	CHECK(NativeArcadeRosterProof_BuildConfig(NULL, 1u, &untouched) == 0);
+	CHECK(NativeArcadeRosterProof_BuildConfig(NULL, TWO_CAB, 1u, &untouched) == 0);
 	CHECK(IsAllByte(&untouched, sizeof(untouched), SENTINEL_BYTE));
-	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, 1u, NULL) == 0);
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, TWO_CAB, 1u, NULL) == 0);
 	memset(identity.build, 0, sizeof(identity.build));
-	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, 1u, &untouched) == 0);
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, TWO_CAB, 1u, &untouched) == 0);
 	CHECK(IsAllByte(&untouched, sizeof(untouched), SENTINEL_BYTE));
 
 	/* The fixed proof build identity is SHA-256 of its tag. */
@@ -445,7 +566,129 @@ static int TestConfigBuilder(void)
 	CHECK(memcmp(proofBuild, expectedBuild, sizeof(proofBuild)) == 0);
 	CHECK(NativeArcadeRosterProof_ProofBuildIdentity(NULL) == 0);
 	memcpy(identity.build, proofBuild, sizeof(identity.build));
-	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, 1u, &a) == 1);
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, TWO_CAB, 1u, &a) == 1);
+	return 0;
+}
+
+/* The ONE_CAB proof config (RS-23): no match select; the fixture's identity,
+ * track, laps, tick rate, CAB1 character, and bot difficulty; the 1P bots;
+ * the seed as masterSeed; the 1P bot rules digest. */
+static int TestOneCabConfigBuilder(void)
+{
+	static const uint64_t seeds[] = {UINT64_C(0x5EED), UINT64_C(0x5EEE), UINT64_C(0), UINT64_C(1), UINT64_MAX};
+	/* ExpectedBots1P(Crash 0): every base character but 0, ascending. */
+	static const uint8_t goldenCharacters[NATIVE_MATCH_CONFIG_V1_SLOT_COUNT] = {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u};
+	struct NativeIdentityV1 identity;
+	struct NativeMatchConfigV1 base;
+	struct NativeMatchConfigV1 a;
+	struct NativeMatchConfigV1 b;
+	struct NativeMatchConfigV1 c;
+	struct NativeMatchConfigV1 twoCab;
+	struct NativeMatchConfigV1 untouched;
+	struct MainArcadeRaceSetupPlan plan;
+	uint8_t bytesA[1024];
+	uint8_t bytesB[1024];
+	uint8_t bytesC[1024];
+	size_t lengthA = 0;
+	size_t lengthB = 0;
+	size_t lengthC = 0;
+	uint8_t digestA[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t digestB[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t digestC[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t digestTwoCab[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t rules1P[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t rules2P[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t bots[NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT];
+	uint8_t cab1Slot = 0;
+
+	TestIdentity(&identity);
+	CHECK(NativeArcadeLinkFixture_Build(&identity, &base) == 1);
+	CHECK(NativeMatchConfigV1_FindRoleSlot(&base, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &cab1Slot) == 1);
+	CHECK(NativeArcadeBotRules_ExpectedBots1P(base.slots[cab1Slot].characterID, bots) == 1);
+	CHECK(NativeArcadeBotRules_Digest1PV1(rules1P) == 1);
+	CHECK(NativeArcadeBotRules_DigestV1(rules2P) == 1);
+
+	for (uint32_t i = 0; i < (uint32_t)(sizeof(seeds) / sizeof(seeds[0])); i++)
+	{
+		memset(&a, SENTINEL_BYTE, sizeof(a));
+		CHECK(NativeArcadeRosterProof_BuildConfig(&identity, ONE_CAB, seeds[i], &a) == 1);
+		CHECK(NativeArcadeBotRules_ValidateConfigV1(&a) == 1);
+		CHECK(a.profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB);
+		CHECK(a.masterSeed == seeds[i]);
+		CHECK((a.gameMode1 == 0u) && (a.gameMode2 == 0u) && (a.rules == 0u));
+		CHECK((a.trackID == base.trackID) && (a.lapCount == base.lapCount));
+		CHECK((a.tickRateNumerator == base.tickRateNumerator) && (a.tickRateDenominator == base.tickRateDenominator));
+		CHECK((a.tickRateNumerator == 30u) && (a.tickRateDenominator == 1u));
+		CHECK(memcmp(a.buildIdentity, identity.build, sizeof(identity.build)) == 0);
+		CHECK(memcmp(a.contentIdentity, identity.content, sizeof(identity.content)) == 0);
+		CHECK(memcmp(a.botRulesDigest, rules1P, sizeof(rules1P)) == 0);
+		CHECK(memcmp(a.botRulesDigest, rules2P, sizeof(rules2P)) != 0);
+		CHECK(IsAllByte(a.reserved, sizeof(a.reserved), 0u));
+		/* Slot 0 the CAB1 human at difficulty 0; slots 1..7 the 1P bots at the fixture's bot difficulty. */
+		CHECK(a.slots[0].role == NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN);
+		CHECK(a.slots[0].characterID == base.slots[cab1Slot].characterID && a.slots[0].difficulty == 0u);
+		for (uint32_t slot = 0; slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; slot++)
+		{
+			CHECK(a.slots[slot].initialLifecycle == NATIVE_MATCH_SLOT_LIFECYCLE_ACTIVE);
+			CHECK(a.slots[slot].characterID == goldenCharacters[slot]);
+			CHECK(IsAllByte(a.slots[slot].reserved, sizeof(a.slots[slot].reserved), 0u));
+			if (slot >= 1u)
+			{
+				CHECK(a.slots[slot].role == NATIVE_MATCH_SLOT_ROLE_BOT);
+				CHECK(a.slots[slot].characterID == bots[slot - 1u]);
+				CHECK(a.slots[slot].difficulty == base.slots[2].difficulty);
+				CHECK(a.slots[slot].difficulty == NATIVE_ARCADE_BOT_RULES_DEFAULT_DIFFICULTY);
+			}
+		}
+		/* The race setup plan builds the 1P arcade race from it. */
+		CHECK(MainArcadeRaceSetupPlan_Build(&a, &plan) == 1);
+		CHECK(plan.profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB);
+		CHECK(plan.numPlyrNextGame == 1u && plan.firstBotSlot == 1u && plan.botCount == 7u);
+		CHECK((plan.levelID == (int32_t)base.trackID) && (plan.numLaps == (int8_t)base.lapCount));
+		CHECK(plan.masterSeed == seeds[i]);
+		for (uint32_t slot = 0; slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; slot++)
+		{
+			CHECK(plan.characterIDs[slot] == (int16_t)goldenCharacters[slot]);
+		}
+	}
+
+	/* Same identity and seed: byte-identical configs and digests. */
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, ONE_CAB, UINT64_C(0x5EED), &a) == 1);
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, ONE_CAB, UINT64_C(0x5EED), &b) == 1);
+	CHECK(memcmp(&a, &b, sizeof(a)) == 0);
+	CHECK(EncodeConfig(&a, bytesA, sizeof(bytesA), &lengthA) == 1);
+	CHECK(EncodeConfig(&b, bytesB, sizeof(bytesB), &lengthB) == 1);
+	CHECK((lengthA == lengthB) && (lengthA > 0u) && (memcmp(bytesA, bytesB, lengthA) == 0));
+	CHECK(NativeMatchConfigV1_Digest(&a, digestA) == 1);
+	CHECK(NativeMatchConfigV1_Digest(&b, digestB) == 1);
+	CHECK(memcmp(digestA, digestB, sizeof(digestA)) == 0);
+
+	/* A different seed: a different config digest, and a difference only in masterSeed. */
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, ONE_CAB, UINT64_C(0x5EEE), &c) == 1);
+	CHECK(NativeMatchConfigV1_Digest(&c, digestC) == 1);
+	CHECK(memcmp(digestA, digestC, sizeof(digestA)) != 0);
+	c.masterSeed = a.masterSeed;
+	CHECK(EncodeConfig(&c, bytesC, sizeof(bytesC), &lengthC) == 1);
+	CHECK((lengthC == lengthA) && (memcmp(bytesC, bytesA, lengthA) == 0));
+
+	/* ONE_CAB and TWO_CAB for the same identity and seed are different configs. */
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, TWO_CAB, UINT64_C(0x5EED), &twoCab) == 1);
+	CHECK(twoCab.profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB);
+	CHECK(NativeMatchConfigV1_Digest(&twoCab, digestTwoCab) == 1);
+	CHECK(memcmp(digestA, digestTwoCab, sizeof(digestA)) != 0);
+
+	/* Rejections leave the output untouched: an unknown profile, NULL
+	 * arguments, and an identity the fixture refuses. */
+	memset(&untouched, SENTINEL_BYTE, sizeof(untouched));
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, 0u, UINT64_C(1), &untouched) == 0);
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, 3u, UINT64_C(1), &untouched) == 0);
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, UINT32_MAX, UINT64_C(1), &untouched) == 0);
+	CHECK(NativeArcadeRosterProof_BuildConfig(NULL, ONE_CAB, UINT64_C(1), &untouched) == 0);
+	CHECK(IsAllByte(&untouched, sizeof(untouched), SENTINEL_BYTE));
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, ONE_CAB, UINT64_C(1), NULL) == 0);
+	memset(identity.content, 0, sizeof(identity.content));
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, ONE_CAB, UINT64_C(1), &untouched) == 0);
+	CHECK(IsAllByte(&untouched, sizeof(untouched), SENTINEL_BYTE));
 	return 0;
 }
 
@@ -493,7 +736,7 @@ static int TestScriptedPads(void)
 	for (uint32_t i = 0; i < (uint32_t)(sizeof(golden) / sizeof(golden[0])); i++)
 	{
 		memset(pads, SENTINEL_BYTE, sizeof(pads));
-		NativeArcadeRosterProof_ScriptedPads(golden[i].tick, pads);
+		NativeArcadeRosterProof_ScriptedPads(TWO_CAB, golden[i].tick, pads);
 		CHECK(ExpectPad(&pads[0], 0u, 0x41u, golden[i].p0[0], golden[i].p0[1], 1u) == 0);
 		CHECK(ExpectPad(&pads[1], 0u, 0x41u, golden[i].p1[0], golden[i].p1[1], 1u) == 0);
 		CHECK(ExpectPad(&pads[2], 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0u) == 0);
@@ -504,8 +747,8 @@ static int TestScriptedPads(void)
 	{
 		memset(pads, 0x00, sizeof(pads));
 		memset(again, 0xA5, sizeof(again));
-		NativeArcadeRosterProof_ScriptedPads(tick, pads);
-		NativeArcadeRosterProof_ScriptedPads(tick, again);
+		NativeArcadeRosterProof_ScriptedPads(TWO_CAB, tick, pads);
+		NativeArcadeRosterProof_ScriptedPads(TWO_CAB, tick, again);
 		CHECK(memcmp(pads, again, sizeof(pads)) == 0);
 		CHECK(pads[0].buttons[1] == 0xBFu && pads[1].buttons[1] == 0xBFu);
 		if (pads[1].buttons[0] == 0xDFu)
@@ -515,9 +758,93 @@ static int TestScriptedPads(void)
 	}
 	/* Seven 30-tick steering windows in ticks 0..899 (60..89, ..., 780..809). */
 	CHECK(steering == 210u);
-	NativeArcadeRosterProof_ScriptedPads(5u, NULL);
+	NativeArcadeRosterProof_ScriptedPads(TWO_CAB, 5u, NULL);
 	CHECK(NATIVE_ARCADE_ROSTER_PROOF_STEER_PERIOD == 120u && NATIVE_ARCADE_ROSTER_PROOF_STEER_BEGIN == 60u &&
 	      NATIVE_ARCADE_ROSTER_PROOF_STEER_END == 90u);
+	return 0;
+}
+
+/* The ONE_CAB scripted pads (RS-24): the same pad layout as TWO_CAB; player 0
+ * holds CROSS and steers RIGHT in [60, 90) of every 120; player 1 stays
+ * neutral. Golden values, a pure function of (profile, race tick). */
+static int TestScriptedPadsOneCab(void)
+{
+	struct NativeArcadeRosterProofPad pads[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT];
+	struct NativeArcadeRosterProofPad again[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT];
+	struct NativeArcadeRosterProofPad twoCab[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT];
+	/* Active-low button words: none 0xFFFF; CROSS clears 0x4000; RIGHT 0x0020. */
+	static const struct
+	{
+		uint32_t tick;
+		uint8_t p0[2];
+		uint8_t p1[2];
+	} golden[] = {
+		{NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, {0xFFu, 0xFFu}, {0xFFu, 0xFFu}},
+		{0u, {0xFFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{1u, {0xFFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{59u, {0xFFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{60u, {0xDFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{75u, {0xDFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{89u, {0xDFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{90u, {0xFFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{119u, {0xFFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{120u, {0xFFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{180u, {0xDFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{899u, {0xFFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{3599u, {0xFFu, 0xBFu}, {0xFFu, 0xFFu}},
+		{3540u, {0xDFu, 0xBFu}, {0xFFu, 0xFFu}},
+	};
+	uint32_t steering = 0;
+
+	for (uint32_t i = 0; i < (uint32_t)(sizeof(golden) / sizeof(golden[0])); i++)
+	{
+		memset(pads, SENTINEL_BYTE, sizeof(pads));
+		NativeArcadeRosterProof_ScriptedPads(ONE_CAB, golden[i].tick, pads);
+		CHECK(ExpectPad(&pads[0], 0u, 0x41u, golden[i].p0[0], golden[i].p0[1], 1u) == 0);
+		CHECK(ExpectPad(&pads[1], 0u, 0x41u, golden[i].p1[0], golden[i].p1[1], 1u) == 0);
+		CHECK(ExpectPad(&pads[2], 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0u) == 0);
+		CHECK(ExpectPad(&pads[3], 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0u) == 0);
+	}
+	for (uint32_t tick = 0; tick < 900u; tick++)
+	{
+		memset(pads, 0x00, sizeof(pads));
+		memset(again, 0xA5, sizeof(again));
+		NativeArcadeRosterProof_ScriptedPads(ONE_CAB, tick, pads);
+		NativeArcadeRosterProof_ScriptedPads(ONE_CAB, tick, again);
+		CHECK(memcmp(pads, again, sizeof(pads)) == 0);
+		CHECK(pads[0].buttons[1] == 0xBFu);
+		CHECK(pads[1].buttons[0] == 0xFFu && pads[1].buttons[1] == 0xFFu && pads[1].connected == 1u);
+		if (pads[0].buttons[0] == 0xDFu)
+		{
+			steering++;
+		}
+		else
+		{
+			CHECK(pads[0].buttons[0] == 0xFFu);
+		}
+		/* Player 0 steers exactly when TWO_CAB's player 1 does. */
+		NativeArcadeRosterProof_ScriptedPads(TWO_CAB, tick, twoCab);
+		CHECK(pads[0].buttons[0] == twoCab[1].buttons[0]);
+		/* Pads 2 and 3 are identical in both profiles. */
+		CHECK(memcmp(&pads[2], &twoCab[2], sizeof(pads[0]) * 2u) == 0);
+	}
+	CHECK(steering == 210u);
+
+	/* The neutral frames (TICK_NONE) are byte-identical in both profiles. */
+	NativeArcadeRosterProof_ScriptedPads(ONE_CAB, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, pads);
+	NativeArcadeRosterProof_ScriptedPads(TWO_CAB, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, twoCab);
+	CHECK(memcmp(pads, twoCab, sizeof(pads)) == 0);
+
+	/* Any other profile: the neutral pads at every tick. */
+	for (uint32_t tick = 0; tick < 240u; tick++)
+	{
+		memset(again, 0xA5, sizeof(again));
+		NativeArcadeRosterProof_ScriptedPads(0u, tick, again);
+		CHECK(memcmp(again, twoCab, sizeof(again)) == 0);
+		NativeArcadeRosterProof_ScriptedPads(3u, tick, again);
+		CHECK(memcmp(again, twoCab, sizeof(again)) == 0);
+	}
+	NativeArcadeRosterProof_ScriptedPads(ONE_CAB, 5u, NULL);
 	return 0;
 }
 
@@ -586,6 +913,7 @@ static int TestTickLines(void)
 	/* The written report: the formatted header, the tick lines in order, then "end ticks". */
 	memset(&report, 0, sizeof(report));
 	report.result = NATIVE_ARCADE_ROSTER_PROOF_PASS;
+	report.profile = ONE_CAB;
 	memcpy(report.setupStatusName, "VALIDATED", sizeof("VALIDATED"));
 	memcpy(report.setupFailureName, "NONE", sizeof("NONE"));
 	report.ticksRequested = 3u;
@@ -613,7 +941,12 @@ static int TestTickLines(void)
 	(void)fclose(file);
 	(void)remove(path);
 	text[length] = '\0';
-	CHECK(strncmp(text, "arcade roster proof v7\ndrivers digest excludes physics\nresult PASS (0)\n", 71u) == 0);
+	{
+		static const char head[] = "arcade roster proof v8\ndrivers digest excludes physics\nresult PASS (0)\nprofile ONE_CAB\n"
+		                           "setup status VALIDATED (0)\n";
+
+		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
+	}
 	CHECK(strstr(text, "\ndwell 0\nticks 3\nmenu ready tick 732\n") != NULL);
 	CHECK(strstr(text, "\nlaunch window title\n"
 	                   "launch counters timer 701 frameCounter 733 frameTimer -7 frameTimerConfetti -1402\n"
@@ -882,14 +1215,31 @@ static int TestSingletonAndReport(void)
 	/* Enabled: the config is BuildConfig's. */
 	CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 1);
 	CHECK(NativeArcadeRosterProof_Active() == 1);
-	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, UINT64_C(9), &expected) == 1);
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, TWO_CAB, UINT64_C(9), &expected) == 1);
 	CHECK(memcmp(NativeArcadeRosterProof_Config(), &expected, sizeof(expected)) == 0);
 	CHECK((NativeArcadeRosterProof_Dwell() == 12u) && (NativeArcadeRosterProof_Seed() == UINT64_C(9)));
 	CHECK(strcmp(NativeArcadeRosterProof_LogPath(), "proof_report.txt") == 0);
+	CHECK(NativeArcadeRosterProof_Profile() == TWO_CAB);
+
+	/* ONE_CAB: the config is BuildConfig's ONE_CAB config for the seed. */
+	options.profile = ONE_CAB;
+	CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeRosterProof_Active() == 1 && NativeArcadeRosterProof_Profile() == ONE_CAB);
+	CHECK(NativeArcadeRosterProof_BuildConfig(&identity, ONE_CAB, UINT64_C(9), &expected) == 1);
+	CHECK(memcmp(NativeArcadeRosterProof_Config(), &expected, sizeof(expected)) == 0);
+	CHECK(NativeArcadeRosterProof_Config()->profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB);
+	CHECK(NativeArcadeRosterProof_Config()->masterSeed == UINT64_C(9));
+	/* An unknown profile does not configure (and leaves the proof inactive). */
+	options.profile = 3u;
+	CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 0);
+	CHECK(NativeArcadeRosterProof_Active() == 0 && NativeArcadeRosterProof_Profile() == 0u);
+	options.profile = TWO_CAB;
+	CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 1);
 
 	/* The report formatter. */
 	memset(&report, 0, sizeof(report));
 	report.result = NATIVE_ARCADE_ROSTER_PROOF_PASS;
+	report.profile = TWO_CAB;
 	report.setupStatus = 4u;
 	memcpy(report.setupStatusName, "VALIDATED", sizeof("VALIDATED"));
 	memcpy(report.setupFailureName, "NONE", sizeof("NONE"));
@@ -928,11 +1278,19 @@ static int TestSingletonAndReport(void)
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(length == strlen(text));
 	{
-		static const char head[] = "arcade roster proof v7\ndrivers digest excludes physics\nresult PASS (0)\n"
-		                           "setup status VALIDATED (4)\nsetup failure NONE (0)\n";
+		static const char head[] = "arcade roster proof v8\ndrivers digest excludes physics\nresult PASS (0)\n"
+		                           "profile TWO_CAB\nsetup status VALIDATED (4)\nsetup failure NONE (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
 	}
+	/* The profile line follows the result line, whatever the profile. */
+	report.profile = ONE_CAB;
+	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, "\nresult PASS (0)\nprofile ONE_CAB\nsetup status VALIDATED (4)\n") != NULL);
+	report.profile = 0u;
+	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, "\nresult PASS (0)\nprofile UNKNOWN\nsetup status VALIDATED (4)\n") != NULL);
+	report.profile = TWO_CAB;
 	CHECK(strstr(text, "seed 0x0123456789ABCDEF\ndwell 45\nticks 900\nmenu ready tick 230\ndemo race tick 1200\nlaunch tick 1275\n"
 	                   "launch window demo race\nlaunch counters none\nvalidated tick none\nrace tick 0 tick none\n"
 	                   "race tick 0 counters none\n"
@@ -995,9 +1353,12 @@ int main(void)
 	CHECK(TestUnknownCombinations() == 0);
 	CHECK(TestExitOptionNames() == 0);
 	CHECK(TestExitCodes() == 0);
+	CHECK(TestProfileOption() == 0);
 	CHECK(TestConfigBuilder() == 0);
+	CHECK(TestOneCabConfigBuilder() == 0);
 	CHECK(TestSeedsAndFinalResult() == 0);
 	CHECK(TestScriptedPads() == 0);
+	CHECK(TestScriptedPadsOneCab() == 0);
 	CHECK(TestTickLines() == 0);
 	CHECK(TestRaceControlDigest() == 0);
 	CHECK(TestSingletonAndReport() == 0);

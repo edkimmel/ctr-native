@@ -3,7 +3,9 @@
  * Live roster proof hook (docs/ROSTER_MILESTONE.md section 3.4; R-5b's
  * launcher, which R-5c lets launch from inside the attract demo race; R-6's
  * scripted pads and per-tick digests; and R-6b's race-relative control
- * digest, race tick 0 counters, and tick-log watchdog). Internal native
+ * digest, race tick 0 counters, and tick-log watchdog; OC-3's ONE_CAB
+ * profile: the configured profile's scripted pads and the report's profile
+ * line, nothing else is profile-specific). Internal native
  * builds only, and dormant unless main.c configured the proof (which also
  * turns on the fixed VBlank pacing): with the proof inactive every
  * entry point returns as its first statement and touches nothing.
@@ -149,6 +151,7 @@ static void MainArcadeRosterProof_Finish(uint32_t requested)
 	int exitCode;
 
 	memset(&report, 0, sizeof(report));
+	report.profile = NativeArcadeRosterProof_Profile();
 	report.setupStatus = (uint32_t)status;
 	report.setupFailure = (uint32_t)failure;
 	MainArcadeRosterProof_CopyName(report.setupStatusName, MainArcadeRaceSetup_StatusName(status));
@@ -297,8 +300,9 @@ static int MainArcadeRosterProof_TryLaunch(struct GameTracker *gGT, struct Gamep
 	{
 		MainArcadeRosterProof_LeaveTitle();
 	}
-	Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "launched at tick %u from the %s (menu ready at tick %u, dwell %u)\n",
-		(unsigned)state->tick, NativeArcadeRosterProof_LaunchWindowName(window), (unsigned)state->menuReadyTick,
+	Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "launched %s at tick %u from the %s (menu ready at tick %u, dwell %u)\n",
+		NativeArcadeRosterProof_ProfileName(NativeArcadeRosterProof_Profile()), (unsigned)state->tick,
+		NativeArcadeRosterProof_LaunchWindowName(window), (unsigned)state->menuReadyTick,
 		(unsigned)NativeArcadeRosterProof_Dwell());
 	state->phase = MAIN_ARCADE_ROSTER_PROOF_RUNNING;
 	return 1;
@@ -449,13 +453,14 @@ void MainArcadeRosterProof_Frame(struct GameTracker *gGT, struct GamepadSystem *
 	state->tick++;
 }
 
-/* Installs the scripted pads for raceTick (TICK_NONE: neutral). */
+/* Installs the configured profile's scripted pads for raceTick (TICK_NONE:
+ * neutral). */
 static int MainArcadeRosterProof_InstallPads(uint32_t raceTick)
 {
 	struct NativeArcadeRosterProofPad pads[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT];
 	struct PlatformInputPadSnapshot snapshots[PLATFORM_INPUT_PAD_COUNT];
 
-	NativeArcadeRosterProof_ScriptedPads(raceTick, pads);
+	NativeArcadeRosterProof_ScriptedPads(NativeArcadeRosterProof_Profile(), raceTick, pads);
 	memset(snapshots, 0, sizeof(snapshots));
 	for (uint32_t pad = 0; pad < NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT; pad++)
 	{

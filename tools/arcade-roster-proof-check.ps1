@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Executable,
 
-    # Absolute directory for the five reports and their stdout/stderr logs.
+    # Absolute directory for the eight reports and their stdout/stderr logs.
     # Each run uses it as its working directory; the game itself still writes
     # the gitignored `Crash Team Racing.log` in the repository root.
     [Parameter(Mandatory = $true)]
@@ -16,29 +16,69 @@ param(
     # [CmdletBinding()] script run with -File.
     [string]$AssetsFile,
 
-    # Race ticks each run logs (--arcade-roster-proof-ticks).
+    # Race ticks each two-cab run (A-E) logs (--arcade-roster-proof-ticks).
     [int]$Ticks = 900,
 
-    # Seconds all five runs together may take (parallel), or each run
+    # Race ticks each one-cab run (F-H) logs (--arcade-roster-proof-ticks);
+    # capped below -Ticks for now, see the header.
+    [int]$OneCabTicks = 90,
+
+    # Seconds all eight runs together may take (parallel), or each run
     # (-Sequential).
     [int]$TimeoutSeconds = 600,
 
-    # Run the five proofs one after another instead of all at once.
+    # Run the eight proofs one after another instead of all at once.
     [switch]$Sequential
 )
 
 # Live roster determinism check (docs/ROSTER_MILESTONE.md section 3.4, R-6,
-# R-6b, R-6c, and R-6d).  Runs five live roster proofs and compares their
-# reports:
-#   A  seed 0x5EED, dwell 0     (launches from the title)
-#   B  seed 0x5EED, dwell 0     (A again: byte-identical report)
-#   C  seed 0x5EED, dwell 5400  (launches from inside the attract demo race)
-#   D  seed 0x5EEE, dwell 0     (another seed: a different config digest, bank
-#                                digest, and race tick 0 RNG digest)
-#   E  seed 0x5EED, dwell 37    (launches from the title 37 ticks late, so its
-#                                boot-relative timer is an odd number of ticks
-#                                off A's at launch; the check verifies the
-#                                offset is odd)
+# R-6b, R-6c, R-6d, and OC-3).  Runs eight live roster proofs, five of the
+# two-cabinet profile and three of the single-cabinet profile, and compares
+# their reports:
+#   A  two-cab, seed 0x5EED, dwell 0     (launches from the title)
+#   B  two-cab, seed 0x5EED, dwell 0     (A again: byte-identical report)
+#   C  two-cab, seed 0x5EED, dwell 5400  (launches from inside the attract
+#                                         demo race)
+#   D  two-cab, seed 0x5EEE, dwell 0     (another seed: a different config
+#                                         digest, bank digest, and race tick 0
+#                                         RNG digest)
+#   E  two-cab, seed 0x5EED, dwell 37    (launches from the title 37 ticks
+#                                         late, so its boot-relative timer is
+#                                         an odd number of ticks off A's at
+#                                         launch; the check verifies the
+#                                         offset is odd)
+#   F  one-cab, seed 0x5EED, dwell 0     (the retail 1P arcade race, one human
+#                                         and seven bots, launched from the
+#                                         title)
+#   G  one-cab, seed 0x5EED, dwell 0     (F again: byte-identical report)
+#   H  one-cab, seed 0x5EEE, dwell 0     (another seed: a different config
+#                                         digest, bank digest, and race tick 0
+#                                         RNG digest than F)
+# A-E pass no --arcade-roster-proof-profile, so they run on the default
+# profile (two-cab) with the command lines they had before OC-3, and their
+# reports must say "profile TWO_CAB"; F-H pass --arcade-roster-proof-profile
+# one-cab and must say "profile ONE_CAB".
+#
+# Tick counts.  A-E log -Ticks race ticks (900 in ctest).  F-H log
+# -OneCabTicks race ticks (default 90), and all their per-run expectations
+# (tick lines, "end ticks N", the tick 0 comparisons) use that count.  The
+# ONE_CAB runs are capped at 90 ticks until the game/UI/UI_Rank.c Debug
+# run-time check failure (uninitialized pos.y in the 1P rank-icon HUD) is
+# resolved: in a 1P race, about 3 s after the start, the MSVC Debug runtime
+# stops the process with a modal "Run-Time Check Failure #3" dialog, and the
+# run never reports.  90 race ticks end inside the start countdown, before
+# the green light and so before any rank change reaches that code.  Once the
+# failure is resolved, F-H run the full -Ticks.
+#
+# Every report must be format v8 with result PASS, the profile line right
+# after the result line, the expected launch window, both counter lines, a
+# seeded line ending "match 1", eight slot lines, exactly the run's requested
+# tick lines numbered from 0, and "end ticks N".  The slot lines must carry the
+# profile's roles: TWO_CAB slot 0 CAB1_HUMAN, slot 1 CAB2_HUMAN, slots 2..5
+# BOT (all present), slots 6..7 "role INACTIVE"; ONE_CAB slot 0 CAB1_HUMAN
+# and slots 1..7 BOT, all present.  F differs from A in the config digest
+# and the race plan digest (another profile).
+#
 # C and E must match A in the config, race plan, bot setup plan, and bank
 # digests, the seeded line, the slot lines, and at every race tick the rng,
 # input, drivers, and race-relative control (rcontrol) digests.  rcontrol is
@@ -72,6 +112,12 @@ $noDisplayMarker = 'No displays available'
 $notInternalMarker = '--arcade-roster-proof is available in internal builds only.'
 $tickPattern = '^tick ([0-9]+) control ([0-9a-f]{16}) rcontrol ([0-9a-f]{16}) rng ([0-9a-f]{16}) input ([0-9a-f]{16}) drivers ([0-9a-f]{64})$'
 $countersPattern = '^timer (-?[0-9]+) frameCounter (-?[0-9]+) frameTimer (-?[0-9]+) frameTimerConfetti (-?[0-9]+)$'
+# The slot roles of each profile, slots 0..7 (NativeMatchConfigV1_InitArcadeTwoCab
+# and _InitArcadeOneCab).
+$slotRoles = @{
+    'TWO_CAB' = @('CAB1_HUMAN', 'CAB2_HUMAN', 'BOT', 'BOT', 'BOT', 'BOT', 'INACTIVE', 'INACTIVE')
+    'ONE_CAB' = @('CAB1_HUMAN', 'BOT', 'BOT', 'BOT', 'BOT', 'BOT', 'BOT', 'BOT')
+}
 $runs = @()
 
 function Exit-Skipped([string]$Reason) {
@@ -132,7 +178,11 @@ function Stop-StartedRuns($Runs) {
 
 function Start-Run($Run) {
     $arguments = @('--arcade-roster-proof', $Run.ReportPath, '--arcade-roster-proof-seed', $Run.Seed,
-        '--arcade-roster-proof-dwell', "$($Run.Dwell)", '--arcade-roster-proof-ticks', "$Ticks")
+        '--arcade-roster-proof-dwell', "$($Run.Dwell)", '--arcade-roster-proof-ticks', "$($Run.Ticks)")
+    # A-E use the default profile (two-cab); only the one-cab runs name it.
+    if (-not [string]::IsNullOrEmpty($Run.ProfileOption)) {
+        $arguments += @('--arcade-roster-proof-profile', $Run.ProfileOption)
+    }
     $argumentLine = ($arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
     $process = Start-Process -FilePath $resolvedExecutable -ArgumentList $argumentLine `
         -WorkingDirectory $resolvedOutput -NoNewWindow -PassThru `
@@ -210,11 +260,19 @@ function Read-Report($Run) {
             $report.Header[$Matches[1]] = $Matches[2]
         }
     }
-    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v7') -or ($lines[1] -ne 'drivers digest excludes physics')) {
-        $report.Problems += 'the report does not start with the v7 header and "drivers digest excludes physics"'
+    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v8') -or ($lines[1] -ne 'drivers digest excludes physics')) {
+        $report.Problems += 'the report does not start with the v8 header and "drivers digest excludes physics"'
     }
     if ($report.Header['result'] -ne 'PASS (0)') {
         $report.Problems += "result is '$($report.Header['result'])', not 'PASS (0)'"
+    }
+    # The profile line comes right after the result line.
+    if (($lines.Count -lt 4) -or ($lines[2] -notmatch '^result ') -or ($lines[3] -ne "profile $($Run.Profile)")) {
+        $found = ''
+        if ($lines.Count -ge 4) {
+            $found = $lines[3]
+        }
+        $report.Problems += "line 4 is '$found', expected 'profile $($Run.Profile)' right after the result line"
     }
     if (($null -ne $report.Header['race tick 0 counters']) -and ($report.Header['race tick 0 counters'] -match $countersPattern)) {
         $report.Counters = [pscustomobject]@{ Timer = [long]$Matches[1]; FrameCounter = [long]$Matches[2]; FrameTimer = [long]$Matches[3]
@@ -230,8 +288,8 @@ function Read-Report($Run) {
     else {
         $report.Problems += "the launch counters line is missing or malformed: '$($report.Header['launch counters'])'"
     }
-    if ($report.Ticks.Count -ne $Ticks) {
-        $report.Problems += "$($report.Ticks.Count) tick lines, expected $Ticks"
+    if ($report.Ticks.Count -ne $Run.Ticks) {
+        $report.Problems += "$($report.Ticks.Count) tick lines, expected $($Run.Ticks)"
     }
     for ($i = 0; $i -lt $report.Ticks.Count; $i++) {
         if ($report.Ticks[$i].Tick -ne $i) {
@@ -239,8 +297,8 @@ function Read-Report($Run) {
             break
         }
     }
-    if (($lines.Count -eq 0) -or ($lines[$lines.Count - 1] -ne "end ticks $Ticks")) {
-        $report.Problems += "the report does not end with 'end ticks $Ticks'"
+    if (($lines.Count -eq 0) -or ($lines[$lines.Count - 1] -ne "end ticks $($Run.Ticks)")) {
+        $report.Problems += "the report does not end with 'end ticks $($Run.Ticks)'"
     }
     if (($null -eq $report.Seeded) -or (-not $report.Seeded.EndsWith(' match 1'))) {
         $report.Problems += "the seeded line is missing or does not match: '$($report.Seeded)'"
@@ -248,7 +306,49 @@ function Read-Report($Run) {
     if ($report.Slots.Count -ne 8) {
         $report.Problems += "$($report.Slots.Count) slot lines, expected 8"
     }
+    else {
+        # The profile's slot roles: a present slot is "slot N role R character
+        # ...", an absent one "slot N role R" (FormatReport).
+        $roles = $slotRoles[$Run.Profile]
+        for ($i = 0; $i -lt 8; $i++) {
+            $role = $roles[$i]
+            if ($role -eq 'INACTIVE') {
+                $ok = $report.Slots[$i] -eq "slot $i role INACTIVE"
+                $expected = "slot $i role INACTIVE"
+            }
+            else {
+                $ok = $report.Slots[$i] -match "^slot $i role $role character [0-9]+ difficulty 0x[0-9A-F]{2} spawn [0-9]+ nav [0-9]+ accel [0-9]+$"
+                $expected = "slot $i role $role character ... (present)"
+            }
+            if (-not $ok) {
+                $report.Problems += "slot line $i is '$($report.Slots[$i])', expected '$expected' for $($Run.Profile)"
+            }
+        }
+    }
     return $report
+}
+
+# 1 when the two files are byte-identical; otherwise the first differing
+# line of the two parsed reports.
+function Compare-ReportBytes($PathX, $PathY, $ReportX, $ReportY, [string]$NameX, [string]$NameY) {
+    $bytesX = [System.IO.File]::ReadAllBytes($PathX)
+    $bytesY = [System.IO.File]::ReadAllBytes($PathY)
+    $identical = $bytesX.Length -eq $bytesY.Length
+    for ($i = 0; $identical -and ($i -lt $bytesX.Length); $i++) {
+        if ($bytesX[$i] -ne $bytesY[$i]) {
+            $identical = $false
+        }
+    }
+    $firstLine = $null
+    if (-not $identical) {
+        for ($i = 0; $i -lt [Math]::Min($ReportX.Lines.Count, $ReportY.Lines.Count); $i++) {
+            if ($ReportX.Lines[$i] -ne $ReportY.Lines[$i]) {
+                $firstLine = "line $($i + 1): $NameX '$($ReportX.Lines[$i])' $NameY '$($ReportY.Lines[$i])'"
+                break
+            }
+        }
+    }
+    return [pscustomobject]@{ Identical = $identical; Length = $bytesX.Length; FirstLine = $firstLine }
 }
 
 # x mod 8 in 0..7, also for a negative x.
@@ -357,22 +457,35 @@ try {
     if (($Ticks -lt 1) -or ($Ticks -gt 3600)) {
         Exit-Failed "invalid tick count $Ticks (1..3600)"
     }
+    if (($OneCabTicks -lt 1) -or ($OneCabTicks -gt 3600)) {
+        Exit-Failed "invalid one-cab tick count $OneCabTicks (1..3600)"
+    }
     $resolvedExecutable = (Resolve-Path -LiteralPath $Executable -ErrorAction Stop).Path
     $resolvedOutput = [System.IO.Path]::GetFullPath($OutputDirectory)
     [System.IO.Directory]::CreateDirectory($resolvedOutput) | Out-Null
 
+    # ProfileOption is the --arcade-roster-proof-profile value, or '' for the
+    # default (two-cab); Profile is the report's expected profile line; Ticks
+    # is the run's --arcade-roster-proof-ticks (-Ticks for A-E, -OneCabTicks
+    # for F-H).
     $specs = @(
-        @{ Name = 'A'; Seed = '0x5EED'; Dwell = 0; Window = 'title' },
-        @{ Name = 'B'; Seed = '0x5EED'; Dwell = 0; Window = 'title' },
-        @{ Name = 'C'; Seed = '0x5EED'; Dwell = 5400; Window = 'demo race' },
-        @{ Name = 'D'; Seed = '0x5EEE'; Dwell = 0; Window = 'title' },
-        @{ Name = 'E'; Seed = '0x5EED'; Dwell = 37; Window = 'title' })
+        @{ Name = 'A'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
+        @{ Name = 'B'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
+        @{ Name = 'C'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 5400; Window = 'demo race'; Ticks = $Ticks },
+        @{ Name = 'D'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EEE'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
+        @{ Name = 'E'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 37; Window = 'title'; Ticks = $Ticks },
+        @{ Name = 'F'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $OneCabTicks },
+        @{ Name = 'G'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $OneCabTicks },
+        @{ Name = 'H'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EEE'; Dwell = 0; Window = 'title'; Ticks = $OneCabTicks })
     foreach ($spec in $specs) {
         $run = [pscustomobject]@{
             Name = $spec.Name
+            Profile = $spec.Profile
+            ProfileOption = $spec.ProfileOption
             Seed = $spec.Seed
             Dwell = $spec.Dwell
             Window = $spec.Window
+            Ticks = $spec.Ticks
             ReportPath = Join-Path $resolvedOutput "$($spec.Name).report.txt"
             StdoutPath = Join-Path $resolvedOutput "$($spec.Name).stdout.log"
             StderrPath = Join-Path $resolvedOutput "$($spec.Name).stderr.log"
@@ -392,7 +505,7 @@ try {
     if ($Sequential) {
         $mode = 'sequential'
     }
-    Write-Output "arcade roster determinism check: $($runs.Count) runs ($mode, fixed VBlank pacing), $Ticks race ticks each"
+    Write-Output "arcade roster determinism check: $($runs.Count) runs ($mode, fixed VBlank pacing), $Ticks race ticks each two-cab run (A-E), $OneCabTicks each one-cab run (F-H)"
     Write-Output "executable: $resolvedExecutable"
     Write-Output "output:     $resolvedOutput"
 
@@ -416,7 +529,7 @@ try {
     foreach ($run in $runs) {
         $exitCode = $run.Process.ExitCode
         $seconds = [math]::Round(($run.Process.ExitTime - $run.StartedAt).TotalSeconds, 1)
-        Write-Output ("run {0} seed {1} dwell {2,-4} exit {3} in {4} s" -f $run.Name, $run.Seed, $run.Dwell, $exitCode, $seconds)
+        Write-Output ("run {0} {1} seed {2} dwell {3,-4} exit {4} in {5} s" -f $run.Name, $run.Profile, $run.Seed, $run.Dwell, $exitCode, $seconds)
         if ($exitCode -ne 0) {
             $failures += "run $($run.Name) exited $exitCode; see $($run.StdoutPath) and $($run.StderrPath)"
         }
@@ -456,28 +569,24 @@ try {
     $c = $reports['C']
     $d = $reports['D']
     $e = $reports['E']
+    $f = $reports['F']
+    $g = $reports['G']
+    $h = $reports['H']
+    $runByName = @{}
+    foreach ($run in $runs) {
+        $runByName[$run.Name] = $run
+    }
 
-    # A and B: byte-identical.
-    $bytesA = [System.IO.File]::ReadAllBytes($runs[0].ReportPath)
-    $bytesB = [System.IO.File]::ReadAllBytes($runs[1].ReportPath)
-    $identical = $bytesA.Length -eq $bytesB.Length
-    for ($i = 0; $identical -and ($i -lt $bytesA.Length); $i++) {
-        if ($bytesA[$i] -ne $bytesB[$i]) {
-            $identical = $false
+    # A and B, and F and G: byte-identical.
+    foreach ($pair in @(@('A', 'B'), @('F', 'G'))) {
+        $comparison = Compare-ReportBytes $runByName[$pair[0]].ReportPath $runByName[$pair[1]].ReportPath `
+            $reports[$pair[0]] $reports[$pair[1]] $pair[0] $pair[1]
+        if ($comparison.Identical) {
+            Write-Output "$($pair[0]) = $($pair[1]): byte-identical ($($comparison.Length) bytes)"
         }
-    }
-    if ($identical) {
-        Write-Output "A = B: byte-identical ($($bytesA.Length) bytes)"
-    }
-    else {
-        $firstLine = $null
-        for ($i = 0; $i -lt [Math]::Min($a.Lines.Count, $b.Lines.Count); $i++) {
-            if ($a.Lines[$i] -ne $b.Lines[$i]) {
-                $firstLine = "line $($i + 1): A '$($a.Lines[$i])' B '$($b.Lines[$i])'"
-                break
-            }
+        else {
+            $failures += "$($pair[0]) and $($pair[1]) reports differ (first difference $($comparison.FirstLine))"
         }
-        $failures += "A and B reports differ (first difference $firstLine)"
     }
 
     # The boot-relative counters at the launch tick (the boot history each
@@ -528,8 +637,38 @@ try {
         Write-Output "D != A: config digest, bank digest, and tick 0 rng digest (A $($a.Ticks[0].Rng), D $($d.Ticks[0].Rng))"
     }
 
+    # H against F: another seed changes the ONE_CAB config, bank, and race tick 0's RNG.
+    $hDiffers = $true
+    foreach ($key in @('config digest', 'bank digest')) {
+        if ($h.Header[$key] -eq $f.Header[$key]) {
+            $failures += "H does not differ from F in the $key ($($f.Header[$key]))"
+            $hDiffers = $false
+        }
+    }
+    if ($h.Ticks[0].Rng -eq $f.Ticks[0].Rng) {
+        $failures += "H does not differ from F in the tick 0 rng digest ($($f.Ticks[0].Rng))"
+        $hDiffers = $false
+    }
+    if ($hDiffers) {
+        Write-Output "H != F: config digest, bank digest, and tick 0 rng digest (F $($f.Ticks[0].Rng), H $($h.Ticks[0].Rng))"
+    }
+
+    # F against A: another profile changes the config and the race plan.
+    $fDiffers = $true
+    foreach ($key in @('config digest', 'race plan digest')) {
+        if ($f.Header[$key] -eq $a.Header[$key]) {
+            $failures += "F does not differ from A in the $key ($($a.Header[$key]))"
+            $fDiffers = $false
+        }
+    }
+    if ($fDiffers) {
+        Write-Output "F != A: config digest and race plan digest (ONE_CAB vs TWO_CAB)"
+    }
+
     Write-Output "report A first tick: $($a.Ticks[0].Line)"
     Write-Output "report A last tick:  $($a.Ticks[$Ticks - 1].Line)"
+    Write-Output "report F first tick: $($f.Ticks[0].Line)"
+    Write-Output "report F last tick:  $($f.Ticks[$OneCabTicks - 1].Line)"
     Write-Output ''
     if ($failures.Count -ne 0) {
         foreach ($failure in $failures) {

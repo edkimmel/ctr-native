@@ -20,15 +20,18 @@
  * process-wide singleton, like platform/native_arcade_link_host.c, so its
  * state lives in file-scope statics. It is internal-build evidence plumbing
  * and never touches game state: the game hook
- * (game/MAIN/MainArcadeRosterProof.c) reads the config, dwell, tick count, and
- * scripted pads from it, hands it one digest line per race tick, and hands it
- * the report.
+ * (game/MAIN/MainArcadeRosterProof.c) reads the config, profile, dwell, tick
+ * count, and the profile's scripted pads from it, hands it one digest line
+ * per race tick, and hands it the report.
  */
 
 static const char k_proofOption[] = "--arcade-roster-proof";
 static const char k_seedOption[] = "--arcade-roster-proof-seed";
 static const char k_dwellOption[] = "--arcade-roster-proof-dwell";
 static const char k_ticksOption[] = "--arcade-roster-proof-ticks";
+static const char k_profileOption[] = "--arcade-roster-proof-profile";
+static const char k_profileTwoCab[] = "two-cab";
+static const char k_profileOneCab[] = "one-cab";
 static const char k_exitAfterFrameOption[] = "--exit-after-frame";
 static const char k_exitAfterFrameEqualsOption[] = "--exit-after-frame=";
 
@@ -56,6 +59,23 @@ void NativeArcadeRosterProofOptions_SetDefaults(struct NativeArcadeRosterProofOp
 	options->seed = NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_SEED;
 	options->dwellTicks = NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_DWELL;
 	options->tickCount = NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_TICKS;
+	options->profile = NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_PROFILE;
+}
+
+/* "two-cab" or "one-cab", exactly; 0 with *profile untouched otherwise. */
+static int NativeArcadeRosterProof_ParseProfile(const char *text, uint32_t *profile)
+{
+	if (strcmp(text, k_profileTwoCab) == 0)
+	{
+		*profile = NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB;
+		return 1;
+	}
+	if (strcmp(text, k_profileOneCab) == 0)
+	{
+		*profile = NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB;
+		return 1;
+	}
+	return 0;
 }
 
 static int NativeArcadeRosterProof_HexValue(char c, uint32_t *value)
@@ -171,6 +191,7 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 	int seenSeed = 0;
 	int seenDwell = 0;
 	int seenTicks = 0;
+	int seenProfile = 0;
 
 	if ((options == NULL) || (argc < 0) || ((argc > 0) && (argv == NULL)))
 	{
@@ -238,9 +259,19 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 			seenTicks = 1;
 			index++;
 		}
+		else if (strcmp(arg, k_profileOption) == 0)
+		{
+			value = NativeArcadeRosterProof_Value(argc, argv, index);
+			if ((value == NULL) || seenProfile || !NativeArcadeRosterProof_ParseProfile(value, &candidate.profile))
+			{
+				return 0;
+			}
+			seenProfile = 1;
+			index++;
+		}
 	}
-	/* A seed, dwell, or tick count without the proof would be silently ignored. */
-	if ((seenSeed || seenDwell || seenTicks) && !seenProof)
+	/* A seed, dwell, tick count, or profile without the proof would be silently ignored. */
+	if ((seenSeed || seenDwell || seenTicks || seenProfile) && !seenProof)
 	{
 		return 0;
 	}
@@ -281,7 +312,8 @@ int NativeArcadeRosterProof_ProofBuildIdentity(uint8_t build[NATIVE_IDENTITY_DIG
 	return 1;
 }
 
-int NativeArcadeRosterProof_BuildConfig(const struct NativeIdentityV1 *identity, uint64_t seed,
+/* TWO_CAB: the fixture resolved through match select with two fixed choices. */
+static int NativeArcadeRosterProof_BuildTwoCabConfig(const struct NativeIdentityV1 *identity, uint64_t seed,
 	struct NativeMatchConfigV1 *config)
 {
 	struct NativeMatchConfigV1 base;
@@ -291,7 +323,7 @@ int NativeArcadeRosterProof_BuildConfig(const struct NativeIdentityV1 *identity,
 	uint8_t cab1Slot = 0;
 	uint8_t cab2Slot = 0;
 
-	if ((identity == NULL) || (config == NULL) || !NativeArcadeLinkFixture_Build(identity, &base) ||
+	if (!NativeArcadeLinkFixture_Build(identity, &base) ||
 	    !NativeMatchConfigV1_FindRoleSlot(&base, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &cab1Slot) ||
 	    !NativeMatchConfigV1_FindRoleSlot(&base, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &cab2Slot))
 	{
@@ -316,6 +348,94 @@ int NativeArcadeRosterProof_BuildConfig(const struct NativeIdentityV1 *identity,
 	return 1;
 }
 
+/*
+ * ONE_CAB (RS-23): no match select. The fixture gives the identity, track,
+ * laps, tick rate, the CAB1 character, and the bots' difficulty; the bots are
+ * the LOAD_Robots1P rule for that character, and the seed is the masterSeed.
+ */
+static int NativeArcadeRosterProof_BuildOneCabConfig(const struct NativeIdentityV1 *identity, uint64_t seed,
+	struct NativeMatchConfigV1 *config)
+{
+	struct NativeMatchConfigV1 base;
+	struct NativeMatchConfigV1 candidate;
+	uint8_t bots[NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT];
+	uint8_t cab1Slot = 0;
+	uint8_t botDifficulty = 0;
+	int botFound = 0;
+	uint32_t bot = 0;
+
+	if (!NativeArcadeLinkFixture_Build(identity, &base) ||
+	    !NativeMatchConfigV1_FindRoleSlot(&base, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &cab1Slot))
+	{
+		return 0;
+	}
+	for (uint32_t slot = 0; (slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT) && !botFound; slot++)
+	{
+		if (base.slots[slot].role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT)
+		{
+			botDifficulty = base.slots[slot].difficulty;
+			botFound = 1;
+		}
+	}
+	if (!botFound || !NativeArcadeBotRules_ExpectedBots1P(base.slots[cab1Slot].characterID, bots))
+	{
+		return 0;
+	}
+	NativeMatchConfigV1_InitArcadeOneCab(&candidate);
+	candidate.trackID = base.trackID;
+	candidate.lapCount = base.lapCount;
+	candidate.tickRateNumerator = base.tickRateNumerator;
+	candidate.tickRateDenominator = base.tickRateDenominator;
+	candidate.masterSeed = seed;
+	memcpy(candidate.buildIdentity, base.buildIdentity, sizeof(candidate.buildIdentity));
+	memcpy(candidate.contentIdentity, base.contentIdentity, sizeof(candidate.contentIdentity));
+	for (uint32_t slot = 0; slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; slot++)
+	{
+		struct NativeMatchConfigSlotV1 *target = &candidate.slots[slot];
+
+		if (target->role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN)
+		{
+			target->characterID = base.slots[cab1Slot].characterID;
+			target->difficulty = 0u;
+		}
+		else if (target->role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT)
+		{
+			if (bot >= NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT)
+			{
+				return 0;
+			}
+			target->characterID = bots[bot];
+			target->difficulty = botDifficulty;
+			bot++;
+		}
+	}
+	if ((bot != NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT) || !NativeArcadeBotRules_Digest1PV1(candidate.botRulesDigest) ||
+	    !NativeArcadeBotRules_ValidateConfigV1(&candidate))
+	{
+		return 0;
+	}
+	*config = candidate;
+	return 1;
+}
+
+int NativeArcadeRosterProof_BuildConfig(const struct NativeIdentityV1 *identity, uint32_t profile, uint64_t seed,
+	struct NativeMatchConfigV1 *config)
+{
+	if ((identity == NULL) || (config == NULL))
+	{
+		return 0;
+	}
+	if (profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB)
+	{
+		return NativeArcadeRosterProof_BuildTwoCabConfig(identity, seed, config);
+	}
+	if (profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB)
+	{
+		return NativeArcadeRosterProof_BuildOneCabConfig(identity, seed, config);
+	}
+	return 0;
+}
+
 int NativeArcadeRosterProof_Configure(const struct NativeArcadeRosterProofOptions *options,
 	const struct NativeIdentityV1 *identity)
 {
@@ -329,7 +449,7 @@ int NativeArcadeRosterProof_Configure(const struct NativeArcadeRosterProofOption
 	if ((options->logPath[0] == '\0') || (memchr(options->logPath, '\0', sizeof(options->logPath)) == NULL) ||
 	    (options->dwellTicks > NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL) || (options->tickCount == 0u) ||
 	    (options->tickCount > NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS) ||
-	    !NativeArcadeRosterProof_BuildConfig(identity, options->seed, &config))
+	    !NativeArcadeRosterProof_BuildConfig(identity, options->profile, options->seed, &config))
 	{
 		return 0;
 	}
@@ -377,6 +497,11 @@ const struct NativeMatchConfigV1 *NativeArcadeRosterProof_Config(void)
 	return (s_nativeArcadeRosterProof.active != 0u) ? &s_nativeArcadeRosterProof.config : NULL;
 }
 
+uint32_t NativeArcadeRosterProof_Profile(void)
+{
+	return (s_nativeArcadeRosterProof.active != 0u) ? s_nativeArcadeRosterProof.options.profile : 0u;
+}
+
 uint32_t NativeArcadeRosterProof_Dwell(void)
 {
 	return (s_nativeArcadeRosterProof.active != 0u) ? s_nativeArcadeRosterProof.options.dwellTicks : 0u;
@@ -387,7 +512,7 @@ uint32_t NativeArcadeRosterProof_Ticks(void)
 	return (s_nativeArcadeRosterProof.active != 0u) ? s_nativeArcadeRosterProof.options.tickCount : 0u;
 }
 
-void NativeArcadeRosterProof_ScriptedPads(uint32_t raceTick,
+void NativeArcadeRosterProof_ScriptedPads(uint32_t profile, uint32_t raceTick,
 	struct NativeArcadeRosterProofPad pads[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT])
 {
 	uint16_t buttons[2] = {NATIVE_ARCADE_ROSTER_PROOF_BUTTONS_NONE, NATIVE_ARCADE_ROSTER_PROOF_BUTTONS_NONE};
@@ -399,13 +524,27 @@ void NativeArcadeRosterProof_ScriptedPads(uint32_t raceTick,
 	if (raceTick != NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE)
 	{
 		const uint32_t phase = raceTick % NATIVE_ARCADE_ROSTER_PROOF_STEER_PERIOD;
+		const int steer = (phase >= NATIVE_ARCADE_ROSTER_PROOF_STEER_BEGIN) && (phase < NATIVE_ARCADE_ROSTER_PROOF_STEER_END);
 
 		/* Active low: a held button clears its bit. */
-		buttons[0] = (uint16_t)(buttons[0] & ~NATIVE_ARCADE_ROSTER_PROOF_BUTTON_CROSS);
-		buttons[1] = (uint16_t)(buttons[1] & ~NATIVE_ARCADE_ROSTER_PROOF_BUTTON_CROSS);
-		if ((phase >= NATIVE_ARCADE_ROSTER_PROOF_STEER_BEGIN) && (phase < NATIVE_ARCADE_ROSTER_PROOF_STEER_END))
+		if (profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB)
 		{
-			buttons[1] = (uint16_t)(buttons[1] & ~NATIVE_ARCADE_ROSTER_PROOF_BUTTON_RIGHT);
+			/* Both humans accelerate; CAB2 (player 1) steers. */
+			buttons[0] = (uint16_t)(buttons[0] & ~NATIVE_ARCADE_ROSTER_PROOF_BUTTON_CROSS);
+			buttons[1] = (uint16_t)(buttons[1] & ~NATIVE_ARCADE_ROSTER_PROOF_BUTTON_CROSS);
+			if (steer)
+			{
+				buttons[1] = (uint16_t)(buttons[1] & ~NATIVE_ARCADE_ROSTER_PROOF_BUTTON_RIGHT);
+			}
+		}
+		else if (profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB)
+		{
+			/* The one human (CAB1, player 0) accelerates and steers; player 1 stays neutral. */
+			buttons[0] = (uint16_t)(buttons[0] & ~NATIVE_ARCADE_ROSTER_PROOF_BUTTON_CROSS);
+			if (steer)
+			{
+				buttons[0] = (uint16_t)(buttons[0] & ~NATIVE_ARCADE_ROSTER_PROOF_BUTTON_RIGHT);
+			}
 		}
 	}
 	memset(pads, 0, sizeof(*pads) * NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT);
@@ -571,6 +710,19 @@ uint32_t NativeArcadeRosterProof_FinalResult(uint32_t requested, const struct Na
 	return (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PASS;
 }
 
+const char *NativeArcadeRosterProof_ProfileName(uint32_t profile)
+{
+	switch (profile)
+	{
+	case NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB:
+		return "TWO_CAB";
+	case NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB:
+		return "ONE_CAB";
+	default:
+		return "UNKNOWN";
+	}
+}
+
 const char *NativeArcadeRosterProof_LaunchWindowName(uint32_t window)
 {
 	switch (window)
@@ -688,10 +840,11 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_Name(report->setupStatusName, statusName);
 	NativeArcadeRosterProof_Name(report->setupFailureName, failureName);
 
-	NativeArcadeRosterProof_Append(&text, "arcade roster proof v7\n");
+	NativeArcadeRosterProof_Append(&text, "arcade roster proof v8\n");
 	NativeArcadeRosterProof_Append(&text, "drivers digest excludes physics\n");
 	NativeArcadeRosterProof_Append(&text, "result %s (%u)\n", NativeArcadeRosterProof_ResultName(report->result),
 		(unsigned)report->result);
+	NativeArcadeRosterProof_Append(&text, "profile %s\n", NativeArcadeRosterProof_ProfileName(report->profile));
 	NativeArcadeRosterProof_Append(&text, "setup status %s (%u)\n", statusName, (unsigned)report->setupStatus);
 	NativeArcadeRosterProof_Append(&text, "setup failure %s (%u)\n", failureName, (unsigned)report->setupFailure);
 	NativeArcadeRosterProof_Append(&text, "seed 0x%08X%08X\n", (unsigned)(uint32_t)(report->seed >> 32),

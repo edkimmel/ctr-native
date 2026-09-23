@@ -16,7 +16,7 @@ struct NativeCanonicalStateV1;
  * 3.4; R-5b's launcher, R-6's scripted pads, per-tick digests, and the
  * arcade_roster_determinism ctest, tools/arcade-roster-proof-check.ps1;
  * R-6b's race-relative control digest and race tick 0 counters; R-6c's pin
- * readback).
+ * readback; OC-3's single-cabinet profile, RS-23 and RS-24 below).
  * Evidence plumbing: host-local options, the fixed proof config, the scripted
  * pad pattern, a game-facing singleton that keeps the per-tick digest lines,
  * and the report writer.
@@ -27,6 +27,9 @@ struct NativeCanonicalStateV1;
  *   --arcade-roster-proof-dwell <ticks>     decimal 0..7200; default 0
  *   --arcade-roster-proof-ticks <N>         decimal 1..3600; default 900: the
  *                                           race ticks logged before PASS
+ *   --arcade-roster-proof-profile <name>    two-cab or one-cab (exactly, in
+ *                                           lowercase); default two-cab: the
+ *                                           race profile (RS-23)
  *
  * The report path is opened as given when the report is written: a relative
  * path resolves against the base directory, because main.c changes into
@@ -34,11 +37,11 @@ struct NativeCanonicalStateV1;
  * working directory. Pass an absolute path to write elsewhere.
  *
  * Parsing is transactional: on any error the caller's options are left
- * untouched. Arguments that are not one of these four options are ignored,
+ * untouched. Arguments that are not one of these five options are ignored,
  * because other host parsers own them. An option whose value is missing (end
  * of argv, a NULL entry, or a next argument starting with '-'), repeated, or
- * malformed is an error, and so is a seed, dwell, or tick count without
- * --arcade-roster-proof. main.c rejects the proof together with any
+ * malformed is an error, and so is a seed, dwell, tick count, or profile
+ * without --arcade-roster-proof. main.c rejects the proof together with any
  * arcade-link or replay option, and with --exit-after-frame (any frame-capture
  * exit option; NativeArcadeRosterProof_NamesExitOption), which would end the
  * run on a frame count instead of the proof result.
@@ -58,20 +61,26 @@ struct NativeCanonicalStateV1;
  * dwell ends outside both windows (a load, the intro cutscene) the hook waits
  * up to LAUNCH_WAIT_TIMEOUT_TICKS for one.
  *
- * Scripted pads (part of the proof definition). While the proof is active the
- * game hook installs the pads of NativeArcadeRosterProof_ScriptedPads through
- * Platform_InputInstallPadSnapshots from process start to exit, so no
- * keyboard, pad, or G29 input reaches the game. Pads 0 and 1 (retail players
- * 0 and 1, CAB1 and CAB2) are connected digital pads with centred analog
- * values; pads 2 and 3 are disconnected (no multitap). Neutral means no button
- * held. Race tick 0 is the first frame after VALIDATED on which the drivers
- * extraction succeeds (the race order is rebuilt on the first race tick); it
- * is known only once that frame was simulated, so every frame up to and
- * including race tick 0 runs on neutral pads. The frame of race tick n >= 1
- * runs on the pattern for n, a pure function of n:
- * - both players hold CROSS (accelerate);
- * - player 1 (CAB2) also holds RIGHT while (n mod STEER_PERIOD) is in
- *   [STEER_BEGIN, STEER_END), that is [60, 90) of every 120 ticks.
+ * Scripted pads (part of the proof definition; RS-24). While the proof is
+ * active the game hook installs the pads of NativeArcadeRosterProof_ScriptedPads
+ * for the configured profile through Platform_InputInstallPadSnapshots from
+ * process start to exit, so no keyboard, pad, or G29 input reaches the game.
+ * In both profiles pads 0 and 1 (retail players 0 and 1) are connected
+ * digital pads with centred analog values and pads 2 and 3 are disconnected
+ * (no multitap): the same pad layout, so the pre-race frames of the two
+ * profiles see the same pads and no pad is ever unplugged. Neutral means no
+ * button held. Race tick 0 is the first frame after VALIDATED on which the
+ * drivers extraction succeeds (the race order is rebuilt on the first race
+ * tick); it is known only once that frame was simulated, so every frame up to
+ * and including race tick 0 runs on neutral pads. The frame of race tick
+ * n >= 1 runs on the pattern for (profile, n), a pure function of both:
+ * - TWO_CAB (players 0 and 1 are CAB1 and CAB2): both players hold CROSS
+ *   (accelerate); player 1 (CAB2) also holds RIGHT while (n mod
+ *   STEER_PERIOD) is in [STEER_BEGIN, STEER_END), that is [60, 90) of every
+ *   120 ticks.
+ * - ONE_CAB (player 0 is CAB1, the only human; pad 1 drives no driver):
+ *   player 0 holds CROSS, and also RIGHT while (n mod STEER_PERIOD) is in
+ *   [STEER_BEGIN, STEER_END); player 1 stays neutral.
  * After the proof reported, the pads are neutral again until the exit.
  *
  * Per-tick digests. From race tick 0, for `ticks` race ticks, the game hook
@@ -149,16 +158,31 @@ struct NativeCanonicalStateV1;
  *                            ticks + TICK_LOG_SLACK_TICKS proof ticks of it
  *
  * The failure codes start at 20 so that none collides with 1 or with the C
- * runtime's abort() code 3.
+ * runtime's abort() code 3. The table is the same for both profiles: a
+ * ONE_CAB proof passes or fails on exactly the evidence a TWO_CAB proof
+ * needs (its eight slot lines are then CAB1_HUMAN and seven BOTs).
  *
- * Config: the arcade-link fixture (NativeArcadeLinkFixture_Build) for the
- * caller's identity, resolved through match select with two fixed choices:
- * CAB1 picks the fixture's CAB1 character and CAB2 the fixture's CAB2
- * character, both vote the fixture track and lap count, and the nonces are
- * seed (CAB1) and seed XOR NATIVE_ARCADE_ROSTER_PROOF_NONCE_MIX (CAB2)
- * (NativeMatchSelect_Resolve, then NativeMatchSelect_BuildConfig). The same
- * identity and seed always give the same config; the seed reaches the
- * config only through the resolved masterSeed.
+ * Config, per profile (the same identity, profile, and seed always give the
+ * same config):
+ * - TWO_CAB (the default): the arcade-link fixture
+ *   (NativeArcadeLinkFixture_Build) for the caller's identity, resolved
+ *   through match select with two fixed choices: CAB1 picks the fixture's
+ *   CAB1 character and CAB2 the fixture's CAB2 character, both vote the
+ *   fixture track and lap count, and the nonces are seed (CAB1) and seed XOR
+ *   NATIVE_ARCADE_ROSTER_PROOF_NONCE_MIX (CAB2) (NativeMatchSelect_Resolve,
+ *   then NativeMatchSelect_BuildConfig). The seed reaches the config only
+ *   through the resolved masterSeed.
+ * - RS-23 (owner decision), ONE_CAB: match select stays TWO_CAB-only and is
+ *   not used. The arcade-link fixture is built for the identity, and the
+ *   config takes from it the build and content identity, trackID, lapCount,
+ *   the tick rate, the CAB1 character, and the bots' difficulty (the
+ *   fixture's first BOT slot). NativeMatchConfigV1_InitArcadeOneCab gives the
+ *   ONE_CAB roles and lifecycles; slot 0 (CAB1_HUMAN) holds the CAB1
+ *   character at difficulty 0, and slots 1..7 (BOT) hold
+ *   NativeArcadeBotRules_ExpectedBots1P(CAB1 character), in ascending slot
+ *   order, at the fixture's bot difficulty; masterSeed is the seed option
+ *   value itself; botRulesDigest is NativeArcadeBotRules_Digest1PV1. The
+ *   result must pass NativeArcadeBotRules_ValidateConfigV1.
  *
  * Identity: the proof is single-machine. When the build identity is unknown
  * (a dirty tree), main.c uses the fixed proof build identity
@@ -180,6 +204,10 @@ struct NativeCanonicalStateV1;
 #define NATIVE_ARCADE_ROSTER_PROOF_BUILD_TAG "CTRN arcade roster proof build v1"
 #define NATIVE_ARCADE_ROSTER_PROOF_SLOT_COUNT NATIVE_MATCH_CONFIG_V1_SLOT_COUNT
 #define NATIVE_ARCADE_ROSTER_PROOF_NAME_BYTES 24u
+/* The race profiles the proof runs (RS-23): the match config's own values. */
+#define NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB
+#define NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB
+#define NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_PROFILE NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB
 #define NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE UINT32_MAX
 
 /* Watchdogs and the post-validation wait, in proof ticks (game frames). */
@@ -212,7 +240,7 @@ struct NativeArcadeRosterProofOptions
 	uint32_t dwellTicks;
 	uint64_t seed;
 	uint32_t tickCount; /* race ticks to log */
-	uint32_t reserved2;
+	uint32_t profile;   /* NATIVE_ARCADE_ROSTER_PROOF_PROFILE_* (--arcade-roster-proof-profile) */
 	char logPath[NATIVE_ARCADE_ROSTER_PROOF_PATH_BYTES];
 };
 
@@ -316,7 +344,8 @@ struct NativeArcadeRosterProofPins
  */
 struct NativeArcadeRosterProofReport
 {
-	uint32_t result; /* enum NativeArcadeRosterProofResult */
+	uint32_t result;  /* enum NativeArcadeRosterProofResult */
+	uint32_t profile; /* NATIVE_ARCADE_ROSTER_PROOF_PROFILE_*: the configured profile */
 	uint32_t setupStatus;
 	uint32_t setupFailure;
 	char setupStatusName[NATIVE_ARCADE_ROSTER_PROOF_NAME_BYTES];
@@ -350,7 +379,8 @@ struct NativeArcadeRosterProofReport
 	struct NativeArcadeRosterProofSlotLine slots[NATIVE_ARCADE_ROSTER_PROOF_SLOT_COUNT];
 };
 
-/* NULL is a no-op. Otherwise: disabled, seed 1, dwell 0, 900 ticks, empty path. */
+/* NULL is a no-op. Otherwise: disabled, seed 1, dwell 0, 900 ticks, profile
+ * TWO_CAB, empty path. */
 void NativeArcadeRosterProofOptions_SetDefaults(struct NativeArcadeRosterProofOptions *options);
 
 /* Returns 1 and updates *options on success; 0 with *options untouched otherwise. */
@@ -369,18 +399,19 @@ int NativeArcadeRosterProof_NamesExitOption(int argc, char *argv[]);
 int NativeArcadeRosterProof_ProofBuildIdentity(uint8_t build[NATIVE_IDENTITY_DIGEST_BYTES]);
 
 /*
- * The proof config (see above). Returns 0 with *config untouched on NULL
- * arguments, a fixture the identity cannot build, a failed resolution, or a
+ * The proof config of a profile (see above; RS-23). Returns 0 with *config
+ * untouched on NULL arguments, a profile other than TWO_CAB and ONE_CAB, a
+ * fixture the identity cannot build, a failed resolution (TWO_CAB), or a
  * result that fails NativeArcadeBotRules_ValidateConfigV1.
  */
-int NativeArcadeRosterProof_BuildConfig(const struct NativeIdentityV1 *identity, uint64_t seed,
+int NativeArcadeRosterProof_BuildConfig(const struct NativeIdentityV1 *identity, uint32_t profile, uint64_t seed,
 	struct NativeMatchConfigV1 *config);
 
 /*
  * Configures the singleton. Disabled (or NULL) options leave it inactive and
  * return 1. Enabled options need a non-empty log path and a config
- * BuildConfig can build for *identity; on failure the singleton stays
- * inactive and 0 is returned.
+ * BuildConfig can build for *identity and the options' profile and seed; on
+ * failure the singleton stays inactive and 0 is returned.
  */
 int NativeArcadeRosterProof_Configure(const struct NativeArcadeRosterProofOptions *options,
 	const struct NativeIdentityV1 *identity);
@@ -403,11 +434,14 @@ void NativeArcadeRosterProof_RecordExitCode(int exitCode);
 int NativeArcadeRosterProof_ExitCode(int inactiveExitCode);
 
 /*
- * The scripted pads for a frame (see above): raceTick is the race tick the
- * frame will be logged as, or NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE (and 0)
- * for the neutral pads. A pure function of raceTick; NULL is a no-op.
+ * The scripted pads for a frame of a profile (see above; RS-24): raceTick is
+ * the race tick the frame will be logged as, or
+ * NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE (and 0) for the neutral pads. A pure
+ * function of (profile, raceTick); a profile other than TWO_CAB and ONE_CAB
+ * gives the neutral pads (the same pad layout, no button held). NULL is a
+ * no-op.
  */
-void NativeArcadeRosterProof_ScriptedPads(uint32_t raceTick,
+void NativeArcadeRosterProof_ScriptedPads(uint32_t profile, uint32_t raceTick,
 	struct NativeArcadeRosterProofPad pads[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT]);
 
 /*
@@ -435,8 +469,10 @@ int NativeArcadeRosterProof_RaceControlDigest(const struct NativeCanonicalStateV
 int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofTickLine *line, char *buffer,
 	size_t bufferSize, size_t *length);
 
-/* The configured config, dwell, tick count, seed, and log path; NULL/0/empty when inactive. */
+/* The configured config, profile, dwell, tick count, seed, and log path;
+ * NULL/0/empty when inactive. */
 const struct NativeMatchConfigV1 *NativeArcadeRosterProof_Config(void);
+uint32_t NativeArcadeRosterProof_Profile(void);
 uint32_t NativeArcadeRosterProof_Dwell(void);
 uint32_t NativeArcadeRosterProof_Ticks(void);
 uint64_t NativeArcadeRosterProof_Seed(void);
@@ -445,8 +481,10 @@ const char *NativeArcadeRosterProof_LogPath(void);
 /*
  * Formats the report as text into buffer (NUL-terminated) and stores its
  * length without the NUL. Returns 0 on NULL arguments or a buffer too small.
- * The format is line based: a header line ("arcade roster proof v7"), the
- * line "drivers digest excludes physics", then "result", "setup status",
+ * The format is line based: a header line ("arcade roster proof v8"), the
+ * line "drivers digest excludes physics", then "result", "profile" (TWO_CAB
+ * or ONE_CAB, the configured profile; UNKNOWN for any other value), "setup
+ * status",
  * "setup failure", "seed", "dwell", "ticks" (requested), "menu ready tick",
  * "demo race tick", "launch tick", "launch window" (title, demo race, or
  * none), "launch counters" (timer, frameCounter, frameTimer, and
@@ -489,6 +527,9 @@ int NativeArcadeRosterProof_WriteReport(const struct NativeArcadeRosterProofRepo
 
 /* The fixed name of a result ("PASS", "SETUP_FAILED", ...); "UNKNOWN" otherwise. */
 const char *NativeArcadeRosterProof_ResultName(uint32_t result);
+
+/* The fixed name of a profile ("TWO_CAB", "ONE_CAB"); "UNKNOWN" otherwise. */
+const char *NativeArcadeRosterProof_ProfileName(uint32_t profile);
 
 /* The fixed name of a launch window ("title", "demo race", "none"); "unknown" otherwise. */
 const char *NativeArcadeRosterProof_LaunchWindowName(uint32_t window);
