@@ -78,8 +78,10 @@ Integration order:
 - **Match config.** Portable match identity with arcade two-cabinet and
   one-cabinet profiles, a reserved `protocolVersion`, eight role-fixed slots
   (CAB1 human, CAB2 human, bot), and validated lifecycle transitions. The
-  arcade race config is resolved per match by match select; the per-build
-  fixture is the lobby base it starts from.
+  arcade race config is resolved per match by match select. The per-build
+  fixture is the lobby base of a first match; a rematch's lobby base is
+  derived from the proposal of the most recent lobby that reached READY
+  (lastReadyConfig).
 - **Input replay.** Replay schedulers with record and playback, per-domain
   canonical verification, and first-divergence masks for observation, VBlank
   parity, pad, canonical domain, and combined digest. Invalid submissions
@@ -165,9 +167,8 @@ the arcade-link screens and host adapter exist and are tested on top of it
   connect/handshake protocol exchanges and validates a full
   `NativeMatchConfigV1` proposal between two peers — an explicit
   accept/reject negotiation, not automatic reconciliation of differing
-  proposals — before a lockstep session opens, replacing the previous
-  implicit hard-fault-on-first-bundle behavior with a clean pre-session
-  rejection when identities disagree. It is transport-agnostic (encodes to
+  proposals — before a lockstep session opens, and rejects the match
+  cleanly before any session opens when identities disagree. It is transport-agnostic (encodes to
   and decodes from caller-owned buffers only, no socket dependency) and is
   fault-tested against `native_virtual_datagram` the same way the lockstep
   protocol was, in addition to running over the real transport. A
@@ -192,9 +193,11 @@ the arcade-link screens and host adapter exist and are tested on top of it
   release-to-arm, rising-edge wheel/pad navigation; `native_arcade_flow` is
   the pure screen state machine (lobby, match found, select, select result,
   racing, results, rematch wait, exit); `native_arcade_netplay` is the only
-  composition of the lobby, outcome, roster, rematch, and match-select
-  layers, and agrees a rematch implicitly by deriving the new seed from the
-  proposal of the most recent lobby that reached READY;
+  module that composes the match-select session with the lobby, outcome,
+  roster, and rematch layers (the host glue also reads the match-select
+  rules tables, for its previews only), and agrees a rematch implicitly by
+  deriving the new seed from the proposal of the most recent lobby that
+  reached READY;
   `native_arcade_link_options` parses the host-local CLI options and builds
   the fixed fixture (the lobby base); `native_arcade_link_host` is the
   game-facing singleton.
@@ -368,7 +371,10 @@ milestone and accepted them.
    SEL-17 (section 4 of `docs/MATCH_SELECT_MILESTONE.md`) and the
    game-loop/UI defaults UX-1 to UX-11 (section 3 of
    `docs/GAME_LOOP_UI_MILESTONE.md`; UX-8, the fixed fixture, is superseded
-   by match select) await an explicit operator decision. The owner
+   by match select) await an explicit operator decision, and the five
+   select preview screens (select-character, select-track, select-laps,
+   select-wait, select-result) await operator review; capture them with
+   `tools/arcade-link-preview-check.ps1 -Png`. The owner
    decisions OD-1 to OD-3 (20 s per select item, unique characters, rematch
    through select) are applied.
 2. Task 7, networked race launch of the resolved config, gated on step 3

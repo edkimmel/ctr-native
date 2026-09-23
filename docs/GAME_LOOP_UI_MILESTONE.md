@@ -538,7 +538,8 @@ artefact, not a rendering bug; review the RGB only.
 
 The recommended path is one command. It renders all 17 previews (the 12
 screens of section 2.4 and the five match-select screens) plus the default
-path in parallel (about 45 seconds wall time), captures frame 1320 of
+path in parallel (measured runs of the 17 previews plus the default took
+about 45 to 48 seconds wall time in ctest), captures frame 1320 of
 each, checks each capture with the RGB checker, and with -Png writes
 alpha-stripped review PNGs. -OutputDirectory must be an absolute path:
 

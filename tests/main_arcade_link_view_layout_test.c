@@ -82,6 +82,8 @@ static int CheckViewBuilds(struct NativeArcadeLinkHostView *out)
 	struct MainArcadeLinkLayout layout;
 	struct MainArcadeLinkLayout layoutFromOnes;
 	int draws;
+	uint32_t item;
+	uint32_t panels;
 
 	memset(&view, 0xA5, sizeof(view));
 	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
@@ -101,6 +103,15 @@ static int CheckViewBuilds(struct NativeArcadeLinkHostView *out)
 	{
 		CHECK(layout.count > 0u);
 		/* Exactly one panel, and it is the last item. */
+		panels = 0u;
+		for (item = 0u; item < layout.count; item++)
+		{
+			if (layout.items[item].kind == (uint8_t)MAIN_ARCADE_LINK_ITEM_PANEL)
+			{
+				panels++;
+			}
+		}
+		CHECK(panels == 1u);
 		CHECK(layout.items[layout.count - 1u].kind == (uint8_t)MAIN_ARCADE_LINK_ITEM_PANEL);
 	}
 	else

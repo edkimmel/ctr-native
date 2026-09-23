@@ -3,9 +3,10 @@
 # section 2.4): a pure draw-list builder that never talks to the netplay
 # adapter, the link, or its state, reads no game global, draws nothing, uses
 # no heap and no stdio, and never names the topology lease. Its only includes
-# are stdint.h, stddef.h, string.h, the arcade flow header, and its own
-# header; the library links only ctr_native_arcade_flow; the target stays
-# portable C17 with extensions off; and its mirrored retail font, colour, and
+# are stdint.h, stddef.h, string.h, the arcade flow header, its own header,
+# and (in its header only, exactly once) the game-safe host glue header
+# (see MS-10b below); the library links only ctr_native_arcade_flow; the
+# target stays portable C17 with extensions off; and its mirrored retail font, colour, and
 # justification values stay in step with include/namespace_Decal.h.
 #
 # Since MS-9 (the match-select screens, docs/MATCH_SELECT_MILESTONE.md

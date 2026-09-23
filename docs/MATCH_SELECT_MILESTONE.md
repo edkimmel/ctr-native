@@ -375,14 +375,22 @@ The adapter owns one select session.
   starts the session on the agreed lobby config (the base), with humanCount
   the base's number of human-role slots, the local human localRole - 1,
   initial cursors from the base config's own slot character, track, and
-  laps (the fixture on a first match; the previous picks on a rematch,
-  OD-3; each replaced by the first table entry if it is not a table
-  value), and a per-select nonce (NativeArcadeNetplay_DeriveSelectNonce):
-  the first LE 8 bytes of SHA-256("CTRN match select nonce v1" ||
-  selectEntropy (8 bytes LE) || localRole (1 byte) || selectSerial (4
-  bytes LE)), where selectSerial counts the selects this adapter has begun
-  since Init. If the session cannot start, the flow is told FAILED and
+  laps (the fixture on a first match; each replaced by the first table
+  entry if it is not a table value), and a per-select nonce
+  (NativeArcadeNetplay_DeriveSelectNonce): the first LE 8 bytes of
+  SHA-256("CTRN match select nonce v1" || selectEntropy (8 bytes LE) ||
+  localRole (1 byte) || selectSerial (4 bytes LE)), where selectSerial
+  counts the selects this adapter has begun since Init. If the session cannot start, the flow is told FAILED and
   shows LINK ERROR.
+- Rematch cursors (OD-3). The rematch base derives from lastReadyConfig,
+  so after a finished race it carries the previous picks and each cursor
+  starts on them; the netplay loopback test
+  TestSelectRematchThroughSelect proves this. It is not reachable live
+  today: every START_RACE calls NativeArcadeLinkHost_AbortToTitle, which
+  shuts the adapter down and re-inits it (clearing lastReadyValid), so the
+  only reachable rematch follows a pre-race LINK ERROR and its cursors
+  start from the select base (the fixture on a first match). Starting on
+  the previous picks becomes live with Task 7.
 - selectEntropy is host-local and never parsed from argv. main.c reads the
   wall clock and SDL's performance counter once, only with --arcade-link
   ((time << 32) XOR counter); default and preview runs leave it 0. The host
@@ -409,11 +417,15 @@ The adapter owns one select session.
 - START_RACE arms the race on the resolved config.
 - BEGIN_REMATCH derives from lastReadyConfig, the proposal of the most
   recent lobby that reached READY. The handshake guarantees both sides hold
-  it byte-identically, whatever happened after it: after a finished race it
-  is the resolved config; after a pre-race failure (a select failure, a
-  failed build, or a launch timeout) it is the select base both held at
-  MATCH_FOUND, even when one side relinked and the other did not, so both
-  sides rematch from the base.
+  a READY proposal byte-identically: after a finished race it is the
+  resolved config; after a pre-race failure (a select failure, a failed
+  build, or a launch timeout) it is the select base both held at
+  MATCH_FOUND, so both sides rematch from the base, provided neither
+  side's relink handshake reached READY. A cabinet whose relink reached
+  READY stores the resolved config as lastReadyConfig while a peer that
+  timed out keeps the base, so their rematch proposals differ (risk 7).
+  Today that is unreachable: READY leads to START_RACE, which aborts to
+  the title and re-inits the adapter.
 - NativeArcadeNetplay_AgreedConfig is non-NULL on RACING, and on RESULTS
   only after START_RACE armed a race on it. A RESULTS screen reached
   without a race reads NULL.
@@ -557,7 +569,10 @@ These are decided by the owner, not defaults.
 3. OD-3, rematch goes back through select (DECIDED): REMATCH -> handshake on
    a new derived seed -> MATCH FOUND -> select again, never keeping the
    previous picks. Each cursor starts on that player's previous pick,
-   because the rematch base config carries them.
+   because the rematch base config carries them; the adapter implements
+   and tests this (2.6), and it becomes live with Task 7. Today every
+   START_RACE aborts to the title, so the only reachable rematch follows
+   a pre-race LINK ERROR and starts from the select base.
 
 ## 4. UX defaults for operator review
 
@@ -567,7 +582,8 @@ for the operator to confirm or change after seeing the built flow.
 1. SEL-1: A vote tie resolves by a seeded draw among the tied options only,
    not among all tracks, so a player's vote always counts.
 2. SEL-2: The lap options are 3, 5, 7, as in retail. The cursor starts on 3
-   (the fixture) or on the previous pick.
+   (the fixture) or, once Task 7 makes a post-race rematch reachable, on
+   the previous pick (2.6).
 3. SEL-3: The track list is the 16 base multiplayer tracks: no Oxide Station
    (retail offers it in 1P only) and no Turbo Track (it needs a save
    unlock, which is host-local state the two cabinets do not agree on).
@@ -735,9 +751,10 @@ alpha-stripped review PNGs checked. No review required.
 
 ### MS-11 -- docs close-out
 
-Status: done (this change). This document's statuses and design sections,
-docs/HANDOFF.md, the docs/GAME_LOOP_UI_MILESTONE.md cross-references, and
-the docs/LOBBY_MILESTONE.md peer-link note. No review required.
+Status: done; reviewed; follow-up fixes in MS-11b (this change). This
+document's statuses and design sections, docs/HANDOFF.md, the
+docs/GAME_LOOP_UI_MILESTONE.md cross-references, and the
+docs/LOBBY_MILESTONE.md peer-link note.
 
 ## 7. Risks and open questions
 
@@ -759,7 +776,8 @@ the docs/LOBBY_MILESTONE.md peer-link note. No review required.
    START_RACE on the resolved config while the other times out to LINK
    ERROR. Today START_RACE aborts to the title, so no race runs, but Task 7
    must handle it: a lone racer would stall into PEER TIMEOUT, and a later
-   rematch may be rejected.
+   rematch may be rejected, because the two sides' lastReadyConfig differ
+   (2.6).
 8. A stale select record from an earlier select on the same base is not
    filtered by baseDigest (2.3). It fails safe (NONCE_CHANGED,
    DIGEST_MISMATCH, or PEER_SILENT), never a wrong agreement, and the aux
