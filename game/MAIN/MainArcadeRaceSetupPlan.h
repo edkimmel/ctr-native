@@ -1,0 +1,342 @@
+#ifndef MAIN_ARCADE_RACE_SETUP_PLAN_H
+#define MAIN_ARCADE_RACE_SETUP_PLAN_H
+
+#include "platform/native_arcade_bot_rules.h"
+#include "platform/native_match_config.h"
+#include "platform/native_sha256.h"
+
+#include <stddef.h>
+#include <stdint.h>
+
+/*
+ * Race setup pure core (docs/ROSTER_MILESTONE.md section 3.2, task R-4).
+ * Turns a validated TWO_CAB NativeMatchConfigV1 into the values of the retail
+ * race-defining fields and applies them to a pointer-free mirror of those
+ * fields. Dormant: no live callsite, not in game/game_unity.h; the R-5 live
+ * adapter copies the mirror to and from the retail globals and requests the
+ * load (levelID goes through MainRaceTrack_RequestLoad, which is what writes
+ * the retail levelID in LOAD_LevelFile, game/LOAD/LOAD_Level.c:42-43).
+ *
+ * Pure: reads no game global, does no I/O, uses no heap, keeps no hidden
+ * state. Every int function returns 1 on success, or 0 with every output
+ * untouched on NULL arguments or invalid input.
+ *
+ * The retail headers need the retail common.h, so the GameMode1, GameMode2,
+ * and ADVENTURE_BOSS values used here are mirrored below;
+ * tests/main_arcade_race_setup_plan_isolation_test.cmake checks every mirror
+ * against include/namespace_Main.h, and the field widths against
+ * include/namespace_Main.h and include/regionsEXE.h.
+ *
+ * ---------------------------------------------------------------------------
+ * Audit (R-4): every gameMode1 and gameMode2 bit on the retail Arcade ->
+ * Single Race -> 2 players -> difficulty -> characters -> track -> laps path.
+ *
+ * The retail menu path writes, in order: gameMode1 &= ~(BATTLE_MODE |
+ * ADVENTURE_MODE | TIME_TRIAL | ADVENTURE_ARENA | ARCADE_MODE | ADVENTURE_CUP),
+ * gameMode2 &= ~CUP_ANY_KIND, numLaps = 3 (1 with CHEAT_ONELAP)
+ * (game/230/MM_MenuFlow.c:152-162, :218-221), gameMode1 |= ARCADE_MODE (:224);
+ * gameMode2 &= ~CUP_ANY_KIND for Single Race (:569); numPlyrNextGame = row + 1
+ * (:345); arcadeDifficulty = cupDifficulty speed[row] (:532); the character
+ * grid picks into characterIDs[0..3] (game/230/MM_Characters.c:1391, overlap
+ * fix :701); currLEV and numLaps from the lap row, 1 with CHEAT_ONELAP
+ * (game/230/MM_TrackSelect.c:862, :773, :787); then QueueLoadTrack_MenuProc clears POINT_LIMIT | LIFE_LIMIT |
+ * TIME_LIMIT, resets originalEventTime, and requests currLEV
+ * (game/QueueLoadTrack.c:25-31). It clears no cheat bit (only the Adventure
+ * and Time Trial rows clear five of them, MM_MenuFlow.c:184-188, :205-209).
+ *
+ * Classes: MODE = the plan sets or clears it; CHEAT/CUP = the plan clears it;
+ * HOST-LOCAL = a per-cabinet setting, pinned by the plan to a fixed value;
+ * TRANSIENT = owned by the load or race path, left alone by the plan and
+ * recomputed before the race reads it. "sim" = a race-simulation reader.
+ *
+ * gameMode1 (include/namespace_Main.h:4-40, ADVENTURE_BOSS :40)
+ * bit        name               class      evidence
+ * 0x00000001 PAUSE_1            TRANSIENT  set only by MainFreeze.c:1211, which returns
+ *                                          first at MAIN_MENU_LEVEL and in demo
+ *                                          (:1181-1194); sim gate MainFrame.c:134
+ * 0x00000002 PAUSE_2            TRANSIENT  no writer in game/; read MainFrame.c:466
+ * 0x00000004 PAUSE_3            TRANSIENT  no reader or writer in game/
+ * 0x00000008 PAUSE_4            TRANSIENT  no reader or writer in game/
+ * 0x00000010 DEBUG_MENU         MODE clear no writer in game/; sim Particle.c:521,
+ *                                          MainFrame.c:213, :296
+ * 0x00000020 BATTLE_MODE        MODE clear retail clears MM_MenuFlow.c:152; sim BOTS.c:388,
+ *                                          RB_Player.c:7, MainGameEnd.c:222
+ * 0x00000040 START_OF_RACE      TRANSIENT  set or cleared every race init
+ *                                          MainGameStart.c:14-34; CAM.c:1641 clears
+ * 0x00000080 (unnamed)          MODE clear no named reader or writer
+ * 0x00000100 P1_VIBRATE         HOST-LOCAL options (RaceConfig.c:19, memory card) and the
+ * 0x00000200 P2_VIBRATE         HOST-LOCAL pause menu (MainFreeze.c:518); a set bit
+ * 0x00000400 P3_VIBRATE         HOST-LOCAL disables rumble (GAMEPAD.c:1002, :1033, :1064,
+ * 0x00000800 P4_VIBRATE         HOST-LOCAL output only); pinned to 0, the retail default
+ * 0x00001000 WARPBALL_HELD      TRANSIENT  cleared at race init MainInit.c:416; sim
+ *                                          VehPhysGeneral.c:1919, :1927
+ * 0x00002000 MAIN_MENU          TRANSIENT  LOAD_TenStages.c:128 clears, :144 sets for
+ *                                          menu levels only; sim BOTS.c:320
+ * 0x00004000 POINT_LIMIT        MODE clear retail clears QueueLoadTrack.c:28; set
+ * 0x00008000 LIFE_LIMIT         MODE clear MM_Battle.c:544-553; sim VehPickState.c:324,
+ * 0x00010000 TIME_LIMIT         MODE clear :343, RB_Player.c:22, :40, :67, MainGameEnd.c:556
+ * 0x00020000 TIME_TRIAL         MODE clear retail clears MM_MenuFlow.c:152; sim BOTS.c:341,
+ *                                          MainInit.c:386, MainGameEnd.c:43
+ * 0x00040000 BETA_UNLIMITED     MODE clear no reader or writer in game/
+ * 0x00080000 ADVENTURE_MODE     MODE clear retail clears MM_MenuFlow.c:152; sim BOTS.c:357,
+ *                                          MainInit.c:327
+ * 0x00100000 ADVENTURE_ARENA    MODE clear retail clears MM_MenuFlow.c:152 (and
+ *                                          LOAD_TenStages.c:128); sim MainInit.c:180
+ * 0x00200000 END_OF_RACE        TRANSIENT  cleared LOAD_TenStages.c:128 and
+ *                                          MainGameStart.c:34; set MainGameEnd.c:546;
+ *                                          sim VehPhysProc.c:775
+ * 0x00400000 ARCADE_MODE        MODE set   retail MM_MenuFlow.c:224; sim BOTS.c:219,
+ *                                          MainInit.c:327, PlayLevel.c:433-437
+ * 0x00800000 ROLLING_ITEM       MODE clear set in race RB_Crate.c:203, cleared only at race
+ *                                          end or by the HUD (MainGameEnd.c:541,
+ *                                          UI_RenderFrame.c:879, :1058), so a quit
+ *                                          race can leave it; sim RB_Crate.c:200
+ * 0x01000000 AKU_SONG           MODE clear set on mask pickup VehPickupItem.c:287, :308,
+ * 0x02000000 UKA_SONG           MODE clear cleared by audio HOWL_AudioState.c:190; a
+ *                                          quit race can leave them
+ * 0x04000000 RELIC_RACE         MODE clear set AH_WarpPad.c:158, :597; the menu and the
+ *                                          pause quit (MainFreeze.c:802-808) do not
+ *                                          clear it; sim RB_Teeth.c:8, BOTS.c:341, :1210
+ * 0x08000000 CRYSTAL_CHALLENGE  MODE clear set AH_WarpPad.c:612; sim RB_GenericMine.c:18,
+ *                                          VehPhysGeneral.c:1709, BOTS.c:345
+ * 0x10000000 ADVENTURE_CUP      MODE clear retail clears MM_MenuFlow.c:152; sim BOTS.c:230
+ * 0x20000000 GAME_CUTSCENE      TRANSIENT  LOAD_TenStages.c:128 clears, :134-165 sets for
+ *                                          cutscene levels only; sim BOTS.c:320
+ * 0x40000000 LOADING            TRANSIENT  MainMain.c:222 sets, :258, :327 clear
+ * 0x80000000 ADVENTURE_BOSS     MODE clear set AH_Garage.c:341; not cleared by the menu or
+ *                                          the pause quit; sim BOTS.c:208, :260, :349,
+ *                                          RB_MinePool.c:20, RB_Plant.c:274
+ *
+ * gameMode2 (include/namespace_Main.h:185-221)
+ * 0x00000001 SPAWN_AT_BOSS      MODE clear 222.c:582, MainFreeze.c:1081; sim VehBirth.c:160,
+ * 0x00000002 SPAWN_RETAINED_UNK MODE clear :352; cleared by VehBirth.c:334, :377
+ * 0x00000004 VEH_FREEZE_PODIUM  MODE clear set CS_Podium.c:683; sim VehPhysProc.c:690
+ * 0x00000008 TOKEN_RACE         MODE clear set AH_WarpPad.c:153; sim INSTANCE.c:379
+ * 0x00000010 CUP_ANY_KIND       CHEAT/CUP  retail clears MM_MenuFlow.c:155, :569; sim
+ *                                          BOTS.c:303, :330, :396, :417, :1226
+ * 0x00000020 LEV_SWAP           TRANSIENT  LOAD_TenStages.c:129 clears, :139, :159 set
+ * 0x00000040 (unnamed)          MODE clear no named reader or writer
+ * 0x00000080 CREDITS            TRANSIENT  LOAD_TenStages.c:129 clears, :166 sets
+ * 0x00000100 NO_LEV_INSTANCE    TRANSIENT  LOAD_TenStages.c:129 clears, :578 sets
+ * 0x00000200 CHEAT_WUMPA        CHEAT/CUP  set MM_CheatCodes.c:5; sim VehBirth.c:498
+ * 0x00000400 CHEAT_MASK         CHEAT/CUP  set MM_CheatCodes.c:65; sim VehBirth.c:507
+ * 0x00000800 CHEAT_TURBO        CHEAT/CUP  set MM_CheatCodes.c:71; sim VehBirth.c:512
+ * 0x00001000 CUP_NEW_WIN        CHEAT/CUP  cleared CS_Camera.c:257; read UI_CupStandings.c:704
+ * 0x00002000 CUP_NEW_BATTLE     CHEAT/CUP  cleared CS_Camera.c:257; read UI_CupStandings.c:731
+ * 0x00004000 VEH_FREEZE_DOOR    MODE clear cleared AH_MaskHint.c:477; sim VehBirth.c:63,
+ *                                          VehPhysProc.c:690
+ * 0x00008000 CHEAT_INVISIBLE    CHEAT/CUP  set MM_CheatCodes.c:77; sim VehPhysProc.c:651
+ * 0x00010000 CHEAT_ENGINE       CHEAT/CUP  set MM_CheatCodes.c:83; sim VehPhysProc.c:356
+ * 0x00020000 GARAGE_OSK         MODE clear set by cutscene script R233.c:2573; cleared
+ *                                          CS_Garage.c:65; garage UI only
+ * 0x00040000 CHEAT_ADV          CHEAT/CUP  set MM_CheatCodes.c:95; sim BOTS.c:240
+ * 0x00080000 CHEAT_ICY          CHEAT/CUP  set MM_CheatCodes.c:107; sim COLL.c:1476
+ * 0x00100000 CHEAT_TURBOPAD     CHEAT/CUP  set MM_CheatCodes.c:113; sim VehPhysForce.c:1012
+ * 0x00200000 CHEAT_SUPERHARD    CHEAT/CUP  set MM_CheatCodes.c:101; sim BOTS.c:223
+ * 0x00400000 CHEAT_BOMBS        CHEAT/CUP  set MM_CheatCodes.c:89; sim VehBirth.c:517
+ * 0x00800000 CHEAT_ONELAP       CHEAT/CUP  set MM_CheatCodes.c:119; the menu turns it into
+ *                                          numLaps 1 (MM_TrackSelect.c:787), which the
+ *                                          plan overwrites
+ * 0x01000000 INC_RELIC          MODE clear set CS_Podium.c:587, cleared :479; read
+ * 0x02000000 INC_KEY            MODE clear UI_DrawNum.c:78, :95, :112
+ * 0x04000000 INC_TROPHY         MODE clear
+ * 0x08000000 CHEAT_TURBOCOUNT   CHEAT/CUP  set MM_CheatCodes.c:125; read UI_RenderFrame.c:567
+ * 0x10000000 LNG_CHANGE         MODE clear no reader or writer in game/
+ * 0x20000000 (unnamed)          MODE clear no named reader or writer (cutscene opcodes
+ * 0x40000000 (unnamed)          MODE clear can OR any bits, CS_Thread.c:956, :964; the
+ * 0x80000000 (unnamed)          MODE clear only one in the tree is GARAGE_OSK)
+ *
+ * So the plan owns every bit of both words except the TRANSIENT ones:
+ * gameMode1 = (gameMode1 & TRANSIENT) | ARCADE_MODE, and
+ * gameMode2 = gameMode2 & TRANSIENT. Both words are in the canonical control
+ * domain (game/MAIN/MainMain.c:75-76), so pinning every non-transient bit
+ * also makes them equal across cabinets. TRANSIENT bits are recomputed by
+ * the load (LOAD_TenStages.c:128-129) and race init (MainGameStart.c:14-34,
+ * MainInit.c:416) before the race reads them, or are never set here.
+ *
+ * Other race-defining fields on this path:
+ * - levelID, numLaps, numPlyrNextGame, arcadeDifficulty, characterIDs[0..5]:
+ *   owned (characterIDs[2..5] are rewritten by LOAD_Robots2P,
+ *   game/LOAD/LOAD_Assets.c:21-59, with the same values, RS-4).
+ * - boolDemoMode (char, include/namespace_Main.h:571): added and pinned to 0.
+ *   The demo path sets it (MM_Title.c:167) and the race reads it
+ *   (MainInit.c:547 converts every human driver to a bot; BOTS.c:1022,
+ *   GAMEPAD.c:705); the arcade-link screens also run over a demo race
+ *   (MainArcadeLink.c:239-245).
+ * - Not owned: currLEV (only carries the menu's track to the load request,
+ *   QueueLoadTrack.c:31); originalEventTime (read only by the battle and
+ *   crystal limit clock, UI_Clock.c:453); the cup fields (read only under
+ *   ADVENTURE_CUP or CUP_ANY_KIND, BOTS.c:230-253, :330, :396-438,
+ *   LOAD_Assets.c:134, which the plan clears); numPlyrCurrGame and
+ *   numBotsNextGame (set by the load and bot init, LOAD_TenStages.c:102,
+ *   BOTS.c:328).
+ * - Live-adapter notes for R-5: the pending load bits
+ *   (Loading.OnBegin.AddBitsConfig0/8, RemBitsConfig0/8) are ORed into and
+ *   masked out of both words when the load starts (game/MAIN/MainMain.c:270-289);
+ *   RaceConfig_LoadGameOptions ORs the saved vibration bits in once
+ *   (RaceConfig.c:19); the pause menu toggles them mid-race (MainFreeze.c:518).
+ *
+ * Candidate defaults for review: RS-14, the plan requires the retail 30 Hz
+ * tick rate (tickRateNumerator/tickRateDenominator exactly 30/1); vibration
+ * pinned to 0 (rumble enabled for every pad, the retail default without a
+ * memory card), so a cabinet's saved rumble preference does not apply to a
+ * linked race; boolDemoMode pinned to 0.
+ * ---------------------------------------------------------------------------
+ */
+
+/* gameMode1 bits: mirrors of include/namespace_Main.h enum GameMode1 and ADVENTURE_BOSS. */
+#define MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_1 UINT32_C(0x1)
+#define MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_2 UINT32_C(0x2)
+#define MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_3 UINT32_C(0x4)
+#define MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_4 UINT32_C(0x8)
+#define MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_ALL UINT32_C(0xF)
+#define MAIN_ARCADE_RACE_SETUP_GM1_DEBUG_MENU UINT32_C(0x10)
+#define MAIN_ARCADE_RACE_SETUP_GM1_BATTLE_MODE UINT32_C(0x20)
+#define MAIN_ARCADE_RACE_SETUP_GM1_START_OF_RACE UINT32_C(0x40)
+#define MAIN_ARCADE_RACE_SETUP_GM1_P1_VIBRATE UINT32_C(0x100)
+#define MAIN_ARCADE_RACE_SETUP_GM1_P2_VIBRATE UINT32_C(0x200)
+#define MAIN_ARCADE_RACE_SETUP_GM1_P3_VIBRATE UINT32_C(0x400)
+#define MAIN_ARCADE_RACE_SETUP_GM1_P4_VIBRATE UINT32_C(0x800)
+#define MAIN_ARCADE_RACE_SETUP_GM1_WARPBALL_HELD UINT32_C(0x1000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_MAIN_MENU UINT32_C(0x2000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_POINT_LIMIT UINT32_C(0x4000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_LIFE_LIMIT UINT32_C(0x8000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_TIME_LIMIT UINT32_C(0x10000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_TIME_TRIAL UINT32_C(0x20000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_BETA_UNLIMITED UINT32_C(0x40000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_ADVENTURE_MODE UINT32_C(0x80000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_ADVENTURE_ARENA UINT32_C(0x100000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_END_OF_RACE UINT32_C(0x200000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_ARCADE_MODE UINT32_C(0x400000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_ROLLING_ITEM UINT32_C(0x800000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_AKU_SONG UINT32_C(0x1000000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_UKA_SONG UINT32_C(0x2000000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_RELIC_RACE UINT32_C(0x4000000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_CRYSTAL_CHALLENGE UINT32_C(0x8000000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_ADVENTURE_CUP UINT32_C(0x10000000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_GAME_CUTSCENE UINT32_C(0x20000000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_LOADING UINT32_C(0x40000000)
+#define MAIN_ARCADE_RACE_SETUP_GM1_ADVENTURE_BOSS UINT32_C(0x80000000)
+
+/* gameMode2 bits: mirrors of include/namespace_Main.h enum GameMode2. */
+#define MAIN_ARCADE_RACE_SETUP_GM2_SPAWN_AT_BOSS UINT32_C(0x1)
+#define MAIN_ARCADE_RACE_SETUP_GM2_GAME_MODE2_SPAWN_RETAINED_UNKNOWN UINT32_C(0x2)
+#define MAIN_ARCADE_RACE_SETUP_GM2_VEH_FREEZE_PODIUM UINT32_C(0x4)
+#define MAIN_ARCADE_RACE_SETUP_GM2_TOKEN_RACE UINT32_C(0x8)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CUP_ANY_KIND UINT32_C(0x10)
+#define MAIN_ARCADE_RACE_SETUP_GM2_LEV_SWAP UINT32_C(0x20)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CREDITS UINT32_C(0x80)
+#define MAIN_ARCADE_RACE_SETUP_GM2_NO_LEV_INSTANCE UINT32_C(0x100)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_WUMPA UINT32_C(0x200)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_MASK UINT32_C(0x400)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_TURBO UINT32_C(0x800)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CUP_NEW_WIN UINT32_C(0x1000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CUP_NEW_BATTLE UINT32_C(0x2000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_VEH_FREEZE_DOOR UINT32_C(0x4000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_INVISIBLE UINT32_C(0x8000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_ENGINE UINT32_C(0x10000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_GARAGE_OSK UINT32_C(0x20000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_ADV UINT32_C(0x40000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_ICY UINT32_C(0x80000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_TURBOPAD UINT32_C(0x100000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_SUPERHARD UINT32_C(0x200000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_BOMBS UINT32_C(0x400000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_ONELAP UINT32_C(0x800000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_INC_RELIC UINT32_C(0x1000000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_INC_KEY UINT32_C(0x2000000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_INC_TROPHY UINT32_C(0x4000000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_TURBOCOUNT UINT32_C(0x8000000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_LNG_CHANGE UINT32_C(0x10000000)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_ALL UINT32_C(0x8FD8E00)
+
+/* The plan's policy (the audit above). */
+#define MAIN_ARCADE_RACE_SETUP_GM1_TRANSIENT_MASK                                                                 \
+	(MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_ALL | MAIN_ARCADE_RACE_SETUP_GM1_START_OF_RACE |                            \
+	 MAIN_ARCADE_RACE_SETUP_GM1_WARPBALL_HELD | MAIN_ARCADE_RACE_SETUP_GM1_MAIN_MENU |                            \
+	 MAIN_ARCADE_RACE_SETUP_GM1_END_OF_RACE | MAIN_ARCADE_RACE_SETUP_GM1_GAME_CUTSCENE |                          \
+	 MAIN_ARCADE_RACE_SETUP_GM1_LOADING)
+#define MAIN_ARCADE_RACE_SETUP_GM1_HOST_LOCAL_MASK                                                                \
+	(MAIN_ARCADE_RACE_SETUP_GM1_P1_VIBRATE | MAIN_ARCADE_RACE_SETUP_GM1_P2_VIBRATE |                              \
+	 MAIN_ARCADE_RACE_SETUP_GM1_P3_VIBRATE | MAIN_ARCADE_RACE_SETUP_GM1_P4_VIBRATE)
+#define MAIN_ARCADE_RACE_SETUP_GM1_SET_MASK MAIN_ARCADE_RACE_SETUP_GM1_ARCADE_MODE
+/* Every other bit, the HOST-LOCAL vibration bits included (pinned to 0). */
+#define MAIN_ARCADE_RACE_SETUP_GM1_CLEAR_MASK \
+	(UINT32_C(0xFFFFFFFF) & ~(MAIN_ARCADE_RACE_SETUP_GM1_TRANSIENT_MASK | MAIN_ARCADE_RACE_SETUP_GM1_SET_MASK))
+#define MAIN_ARCADE_RACE_SETUP_GM2_TRANSIENT_MASK \
+	(MAIN_ARCADE_RACE_SETUP_GM2_LEV_SWAP | MAIN_ARCADE_RACE_SETUP_GM2_CREDITS | MAIN_ARCADE_RACE_SETUP_GM2_NO_LEV_INSTANCE)
+#define MAIN_ARCADE_RACE_SETUP_GM2_SET_MASK UINT32_C(0)
+#define MAIN_ARCADE_RACE_SETUP_GM2_CLEAR_MASK (UINT32_C(0xFFFFFFFF) & ~MAIN_ARCADE_RACE_SETUP_GM2_TRANSIENT_MASK)
+
+#define MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT 8u        /* retail characterIDs[8] */
+#define MAIN_ARCADE_RACE_SETUP_CHARACTER_WRITE_MASK 0x3Fu /* slots 0..5; 6 and 7 untouched */
+#define MAIN_ARCADE_RACE_SETUP_NUM_PLAYERS 2u
+#define MAIN_ARCADE_RACE_SETUP_TICK_RATE_NUMERATOR 30u
+#define MAIN_ARCADE_RACE_SETUP_TICK_RATE_DENOMINATOR 1u
+#define MAIN_ARCADE_RACE_SETUP_PLAN_V1_TAG "CTRN arcade race setup plan v1"
+#define MAIN_ARCADE_RACE_SETUP_PLAN_V1_ENCODED_BYTES 126u
+
+/*
+ * Pointer-free mirror of the retail fields the plan owns, at the retail
+ * widths (the mode words are int in retail and carried here as their 32-bit
+ * pattern). Compare it field by field: it has padding.
+ */
+struct MainArcadeRaceSetupRetailFields
+{
+	int32_t levelID;          /* GameTracker levelID (int) */
+	uint32_t gameMode1;       /* GameTracker gameMode1 (int) */
+	uint32_t gameMode2;       /* GameTracker gameMode2 (int) */
+	int32_t arcadeDifficulty; /* GameTracker arcadeDifficulty (int) */
+	int16_t characterIDs[MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT]; /* characterIDs (s16[8]) */
+	int8_t numLaps;           /* GameTracker numLaps (s8) */
+	uint8_t numPlyrNextGame;  /* GameTracker numPlyrNextGame (u8) */
+	uint8_t boolDemoMode;     /* GameTracker boolDemoMode (char) */
+};
+
+struct MainArcadeRaceSetupPlan
+{
+	uint8_t locked;           /* 1 once built */
+	uint8_t numPlyrNextGame;  /* MAIN_ARCADE_RACE_SETUP_NUM_PLAYERS */
+	int8_t numLaps;           /* config lapCount */
+	uint8_t boolDemoMode;     /* 0 */
+	int32_t levelID;          /* config trackID */
+	uint32_t gameMode1ClearMask;
+	uint32_t gameMode1SetMask;
+	uint32_t gameMode2ClearMask;
+	uint32_t gameMode2SetMask;
+	int32_t arcadeDifficulty; /* the bots' shared difficulty */
+	uint8_t characterWriteMask; /* MAIN_ARCADE_RACE_SETUP_CHARACTER_WRITE_MASK */
+	uint8_t aiSetIndex;       /* the retail 2P AI set of the bots */
+	uint8_t reserved[2];      /* 0 */
+	int16_t characterIDs[MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT]; /* slot i's character for i < 6, else 0 */
+	uint8_t expectedBots[NATIVE_ARCADE_BOT_RULES_BOT_COUNT];      /* NativeArcadeBotRules_ExpectedBots2P */
+	uint64_t masterSeed;      /* for the R-5 bank */
+	uint32_t rngDerivationVersion;
+	uint8_t configDigest[NATIVE_SHA256_DIGEST_BYTES]; /* NativeMatchConfigV1_Digest */
+};
+
+/*
+ * Builds the plan. Fails unless NativeArcadeBotRules_ValidateConfigV1(config)
+ * passes, the tick rate is exactly TICK_RATE_NUMERATOR/TICK_RATE_DENOMINATOR
+ * (RS-14), and the CAB1_HUMAN and CAB2_HUMAN roles are slots 0 and 1 (retail
+ * players 0 and 1). The bots, slots 2..5, are retail drivers 2..5.
+ */
+int MainArcadeRaceSetupPlan_Build(const struct NativeMatchConfigV1 *config, struct MainArcadeRaceSetupPlan *out);
+
+/*
+ * *after = *before with the plan applied: levelID, numLaps, numPlyrNextGame,
+ * arcadeDifficulty, and boolDemoMode replaced; each mode word cleared by its
+ * clear mask and ORed with its set mask; characterIDs[i] replaced where bit i
+ * of characterWriteMask is set. before and after may alias. Fails on a plan
+ * that is not locked or whose fixed fields differ from the policy above.
+ */
+int MainArcadeRaceSetupPlan_Apply(const struct MainArcadeRaceSetupPlan *plan,
+	const struct MainArcadeRaceSetupRetailFields *before, struct MainArcadeRaceSetupRetailFields *after);
+
+/*
+ * SHA-256 of the V1 encoding: the tag (30 bytes ASCII, no NUL), then every
+ * plan field in declaration order, little-endian, signed fields as their
+ * two's-complement pattern (126 bytes). Fails like Apply on a bad plan.
+ */
+int MainArcadeRaceSetupPlan_Digest(const struct MainArcadeRaceSetupPlan *plan, uint8_t digest[NATIVE_SHA256_DIGEST_BYTES]);
+
+#endif

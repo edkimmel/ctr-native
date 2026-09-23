@@ -484,6 +484,18 @@ set_target_properties(ctr_native_arcade_bot_setup PROPERTIES
 target_include_directories(ctr_native_arcade_bot_setup PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 target_link_libraries(ctr_native_arcade_bot_setup PUBLIC ctr_native_arcade_roster ctr_native_deterministic_rng)
 
+# Race setup pure core (docs/ROSTER_MILESTONE.md section 3.2, R-4): match
+# config -> the retail race-defining field values, applied to a pointer-free
+# mirror. Dormant: not in game/game_unity.h, no live callsite until R-5.
+add_library(ctr_native_arcade_race_setup_plan STATIC game/MAIN/MainArcadeRaceSetupPlan.c)
+set_target_properties(ctr_native_arcade_race_setup_plan PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_race_setup_plan PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+target_link_libraries(ctr_native_arcade_race_setup_plan PUBLIC ctr_native_arcade_bot_rules ctr_native_match_config)
+
 add_library(ctr_native_canonical_state STATIC platform/native_canonical_state.c)
 set_target_properties(ctr_native_canonical_state PROPERTIES
     C_STANDARD 17
@@ -1433,6 +1445,23 @@ if(BUILD_TESTING)
     )
     target_link_libraries(main_arcade_bot_setup_test PRIVATE ctr_native_arcade_bot_setup)
     add_test(NAME main_arcade_bot_setup_unit COMMAND $<TARGET_FILE:main_arcade_bot_setup_test>)
+
+    # Race setup pure core (R-4): plans built from the real fixture through
+    # match select, menu-history independence of Apply, rejections, and a
+    # golden digest; the isolation test checks purity, the link set, the
+    # retail mirrors, and that nothing in game/ uses it yet.
+    add_executable(main_arcade_race_setup_plan_test tests/main_arcade_race_setup_plan_test.c)
+    set_target_properties(main_arcade_race_setup_plan_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(main_arcade_race_setup_plan_test PRIVATE ctr_native_arcade_race_setup_plan
+        ctr_native_arcade_link_options)
+    add_test(NAME main_arcade_race_setup_plan_unit COMMAND $<TARGET_FILE:main_arcade_race_setup_plan_test>)
+
+    add_test(NAME main_arcade_race_setup_plan_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_setup_plan_isolation_test.cmake")
 
     add_executable(native_canonical_state_test tests/native_canonical_state_test.c)
     set_target_properties(native_canonical_state_test PROPERTIES
