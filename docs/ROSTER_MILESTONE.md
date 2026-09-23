@@ -218,13 +218,29 @@ A pure core plus a thin live adapter.
   through the canonical encoders, never raw struct bytes); plus the setup
   plan and bank digests once. It exits 0 after the last tick, nonzero on
   FAILED.
-- A ctest runs the exe: A and B (same seed, dwell 0) must produce
-  byte-identical logs; C (same seed, a different dwell) must match A in
-  every RNG, input, DRIVERS, plan, and bank digest (control may differ only
-  in boot-relative counters, which the check reports); D (another seed)
-  must differ from A in the RNG digest at tick 0 and in the bank digest. It
-  skips when assets/ctr-u.bin is absent, no display is available, or the
-  build rejects the internal option.
+- Host timing (R-6b): main.c turns on a host-local, proof-only fixed VBlank
+  pacing (Platform_SetFixedVBlankPacing, platform/native_vblank_pacing.c):
+  the pacer never emits late (catch-up) VBlanks, so every game tick advances
+  exactly the retail 2 VBlanks and gGT->elapsedTimeMS cannot follow a host
+  hitch. Every other run keeps the default pacing; V2 playback keeps its own
+  packet path.
+- Each tick line also carries a race-relative control digest (rcontrol):
+  the V1 control encoding and FNV-1a 64 digest with frameTimer,
+  frameCounter, and timer zeroed, computed locally (no schema change). The
+  report header logs those three counters at the launch tick and at race
+  tick 0.
+- A ctest (label "live") runs the exe five times in parallel: A and B (same
+  seed, dwell 0) must produce byte-identical logs; C (same seed, dwell 5400,
+  launched from inside the attract demo race) and E (same seed, dwell 37, an
+  odd timer offset from A at launch) must match A in every RNG, input,
+  DRIVERS, rcontrol, plan, and bank digest and start the race with A's timer
+  (the RS-17 pin); the full control digest differs only in the unpinned
+  boot-relative counters frameCounter and frameTimer and is informational,
+  and the check reports the C-A and E-A offsets at launch and at race tick
+  0, mod 8. D (another seed) must differ from A in the RNG digest
+  at tick 0 and in the bank digest. It skips when assets/ctr-u.bin is
+  absent, no display is available, or the build rejects the internal
+  option.
 
 ## 4. Defaults for owner review
 
@@ -343,7 +359,19 @@ simulation; the docs/GAME_LOOP_UI_MILESTONE.md botRulesDigest notes.
 2. Boot-relative control counters (gGT->timer, sdata->frameCounter and
    similar) are in the canonical control domain; two cabinets never share a
    boot history, so Task 8 must either compare race-relative control or
-   normalize these counters (RS-12).
+   normalize these counters (RS-12). Run E of the live proof shows that
+   gGT->timer parity feeds the simulation RNG: with an odd timer offset
+   (37), sdata->randomNumber first differs from run A at race tick 399 on
+   Crash Cove (drivers, input, and rcontrol stay equal through tick 899).
+   The 2P exhaust emitter picks each human driver's frames by timer parity
+   (game/Vehicle/VehEmitter.c, `(gGT->timer & 1) == d->driverID`), and an
+   exhaust particle that ends underwater draws MixRNG_Scramble
+   (game/Particle.c, the bubble pop), so the same draws land one frame
+   earlier or later. An even offset (run C, +5382) matched. R-6c pins
+   gGT->timer and gGT->frameTimer_Confetti at the setup point (RS-17), and
+   run E now matches A. frameCounter and frameTimer_VsyncCallback stay
+   boot-relative (presentation and platform only), so Task 8 must still
+   compare race-relative control.
 3. The V4 runtime derives a fresh bank from the config
    (game/MAIN/MainCanonicalRuntime.c,
    NativeDeterministicRngBankV1_InitInPlace), while the live bank after

@@ -9,11 +9,14 @@
 #include "platform/native_match_config.h"
 #include "platform/native_sha256.h"
 
+struct NativeCanonicalStateV1;
+
 /*
  * Live roster proof, internal builds only (docs/ROSTER_MILESTONE.md section
  * 3.4; R-5b's launcher, R-6's scripted pads, per-tick digests, and the
  * arcade_roster_determinism ctest, tools/arcade-roster-proof-check.ps1;
- * R-6c's pin readback).
+ * R-6b's race-relative control digest and race tick 0 counters; R-6c's pin
+ * readback).
  * Evidence plumbing: host-local options, the fixed proof config, the scripted
  * pad pattern, a game-facing singleton that keeps the per-tick digest lines,
  * and the report writer.
@@ -73,19 +76,33 @@
  *
  * Per-tick digests. From race tick 0, for `ticks` race ticks, the game hook
  * appends one line per tick after its frame was simulated:
- *   tick <n> control <16 hex> rng <16 hex> input <16 hex> drivers <64 hex>
+ *   tick <n> control <16 hex> rcontrol <16 hex> rng <16 hex> input <16 hex> drivers <64 hex>
  * control, rng, and input are the V1 canonical domain digests of that frame
- * (the live V1 projection, MainCanonicalState_ProjectLive); drivers is the
- * SHA-256 of the canonical encoding (NativeCanonicalDriversDetailedV1_Encode)
- * of the topology-free drivers candidate, a detailed record whose Physics
- * groups are all at their exact zero value (the report header says "drivers
- * digest excludes physics"). The report ends with "end ticks <count>".
+ * (the live V1 projection, MainCanonicalState_ProjectLive); rcontrol is the
+ * race-relative control digest (NativeArcadeRosterProof_RaceControlDigest):
+ * the same V1 control encoding and FNV-1a 64 digest with the three
+ * boot-relative counters (frameTimer, frameCounter, timer) zeroed, computed
+ * locally (no schema change); drivers is the SHA-256 of the canonical
+ * encoding (NativeCanonicalDriversDetailedV1_Encode) of the topology-free
+ * drivers candidate, a detailed record whose Physics groups are all at their
+ * exact zero value (the report header says "drivers digest excludes
+ * physics"). The report header also carries the three boot-relative counters
+ * at the launch tick (before the race setup pinned gGT->timer, RS-17) and as
+ * race tick 0 saw them. The report ends with "end ticks <count>".
+ *
+ * Host timing. main.c turns on the host-local fixed VBlank pacing
+ * (Platform_SetFixedVBlankPacing, include/platform.h) for the proof only: a
+ * slow host frame then never emits late VBlanks, so every game tick advances
+ * exactly the retail 2 VBlanks and gGT->elapsedTimeMS, and with it the whole
+ * race, is independent of host timing. Every other run keeps the default
+ * pacing.
  *
  * Process exit codes while the proof is active (enum
  * NativeArcadeRosterProofResult is also the report's result):
  *
- *    0  PASS                 VALIDATED, every requested race tick logged, and
- *                            the report was written
+ *    0  PASS                 VALIDATED, every requested race tick logged, the
+ *                            launch and race tick 0 counters kept, and the
+ *                            report was written
  *    1  (startup failure)    main.c's generic failure: an invalid option or
  *                            combination, asset or platform initialisation,
  *                            or a proof that could not be configured; the
@@ -109,20 +126,26 @@
  *                            seed the setup produced (the adapter's field
  *                            mapping is wrong)
  *   28  EVIDENCE_MISSING     VALIDATED, but the digests, the slot facts, or
- *                            the seed or pin readback could not be read; PASS
- *                            needs all of them
+ *                            the seed or pin readback could not be read, or
+ *                            the launch or race tick 0 counters or a
+ *                            requested tick line is missing; PASS needs all
+ *                            of them
  *   29  RACE_TICK_TIMEOUT    no race tick 0 (the drivers extraction never
  *                            succeeded) within RACE_TICK_TIMEOUT_TICKS of
  *                            VALIDATED
  *   30  DRIVERS_FAILED       the drivers extraction or its canonical encoding
  *                            failed at a logged race tick after tick 0
  *   31  DIGEST_FAILED        the frame's V1 canonical projection (or its input
- *                            freeze) failed at a logged race tick, or a tick
- *                            line could not be kept
+ *                            freeze) or its race-relative control digest
+ *                            failed at a logged race tick, or a tick line
+ *                            could not be kept
  *   32  PIN_MISMATCH         VALIDATED, but a pinned boot-relative counter
  *                            (gGT->timer, gGT->frameTimer_Confetti; RS-17)
  *                            read back right after the SEEDED writes differs
  *                            from the value the setup pinned
+ *   33  TICK_LOG_TIMEOUT     race tick 0 was reached, but the requested race
+ *                            ticks were not all logged within
+ *                            ticks + TICK_LOG_SLACK_TICKS proof ticks of it
  *
  * The failure codes start at 20 so that none collides with 1 or with the C
  * runtime's abort() code 3.
@@ -163,6 +186,9 @@
 #define NATIVE_ARCADE_ROSTER_PROOF_LAUNCH_WAIT_TIMEOUT_TICKS 3600u
 #define NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT_TICKS 1800u
 #define NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT_TICKS 1800u
+/* After race tick 0: the proof ticks allowed beyond the requested tick count
+ * for the tick lines to be logged (normally one line per proof tick). */
+#define NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_SLACK_TICKS 600u
 
 /* The scripted pads (see above). Buttons are the PSX pad's active-low word
  * (buttons[0] is its low byte): a held button reads 0. */
@@ -205,7 +231,8 @@ enum NativeArcadeRosterProofResult
 	NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT = 29,    /* no race tick 0 within RACE_TICK_TIMEOUT_TICKS of VALIDATED */
 	NATIVE_ARCADE_ROSTER_PROOF_DRIVERS_FAILED = 30,       /* the drivers extraction or encoding failed after race tick 0 */
 	NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED = 31,        /* the V1 projection failed at a logged tick, or a line was not kept */
-	NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH = 32          /* a pinned counter read back differs from the pinned value */
+	NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH = 32,         /* a pinned counter read back differs from the pinned value */
+	NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT = 33      /* race tick 0 reached, but not every tick line logged in time */
 };
 
 /* One scripted pad, in the shape of the host pad snapshot. */
@@ -224,8 +251,9 @@ struct NativeArcadeRosterProofTickLine
 {
 	uint32_t tick;
 	uint32_t reserved;
-	uint64_t control; /* V1 CONTROL domain digest */
-	uint64_t rng;     /* V1 RNG domain digest */
+	uint64_t control;     /* V1 CONTROL domain digest */
+	uint64_t raceControl; /* race-relative control digest (NativeArcadeRosterProof_RaceControlDigest) */
+	uint64_t rng;         /* V1 RNG domain digest */
 	uint64_t input;   /* V1 INPUT domain digest */
 	uint8_t drivers[NATIVE_SHA256_DIGEST_BYTES];
 };
@@ -251,6 +279,15 @@ struct NativeArcadeRosterProofSlotLine
 	uint8_t reserved;
 };
 
+/* The boot-relative control counters (the V1 control values gGT->timer,
+ * sdata->frameCounter, and gGT->frameTimer_VsyncCallback) of one frame. */
+struct NativeArcadeRosterProofCounters
+{
+	int32_t timer;
+	int32_t frameCounter;
+	int32_t frameTimer;
+};
+
 /* The boot-relative counters the race setup pins at its seeding point
  * (RS-17): gGT->timer and gGT->frameTimer_Confetti. */
 struct NativeArcadeRosterProofPins
@@ -269,6 +306,9 @@ struct NativeArcadeRosterProofPins
  * the seeds the setup produced (NativeArcadeRosterProof_SeedsMatch); pinValid,
  * pinStored, and pinMatch say the same of the pinned counters
  * (NativeArcadeRosterProof_PinsMatch).
+ * tickLineCount is the number of tick lines kept, and countersValid says
+ * whether raceTickZeroCounters holds race tick 0's counters; launchCountersValid
+ * whether launchCounters holds the same counters at the launch tick.
  */
 struct NativeArcadeRosterProofReport
 {
@@ -286,13 +326,17 @@ struct NativeArcadeRosterProofReport
 	uint32_t validatedTick;
 	uint32_t raceTickZeroTick; /* the proof tick of race tick 0 */
 	uint32_t ticksRequested;   /* --arcade-roster-proof-ticks */
+	uint32_t tickLineCount;    /* tick lines kept (NativeArcadeRosterProof_TickCount) */
 	uint8_t digestsValid;
 	uint8_t slotsValid;
 	uint8_t seedValid;
 	uint8_t seedMatch;
+	uint8_t countersValid;
 	uint8_t pinValid;
 	uint8_t pinMatch;
-	uint8_t reserved[2];
+	uint8_t launchCountersValid;
+	struct NativeArcadeRosterProofCounters launchCounters; /* at the launch tick, before the setup pinned anything */
+	struct NativeArcadeRosterProofCounters raceTickZeroCounters;
 	struct NativeArcadeRetailRngSeedsV1 seedStored;
 	struct NativeArcadeRosterProofPins pinStored;
 	uint8_t configDigest[NATIVE_SHA256_DIGEST_BYTES];
@@ -372,6 +416,16 @@ int NativeArcadeRosterProof_RecordTick(const struct NativeArcadeRosterProofTickL
 /* The number of tick lines kept; 0 when inactive. */
 uint32_t NativeArcadeRosterProof_TickCount(void);
 
+/*
+ * The race-relative control digest of a V1 state: a copy of the state with
+ * control.frameTimer, control.frameCounter, and control.timer (the
+ * boot-relative counters) zeroed, digested by NativeCanonicalStateV1_ComputeDigests
+ * (the V1 control encoding and FNV-1a 64), and its CONTROL domain digest
+ * stored in *digest. The state is not changed. 0 with *digest untouched on
+ * NULL arguments or a state the V1 digests reject.
+ */
+int NativeArcadeRosterProof_RaceControlDigest(const struct NativeCanonicalStateV1 *state, uint64_t *digest);
+
 /* One tick line as text (see above), with its newline, NUL-terminated;
  * *length excludes the NUL. 0 on NULL arguments or a buffer too small. */
 int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofTickLine *line, char *buffer,
@@ -387,16 +441,18 @@ const char *NativeArcadeRosterProof_LogPath(void);
 /*
  * Formats the report as text into buffer (NUL-terminated) and stores its
  * length without the NUL. Returns 0 on NULL arguments or a buffer too small.
- * The format is line based: a header line ("arcade roster proof v5"), the
+ * The format is line based: a header line ("arcade roster proof v6"), the
  * line "drivers digest excludes physics", then "result", "setup status",
  * "setup failure", "seed", "dwell", "ticks" (requested), "menu ready tick",
  * "demo race tick", "launch tick", "launch window" (title, demo race, or
- * none), "validated tick", "race tick 0 tick", the four digests as lowercase
- * hex (or "none"),
- * the "seeded" line (the five retail seed fields and the two pinned counters,
- * timer and frameTimerConfetti as signed decimal, as read back, then
- * "match 1" when every one equals what the setup wrote, else "match 0";
- * "seeded none" without both readbacks), and one "slot" line per slot.
+ * none), "launch counters" (timer, frameCounter, and frameTimer at the launch
+ * tick, as signed decimal, or "none"), "validated tick", "race tick 0 tick",
+ * "race tick 0 counters" (the same, at race tick 0), the four digests as
+ * lowercase hex (or "none"), the "seeded" line (the five retail seed fields
+ * and the two pinned counters, timer and frameTimerConfetti as signed
+ * decimal, as read back, then "match 1" when every one equals what the setup
+ * wrote, else "match 0"; "seeded none" without both readbacks), and one
+ * "slot" line per slot.
  */
 int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofReport *report, char *buffer,
 	size_t bufferSize, size_t *length);
@@ -413,9 +469,11 @@ int NativeArcadeRosterProof_PinsMatch(const struct NativeArcadeRosterProofPins *
 
 /*
  * The result a finished proof reports: requested unless it is PASS, and PASS
- * only when the digests, the slot facts, and the seed and pin readbacks are
- * all valid (else EVIDENCE_MISSING), the seed readback matches (else
- * SEED_MISMATCH), and the pin readback matches (else PIN_MISMATCH).
+ * only when the digests, the slot facts, the seed and pin readbacks, and the
+ * launch and race tick 0 counters are all valid and every requested tick line
+ * was kept (tickLineCount == ticksRequested, and at least one) (else
+ * EVIDENCE_MISSING), the seed readback matches (else SEED_MISMATCH), and the
+ * pin readback matches (else PIN_MISMATCH).
  */
 uint32_t NativeArcadeRosterProof_FinalResult(uint32_t requested, const struct NativeArcadeRosterProofReport *report);
 

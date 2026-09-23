@@ -15,6 +15,7 @@
 #include "platform/native_replay_scheduler.h"
 #include "platform/native_savestate.h"
 #include "platform/native_sdl_assert.h"
+#include "platform/native_vblank_pacing.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -813,6 +814,11 @@ int NikoGetEnterKey(void)
 global_variable u64 s_nextVBlankCounter = 0;
 global_variable u64 s_vblankRemainder = 0;
 global_variable int s_nativeVBlankCount = 0;
+/* Host-local fixed VBlank pacing (platform/native_vblank_pacing.h): off by
+ * default, so every normal run keeps the retail-faithful catch-up. Only
+ * Platform_SetFixedVBlankPacing writes it, and only Native_CatchUpDueVBlanks
+ * reads it. */
+global_variable int s_fixedVBlankPacing = 0;
 
 internal u64 Native_CounterFromMicroseconds(u64 freq, u64 microseconds)
 {
@@ -914,22 +920,29 @@ internal int Native_CatchUpDueVBlanks(void)
 	// stalls, for example during window dragging or a debugger break. Replay a few
 	// late VBlanks normally, but rebase pathological stalls instead of bursting
 	// many callbacks into one host frame.
+	// Fixed pacing (proof-only, off by default) never replays a late VBlank: it
+	// re-anchors the schedule at now, so each wait emits exactly its own
+	// VBlanks (NativeVBlankPacing_Plan).
 	{
 		const u64 now = SDL_GetPerformanceCounter();
+		const u64 freq = SDL_GetPerformanceFrequency();
+		const u64 step = (freq * NATIVE_VBLANK_GPU_CYCLES) / NATIVE_GPU_CLOCK_HZ;
 
-		if (now >= s_nextVBlankCounter)
+		switch (NativeVBlankPacing_Plan(s_fixedVBlankPacing, now, s_nextVBlankCounter, step, NATIVE_VSYNC_CATCHUP_MAX))
 		{
-			const u64 freq = SDL_GetPerformanceFrequency();
-			const u64 step = (freq * NATIVE_VBLANK_GPU_CYCLES) / NATIVE_GPU_CLOCK_HZ;
-			const u64 dueApprox = ((now - s_nextVBlankCounter) / step) + 1;
-
-			if (dueApprox > NATIVE_VSYNC_CATCHUP_MAX)
-			{
-				s_nextVBlankCounter = now;
-				s_vblankRemainder = 0;
-				Native_AdvanceVBlankTarget();
-				return 0;
-			}
+		case NATIVE_VBLANK_PACING_REBASE:
+			s_nextVBlankCounter = now;
+			s_vblankRemainder = 0;
+			Native_AdvanceVBlankTarget();
+			return 0;
+		case NATIVE_VBLANK_PACING_REANCHOR:
+			s_nextVBlankCounter = now;
+			s_vblankRemainder = 0;
+			return 0;
+		case NATIVE_VBLANK_PACING_ON_TIME:
+			return 0;
+		default:
+			break;
 		}
 	}
 
@@ -1007,6 +1020,19 @@ int Platform_GetVBlankCount(void)
 {
 	return s_nativeVBlankCount;
 }
+
+#if defined(CTR_INTERNAL)
+/*
+ * Host-local and proof-only (include/platform.h): main.c turns it on only for
+ * the internal live roster proof, before CTR_Main. It changes only how the
+ * pacer treats late VBlanks (NativeVBlankPacing_Plan); game code never
+ * observes it.
+ */
+void Platform_SetFixedVBlankPacing(int enabled)
+{
+	s_fixedVBlankPacing = (enabled != 0) ? 1 : 0;
+}
+#endif
 
 void Platform_WaitUntilVBlank(int targetVBlank)
 {

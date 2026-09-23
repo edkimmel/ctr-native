@@ -34,7 +34,8 @@
 #  8. ctr_native links the plan, the facts, the decision core, and the proof
 #     libraries, and neither ctr_native_arcade_setup_v4 nor a V4 projector
 #     directly; the proof library links exactly the link options, the
-#     match-select rules, and the bot rules, C17 with extensions off; neither
+#     match-select rules, the bot rules, and the V1 canonical state (for the
+#     race-relative control digest, R-6b), C17 with extensions off; neither
 #     game file names the V4 setup or projector;
 #  9. main.c parses the proof options before any replay parser, rejects them
 #     with link, preview, --exit-after-frame, or replay options, and
@@ -48,13 +49,14 @@
 #     every core write target (each one of the core header's enum) to
 #     exactly its one retail field or call, with the exact width casts, and
 #     holds no other store; outside MainArcadeRaceSetup_Apply the adapter
-#     stores to no retail field (gGT, sdata, data in any member spelling,
-#     compound assignment, increment, address taken, or mem* destination) and
-#     never calls PSX_BIOS_SetRandSeed or MainRaceTrack_RequestLoad; the core
-#     names the two boot-relative pin targets (gGT->timer,
-#     gGT->frameTimer_Confetti; RS-17, R-6c) exactly once each, only in its
-#     seeding step, after the load-field verification and before the first
-#     seed, at their documented values;
+#     stores to no retail field (gGT, sdata, data, or an alias of them, in any
+#     member spelling, (*gGT).x and (gGT)->x included; compound assignment,
+#     increment, address taken, or mem* destination) and never calls
+#     PSX_BIOS_SetRandSeed or MainRaceTrack_RequestLoad; the core names the
+#     two boot-relative pin targets (gGT->timer, gGT->frameTimer_Confetti;
+#     RS-17, R-6c) exactly once each, only in its seeding step, after the
+#     load-field verification and before the first seed, at their documented
+#     values;
 # 12. the proof's scripted pads and per-tick digests (R-6):
 #     MainArcadeRosterProof_Start is named only by main.c (once, in an
 #     internal-build guard, after the proof was configured and before
@@ -535,8 +537,8 @@ string(REGEX REPLACE "\\)$" "" proof_body "${proof_body}")
 string(REGEX REPLACE "[ \t\r\n]+" ";" proof_items "${proof_body}")
 list(REMOVE_ITEM proof_items "" PUBLIC PRIVATE INTERFACE)
 list(SORT proof_items)
-if(NOT "${proof_items}" STREQUAL "ctr_native_arcade_bot_rules;ctr_native_arcade_link_options;ctr_native_match_select_rules")
-    message(FATAL_ERROR "${prefix}: ${proof_target} must link exactly the link options, the match-select rules, and the bot rules (found '${proof_items}')")
+if(NOT "${proof_items}" STREQUAL "ctr_native_arcade_bot_rules;ctr_native_arcade_link_options;ctr_native_canonical_state;ctr_native_match_select_rules")
+    message(FATAL_ERROR "${prefix}: ${proof_target} must link exactly the link options, the match-select rules, the bot rules, and the V1 canonical state (found '${proof_items}')")
 endif()
 string(FIND "${cmake}" "add_library(${proof_target} STATIC platform/native_arcade_roster_proof.c)" proof_declare_at)
 if(proof_declare_at EQUAL -1)
@@ -607,22 +609,42 @@ endforeach()
 
 # 11. The adapter's retail stores.
 # Sets out_var to the retail stores in code: a member chain rooted at gGT,
-# sdata, or data (not a member of something else) that is assigned, compound
-# assigned, or incremented; an increment before it; its address taken; or a
-# mem* call writing through it.
+# sdata, or data (not a member of something else), or at an alias of them,
+# plain, parenthesized ((gGT)->x), or dereferenced ((*gGT).x), that is
+# assigned, compound assigned, or incremented; an increment before it; its
+# address taken; or a mem* call writing through it. An alias is a name
+# declared as a pointer to a retail type (struct GameTracker, sData, Data, or
+# Driver) or assigned a retail root (x = gGT; x = &data; x = sdata->gGT;).
 function(ctr_retail_stores code out_var)
     string(REPLACE ";" "@SEMI@" masked "${code}")
-    set(chain "(gGT|sdata|data)([ \t]*(->|\\.)[ \t]*[A-Za-z_][A-Za-z0-9_]*([ \t]*\\[[^]]*\\])*)+")
+    set(roots "gGT|sdata|data")
+    string(REGEX MATCHALL "struct[ \t\r\n]+(GameTracker|sData|Data|Driver)[ \t\r\n]*\\*[ \t\r\n]*(const[ \t\r\n]+)?[A-Za-z_][A-Za-z0-9_]*" typed_aliases "${masked}")
+    string(REGEX MATCHALL "[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*&?[ \t]*(gGT|sdata|data)([ \t]*->[ \t]*gGT)?[ \t]*@SEMI@" assigned_aliases "${masked}")
+    foreach(alias_text IN LISTS typed_aliases)
+        string(REGEX MATCH "[A-Za-z_][A-Za-z0-9_]*$" alias "${alias_text}")
+        string(APPEND roots "|${alias}")
+    endforeach()
+    foreach(alias_text IN LISTS assigned_aliases)
+        string(REGEX MATCH "^[A-Za-z_][A-Za-z0-9_]*" alias "${alias_text}")
+        string(APPEND roots "|${alias}")
+    endforeach()
+    set(root "(\\([ \t]*\\*?[ \t]*(${roots})[ \t]*\\)|(${roots}))")
+    set(chain "${root}([ \t]*(->|\\.)[ \t]*[A-Za-z_][A-Za-z0-9_]*([ \t]*\\[[^]]*\\])*)+")
     string(REGEX MATCHALL "(^|[^A-Za-z0-9_>.])${chain}[ \t\r\n]*(=[^=]|[-+*/%&|^]=|<<=|>>=|\\+\\+|--)" assignments "${masked}")
     string(REGEX MATCHALL "(\\+\\+|--)[ \t]*[(]?[ \t]*${chain}" increments "${masked}")
-    string(REGEX MATCHALL "(^|[^&])&[ \t]*[(]?[ \t]*(gGT|sdata|data)[ \t]*(->|\\.)" addresses "${masked}")
-    string(REGEX MATCHALL "mem(set|cpy|move)[ \t]*\\([ \t]*[(]?[ \t]*&?[ \t]*[(]?[ \t]*(gGT|sdata|data)([^A-Za-z0-9_]|$)" mem_writes "${masked}")
+    string(REGEX MATCHALL "(^|[^&])&[ \t]*[(]?[ \t]*${root}[ \t]*(->|\\.)" addresses "${masked}")
+    string(REGEX MATCHALL "mem(set|cpy|move)[ \t]*\\([ \t]*[(]?[ \t]*&?[ \t]*[(]?[ \t]*\\*?[ \t]*(${roots})([^A-Za-z0-9_]|$)" mem_writes "${masked}")
     set(${out_var} ${assignments} ${increments} ${addresses} ${mem_writes} PARENT_SCOPE)
 endfunction()
 # The retail store scan must itself work.
 foreach(probe IN ITEMS "gGT->gameMode1 = 1;" "sdata->advRng.state0 = 2;" "data.characterIDs[3] = 4;" "gGT->numLaps++;"
         "++sdata->randomNumber;" "memset(&sdata->advRng, 0, 8);" "sdata->gGT->boolDemoMode |= 1;"
-        "p = &gGT->numLaps;" "memcpy(gGT, &x, 4);" "data.characterIDs[op->index]=5;" "x = 1; sdata->audioRNG -= 3;")
+        "p = &gGT->numLaps;" "memcpy(gGT, &x, 4);" "data.characterIDs[op->index]=5;" "x = 1; sdata->audioRNG -= 3;"
+        "(*gGT).gameMode1 = 1;" "(gGT)->numLaps = 2;" "( * sdata ).audioRNG = 3;" "(data).characterIDs[1] = 2;"
+        "++(*gGT).numLaps;" "p = &(*gGT).numLaps;" "memset(*gGT, 0, 4);"
+        "struct GameTracker *tracker = sdata->gGT; tracker->numLaps = 2;" "struct sData *s = x; s->audioRNG = 1;"
+        "struct Data *d = &data; d->characterIDs[0] = 1;" "t = gGT; t->gameMode2 |= 4;" "q = &data; (*q).characterIDs[2] = 3;"
+        "r = sdata->gGT; ++r->numLaps;" "struct Driver *driver = gGT->drivers[0]; driver->numWumpas = 3;")
     ctr_retail_stores("${probe}" probe_stores)
     list(LENGTH probe_stores probe_store_count)
     if(probe_store_count LESS 1)
@@ -632,7 +654,9 @@ endforeach()
 foreach(probe IN ITEMS "x = gGT->gameMode1;" "if (gGT->levelID == 3)" "view->gameMode1 = (uint32_t)gGT->gameMode1;"
         "fields->levelID = (int32_t)gGT->levelID;" "if ((gGT != NULL) && f(gGT))" "y = (sdata->advRng.state0 >= 2);"
         "snapshot->characterIDs[slot] = (int16_t)data.characterIDs[slot];" "z = sdata->kartSpawnOrderArray[slot] != 1;"
-        "stored->audioRNG = (uint32_t)sdata->audioRNG;" "memset(view, 0, sizeof(*view));" "f(gGT, sdata, &x);")
+        "stored->audioRNG = (uint32_t)sdata->audioRNG;" "memset(view, 0, sizeof(*view));" "f(gGT, sdata, &x);"
+        "view->gameMode1 = (uint32_t)(*gGT).gameMode1;" "x = (gGT)->numLaps;" "if ((*sdata).audioRNG == 2)"
+        "const struct Driver *driver = gGT->drivers[slot]; y = driver->numWumpas;" "t = gGT; z = t->numLaps;")
     ctr_retail_stores("${probe}" probe_stores)
     list(LENGTH probe_stores probe_store_count)
     if(NOT probe_store_count EQUAL 0)

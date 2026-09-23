@@ -73,7 +73,9 @@
  * to that demo race for those frames. This is safe:
  * - boolDemoMode 0 disables the demo exit: the countdown and the "any button"
  *   exit that would request MAIN_MENU_LEVEL run only while boolDemoMode is set
- *   (MainMain.c:422-460), so the demo cannot queue a competing load;
+ *   (MainMain.c, CTR_Main state 3, the boolDemoMode block right after
+ *   MainFrame_ResetDB, lines 437-492 today), so the demo cannot queue a
+ *   competing load;
  * - every other competing load is caught: a later MainRaceTrack_RequestLoad
  *   replaces the queued level, and the pre-drivers hook then fails closed
  *   with LEVEL_MISMATCH;

@@ -526,7 +526,8 @@ target_link_libraries(ctr_native_arcade_race_setup_core PUBLIC ctr_native_arcade
 
 # Internal live roster proof host glue (docs/ROSTER_MILESTONE.md section 3.4,
 # R-5b): the --arcade-roster-proof options, the proof config (the fixture
-# resolved through match select), a singleton, and the report writer.
+# resolved through match select), a singleton, the report writer, and the
+# race-relative control digest (R-6b, over the V1 canonical state).
 # Dormant unless main.c configures it; linked into ctr_native.
 add_library(ctr_native_arcade_roster_proof STATIC platform/native_arcade_roster_proof.c)
 set_target_properties(ctr_native_arcade_roster_proof PROPERTIES
@@ -535,7 +536,8 @@ set_target_properties(ctr_native_arcade_roster_proof PROPERTIES
     C_EXTENSIONS OFF
 )
 target_include_directories(ctr_native_arcade_roster_proof PUBLIC ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(ctr_native_arcade_roster_proof PUBLIC ctr_native_arcade_link_options ctr_native_match_select_rules ctr_native_arcade_bot_rules)
+target_link_libraries(ctr_native_arcade_roster_proof PUBLIC ctr_native_arcade_link_options ctr_native_match_select_rules ctr_native_arcade_bot_rules
+    ctr_native_canonical_state)
 
 add_library(ctr_native_canonical_state STATIC platform/native_canonical_state.c)
 set_target_properties(ctr_native_canonical_state PROPERTIES
@@ -893,6 +895,18 @@ set(SDL_X11_XSCRNSAVER OFF CACHE BOOL "" FORCE)
 set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)
 add_subdirectory(externals/SDL)
 
+# Pure VBlank pacing decision (include/platform/native_vblank_pacing.h): what
+# the native VBlank pacer in platform/native_platform.c does with late
+# VBlanks, by default (catch up) and under the proof-only fixed pacing
+# (re-anchor, never catch up). No clock, no I/O; linked into ctr_native.
+add_library(ctr_native_vblank_pacing STATIC platform/native_vblank_pacing.c)
+set_target_properties(ctr_native_vblank_pacing PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_vblank_pacing PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Host-only SDL assertion policy: log one line and continue instead of SDL's
 # modal assertion dialog, so an unattended Debug run can never block on it.
 # Linked into ctr_native as a library; it is not part of the game unity chain.
@@ -951,7 +965,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_race_setup_core ctr_native_arcade_roster_proof)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_race_setup_core ctr_native_arcade_roster_proof ctr_native_vblank_pacing)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -1054,6 +1068,20 @@ if(BUILD_TESTING)
     )
     target_link_libraries(native_g29_input_test PRIVATE ctr_native_g29_input)
     add_test(NAME native_g29_input_unit COMMAND $<TARGET_FILE:native_g29_input_test>)
+
+    # The VBlank pacing decision (R-6b): the default catch-up and the
+    # proof-only fixed pacing, with an injected host stall; the isolation test
+    # keeps the fixed-pacing switch proof-only and host-local.
+    add_executable(native_vblank_pacing_test tests/native_vblank_pacing_test.c)
+    set_target_properties(native_vblank_pacing_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_vblank_pacing_test PRIVATE ctr_native_vblank_pacing)
+    add_test(NAME native_vblank_pacing_unit COMMAND $<TARGET_FILE:native_vblank_pacing_test>)
+    add_test(NAME native_vblank_pacing_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_vblank_pacing_isolation_test.cmake")
 
     add_executable(native_sdl_assert_test tests/native_sdl_assert_test.c)
     set_target_properties(native_sdl_assert_test PROPERTIES
@@ -1620,15 +1648,19 @@ if(BUILD_TESTING)
         set_tests_properties(arcade_link_preview_render PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 420
-            RUN_SERIAL TRUE)
+            RUN_SERIAL TRUE
+            LABELS live)
 
         # The live roster determinism proof (docs/ROSTER_MILESTONE.md section
-        # 3.4, R-6): four internal --arcade-roster-proof runs of ctr_native,
-        # one after another (same seed twice, same seed launched from inside
-        # the attract demo race, another seed), compared tick by tick.  Needs the
-        # user-supplied assets/ctr-u.bin, a desktop session with a display,
-        # and an internal build; skips (77) otherwise.  Reports and logs are
-        # written only under the build tree.
+        # 3.4, R-6 and R-6b): five internal --arcade-roster-proof runs of
+        # ctr_native, all at once under the proof's fixed VBlank pacing (same
+        # seed twice, same seed launched from inside the attract demo race,
+        # another seed, same seed launched an odd number of ticks late),
+        # compared tick by tick.  Needs the user-supplied assets/ctr-u.bin, a
+        # desktop session with a display, and an internal build; skips (77)
+        # otherwise.  Reports and logs are written only under the build tree.
+        # Both live tests carry the label "live": `ctest -LE live` leaves them
+        # out, and the default full run still includes them.
         add_test(NAME arcade_roster_determinism
             COMMAND powershell -NoProfile -ExecutionPolicy Bypass
                 -File "${CMAKE_SOURCE_DIR}/tools/arcade-roster-proof-check.ps1"
@@ -1638,8 +1670,9 @@ if(BUILD_TESTING)
                 -TimeoutSeconds 600)
         set_tests_properties(arcade_roster_determinism PROPERTIES
             SKIP_RETURN_CODE 77
-            TIMEOUT 2700
-            RUN_SERIAL TRUE)
+            TIMEOUT 900
+            RUN_SERIAL TRUE
+            LABELS live)
     endif()
 
     add_executable(native_canonical_world_mine_registry_v1_test tests/native_canonical_world_mine_registry_v1_test.c)

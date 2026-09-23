@@ -43,6 +43,16 @@ void Platform_SetFrameCaptureConfig(const struct NativeFrameCaptureConfig *confi
  * exit the process with exitCode. For unattended internal runs only.
  */
 void Platform_RequestExit(int exitCode);
+
+/*
+ * Host-local fixed VBlank pacing, off by default. Enabled, the VBlank pacer
+ * never emits a late (catch-up) VBlank: each VSync or Platform_WaitUntilVBlank
+ * still waits for its own VBlank slot(s) and re-anchors the schedule when it
+ * is late, so every game tick advances exactly the VBlanks it asked for,
+ * whatever the host frame time (platform/native_vblank_pacing.h). Only the
+ * internal live roster proof enables it (main.c); no game code observes it.
+ */
+void Platform_SetFixedVBlankPacing(int enabled);
 #endif
 
 #if defined(CTR_NATIVE)

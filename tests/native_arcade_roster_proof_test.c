@@ -4,6 +4,7 @@
 #include "platform/native_arcade_bot_rules.h"
 #include "platform/native_arcade_link_options.h"
 #include "platform/native_canonical_codec.h"
+#include "platform/native_canonical_state.h"
 #include "platform/native_identity.h"
 #include "platform/native_match_config.h"
 #include "platform/native_sha256.h"
@@ -308,7 +309,7 @@ static int TestExitCodes(void)
 		NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT, NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT,
 		NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH, NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING,
 		NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT, NATIVE_ARCADE_ROSTER_PROOF_DRIVERS_FAILED,
-		NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED, NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH};
+		NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED, NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH, NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT};
 	struct NativeIdentityV1 identity;
 	struct NativeArcadeRosterProofOptions options;
 
@@ -325,6 +326,7 @@ static int TestExitCodes(void)
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_DRIVERS_FAILED), "DRIVERS_FAILED") == 0);
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED), "DIGEST_FAILED") == 0);
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH), "PIN_MISMATCH") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT), "TICK_LOG_TIMEOUT") == 0);
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(1u), "UNKNOWN") == 0);
 
 	/* Inactive: every exit path keeps its own code (a default run is unchanged). */
@@ -535,11 +537,12 @@ static int TestTickLines(void)
 	memset(&line, 0, sizeof(line));
 	line.tick = 7u;
 	line.control = UINT64_C(0x0123456789ABCDEF);
+	line.raceControl = UINT64_C(0xA1B2C3D4E5F60718);
 	line.rng = UINT64_C(0xFEDCBA9876543210);
 	line.input = UINT64_C(1);
 	FillCounting(line.drivers, sizeof(line.drivers), 0u);
 	CHECK(NativeArcadeRosterProof_FormatTickLine(&line, text, sizeof(text), &length) == 1);
-	CHECK(strcmp(text, "tick 7 control 0123456789abcdef rng fedcba9876543210 input 0000000000000001 drivers "
+	CHECK(strcmp(text, "tick 7 control 0123456789abcdef rcontrol a1b2c3d4e5f60718 rng fedcba9876543210 input 0000000000000001 drivers "
 	                   "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n") == 0);
 	CHECK(length == strlen(text));
 	CHECK(NativeArcadeRosterProof_FormatTickLine(&line, small, sizeof(small), &length) == 0);
@@ -592,6 +595,14 @@ static int TestTickLines(void)
 	report.launchWindow = NATIVE_ARCADE_ROSTER_PROOF_WINDOW_TITLE;
 	report.validatedTick = 762u;
 	report.raceTickZeroTick = 762u;
+	report.countersValid = 1u;
+	report.raceTickZeroCounters.timer = 1466;
+	report.raceTickZeroCounters.frameCounter = 1523;
+	report.raceTickZeroCounters.frameTimer = -2;
+	report.launchCountersValid = 1u;
+	report.launchCounters.timer = 701;
+	report.launchCounters.frameCounter = 733;
+	report.launchCounters.frameTimer = -7;
 	(void)remove(path);
 	CHECK(NativeArcadeRosterProof_WriteReport(&report) == 1);
 	file = fopen(path, "rb");
@@ -600,14 +611,16 @@ static int TestTickLines(void)
 	(void)fclose(file);
 	(void)remove(path);
 	text[length] = '\0';
-	CHECK(strncmp(text, "arcade roster proof v5\ndrivers digest excludes physics\nresult PASS (0)\n", 71u) == 0);
+	CHECK(strncmp(text, "arcade roster proof v6\ndrivers digest excludes physics\nresult PASS (0)\n", 71u) == 0);
 	CHECK(strstr(text, "\ndwell 0\nticks 3\nmenu ready tick 732\n") != NULL);
-	CHECK(strstr(text, "\nvalidated tick 762\nrace tick 0 tick 762\nconfig digest none\n") != NULL);
+	CHECK(strstr(text, "\nlaunch window title\nlaunch counters timer 701 frameCounter 733 frameTimer -7\nvalidated tick 762\n") != NULL);
+	CHECK(strstr(text, "\nvalidated tick 762\nrace tick 0 tick 762\n"
+	                   "race tick 0 counters timer 1466 frameCounter 1523 frameTimer -2\nconfig digest none\n") != NULL);
 	CHECK(strstr(text, "slot 7 none\n"
-	                   "tick 0 control 0123456789abcdef rng 0000000000000000 input 0000000000000001 drivers 0001")
+	                   "tick 0 control 0123456789abcdef rcontrol a1b2c3d4e5f60718 rng 0000000000000000 input 0000000000000001 drivers 0001")
 	      != NULL);
-	CHECK(strstr(text, "\ntick 1 control 0123456789abcdef rng 0000000000000001 ") != NULL);
-	CHECK(strstr(text, "\ntick 2 control 0123456789abcdef rng 0000000000000002 ") != NULL);
+	CHECK(strstr(text, "\ntick 1 control 0123456789abcdef rcontrol a1b2c3d4e5f60718 rng 0000000000000001 ") != NULL);
+	CHECK(strstr(text, "\ntick 2 control 0123456789abcdef rcontrol a1b2c3d4e5f60718 rng 0000000000000002 ") != NULL);
 	CHECK((length > 12u) && (strcmp(text + length - 12u, "end ticks 3\n") == 0));
 	NativeArcadeRosterProof_Shutdown();
 	CHECK(NativeArcadeRosterProof_TickCount() == 0u);
@@ -681,7 +694,8 @@ static int TestSeedsAndFinalResult(void)
 	CHECK(NativeArcadeRosterProof_PinsMatch(NULL, &pinsStored) == 0);
 	CHECK(NativeArcadeRosterProof_PinsMatch(&pinsProduced, NULL) == 0);
 
-	/* PASS needs the digests, the slot facts, and matching seed and pin readbacks. */
+	/* PASS needs the digests, the slot facts, matching seed and pin
+	 * readbacks, race tick 0's counters, and every requested tick line. */
 	memset(&report, 0, sizeof(report));
 	report.digestsValid = 1u;
 	report.slotsValid = 1u;
@@ -689,6 +703,26 @@ static int TestSeedsAndFinalResult(void)
 	report.seedMatch = 1u;
 	report.pinValid = 1u;
 	report.pinMatch = 1u;
+	report.launchCountersValid = 1u;
+	report.countersValid = 1u;
+	report.ticksRequested = 900u;
+	report.tickLineCount = 900u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_PASS);
+	report.launchCountersValid = 0u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.launchCountersValid = 1u;
+	report.tickLineCount = 899u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.tickLineCount = 901u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.tickLineCount = 0u;
+	report.ticksRequested = 0u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.tickLineCount = 900u;
+	report.ticksRequested = 900u;
+	report.countersValid = 0u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.countersValid = 1u;
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_PASS);
 	report.digestsValid = 0u;
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
@@ -712,6 +746,99 @@ static int TestSeedsAndFinalResult(void)
 	/* A failure is reported as requested, whatever the evidence. */
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED, &report) == NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED);
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_LAUNCH_FAILED, NULL) == NATIVE_ARCADE_ROSTER_PROOF_LAUNCH_FAILED);
+	return 0;
+}
+
+/* The CONTROL domain digest of a state. */
+static uint64_t ControlDigest(const struct NativeCanonicalStateV1 *state)
+{
+	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+	{
+		if (NativeCanonicalDomainOrder[i] == (uint32_t)NATIVE_CANONICAL_DOMAIN_CONTROL)
+		{
+			return state->domainDigests[i];
+		}
+	}
+	return 0u;
+}
+
+/* The race-relative control digest: the V1 control digest with the
+ * boot-relative counters zeroed, and only those. */
+static int TestRaceControlDigest(void)
+{
+	struct NativeCanonicalStateV1 state;
+	struct NativeCanonicalStateV1 zeroed;
+	struct NativeCanonicalStateV1 before;
+	uint64_t digest = 0;
+	uint64_t other = 0;
+	uint64_t untouched = UINT64_C(0x5A5A5A5A5A5A5A5A);
+
+	NativeCanonicalStateV1_Init(&state);
+	state.control.frameTimer = 3059;
+	state.control.frameCounter = 1523;
+	state.control.timer = 1466;
+	state.control.framesInThisLEV = 1;
+	state.control.elapsedTimeMS = 32;
+	state.control.msInThisLEV = 32;
+	state.control.elapsedEventTime = 0;
+	state.control.mainGameState = 3;
+	state.control.loadingStage = -1;
+	state.control.levelID = 3;
+	state.control.gameMode1 = 0x00400000;
+	state.control.gameMode2 = 0;
+	state.rng.mixRandomNumber = 0x716Du;
+	CHECK(NativeCanonicalStateV1_ComputeDigests(&state) == 1);
+	before = state;
+
+	/* It is the V1 CONTROL digest of the state with the three counters zeroed. */
+	zeroed = state;
+	zeroed.control.frameTimer = 0;
+	zeroed.control.frameCounter = 0;
+	zeroed.control.timer = 0;
+	CHECK(NativeCanonicalStateV1_ComputeDigests(&zeroed) == 1);
+	CHECK(NativeArcadeRosterProof_RaceControlDigest(&state, &digest) == 1);
+	CHECK(digest == ControlDigest(&zeroed));
+	CHECK(digest != ControlDigest(&state));
+	CHECK(memcmp(&state, &before, sizeof(state)) == 0);
+	/* With the counters already zero it is the control digest itself. */
+	CHECK(NativeArcadeRosterProof_RaceControlDigest(&zeroed, &other) == 1);
+	CHECK(other == ControlDigest(&zeroed) && other == digest);
+
+	/* Any boot-relative offset leaves it unchanged, an odd one included. */
+	state.control.frameTimer += 7;
+	state.control.frameCounter += 37;
+	state.control.timer += 37;
+	CHECK(NativeArcadeRosterProof_RaceControlDigest(&state, &other) == 1);
+	CHECK(other == digest);
+	state = before;
+
+	/* Every race-relative control value still counts. */
+	for (uint32_t field = 0; field < 9u; field++)
+	{
+		int32_t *values[9] = {&state.control.framesInThisLEV, &state.control.elapsedTimeMS, &state.control.msInThisLEV,
+			&state.control.elapsedEventTime, &state.control.mainGameState, &state.control.loadingStage, &state.control.levelID,
+			&state.control.gameMode1, &state.control.gameMode2};
+
+		state = before;
+		*values[field] += 1;
+		CHECK(NativeArcadeRosterProof_RaceControlDigest(&state, &other) == 1);
+		CHECK(other != digest);
+	}
+	/* Other domains do not enter it. */
+	state = before;
+	state.rng.mixRandomNumber ^= 1u;
+	state.input.pads[0].buttons[0] = (uint8_t)(state.input.pads[0].buttons[0] ^ 1u);
+	CHECK(NativeArcadeRosterProof_RaceControlDigest(&state, &other) == 1);
+	CHECK(other == digest);
+
+	/* Rejections leave the output untouched. */
+	CHECK(NativeArcadeRosterProof_RaceControlDigest(NULL, &untouched) == 0);
+	CHECK(untouched == UINT64_C(0x5A5A5A5A5A5A5A5A));
+	CHECK(NativeArcadeRosterProof_RaceControlDigest(&before, NULL) == 0);
+	state = before;
+	state.schemaVersion = 99u;
+	CHECK(NativeArcadeRosterProof_RaceControlDigest(&state, &untouched) == 0);
+	CHECK(untouched == UINT64_C(0x5A5A5A5A5A5A5A5A));
 	return 0;
 }
 
@@ -796,13 +923,15 @@ static int TestSingletonAndReport(void)
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(length == strlen(text));
 	{
-		static const char head[] = "arcade roster proof v5\ndrivers digest excludes physics\nresult PASS (0)\n"
+		static const char head[] = "arcade roster proof v6\ndrivers digest excludes physics\nresult PASS (0)\n"
 		                           "setup status VALIDATED (4)\nsetup failure NONE (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
 	}
 	CHECK(strstr(text, "seed 0x0123456789ABCDEF\ndwell 45\nticks 900\nmenu ready tick 230\ndemo race tick 1200\nlaunch tick 1275\n"
-	                   "launch window demo race\nvalidated tick none\nrace tick 0 tick none\n") != NULL);
+	                   "launch window demo race\nlaunch counters none\nvalidated tick none\nrace tick 0 tick none\n"
+	                   "race tick 0 counters none\n"
+	                   "config digest ") != NULL);
 	CHECK(strstr(text, "config digest 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n") != NULL);
 	CHECK(strstr(text, "slot 0 role CAB1_HUMAN character 0 difficulty 0x00 spawn 0 nav 0 accel 0\n") != NULL);
 	CHECK(strstr(text, "slot 2 role BOT character 6 difficulty 0xA0 spawn 2 nav 1 accel 3\n") != NULL);
@@ -836,7 +965,7 @@ static int TestSingletonAndReport(void)
 	report.launchWindow = NATIVE_ARCADE_ROSTER_PROOF_WINDOW_NONE;
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(strstr(text, "result SETUP_FAILED (22)\n") != NULL);
-	CHECK(strstr(text, "menu ready tick 230\ndemo race tick none\nlaunch tick none\nlaunch window none\n") != NULL);
+	CHECK(strstr(text, "menu ready tick 230\ndemo race tick none\nlaunch tick none\nlaunch window none\nlaunch counters none\n") != NULL);
 	CHECK(strstr(text, "bank digest none\n") != NULL);
 	CHECK(strstr(text, "slot 5 none\n") != NULL);
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, small, sizeof(small), &length) == 0);
@@ -865,6 +994,7 @@ int main(void)
 	CHECK(TestSeedsAndFinalResult() == 0);
 	CHECK(TestScriptedPads() == 0);
 	CHECK(TestTickLines() == 0);
+	CHECK(TestRaceControlDigest() == 0);
 	CHECK(TestSingletonAndReport() == 0);
 	puts("native_arcade_roster_proof_test: ok");
 	return 0;

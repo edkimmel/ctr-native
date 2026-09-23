@@ -2,6 +2,8 @@
 
 #include "platform/native_arcade_bot_rules.h"
 #include "platform/native_arcade_link_options.h"
+#include "platform/native_canonical_codec.h"
+#include "platform/native_canonical_state.h"
 #include "platform/native_identity.h"
 #include "platform/native_match_config.h"
 #include "platform/native_match_select_rules.h"
@@ -453,6 +455,35 @@ uint32_t NativeArcadeRosterProof_TickCount(void)
 	return (s_nativeArcadeRosterProof.active != 0u) ? s_nativeArcadeRosterProof.tickLineCount : 0u;
 }
 
+int NativeArcadeRosterProof_RaceControlDigest(const struct NativeCanonicalStateV1 *state, uint64_t *digest)
+{
+	struct NativeCanonicalStateV1 race;
+	uint32_t index = 0;
+
+	if ((state == NULL) || (digest == NULL))
+	{
+		return 0;
+	}
+	race = *state;
+	race.control.frameTimer = 0;
+	race.control.frameCounter = 0;
+	race.control.timer = 0;
+	if (!NativeCanonicalStateV1_ComputeDigests(&race))
+	{
+		return 0;
+	}
+	while ((index < NATIVE_CANONICAL_DOMAIN_COUNT) && (NativeCanonicalDomainOrder[index] != (uint32_t)NATIVE_CANONICAL_DOMAIN_CONTROL))
+	{
+		index++;
+	}
+	if (index >= NATIVE_CANONICAL_DOMAIN_COUNT)
+	{
+		return 0;
+	}
+	*digest = race.domainDigests[index];
+	return 1;
+}
+
 uint64_t NativeArcadeRosterProof_Seed(void)
 {
 	return (s_nativeArcadeRosterProof.active != 0u) ? s_nativeArcadeRosterProof.options.seed : 0u;
@@ -495,6 +526,8 @@ const char *NativeArcadeRosterProof_ResultName(uint32_t result)
 		return "DIGEST_FAILED";
 	case NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH:
 		return "PIN_MISMATCH";
+	case NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT:
+		return "TICK_LOG_TIMEOUT";
 	default:
 		return "UNKNOWN";
 	}
@@ -522,7 +555,8 @@ uint32_t NativeArcadeRosterProof_FinalResult(uint32_t requested, const struct Na
 		return requested;
 	}
 	if ((report == NULL) || (report->digestsValid == 0u) || (report->slotsValid == 0u) || (report->seedValid == 0u) ||
-	    (report->pinValid == 0u))
+	    (report->pinValid == 0u) || (report->launchCountersValid == 0u) || (report->countersValid == 0u) ||
+	    (report->ticksRequested == 0u) || (report->tickLineCount != report->ticksRequested))
 	{
 		return (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING;
 	}
@@ -654,7 +688,7 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_Name(report->setupStatusName, statusName);
 	NativeArcadeRosterProof_Name(report->setupFailureName, failureName);
 
-	NativeArcadeRosterProof_Append(&text, "arcade roster proof v5\n");
+	NativeArcadeRosterProof_Append(&text, "arcade roster proof v6\n");
 	NativeArcadeRosterProof_Append(&text, "drivers digest excludes physics\n");
 	NativeArcadeRosterProof_Append(&text, "result %s (%u)\n", NativeArcadeRosterProof_ResultName(report->result),
 		(unsigned)report->result);
@@ -668,8 +702,28 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_AppendTick(&text, "demo race tick", report->demoRaceTick);
 	NativeArcadeRosterProof_AppendTick(&text, "launch tick", report->launchTick);
 	NativeArcadeRosterProof_Append(&text, "launch window %s\n", NativeArcadeRosterProof_LaunchWindowName(report->launchWindow));
+	if (report->launchCountersValid == 0u)
+	{
+		NativeArcadeRosterProof_Append(&text, "launch counters none\n");
+	}
+	else
+	{
+		NativeArcadeRosterProof_Append(&text, "launch counters timer %ld frameCounter %ld frameTimer %ld\n",
+			(long)report->launchCounters.timer, (long)report->launchCounters.frameCounter,
+			(long)report->launchCounters.frameTimer);
+	}
 	NativeArcadeRosterProof_AppendTick(&text, "validated tick", report->validatedTick);
 	NativeArcadeRosterProof_AppendTick(&text, "race tick 0 tick", report->raceTickZeroTick);
+	if (report->countersValid == 0u)
+	{
+		NativeArcadeRosterProof_Append(&text, "race tick 0 counters none\n");
+	}
+	else
+	{
+		NativeArcadeRosterProof_Append(&text, "race tick 0 counters timer %ld frameCounter %ld frameTimer %ld\n",
+			(long)report->raceTickZeroCounters.timer, (long)report->raceTickZeroCounters.frameCounter,
+			(long)report->raceTickZeroCounters.frameTimer);
+	}
 	NativeArcadeRosterProof_AppendDigest(&text, "config digest", report->configDigest, digestsValid);
 	NativeArcadeRosterProof_AppendDigest(&text, "race plan digest", report->racePlanDigest, digestsValid);
 	NativeArcadeRosterProof_AppendDigest(&text, "bot setup plan digest", report->botSetupPlanDigest, digestsValid);
@@ -732,8 +786,9 @@ int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofT
 	text.length = 0;
 	text.ok = 1;
 	buffer[0] = '\0';
-	NativeArcadeRosterProof_Append(&text, "tick %u control %08x%08x rng %08x%08x input %08x%08x drivers ", (unsigned)line->tick,
-		(unsigned)(uint32_t)(line->control >> 32), (unsigned)(uint32_t)(line->control & 0xFFFFFFFFu),
+	NativeArcadeRosterProof_Append(&text, "tick %u control %08x%08x rcontrol %08x%08x rng %08x%08x input %08x%08x drivers ",
+		(unsigned)line->tick, (unsigned)(uint32_t)(line->control >> 32), (unsigned)(uint32_t)(line->control & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->raceControl >> 32), (unsigned)(uint32_t)(line->raceControl & 0xFFFFFFFFu),
 		(unsigned)(uint32_t)(line->rng >> 32), (unsigned)(uint32_t)(line->rng & 0xFFFFFFFFu),
 		(unsigned)(uint32_t)(line->input >> 32), (unsigned)(uint32_t)(line->input & 0xFFFFFFFFu));
 	for (uint32_t i = 0; i < NATIVE_SHA256_DIGEST_BYTES; i++)

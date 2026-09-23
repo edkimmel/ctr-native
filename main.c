@@ -458,6 +458,11 @@ int main(int argc, char *argv[])
 			Platform_Shutdown();
 			return NativeConsole_Return(1);
 		}
+		/* Proof-only fixed VBlank pacing: a slow host frame must not emit late
+		 * VBlanks, which would move elapsedTimeMS and the VBlank count and so
+		 * make the proof depend on host timing. Every other run keeps the
+		 * default pacing. */
+		Platform_SetFixedVBlankPacing(1);
 #endif
 	}
 

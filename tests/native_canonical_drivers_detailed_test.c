@@ -253,8 +253,50 @@ static int TestPhysicsContract(void)
 	CHECK(!NativeCanonicalDriverPhysicsV1_Validate(NULL));
 	return 0;
 }
+/* Two present human slots (0 and 1) whose Physics groups are given, the rest as ValidHuman. */
+static void TwoHumansWithPhysics(struct NativeCanonicalDriversDetailedV1 *value,const struct NativeCanonicalDriverPhysicsV1 *physics)
+{
+	ValidHuman(value);
+	value->slots[1]=value->slots[0];value->slots[1].meta.slotIndex=1;value->slots[1].meta.driverID=6;
+	value->prelude.presenceMask=3;value->prelude.raceOrderCount=2;value->prelude.raceOrder[1]=1;
+	value->prelude.playerCount=2;value->prelude.humanPlayerPositions[1]=1;
+	value->slots[0].physics=*physics;value->slots[1].physics=*physics;
+}
+/* The live roster proof's drivers digest (game/MAIN/MainArcadeRosterProof.c,
+ * R-6/R-6b): present slots whose Physics groups are all at their exact zero
+ * value validate, and encode byte-identically however they were built. */
+static int TestZeroPhysicsPresentSlots(void)
+{
+	struct NativeCanonicalDriversDetailedV1 a,b,initPhysics;struct NativeCanonicalDriverPhysicsV1 zero;struct NativeCanonicalDriversV1 summaryA,summaryB;
+	uint8_t bytesA[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES],bytesB[NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES];
+	const size_t slotBytes=NATIVE_CANONICAL_DRIVERS_META_BYTES+NATIVE_CANONICAL_DRIVERS_RACE_BYTES+NATIVE_CANONICAL_DRIVERS_PHYSICS_BYTES+
+		NATIVE_CANONICAL_DRIVERS_DYNAMICS_BYTES+NATIVE_CANONICAL_DRIVERS_ACTIVE_BYTES+NATIVE_CANONICAL_DRIVERS_BOT_BYTES+NATIVE_CANONICAL_DRIVERS_TAIL_BYTES;
+	CHECK(NATIVE_CANONICAL_DRIVERS_PRELUDE_BYTES+(8u*slotBytes)==NATIVE_CANONICAL_DRIVERS_NORMATIVE_BYTES);
+	memset(&zero,0,sizeof(zero));CHECK(NativeCanonicalDriverPhysicsV1_Validate(&zero));
+	/* a: the zero group spelled with memset; b: the group Init leaves, as the proof uses it. */
+	memset(&a,0xa5,sizeof(a));TwoHumansWithPhysics(&a,&zero);
+	NativeCanonicalDriversDetailedV1_Init(&initPhysics);memset(&b,0x5a,sizeof(b));TwoHumansWithPhysics(&b,&initPhysics.slots[0].physics);
+	CHECK(NativeCanonicalDriversDetailedV1_Validate(&a)&&NativeCanonicalDriversDetailedV1_Validate(&b));
+	CHECK(Encode(&a,bytesA)&&Encode(&b,bytesB)&&memcmp(bytesA,bytesB,sizeof(bytesA))==0);
+	/* Deterministic: the same record encodes to the same bytes again. */
+	CHECK(Encode(&a,bytesB)&&memcmp(bytesA,bytesB,sizeof(bytesA))==0);
+	/* Both present slots carry an all-zero Physics group in the stream, and the rest of each slot is not all zero. */
+	for(uint32_t slot=0;slot<2u;slot++)
+	{
+		const size_t physicsAt=NATIVE_CANONICAL_DRIVERS_PRELUDE_BYTES+(slot*slotBytes)+NATIVE_CANONICAL_DRIVERS_META_BYTES+NATIVE_CANONICAL_DRIVERS_RACE_BYTES;
+		uint8_t any=0;
+		for(size_t i=0;i<NATIVE_CANONICAL_DRIVERS_PHYSICS_BYTES;i++)any|=bytesA[physicsAt+i];
+		CHECK(any==0);
+		CHECK(bytesA[NATIVE_CANONICAL_DRIVERS_PRELUDE_BYTES+(slot*slotBytes)]==1);
+	}
+	CHECK(NativeCanonicalDriversDetailedV1_BuildSummary(&a,&summaryA)&&NativeCanonicalDriversDetailedV1_BuildSummary(&b,&summaryB)&&EqualSummary(&summaryA,&summaryB));
+	/* A nonzero Physics field changes the stream: the zero group is not ignored. */
+	b.slots[1].physics.velocity[0]=1;CHECK(NativeCanonicalDriversDetailedV1_Validate(&b)&&Encode(&b,bytesB)&&memcmp(bytesA,bytesB,sizeof(bytesA))!=0);
+	return 0;
+}
 int main(void)
 {
+	if(TestZeroPhysicsPresentSlots()!=0)return 1;
 	if(TestGoldenAndSummary()!=0||TestSemanticMutations()!=0||TestRejectionAndTransaction()!=0||TestPendingDamageTail()!=0||TestTypedBotLayout()!=0||TestBotAndReferences()!=0||TestRanksAndActiveTags()!=0||TestAllowedTagOverlap()!=0||TestMetaFlagContract()!=0||TestPhysicsContract()!=0)return 1;
 	puts("native_canonical_drivers_detailed_test: passed");return 0;
 }

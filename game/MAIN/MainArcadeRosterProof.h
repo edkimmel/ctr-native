@@ -53,9 +53,12 @@ int MainArcadeRosterProof_BeginFrame(void);
  * projected); inactive, it returns with no side effect. After VALIDATED it
  * finds race tick 0 (the first frame whose drivers extraction, the Meta
  * candidate without Physics, succeeds), then logs one tick line per frame
- * (the V1 control, RNG, and input domain digests and the drivers digest), and
- * reports PASS after the configured tick count; an extraction or projection
- * failure after race tick 0 fails the proof.
+ * (the V1 control, race-relative control, RNG, and input domain digests and
+ * the drivers digest), keeps race tick 0's boot-relative counters for the
+ * report, and reports PASS after the configured tick count; an extraction,
+ * projection, or digest failure after race tick 0 fails the proof, and
+ * MainArcadeRosterProof_Frame fails it (TICK_LOG_TIMEOUT) when the ticks are
+ * not all logged in time.
  */
 void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct NativeCanonicalStateV1 *frameState);
 

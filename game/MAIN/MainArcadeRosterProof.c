@@ -1,9 +1,11 @@
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 /*
  * Live roster proof hook (docs/ROSTER_MILESTONE.md section 3.4; R-5b's
- * launcher, which R-5c lets launch from inside the attract demo race, and
- * R-6's scripted pads and per-tick digests). Internal native builds only, and
- * dormant unless main.c configured the proof: with the proof inactive every
+ * launcher, which R-5c lets launch from inside the attract demo race; R-6's
+ * scripted pads and per-tick digests; and R-6b's race-relative control
+ * digest, race tick 0 counters, and tick-log watchdog). Internal native
+ * builds only, and dormant unless main.c configured the proof (which also
+ * turns on the fixed VBlank pacing): with the proof inactive every
  * entry point returns as its first statement and touches nothing.
  *
  * The per-tick evidence is local only: the V1 state MainMain.c projects for
@@ -66,13 +68,17 @@ struct MainArcadeRosterProofState
 	uint32_t frameTick;        /* the proof tick of the current frame */
 	uint32_t raceTick;         /* the next race tick to log; TICK_NONE before race tick 0 */
 	uint32_t raceTickZeroTick; /* the proof tick of race tick 0 */
+	uint32_t countersValid;    /* 1 once raceTickZeroCounters holds race tick 0's counters */
+	struct NativeArcadeRosterProofCounters raceTickZeroCounters;
+	uint32_t launchCountersValid; /* 1 once launchCounters holds the launch tick's counters */
+	struct NativeArcadeRosterProofCounters launchCounters;
 };
 
 static struct MainArcadeRosterProofState s_mainArcadeRosterProof = {
 	MAIN_ARCADE_ROSTER_PROOF_WAIT_MENU, 0u, 0u,
 	NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE,
 	NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, NATIVE_ARCADE_ROSTER_PROOF_WINDOW_NONE, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE,
-	0u, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE};
+	0u, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, 0u, {0, 0, 0}, 0u, {0, 0, 0}};
 
 /* The drivers digest workspace: far too large for the game stack, so
  * file-scope static. Local only; only the digest leaves it. */
@@ -156,6 +162,11 @@ static void MainArcadeRosterProof_Finish(uint32_t requested)
 	report.validatedTick = state->validatedTick;
 	report.raceTickZeroTick = state->raceTickZeroTick;
 	report.ticksRequested = NativeArcadeRosterProof_Ticks();
+	report.tickLineCount = NativeArcadeRosterProof_TickCount();
+	report.countersValid = (state->countersValid != 0u) ? 1u : 0u;
+	report.raceTickZeroCounters = state->raceTickZeroCounters;
+	report.launchCountersValid = (state->launchCountersValid != 0u) ? 1u : 0u;
+	report.launchCounters = state->launchCounters;
 	report.digestsValid = MainArcadeRaceSetup_Digests(report.configDigest, report.racePlanDigest,
 		report.botSetupPlanDigest, report.bankDigest) ? 1u : 0u;
 	if (MainArcadeRaceSetup_SlotFacts(&facts))
@@ -262,6 +273,12 @@ static int MainArcadeRosterProof_TryLaunch(struct GameTracker *gGT, struct Gamep
 	{
 		return 0;
 	}
+	/* The boot-relative counters as this boot history left them, before the
+	 * setup pins gGT->timer at race init (RS-17 evidence). */
+	state->launchCounters.timer = (int32_t)gGT->timer;
+	state->launchCounters.frameCounter = (int32_t)sdata->frameCounter;
+	state->launchCounters.frameTimer = (int32_t)gGT->frameTimer_VsyncCallback;
+	state->launchCountersValid = 1u;
 	if (!MainArcadeRaceSetup_Arm(NativeArcadeRosterProof_Config()))
 	{
 		MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_ARM_FAILED);
@@ -410,6 +427,17 @@ void MainArcadeRosterProof_Frame(struct GameTracker *gGT, struct GamepadSystem *
 		    ((state->tick - state->validatedTick) >= NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT_TICKS))
 		{
 			MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT);
+			return;
+		}
+		/* After race tick 0: every requested tick must be logged in time. */
+		if ((state->raceTick != NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE) &&
+		    ((state->tick - state->raceTickZeroTick) >=
+		     (NativeArcadeRosterProof_Ticks() + NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_SLACK_TICKS)))
+		{
+			Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "only %u of %u race ticks logged %u ticks after race tick 0\n",
+				(unsigned)NativeArcadeRosterProof_TickCount(), (unsigned)NativeArcadeRosterProof_Ticks(),
+				(unsigned)(state->tick - state->raceTickZeroTick));
+			MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT);
 			return;
 		}
 		break;
@@ -580,6 +608,23 @@ void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct Native
 	line.control = frameState->domainDigests[controlIndex];
 	line.rng = frameState->domainDigests[rngIndex];
 	line.input = frameState->domainDigests[inputIndex];
+	/* The race-relative control digest: the boot-relative counters zeroed. */
+	if (!NativeArcadeRosterProof_RaceControlDigest(frameState, &line.raceControl))
+	{
+		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "no race-relative control digest at race tick %u\n", (unsigned)state->raceTick);
+		MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED);
+		return;
+	}
+	if (state->raceTick == 0u)
+	{
+		/* The boot-relative counters as race tick 0 saw them (RS-12 evidence). */
+		state->raceTickZeroCounters.timer = frameState->control.timer;
+		state->raceTickZeroCounters.frameCounter = frameState->control.frameCounter;
+		state->raceTickZeroCounters.frameTimer = frameState->control.frameTimer;
+		state->countersValid = 1u;
+		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "race tick 0 counters: timer %ld frameCounter %ld frameTimer %ld\n",
+			(long)frameState->control.timer, (long)frameState->control.frameCounter, (long)frameState->control.frameTimer);
+	}
 	if (!NativeArcadeRosterProof_RecordTick(&line))
 	{
 		MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED);
