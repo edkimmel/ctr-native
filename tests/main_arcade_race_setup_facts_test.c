@@ -398,6 +398,31 @@ static int TestRejections(void)
 	BuildRosterInput(&race, (int8_t)config.lapCount);
 	CHECK(ExpectRosterReject(&config, &race) == 0);
 
+	/* A bot in slot 1 (the CAB2 player): observed as BOT, refused by the roster validator. */
+	race = valid;
+	race.snapshot.driverIsBot[1] = 1;
+	race.snapshot.numPlyrCurrGame = 1;
+	race.snapshot.numBotsNextGame = 5;
+	BuildRosterInput(&race, (int8_t)config.lapCount);
+	CHECK(MainArcadeRaceSetupFacts_Build(&config, &race.snapshot, &race.rosterInput, &rosterFacts, &setupFacts) == 1);
+	CHECK((rosterFacts.slots[1].role == NATIVE_MATCH_SLOT_ROLE_BOT) && (rosterFacts.slots[1].difficulty == 0xa0u));
+	CHECK((setupFacts.facts[1].role == NATIVE_MATCH_SLOT_ROLE_BOT) && (setupFacts.facts[1].difficulty == 0xa0u));
+	CHECK(ExpectRosterReject(&config, &race) == 0);
+
+	/* Tampered counts with an otherwise valid roster: each is refused by the roster validator. */
+	race = valid;
+	race.snapshot.numPlyrCurrGame = 3;
+	CHECK(ExpectRosterReject(&config, &race) == 0);
+	race = valid;
+	race.snapshot.numPlyrCurrGame = 1;
+	CHECK(ExpectRosterReject(&config, &race) == 0);
+	race = valid;
+	race.snapshot.numBotsNextGame = 5;
+	CHECK(ExpectRosterReject(&config, &race) == 0);
+	race = valid;
+	race.snapshot.numBotsNextGame = 3;
+	CHECK(ExpectRosterReject(&config, &race) == 0);
+
 	/* A missing driver. */
 	race = valid;
 	race.snapshot.driverPresent[4] = 0;

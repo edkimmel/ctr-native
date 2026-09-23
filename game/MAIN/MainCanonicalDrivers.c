@@ -339,23 +339,27 @@ int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 		wantsMask?driver->KartStates.MaskGrab.maskObj:NULL,wantsMask,out);
 }
 
-int MainCanonicalDrivers_ExtractRosterInput(const struct GameTracker *gGT,const struct sData *sourceData,struct NativeCanonicalDriversRosterInput *out)
+/* The one extraction pass behind ExtractRosterInput and ExtractRosterPrelude:
+ * fills the caller-owned staging *input and its normalized *candidate with a
+ * single NativeCanonicalDriversRoster_Normalize.  May leave both partly
+ * written on failure; each public wrapper owns them as staging and commits
+ * only its own output, and only on success. */
+static int MainCanonicalDrivers_ExtractRosterSource(const struct GameTracker *gGT,const struct sData *sourceData,
+	struct NativeCanonicalDriversRosterInput *input,struct NativeCanonicalDriversRosterCandidate *candidate)
 {
-	struct NativeCanonicalDriversRosterInput input;
-	struct NativeCanonicalDriversRosterCandidate accepted;
 	DriverFunc tables[8][13]={{0}};
 	void(*threads[8])(struct Thread *)={0};
 	const struct Driver *drivers[8];
 	struct NativeCanonicalPoolGeometry largeGeometry,threadGeometry,instanceGeometry;
 	struct NativeCanonicalPoolList largeFree,threadFree,instanceFree,instanceTaken;
 	int anyRoot=0;
-	if(!gGT||!sourceData||!out||sourceData->gGT!=gGT||gGT->numLaps<0)return 0;
-	memset(&input,0,sizeof(input));
-	memset(input.raceOrder,0xff,sizeof(input.raceOrder));
-	memset(input.winnerDriverIDs,0xff,sizeof(input.winnerDriverIDs));
-	memset(input.ranks,0xff,sizeof(input.ranks));
-	memset(input.navOrder,0xff,sizeof(input.navOrder));
-	input.numLaps=gGT->numLaps;
+	if(!gGT||!sourceData||sourceData->gGT!=gGT||gGT->numLaps<0)return 0;
+	memset(input,0,sizeof(*input));
+	memset(input->raceOrder,0xff,sizeof(input->raceOrder));
+	memset(input->winnerDriverIDs,0xff,sizeof(input->winnerDriverIDs));
+	memset(input->ranks,0xff,sizeof(input->ranks));
+	memset(input->navOrder,0xff,sizeof(input->navOrder));
+	input->numLaps=gGT->numLaps;
 	/* Root addresses are compared but never dereferenced until all three pool
 	 * snapshots prove ownership.  With no roots, menu/reset phases deliberately
 	 * accept uninitialized pools: there is no object to inspect. */
@@ -374,8 +378,8 @@ int MainCanonicalDrivers_ExtractRosterInput(const struct GameTracker *gGT,const 
 		if(!driver)continue;
 		if(!ValidateDriverRootOwnership(driver,&largeGeometry,&largeFree,&threadGeometry,&threadFree,
 			&instanceGeometry,&instanceFree,&instanceTaken)||driver->driverID!=slot)return 0;
-		input.slots[slot].present=1;input.slots[slot].driverID=slot;
-		input.slots[slot].kind=(driver->actionsFlagSet&ACTION_BOT)?NATIVE_CANONICAL_DRIVER_KIND_BOT:NATIVE_CANONICAL_DRIVER_KIND_HUMAN;
+		input->slots[slot].present=1;input->slots[slot].driverID=slot;
+		input->slots[slot].kind=(driver->actionsFlagSet&ACTION_BOT)?NATIVE_CANONICAL_DRIVER_KIND_BOT:NATIVE_CANONICAL_DRIVER_KIND_HUMAN;
 		memcpy(tables[slot],driver->funcPtrs,sizeof(tables[slot]));threads[slot]=driver->instSelf->thread->funcThTick;
 	}
 	for(uint8_t n=0,tail=0;n<8;n++)
@@ -383,28 +387,34 @@ int MainCanonicalDrivers_ExtractRosterInput(const struct GameTracker *gGT,const 
 		uint8_t slot;const struct Driver *driver=gGT->driversInRaceOrder[n];
 		if(!driver){tail=1;continue;}
 		if(tail||!DriverSlot(drivers,driver,&slot))return 0;
-		for(uint8_t prior=0;prior<n;prior++)if(input.raceOrder[prior]==slot)return 0;
-		input.raceOrder[input.raceOrderCount++]=slot;
+		for(uint8_t prior=0;prior<n;prior++)if(input->raceOrder[prior]==slot)return 0;
+		input->raceOrder[input->raceOrderCount++]=slot;
 	}
 	if(gGT->numWinners>4)return 0;
-	input.winnerCount=(uint8_t)gGT->numWinners;
-	for(uint8_t n=0;n<input.winnerCount;n++)
+	input->winnerCount=(uint8_t)gGT->numWinners;
+	for(uint8_t n=0;n<input->winnerCount;n++)
 	{
 		int id=gGT->winnerIndex[n];uint8_t slot;
 		if(id<0||id>7)return 0;
 		for(slot=0;slot<8;slot++)if(drivers[slot]&&drivers[slot]->driverID==(uint8_t)id)break;
-		if(slot==8)return 0;input.winnerDriverIDs[n]=(uint8_t)id;
+		if(slot==8)return 0;input->winnerDriverIDs[n]=(uint8_t)id;
 	}
 	for(uint8_t slot=0;slot<8;slot++)if(drivers[slot]&&(drivers[slot]->actionsFlagSet&ACTION_BOT)==0)
 	{
 		if(gGT->humanPlayerPositions[slot]>7)return 0;
-		input.ranks[input.playerCount++]=gGT->humanPlayerPositions[slot];
+		input->ranks[input->playerCount++]=gGT->humanPlayerPositions[slot];
 	}
-	if(!NavLists(drivers,sourceData,&input))return 0;
-	/* Exactly ProjectPrelude's resolution and acceptance; the input, not the
-	 * normalized candidate, is the output. */
-	if(!MainCanonicalDrivers_ResolveRosterIdentities(&input,tables,threads)||
-		!NativeCanonicalDriversRoster_Normalize(&input,&accepted))return 0;
+	if(!NavLists(drivers,sourceData,input))return 0;
+	/* Exactly ProjectPrelude's resolution and acceptance, normalized once. */
+	return MainCanonicalDrivers_ResolveRosterIdentities(input,tables,threads)&&
+		NativeCanonicalDriversRoster_Normalize(input,candidate);
+}
+
+int MainCanonicalDrivers_ExtractRosterInput(const struct GameTracker *gGT,const struct sData *sourceData,struct NativeCanonicalDriversRosterInput *out)
+{
+	struct NativeCanonicalDriversRosterInput input;
+	struct NativeCanonicalDriversRosterCandidate accepted;
+	if(!out||!MainCanonicalDrivers_ExtractRosterSource(gGT,sourceData,&input,&accepted))return 0;
 	*out=input;
 	return 1;
 }
@@ -413,8 +423,7 @@ int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,cons
 {
 	struct NativeCanonicalDriversRosterInput input;
 	struct NativeCanonicalDriversRosterCandidate candidate;
-	if(!out||!MainCanonicalDrivers_ExtractRosterInput(gGT,sourceData,&input)||
-		!NativeCanonicalDriversRoster_Normalize(&input,&candidate))return 0;
+	if(!out||!MainCanonicalDrivers_ExtractRosterSource(gGT,sourceData,&input,&candidate))return 0;
 	*out=candidate;
 	return 1;
 }

@@ -55,7 +55,8 @@
  *                                          first at MAIN_MENU_LEVEL and in demo,
  *                                          :1181-1194); cleared only by unpause
  *                                          (MainFrame.c:397, MainFreeze.c:811, :952,
- *                                          :987, :1012); no load or race path resets it
+ *                                          :987, :1012, :1032, :1049, :1068); no load
+ *                                          or race path resets it
  * 0x00000002 PAUSE_2            MODE clear no writer in game/ (MainFrame.c:466 tests
  *                                          gameModeEnd, not gameMode1)
  * 0x00000004 PAUSE_3            MODE clear no named reader or writer in game/
@@ -184,24 +185,41 @@
  * memory card), so a cabinet's saved rumble preference does not apply to a
  * linked race; boolDemoMode pinned to 0.
  * ---------------------------------------------------------------------------
- * Contract for the R-5 live adapter:
- * - Apply runs twice: once before MainRaceTrack_RequestLoad, and again at the
- *   pre-drivers hook in MainInit_FinalizeInit (game/MAIN/MainInit.c, after
- *   the WARPBALL_HELD clear at :416 and before MainInit_Drivers at :466). The
- *   demo race behind the link screens keeps running until LOADING and can
- *   set ROLLING_ITEM and AKU_SONG/UKA_SONG, and the pending OnBegin mode bits
- *   (Loading.OnBegin.AddBitsConfig0/8, RemBitsConfig0/8) are ORed into and
- *   masked out of both words when the load starts (game/MAIN/MainMain.c:270-290),
- *   so only the second Apply fixes the words the race reads.
- * - The adapter never writes levelID into gGT while the old level runs: the
- *   load request carries it (MainRaceTrack_RequestLoad), and LOAD_LevelFile
- *   writes it.
+ * Contract for the R-5 live adapter (game/MAIN/MainArcadeRaceSetup):
+ * - Launch runs the first Apply on a snapshot of the live fields before
+ *   MainRaceTrack_RequestLoad and writes back every owned field except
+ *   levelID: the adapter never writes levelID into gGT while the old level
+ *   runs; the load request carries it and LOAD_LevelFile writes it
+ *   (game/LOAD/LOAD_Level.c:42-43).
+ * - ONE pre-drivers hook, at the very start of MainInit_FinalizeInit
+ *   (game/MAIN/MainInit.c, before the WARPBALL_HELD clear at :416 and so
+ *   before MainInit_Drivers at :466):
+ *   - VERIFIES the fields the load consumed and fails closed on a mismatch:
+ *     levelID and numLaps equal the plan, numPlyrCurrGame is 2 (the load
+ *     copies numPlyrNextGame, LOAD_TenStages.c:102), characterIDs[0..5]
+ *     equal the plan, which holds the bots exactly as LOAD_Robots2P wrote
+ *     them (LOAD_Assets.c:21-59, RS-4);
+ *   - RE-APPLIES only the mode words, arcadeDifficulty, and boolDemoMode. The
+ *     demo race behind the link screens keeps running until LOADING and can
+ *     set ROLLING_ITEM and AKU_SONG/UKA_SONG, and the pending OnBegin mode
+ *     bits (Loading.OnBegin.AddBitsConfig0/8, RemBitsConfig0/8) are ORed into
+ *     and masked out of both words when the load starts
+ *     (game/MAIN/MainMain.c:270-290), so only this re-apply fixes the words
+ *     the race reads;
+ *   - SEEDS the retail RNG states from the bank
+ *     (NativeArcadeBotRules_DeriveRetailSeedsV1).
+ * - A post-drivers hook, right after MainInit_Drivers, validates the facts
+ *   (the R-5a facts builder, then the roster and bot setup validators).
  * - The adapter saves the cabinet's vibration bits (P1..P4_VIBRATE) at Arm
  *   and restores them at Disarm; RaceConfig_LoadGameOptions ORs the saved
  *   bits in once (RaceConfig.c:19).
  * - Launch preconditions: sdata->Loading.stage is LOAD_IDLE; all four pending
  *   OnBegin mode words are 0; sdata->boolHasLoadedOptions != 0 (so the
- *   one-time options load cannot OR vibration bits in after Apply).
+ *   one-time options load cannot OR vibration bits in after Apply); and
+ *   (gameMode1 & PAUSE_ALL) == 0. Launch never clears pause itself: the
+ *   unpause path (MainFrame.c:397-406) has side effects (menu input clear,
+ *   pause audio, the adventure pause cleanup, ElimBG, the menu hide, the
+ *   unpause cooldown).
  * - Recorded as Task 8 / R-7 risks, not handled here: the pause-menu
  *   vibration toggle flips gameMode1 mid-race (MainFreeze.c:518); data.rwd
  *   (racing wheel calibration, loaded from the options by RaceConfig.c:16)

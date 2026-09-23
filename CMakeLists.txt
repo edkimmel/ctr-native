@@ -1493,6 +1493,11 @@ if(BUILD_TESTING)
     add_test(NAME main_arcade_race_setup_facts_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_setup_facts_isolation_test.cmake")
 
+    # R-5a2: MainCanonicalDrivers_ExtractRosterInput is named only by its own
+    # module (and tests/).
+    add_test(NAME main_canonical_drivers_roster_input_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_drivers_roster_input_isolation_test.cmake")
+
     add_executable(native_canonical_state_test tests/native_canonical_state_test.c)
     set_target_properties(native_canonical_state_test PROPERTIES
         C_STANDARD 17

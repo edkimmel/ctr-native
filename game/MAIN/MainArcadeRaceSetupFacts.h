@@ -82,8 +82,10 @@
  * actionsFlagSet, set by BOTS_Driver_Init (game/BOTS.c:3104) and again by
  * BOTS_GotoStartingLine (:3038). A human Driver is zeroed by VehBirth_Player
  * (game/Vehicle/VehBirth.c:863) and gains ACTION_BOT only through
- * BOTS_Driver_Convert (game/BOTS.c:3188, demo mode MainInit.c:547, pinned
- * off by the plan).
+ * BOTS_Driver_Convert (game/BOTS.c:3188). Its demo-mode call is at
+ * MainInit.c:551 (under the boolDemoMode test at :547), pinned off by the
+ * plan; the other callers (PlayLevel.c:226, GhostReplay.c:88,
+ * MainGameEnd.c:157) run after the snapshot point.
  *
  * Consequence for the dormant validators: the MainArcadeBotSetup range rules
  * that every present slot, humans included, has spawnOrder < 8,
