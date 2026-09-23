@@ -30,7 +30,10 @@ Integration order:
 1. Reproducible Win32 baseline — complete.
 2. Canonical state, input replay, and deterministic hashes — substantially
    complete.
-3. Stable two-human-plus-bot roster and RNG ownership — in progress.
+3. Stable two-human-plus-bot roster and RNG ownership — functionally
+   complete, proven by the live roster proof (`arcade_roster_determinism`)
+   on one machine; see `docs/ROSTER_MILESTONE.md`. Networked launch through
+   its seam is Task 7.
 4. Native lockstep protocol and virtual-network fault tests — protocol design
    and fault-tolerant session logic complete; a real socket transport,
    connect/handshake protocol, and a lobby data/state layer exist and are
@@ -41,8 +44,9 @@ Integration order:
    and vote on the track and laps; a disagreement is a seeded draw, and
    the resolved config is re-validated by a relink handshake and is what
    START_RACE would launch (`docs/MATCH_SELECT_MILESTONE.md`). Networked
-   race launch and in-race lockstep driving remain gated on step 3 and live
-   V4 projection; physical two-cabinet validation remains open before steps
+   race launch (Task 7, through the step-3 race setup seam) is not started,
+   and in-race lockstep driving (Task 8) is gated on it and on live V4
+   projection; physical two-cabinet validation remains open before steps
    6-7.
 5. Failure handling, results, and rematch — stall-timeout policy, peer-drop
    roster, and rematch config builder complete and fault-tested against
@@ -71,17 +75,66 @@ Integration order:
   transactional and identity-checked. SHA-256 in V4 is used only for
   `identity.build`, `identity.content`, and `configDigest`. V1 and V3 remain
   for their existing consumers.
-- **Deterministic RNG.** A dormant xoshiro256\*\* bank derived with
+- **Deterministic RNG.** A xoshiro256\*\* bank derived with
   `SHA-256/CTRNRNG1`, with eleven streams (match setup, items, hazards, eight
-  bots) and global versus per-bot slot ownership. It does not read or replace
-  the retail RNG.
+  bots) and global versus per-bot slot ownership. It replaces no retail RNG
+  call site: the retail RNGs stay the in-race simulation RNG (RS-5). An
+  armed race setup draws from its MATCH_SETUP stream (below); ITEMS,
+  HAZARDS, and the eight BOT streams are reserved and undrawn in bot rules
+  v1.
 - **Match config.** Portable match identity with arcade two-cabinet and
   one-cabinet profiles, a reserved `protocolVersion`, eight role-fixed slots
   (CAB1 human, CAB2 human, bot), and validated lifecycle transitions. The
   arcade race config is resolved per match by match select. The per-build
   fixture is the lobby base of a first match; a rematch's lobby base is
   derived from the proposal of the most recent lobby that reached READY
-  (lastReadyConfig).
+  (lastReadyConfig). `botRulesDigest` is the real bot-rules digest,
+  `NativeArcadeBotRules_DigestV1`.
+- **Bot rules.** `native_arcade_bot_rules` defines and versions the native
+  rule choices of a two-cabinet arcade race (TWO_CAB only, two humans and
+  four bots, global difficulty from the retail table {0x50, 0xA0, 0xF0},
+  bots by the retail 2P AI set rule, the retail seed recipe) as a 111-byte
+  canonical encoding; its SHA-256 is the `botRulesDigest` of every config
+  built on these rules (golden `9022154eab793fb25d0a2d3b0c787d62fdaf9af490b7e3f1d48fbec8d4065eab`).
+  `NativeArcadeBotRules_ValidateConfigV1` accepts only a race these rules
+  can build.
+- **RNG ownership.** At race init an armed setup seeds every retail RNG
+  state that survives across races from the bank's MATCH_SETUP stream, in a
+  fixed order (RS-7): randomNumber, advRng state0 and state1, the PSX BIOS
+  rand seed, and audioRNG (the last two presentation-only and not
+  canonical). deadcoed keeps its retail per-race reset. The per-bot setup
+  draws follow on the same stream, and `MainArcadeRaceSetup_Bank()` is the
+  post-setup bank Task 8 must project.
+- **Live race setup.** `game/MAIN/MainArcadeRaceSetup` is the seam Task 7
+  calls (`_Arm`, `_Launch`, `_Status`, `_Digests`, `_Bank`, `_Disarm`): it
+  turns a validated TWO_CAB config into a retail 2P arcade race through the
+  pure plan, facts, and decision-core libraries, with two hooks in
+  `MainInit_FinalizeInit` (at its very start, and right after
+  `MainInit_Drivers`) that verify the loaded fields, re-apply the mode
+  words, seed the RNGs, and validate the live roster and bot setup facts,
+  failing closed. It pins every non-transient mode bit (cheats included), the
+  vibration bits to 0, and boolDemoMode to 0, and requires the 30/1 tick
+  rate. Dormant unless armed; its state is never checkpointed, recorded, or
+  canonical.
+- **Race counter pins (RS-17).** The same race-init hook pins the
+  boot-relative counters that feed the race simulation or its RNG,
+  `gGT->timer` and `gGT->frameTimer_Confetti`, to 0.
+  `sdata->frameCounter` and `gGT->frameTimer_VsyncCallback` stay
+  boot-relative (presentation and platform only), so cross-cabinet
+  comparison must use race-relative control.
+- **Live roster proof.** In internal builds `--arcade-roster-proof` launches
+  the configured race from the title or the attract demo race with
+  scripted pads and logs per-tick V1 control, race-relative control, RNG,
+  input, and topology-free drivers digests.
+  `tools/arcade-roster-proof-check.ps1` (ctest `arcade_roster_determinism`)
+  runs five proofs and requires identical setup and per-tick digests for
+  one seed across runs, launch windows, and boot offsets, and different
+  ones for another seed.
+- **Proof-only VBlank pacing (RS-18).** The proof runs with host-local
+  fixed VBlank pacing (`Platform_SetFixedVBlankPacing`), so a late host
+  frame emits no catch-up VBlanks. Every other run keeps the default
+  catch-up pacing, in which a late frame raises `elapsedTimeMS` and so
+  changes the race; Task 8 must make VBlanks per tick deterministic.
 - **Input replay.** Replay schedulers with record and playback, per-domain
   canonical verification, and first-divergence masks for observation, VBlank
   parity, pad, canonical domain, and combined digest. Invalid submissions
@@ -199,7 +252,9 @@ the arcade-link screens and host adapter exist and are tested on top of it
   deriving the new seed from the proposal of the most recent lobby that
   reached READY;
   `native_arcade_link_options` parses the host-local CLI options and builds
-  the fixed fixture (the lobby base); `native_arcade_link_host` is the
+  the fixed fixture (the lobby base) on the real bot rules (bots by the
+  retail 2P AI set at medium difficulty, `botRulesDigest` from
+  `NativeArcadeBotRules_DigestV1`); `native_arcade_link_host` is the
   game-facing singleton.
   Match select runs between MATCH FOUND and the race: each player picks a
   character and votes on the track and the lap count, and a disagreement
@@ -249,12 +304,19 @@ ctest --test-dir build-msvc-x86 -C Debug --output-on-failure
 ```
 
 Use `build-msvc-x86`; other `build-msvc-x86-*` directories are from earlier
-milestones. The full suite (119 tests) passes. LF-to-CRLF warnings are
-benign. The `arcade_link_preview_render` test (Windows only) renders all 17
+milestones. The full suite is 133 tests and passes; it takes about 400 s.
+Two tests carry the ctest label `live` (`arcade_link_preview_render` and
+`arcade_roster_determinism`); `ctest -LE live` excludes them, and the
+default full run includes them. LF-to-CRLF warnings are benign. The
+`arcade_link_preview_render` test (Windows only) renders all 17
 arcade-link previews with `ctr_native.exe` and checks each capture; it skips
 when `assets/ctr-u.bin` is absent, no display is available, or the build
 rejects the internal-only preview option, and writes its captures and logs
-under `build-msvc-x86\arcade_link_preview_captures\<config>`.
+under `build-msvc-x86\arcade_link_preview_captures\<config>`. The
+`arcade_roster_determinism` test (Windows only) runs
+`tools/arcade-roster-proof-check.ps1` (docs/ROSTER_MILESTONE.md section
+3.4); it skips on the same three conditions and writes its reports and
+logs under `build-msvc-x86\arcade_roster_proof\<config>`.
 
 `ctr_native.exe` needs a connected desktop session with a display. Without
 one, platform init fails, the SDL error is logged, and the exe exits 1. SDL
@@ -320,6 +382,21 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `include/platform/native_match_select_message.h` (64-byte select wire
   codec); `platform/native_match_select_session.c`,
   `include/platform/native_match_select_session.h` (select state machine).
+- Roster and RNG ownership (step 3): `platform/native_arcade_bot_rules.c`,
+  `include/platform/native_arcade_bot_rules.h` (bot rules, v1 encoding and
+  digest, seed derivation, config validator);
+  `game/MAIN/MainArcadeRaceSetupPlan.{c,h}` (pure plan and mode-bit
+  audit), `game/MAIN/MainArcadeRaceSetupFacts.{c,h}` (pure facts builder),
+  `game/MAIN/MainArcadeRaceSetupCore.{c,h}` (pure decision core, state
+  machine, RS-17 counter audit), `game/MAIN/MainArcadeRaceSetup.{c,h}`
+  (live adapter and the Task 7 seam, hooked from `MainInit_FinalizeInit`).
+- Live roster proof (internal builds): `platform/native_arcade_roster_proof.c`,
+  `include/platform/native_arcade_roster_proof.h` (options, proof config,
+  scripted pads, report format, exit codes);
+  `game/MAIN/MainArcadeRosterProof.{c,h}` (game hook);
+  `platform/native_vblank_pacing.c`, `include/platform/native_vblank_pacing.h`
+  (the pure pacing decision behind proof-only fixed VBlank pacing);
+  `tools/arcade-roster-proof-check.ps1` (the five-run checker).
 - Presentation options (host-local): `platform/native_display_config.c`,
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
@@ -339,7 +416,8 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   files here). Standalone libraries are declared in `CMakeLists.txt`.
 - Related docs: `docs/ARCADE_FORK.md`, `docs/TOPOLOGY_LEASE_AUTHORITY.md`,
   `docs/REPLAYS.md`, `docs/MEMORY_MODEL.md`, `docs/G29_INPUT.md`,
-  `docs/GAME_LOOP_UI_MILESTONE.md`, `docs/MATCH_SELECT_MILESTONE.md`.
+  `docs/GAME_LOOP_UI_MILESTONE.md`, `docs/MATCH_SELECT_MILESTONE.md`,
+  `docs/ROSTER_MILESTONE.md`.
 
 ## Rules and constraints
 

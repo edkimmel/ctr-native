@@ -425,20 +425,29 @@ outputs, ticks the host, and draws:
   runs there (DISABLE_INPUT_ALLOW_FUNCPTRS still runs funcPtrs), so a player
   holding L1 and R1 can still enter a retail cheat code during the first
   seconds of the title intro. Clearing taps there would also kill the intro
-  skip, which reads the same taps. Task 7 must therefore reset the gameMode2
-  cheat bits from the fixture when it launches a linked race.
+  skip, which reads the same taps. A cheat entered there does not reach a
+  linked race launched through the race setup seam: the setup pins every
+  non-transient gameMode1 and gameMode2 bit (docs/ROSTER_MILESTONE.md
+  RS-2), cheat bits included, so Task 7 need not reset them itself.
 
-The fixture (native_arcade_link_options, Task 6a) is profile ARCADE_TWO_CAB
-on track 3 (CRASH_COVE), 3 laps, a 30/1 tick rate, master seed
-0x4354524e41524331 ("CTRNARC1"), characters 0..5 in slots 0..5 (CAB1 Crash,
-CAB2 Cortex, then four bots) at difficulty 0, and gameMode1, gameMode2, and
-rules all 0 until Task 7 maps the fixture onto the retail race flags. Build
-and content identity come from the caller's identity. botRulesDigest is the
-SHA-256 of the text "CTRN arcade-link fixture bot rules v1", a placeholder
-digest until integration step 3 defines the bot rules. Two cabinets on the
-same build and disc build byte-identical fixtures; different builds or discs
-build configs the handshake rejects with CONFIG_MISMATCH, which is the
-intended "LINK REFUSED: SETTINGS DO NOT MATCH" path.
+The fixture (native_arcade_link_options, Task 6a, on the real bot rules
+since roster task R-3) is profile ARCADE_TWO_CAB on track 3 (CRASH_COVE),
+3 laps, a 30/1 tick rate, master seed 0x4354524e41524331 ("CTRNARC1"),
+CAB1 Crash (character 0) in slot 0 and CAB2 Cortex (character 1) in slot 1
+at difficulty 0, and in slots 2..5 the retail 2P AI set for those two
+(Polar 6, N. Gin 4, Tiny 2, Coco 3; RS-4) at the global medium bot
+difficulty 0xA0 (RS-3). gameMode1, gameMode2, and rules are all 0, which
+under RS-2 (docs/ROSTER_MILESTONE.md) means a retail arcade single race
+with no cheats and no cup; the race setup, not the config, writes the
+retail mode bits. Build and content identity come from the caller's
+identity. botRulesDigest is the real bot-rules digest,
+NativeArcadeBotRules_DigestV1 (docs/ROSTER_MILESTONE.md section 3.1), no
+longer the placeholder SHA-256 of "CTRN arcade-link fixture bot rules v1",
+and the builder fails unless NativeArcadeBotRules_ValidateConfigV1 accepts
+the result. Two cabinets on the same build and disc build byte-identical
+fixtures; different builds or discs build configs the handshake rejects
+with CONFIG_MISMATCH, which is the intended "LINK REFUSED: SETTINGS DO NOT
+MATCH" path.
 
 The fixture is the lobby base config of a first match, not the race
 config. Match select starts its cursors on the fixture's characters,
@@ -504,8 +513,12 @@ for the operator to confirm or change after seeing the built flow.
    characters, bot difficulty), not a per-cabinet selection menu. The
    fixture is track 3
    (CRASH_COVE), 3 laps, a 30/1 tick rate, CAB1 Crash (character 0), CAB2
-   Cortex (character 1), bots on characters 2..5, and bot difficulty 0. The
-   first match always uses the fixed seed 0x4354524e41524331 ("CTRNARC1");
+   Cortex (character 1), and bots decided by the roster milestone
+   (docs/ROSTER_MILESTONE.md): the retail 2P AI set for the two human
+   characters (RS-4; Polar, N. Gin, Tiny, and Coco for Crash and Cortex)
+   at one global difficulty, medium 0xA0 (RS-3). Match select keeps that
+   rule and that difficulty for the characters it resolves. The first
+   match always uses the fixed seed 0x4354524e41524331 ("CTRNARC1");
    each rematch derives a new seed (UX-7).
 9. UX-9: The in-race stall timeout is 90 ticks (3 s at the 30 Hz loop); a
    WAITING FOR OPPONENT overlay appears after 15 stalled ticks (0.5 s).
@@ -878,20 +891,27 @@ replay, canonical-state, or lease change.
 
 ### Task 7 -- networked race launch
 
-Status: gated on integration step 3 (live two-human-plus-bot roster). On
-START_RACE, configure and load the race described by the agreed
-NativeMatchConfigV1 through the arcade roster and bot setup. The agreed
-config is the one match select resolved and the relink handshake
+Status: not started. Its step-3 prerequisite exists: the live race setup
+seam game/MAIN/MainArcadeRaceSetup (docs/ROSTER_MILESTONE.md section
+3.2). On START_RACE, configure and load the race described by the agreed
+NativeMatchConfigV1 through that seam: MainArcadeRaceSetup_Arm with the
+agreed config, then MainArcadeRaceSetup_Launch (which writes the race
+fields and requests the load); poll MainArcadeRaceSetup_Status until
+VALIDATED (or FAILED, whose player-facing response Task 7 decides, RS-10);
+read MainArcadeRaceSetup_Digests and hand MainArcadeRaceSetup_Bank to
+Task 8; and call MainArcadeRaceSetup_Disarm when the race is left. The
+agreed config is the one match select resolved and the relink handshake
 validated (docs/MATCH_SELECT_MILESTONE.md sections 2.6 and 7): track,
 laps, per-slot characters, the retail 2P AI set, and the derived seed.
 Task 7 must also handle asymmetric relink completion: each side's relink
 handshake completes independently, so one cabinet can reach START_RACE
 while the other times out to LINK ERROR; a lone racer would stall into
-PEER TIMEOUT, and a later rematch may be rejected. Task 7 must
-reset gameMode2 cheat bits from the fixture: retail cheat entry stays
-possible during the title intro before the menu-ready frame, which the layer
-leaves to retail so the intro skip keeps working (section 2.5, residual
-retail window).
+PEER TIMEOUT, and a later rematch may be rejected. Retail cheat entry
+stays possible during the title intro before the menu-ready frame, which
+the layer leaves to retail so the intro skip keeps working (section 2.5,
+residual retail window), but Task 7 need not reset the gameMode2 cheat
+bits itself: RS-2 already does, since the setup plan pins every
+non-transient mode bit, cheat bits included.
 
 ### Task 8 -- in-race lockstep drive and failure handling
 
@@ -912,9 +932,11 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
 
 ## 6. Risks and open questions
 
-1. Tasks 7 and 8 are gated on step-3 roster wiring and live V4 projection.
-   Until then the live hook can reach LOBBY, MATCH_FOUND, the match-select
-   screens, and the preview screens, but not a real networked race.
+1. The step-3 roster wiring exists (the MainArcadeRaceSetup seam,
+   docs/ROSTER_MILESTONE.md), but Task 7 is not started and Task 8 is
+   gated on it and on live V4 projection. Until then the live hook can
+   reach LOBBY, MATCH_FOUND, the match-select screens, and the preview
+   screens, but not a real networked race.
 2. Stale bundles from a just-finished session that arrive after a rematch
    link has opened on the same port would be staged by the peer link and
    fault the new session on its match identity. Both peers stop sending
@@ -929,16 +951,22 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
    from a tree with uncommitted or untracked changes refuses `--arcade-link`
    ("arcade link requires a known build and content identity"). This is by
    design: both cabinets must run the identical build.
-6. botRulesDigest in the fixture is a placeholder (the SHA-256 of a fixed
-   text) until integration step 3 defines the bot rules.
+6. Resolved: the fixture's botRulesDigest is no longer a placeholder. It
+   is the real bot-rules digest, NativeArcadeBotRules_DigestV1
+   (docs/ROSTER_MILESTONE.md section 3.1), and every config the fixture,
+   match select, or a rematch builds from it carries that digest.
 7. Link and preview mode exclude replay: `--arcade-link` or
    `--arcade-link-preview` combined with any replay record, playback, or
    report option is fatal at startup. The F5 and F8 quick-state hotkeys are
    disabled in both modes; each press only logs "[CTR Native] quick states
    are disabled in arcade-link mode".
 8. The title intro before the menu-ready frame stays retail (intro skip and
-   cheat entry both work there), so Task 7 must reset the gameMode2 cheat
-   bits from the fixture when it launches a linked race.
+   cheat entry both work there). The race setup seam already resets the
+   gameMode2 cheat bits: RS-2 pins every non-transient gameMode1 and
+   gameMode2 bit at Launch and again at race init, and the post-drivers
+   check fails closed if a cheat bit is set (docs/ROSTER_MILESTONE.md). So
+   Task 7 need not reset them itself, as long as it launches through
+   MainArcadeRaceSetup.
 9. The two-instance loopback run was driven by script on one machine with
    the G29 hidden from SDL. No real two-cabinet or real-wheel run has
    happened; that is the step 6/7 requirement.
