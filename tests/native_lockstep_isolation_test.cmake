@@ -4,7 +4,9 @@
 # or presentation dependency, the two leaf libraries never link the virtual
 # datagram test harness, the frozen wire/window constants cannot silently
 # change, no other seam picks up a lockstep identifier, and the three targets
-# stay portable C17 with extensions off.
+# stay portable C17 with extensions off. It also freezes the peer link's
+# generic aux-route widths and keeps any select-layer token out of the peer
+# link (section 9).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -174,4 +176,22 @@ foreach(target IN ITEMS ctr_native_lockstep_protocol ctr_native_lockstep_input_w
     if(NOT (properties_at LESS standard_at AND standard_at LESS required_at AND required_at LESS extensions_at))
         message(FATAL_ERROR "lockstep isolation: ${target} C17/no-extensions properties are out of order")
     endif()
+endforeach()
+
+# 9. Peer-link aux route (docs/MATCH_SELECT_MILESTONE.md section 2.4). The
+#    aux datagram width and inbox capacity are frozen: a changed literal must
+#    fail this test, not silently change what the peer link routes. The peer
+#    link carries aux datagrams generically and must not know the layer that
+#    uses them, so no match-select token may appear in its sources.
+ctr_read_source("include/platform/native_lockstep_peer_link.h" peer_link_header)
+ctr_require_regex("include/platform/native_lockstep_peer_link.h (AUX_BYTES must stay 64u)" "${peer_link_header}"
+    "#define NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES 64u[^0-9a-zA-Z_]")
+ctr_require_regex("include/platform/native_lockstep_peer_link.h (AUX_CAPACITY must stay 16u)" "${peer_link_header}"
+    "#define NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY 16u[^0-9a-zA-Z_]")
+
+foreach(relative_path IN ITEMS "include/platform/native_lockstep_peer_link.h" "platform/native_lockstep_peer_link.c")
+    ctr_read_source("${relative_path}" source)
+    foreach(term IN ITEMS MatchSelect match_select MATCH_SELECT)
+        ctr_forbid("${relative_path}" "${source}" "${term}")
+    endforeach()
 endforeach()

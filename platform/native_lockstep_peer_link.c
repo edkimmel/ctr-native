@@ -2,6 +2,26 @@
 
 #include <string.h>
 
+/* The aux route is chosen by exact byte count, so its width must differ
+ * from both wire records this link routes, or the routes would collide. */
+_Static_assert(NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES != NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES,
+	"aux datagram width must differ from the handshake message width");
+_Static_assert(NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES != NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES,
+	"aux datagram width must differ from the lockstep bundle width");
+_Static_assert(NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY > 0u, "aux inbox must hold at least one entry");
+
+/* Empties the aux inbox and zeroes its drop counter; shared by Open (on
+ * success) and Close so nothing from a previous link survives. The payload
+ * bytes are cleared too, so a stale datagram is not even left behind in
+ * memory. */
+static void NativeLockstepPeerLink_ResetAux(struct NativeLockstepPeerLink *link)
+{
+	memset(link->auxBytes, 0, sizeof(link->auxBytes));
+	link->auxHead = 0;
+	link->auxCount = 0;
+	link->droppedAuxCount = 0;
+}
+
 int NativeLockstepPeerLink_Open(struct NativeLockstepPeerLink *link, uint16_t localPort,
 	const struct NativeUdpTransportAddress *peer, const struct NativeMatchConfigV1 *proposedConfig,
 	uint8_t localRole, uint32_t inputDelay)
@@ -46,6 +66,7 @@ int NativeLockstepPeerLink_Open(struct NativeLockstepPeerLink *link, uint16_t lo
 	link->localRole = localRole;
 	link->earlyBundleCount = 0;
 	link->droppedEarlyBundleCount = 0;
+	NativeLockstepPeerLink_ResetAux(link);
 	link->mode = NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING;
 	link->opened = 1;
 	return 1;
@@ -68,13 +89,17 @@ void NativeLockstepPeerLink_Retransmit(struct NativeLockstepPeerLink *link)
 }
 
 /* Large enough for either wire record this link ever receives: a handshake
- * message (284 bytes) or a lockstep bundle (128 bytes). UDP preserves
+ * message (284 bytes) or a lockstep bundle (128 bytes); the static assert
+ * below checks it also fits an aux datagram (64 bytes). UDP preserves
  * datagram boundaries, so a capacity at least as large as the sender's
  * actual datagram is all NativeUdpTransport_Receive needs. */
 #define NATIVE_LOCKSTEP_PEER_LINK_POLL_BUFFER_BYTES \
 	(NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES > NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES \
 	     ? NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES \
 	     : NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES)
+
+_Static_assert(NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES <= NATIVE_LOCKSTEP_PEER_LINK_POLL_BUFFER_BYTES,
+	"aux datagram must fit the poll receive buffer");
 
 /* Applies one session-mode read-out to link mode: DIVERGED and FAULTED are
  * both terminal for the session, so they replace link mode; RUNNING (or, in
@@ -196,6 +221,31 @@ static void NativeLockstepPeerLink_HandleBundleDatagram(struct NativeLockstepPee
 	}
 }
 
+/* Handles one NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES-sized datagram: appended,
+ * unmodified, to the back of the aux inbox while RUNNING (discarding and
+ * counting the oldest entry first when the inbox is full), dropped
+ * uncounted in every other mode. Never touches the handshake, the session,
+ * or link mode. */
+static void NativeLockstepPeerLink_HandleAuxDatagram(struct NativeLockstepPeerLink *link, const uint8_t *bytes)
+{
+	uint32_t tail;
+
+	if (link->mode != NATIVE_LOCKSTEP_PEER_LINK_RUNNING)
+	{
+		return;
+	}
+	if (link->auxCount >= NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY)
+	{
+		/* Full: newest-wins, so the oldest entry makes room. */
+		link->auxHead = (link->auxHead + 1u) % NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY;
+		link->auxCount--;
+		link->droppedAuxCount++;
+	}
+	tail = (link->auxHead + link->auxCount) % NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY;
+	memcpy(link->auxBytes[tail], bytes, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES);
+	link->auxCount++;
+}
+
 void NativeLockstepPeerLink_Poll(struct NativeLockstepPeerLink *link)
 {
 	uint32_t drained;
@@ -242,7 +292,11 @@ void NativeLockstepPeerLink_Poll(struct NativeLockstepPeerLink *link)
 		{
 			NativeLockstepPeerLink_HandleBundleDatagram(link, bytes, byteCount);
 		}
-		/* Any other size matches neither wire record at this seam: dropped. */
+		else if (byteCount == NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES)
+		{
+			NativeLockstepPeerLink_HandleAuxDatagram(link, bytes);
+		}
+		/* Any other size matches none of the three routes: dropped. */
 
 		if ((link->mode == NATIVE_LOCKSTEP_PEER_LINK_REJECTED) || (link->mode == NATIVE_LOCKSTEP_PEER_LINK_FAULTED) ||
 		    (link->mode == NATIVE_LOCKSTEP_PEER_LINK_DIVERGED))
@@ -283,6 +337,40 @@ uint32_t NativeLockstepPeerLink_DroppedEarlyBundleCount(const struct NativeLocks
 	return (link != NULL) ? link->droppedEarlyBundleCount : 0u;
 }
 
+int NativeLockstepPeerLink_SendAux(struct NativeLockstepPeerLink *link, const uint8_t *bytes, size_t size)
+{
+	if ((link == NULL) || (bytes == NULL) || (link->mode != NATIVE_LOCKSTEP_PEER_LINK_RUNNING) ||
+	    (size != NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES))
+	{
+		return 0;
+	}
+	return NativeUdpTransport_Send(&link->transport, &link->peerAddress, bytes, size) ? 1 : 0;
+}
+
+int NativeLockstepPeerLink_TakeAux(struct NativeLockstepPeerLink *link, uint8_t *out, size_t capacity, size_t *sizeOut)
+{
+	if ((link == NULL) || (out == NULL) || (sizeOut == NULL) || (capacity < NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES) ||
+	    (link->auxCount == 0u))
+	{
+		return 0;
+	}
+	memcpy(out, link->auxBytes[link->auxHead], NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES);
+	*sizeOut = NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES;
+	link->auxHead = (link->auxHead + 1u) % NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY;
+	link->auxCount--;
+	return 1;
+}
+
+uint32_t NativeLockstepPeerLink_AuxCount(const struct NativeLockstepPeerLink *link)
+{
+	return (link != NULL) ? link->auxCount : 0u;
+}
+
+uint32_t NativeLockstepPeerLink_DroppedAuxCount(const struct NativeLockstepPeerLink *link)
+{
+	return (link != NULL) ? link->droppedAuxCount : 0u;
+}
+
 struct NativeLockstepSession *NativeLockstepPeerLink_Session(struct NativeLockstepPeerLink *link)
 {
 	return (link != NULL) ? &link->session : NULL;
@@ -305,5 +393,6 @@ void NativeLockstepPeerLink_Close(struct NativeLockstepPeerLink *link)
 		NativeUdpTransport_GlobalShutdown();
 		link->opened = 0;
 	}
+	NativeLockstepPeerLink_ResetAux(link);
 	link->mode = NATIVE_LOCKSTEP_PEER_LINK_IDLE;
 }

@@ -52,6 +52,24 @@
 #define TEST4_PORT_A 48208u
 #define TEST4_PORT_B 48209u
 #define TEST4_PORT_BYSTANDER 48210u
+/* Aux-route tests (MS-5) continue the same band at 48211-48227. */
+#define AUX_ROUNDTRIP_PORT_A 48211u
+#define AUX_ROUNDTRIP_PORT_B 48212u
+#define AUX_HANDSHAKING_PORT_A 48213u
+#define AUX_HANDSHAKING_PORT_B 48214u
+#define AUX_INTERLEAVE_PORT_A 48215u
+#define AUX_INTERLEAVE_PORT_B 48216u
+#define AUX_OVERFLOW_PORT_A 48217u
+#define AUX_OVERFLOW_PORT_B 48218u
+#define AUX_REFUSAL_PORT_A 48219u
+#define AUX_REFUSAL_PORT_B 48220u
+#define AUX_RESET_PORT_A 48221u
+#define AUX_RESET_PORT_B 48222u
+#define AUX_ODD_SIZE_PORT_A 48223u
+#define AUX_ODD_SIZE_PORT_B 48224u
+#define AUX_FOREIGN_PORT_A 48225u
+#define AUX_FOREIGN_PORT_B 48226u
+#define AUX_FOREIGN_PORT_BYSTANDER 48227u
 
 /* Real loopback delivery is asynchronous relative to sendto returning
  * (tests/native_udp_transport_test.c's own PollReceive helper documents the
@@ -588,12 +606,578 @@ static int TestSenderAddressFiltering(void)
 	return 0;
 }
 
+/*
+ * Aux route (MS-5): opaque NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES datagrams for
+ * higher layers. Every payload below is a deterministic pattern of a
+ * (side, index) tag so payloads are pairwise distinct and a reordering,
+ * truncation, or mix-up between entries is caught byte for byte.
+ */
+static void MakeAuxPayload(uint8_t *out, uint8_t side, uint32_t index)
+{
+	for (uint32_t i = 0; i < NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES; i++)
+	{
+		out[i] = (uint8_t)((side * 0x53u) ^ (index * 0x1Du) ^ (i * 0x07u) ^ 0xA5u);
+	}
+	out[0] = side;
+	out[1] = (uint8_t)index;
+}
+
+/* Poll-only spin until at least expectedTotal aux datagrams have been either
+ * stored or discarded as overflow (AuxCount + DroppedAuxCount). */
+static void PumpPollUntilAuxTotal(struct NativeLockstepPeerLink *link, uint32_t expectedTotal)
+{
+	uint32_t attempt;
+
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Poll(link);
+		if ((NativeLockstepPeerLink_AuxCount(link) + NativeLockstepPeerLink_DroppedAuxCount(link)) >= expectedTotal)
+		{
+			break;
+		}
+	}
+}
+
+/* Pops one aux entry and checks it is byte-identical to the (side, index)
+ * payload. */
+static int ExpectTakeAux(struct NativeLockstepPeerLink *link, uint8_t side, uint32_t index)
+{
+	uint8_t expected[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	uint8_t actual[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	size_t size = 0;
+
+	MakeAuxPayload(expected, side, index);
+	memset(actual, 0, sizeof(actual));
+	CHECK(NativeLockstepPeerLink_TakeAux(link, actual, sizeof(actual), &size) == 1);
+	CHECK(size == NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES);
+	CHECK(memcmp(actual, expected, sizeof(expected)) == 0);
+	return 0;
+}
+
+/* Opens A then B on the given ports and pumps both to RUNNING with the
+ * normal Retransmit-before-Poll cadence. */
+static int OpenRunningPair(struct NativeLockstepPeerLink *linkA, struct NativeLockstepPeerLink *linkB, uint16_t portA, uint16_t portB,
+	struct NativeUdpTransportAddress *addrA, struct NativeUdpTransportAddress *addrB)
+{
+	struct NativeMatchConfigV1 config;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+	CHECK(NativeUdpTransport_MakeAddress(addrA, "127.0.0.1", portA));
+	CHECK(NativeUdpTransport_MakeAddress(addrB, "127.0.0.1", portB));
+	CHECK(NativeLockstepPeerLink_Open(linkA, portA, addrB, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_Open(linkB, portB, addrA, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(PumpUntilMode(linkA, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(PumpUntilMode(linkB, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_AuxCount(linkA) == 0u);
+	CHECK(NativeLockstepPeerLink_AuxCount(linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(linkA) == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(linkB) == 0u);
+	return 0;
+}
+
+/* Two RUNNING links exchange three distinct aux payloads each way; each
+ * receiver takes them back byte-identical and in send order. */
+static int TestAuxRoundTrip(void)
+{
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t payload[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	uint8_t out[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	size_t size = 0;
+	uint32_t i;
+
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)AUX_ROUNDTRIP_PORT_A, (uint16_t)AUX_ROUNDTRIP_PORT_B, &addrA, &addrB) == 0);
+
+	for (i = 0; i < 3u; i++)
+	{
+		MakeAuxPayload(payload, 0xAu, i);
+		CHECK(NativeLockstepPeerLink_SendAux(&linkA, payload, sizeof(payload)) == 1);
+	}
+	PumpPollUntilAuxTotal(&linkB, 3u);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 3u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkB) == 0u);
+	for (i = 0; i < 3u; i++)
+	{
+		CHECK(ExpectTakeAux(&linkB, 0xAu, i) == 0);
+	}
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_TakeAux(&linkB, out, sizeof(out), &size) == 0);
+
+	for (i = 0; i < 3u; i++)
+	{
+		MakeAuxPayload(payload, 0xBu, i);
+		CHECK(NativeLockstepPeerLink_SendAux(&linkB, payload, sizeof(payload)) == 1);
+	}
+	PumpPollUntilAuxTotal(&linkA, 3u);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkA) == 3u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkA) == 0u);
+	for (i = 0; i < 3u; i++)
+	{
+		CHECK(ExpectTakeAux(&linkA, 0xBu, i) == 0);
+	}
+	CHECK(NativeLockstepPeerLink_TakeAux(&linkA, out, sizeof(out), &size) == 0);
+
+	CHECK(NativeLockstepPeerLink_Mode(&linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+/*
+ * An aux datagram reaching a side that is still HANDSHAKING is dropped (and
+ * not counted). Uses TestEarlyBundleArrival's held-back-HELLO construction
+ * to keep B genuinely HANDSHAKING while A is RUNNING; a bundle sent right
+ * after the aux datagram, on the same socket pair, is the marker that B's
+ * Poll has already consumed the aux datagram (it is staged as an early
+ * bundle, which is observable).
+ */
+static int TestAuxDroppedWhileHandshaking(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	struct NativeUdpTransportAddress sender;
+	uint8_t savedHello[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
+	size_t savedHelloSize = 0;
+	uint8_t payload[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+	CHECK(NativeUdpTransport_MakeAddress(&addrA, "127.0.0.1", (uint16_t)AUX_HANDSHAKING_PORT_A));
+	CHECK(NativeUdpTransport_MakeAddress(&addrB, "127.0.0.1", (uint16_t)AUX_HANDSHAKING_PORT_B));
+
+	/* A first (its Open()-time HELLO to B is lost), then B. */
+	CHECK(NativeLockstepPeerLink_Open(&linkA, (uint16_t)AUX_HANDSHAKING_PORT_A, &addrB, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_Open(&linkB, (uint16_t)AUX_HANDSHAKING_PORT_B, &addrA, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+
+	/* A HANDSHAKING link refuses to send aux. */
+	MakeAuxPayload(payload, 0xBu, 0u);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkB, payload, sizeof(payload)) == 0);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+
+	/* The one HELLO B will ever get from A, held back off B's socket. */
+	NativeLockstepPeerLink_Retransmit(&linkA);
+	memset(&sender, 0, sizeof(sender));
+	CHECK(PumpRawReceive(&linkB.transport, savedHello, sizeof(savedHello), &savedHelloSize, &sender) == NATIVE_UDP_TRANSPORT_RECEIVE_OK);
+	CHECK(savedHelloSize == NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES);
+
+	CHECK(PumpPollUntilMode(&linkA, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	MakeAuxPayload(payload, 0xAu, 0u);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, payload, sizeof(payload)) == 1);
+	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkA, 0u));
+
+	PumpPollUntilEarlyCount(&linkB, 1u);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+	CHECK(linkB.earlyBundleCount == 1u);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkB) == 0u);
+
+	/* Let B complete: the dropped aux datagram does not reappear. */
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, savedHello, savedHelloSize));
+	CHECK(PumpPollUntilMode(&linkB, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkB) == 0u);
+
+	/* Once RUNNING, B's aux route is live. */
+	MakeAuxPayload(payload, 0xAu, 1u);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, payload, sizeof(payload)) == 1);
+	PumpPollUntilAuxTotal(&linkB, 1u);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 1u);
+	CHECK(ExpectTakeAux(&linkB, 0xAu, 1u) == 0);
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+#define AUX_INTERLEAVE_FRAME_COUNT 6u
+
+static void BuildRolePad(struct NativeCanonicalInputPadV1 *pad, uint8_t role, uint32_t frame)
+{
+	memset(pad, 0, sizeof(*pad));
+	pad->status = (uint8_t)(0x40u + role);
+	pad->id = role;
+	pad->buttons[0] = (uint8_t)(0xA5u ^ frame);
+	pad->analog[0] = 0x80u;
+	pad->connected = 1u;
+}
+
+/*
+ * Aux datagrams interleaved with real lockstep traffic: both sides run
+ * AUX_INTERLEAVE_FRAME_COUNT frames of SubmitLocalInput/ComposeAndSendBundle/
+ * Poll/TakeFrameInputs/RecordLocalDigests (the process test's loop, both
+ * sides driven from this one process), sending one aux datagram just before
+ * and one just after each frame's bundle. Both sides must stay RUNNING with
+ * no fault or divergence, and every aux payload must come out intact and in
+ * order (2 * AUX_INTERLEAVE_FRAME_COUNT per side, under the inbox capacity).
+ */
+static int TestAuxInterleavedWithBundles(void)
+{
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	struct NativeLockstepPeerLink *links[2] = {&linkA, &linkB};
+	const uint8_t roles[2] = {(uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN};
+	const uint8_t sides[2] = {0xAu, 0xBu};
+	uint8_t payload[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	uint32_t frame;
+	uint32_t side;
+	uint32_t i;
+
+	_Static_assert(2u * AUX_INTERLEAVE_FRAME_COUNT <= NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY,
+		"interleave test must not overflow the aux inbox");
+
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)AUX_INTERLEAVE_PORT_A, (uint16_t)AUX_INTERLEAVE_PORT_B, &addrA, &addrB) == 0);
+
+	for (frame = 0; frame < AUX_INTERLEAVE_FRAME_COUNT; frame++)
+	{
+		int taken[2] = {0, 0};
+		uint32_t attempt;
+
+		for (side = 0; side < 2u; side++)
+		{
+			struct NativeCanonicalInputPadV1 pad;
+			struct NativeLockstepSession *session = NativeLockstepPeerLink_Session(links[side]);
+
+			CHECK(session != NULL);
+			BuildRolePad(&pad, roles[side], frame);
+			CHECK(NativeLockstepSession_SubmitLocalInput(session, frame, &pad));
+			MakeAuxPayload(payload, sides[side], 2u * frame);
+			CHECK(NativeLockstepPeerLink_SendAux(links[side], payload, sizeof(payload)) == 1);
+			CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(links[side], frame));
+			MakeAuxPayload(payload, sides[side], (2u * frame) + 1u);
+			CHECK(NativeLockstepPeerLink_SendAux(links[side], payload, sizeof(payload)) == 1);
+		}
+
+		for (attempt = 0; (attempt < SPIN_BUDGET) && !(taken[0] && taken[1]); attempt++)
+		{
+			for (side = 0; side < 2u; side++)
+			{
+				struct NativeLockstepSessionFrameInputs inputs;
+				enum NativeLockstepSessionResult result;
+
+				NativeLockstepPeerLink_Poll(links[side]);
+				CHECK(NativeLockstepPeerLink_Mode(links[side]) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+				if (taken[side])
+				{
+					continue;
+				}
+				result = NativeLockstepSession_TakeFrameInputs(NativeLockstepPeerLink_Session(links[side]), frame, &inputs);
+				if (result == NATIVE_LOCKSTEP_SESSION_OK)
+				{
+					taken[side] = 1;
+				}
+				else
+				{
+					CHECK(result == NATIVE_LOCKSTEP_SESSION_STALL);
+				}
+			}
+		}
+		CHECK(taken[0] && taken[1]);
+
+		for (side = 0; side < 2u; side++)
+		{
+			struct NativeCanonicalStateV4 state;
+
+			CHECK(NativeLockstepPeerLinkFixture_MakeState(&state, frame));
+			CHECK(NativeLockstepSession_RecordLocalDigests(NativeLockstepPeerLink_Session(links[side]), &state));
+		}
+	}
+
+	for (side = 0; side < 2u; side++)
+	{
+		struct NativeLockstepPeerLink *receiver = links[1u - side];
+		struct NativeLockstepSession *session = NativeLockstepPeerLink_Session(receiver);
+
+		PumpPollUntilAuxTotal(receiver, 2u * AUX_INTERLEAVE_FRAME_COUNT);
+		CHECK(NativeLockstepPeerLink_Mode(receiver) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+		CHECK(NativeLockstepSession_FirstFault(session) == NULL);
+		CHECK(NativeLockstepSession_FirstDivergence(session) == NULL);
+		CHECK(NativeLockstepPeerLink_AuxCount(receiver) == 2u * AUX_INTERLEAVE_FRAME_COUNT);
+		CHECK(NativeLockstepPeerLink_DroppedAuxCount(receiver) == 0u);
+		for (i = 0; i < 2u * AUX_INTERLEAVE_FRAME_COUNT; i++)
+		{
+			CHECK(ExpectTakeAux(receiver, sides[side], i) == 0);
+		}
+		CHECK(NativeLockstepPeerLink_AuxCount(receiver) == 0u);
+	}
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+#define AUX_OVERFLOW_SEND_COUNT 20u
+
+/*
+ * Overflow: A sends AUX_OVERFLOW_SEND_COUNT aux datagrams before B polls at
+ * all; B drains them over several Poll calls (the per-call budget is
+ * NATIVE_LOCKSTEP_PEER_LINK_POLL_BUDGET). The inbox keeps the newest
+ * NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY in order and counts the rest.
+ */
+static int TestAuxOverflowKeepsNewest(void)
+{
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t payload[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	uint8_t out[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	size_t size = 0;
+	const uint32_t dropped = AUX_OVERFLOW_SEND_COUNT - NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY;
+	uint32_t i;
+
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)AUX_OVERFLOW_PORT_A, (uint16_t)AUX_OVERFLOW_PORT_B, &addrA, &addrB) == 0);
+
+	for (i = 0; i < AUX_OVERFLOW_SEND_COUNT; i++)
+	{
+		MakeAuxPayload(payload, 0xAu, i);
+		CHECK(NativeLockstepPeerLink_SendAux(&linkA, payload, sizeof(payload)) == 1);
+	}
+
+	PumpPollUntilAuxTotal(&linkB, AUX_OVERFLOW_SEND_COUNT);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkB) == dropped);
+	CHECK(dropped == 4u);
+
+	for (i = dropped; i < AUX_OVERFLOW_SEND_COUNT; i++)
+	{
+		CHECK(ExpectTakeAux(&linkB, 0xAu, i) == 0);
+	}
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_TakeAux(&linkB, out, sizeof(out), &size) == 0);
+	/* Taking does not reset the drop counter. */
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkB) == dropped);
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+/* SendAux and TakeAux argument, size, and mode refusals. */
+static int TestAuxRefusals(void)
+{
+	struct NativeLockstepPeerLink idle = {0};
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t big[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES + 1u];
+	uint8_t out[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	size_t size = 0;
+
+	/* NULL and never-opened links. */
+	CHECK(NativeLockstepPeerLink_AuxCount(NULL) == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(NULL) == 0u);
+	MakeAuxPayload(big, 0xAu, 0u);
+	CHECK(NativeLockstepPeerLink_SendAux(NULL, big, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES) == 0);
+	CHECK(NativeLockstepPeerLink_SendAux(&idle, big, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES) == 0);
+	CHECK(NativeLockstepPeerLink_TakeAux(NULL, out, sizeof(out), &size) == 0);
+	CHECK(NativeLockstepPeerLink_TakeAux(&idle, out, sizeof(out), &size) == 0);
+	CHECK(NativeLockstepPeerLink_Mode(&idle) == NATIVE_LOCKSTEP_PEER_LINK_IDLE);
+
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)AUX_REFUSAL_PORT_A, (uint16_t)AUX_REFUSAL_PORT_B, &addrA, &addrB) == 0);
+
+	/* Wrong sizes and NULL bytes are refused and change nothing. */
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, big, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES - 1u) == 0);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, big, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES + 1u) == 0);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, big, 0u) == 0);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, NULL, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES) == 0);
+	CHECK(NativeLockstepPeerLink_Mode(&linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	/* One good send, so TakeAux refusals can be shown to pop nothing. */
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, big, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES) == 1);
+	PumpPollUntilAuxTotal(&linkB, 1u);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 1u);
+
+	CHECK(NativeLockstepPeerLink_TakeAux(&linkB, NULL, sizeof(out), &size) == 0);
+	CHECK(NativeLockstepPeerLink_TakeAux(&linkB, out, sizeof(out), NULL) == 0);
+	size = 12345u;
+	CHECK(NativeLockstepPeerLink_TakeAux(&linkB, out, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES - 1u, &size) == 0);
+	CHECK(size == 12345u);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 1u);
+	CHECK(ExpectTakeAux(&linkB, 0xAu, 0u) == 0);
+	CHECK(NativeLockstepPeerLink_TakeAux(&linkB, out, sizeof(out), &size) == 0);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	/* A closed (IDLE again) link refuses to send. */
+	NativeLockstepPeerLink_Close(&linkA);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, big, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES) == 0);
+	CHECK(NativeLockstepPeerLink_Mode(&linkA) == NATIVE_LOCKSTEP_PEER_LINK_IDLE);
+
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+/*
+ * Close empties the inbox and zeroes the drop counter (idempotently, and
+ * safely on a zero-initialized struct), and a fresh Open on the same struct
+ * starts empty; the reopened pair's aux route works normally.
+ */
+static int TestAuxResetOnCloseAndReopen(void)
+{
+	struct NativeLockstepPeerLink zeroed = {0};
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t payload[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	uint8_t out[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	size_t size = 0;
+	uint32_t i;
+
+	NativeLockstepPeerLink_Close(&zeroed);
+	NativeLockstepPeerLink_Close(&zeroed);
+	CHECK(NativeLockstepPeerLink_AuxCount(&zeroed) == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&zeroed) == 0u);
+	CHECK(NativeLockstepPeerLink_Mode(&zeroed) == NATIVE_LOCKSTEP_PEER_LINK_IDLE);
+
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)AUX_RESET_PORT_A, (uint16_t)AUX_RESET_PORT_B, &addrA, &addrB) == 0);
+
+	/* Fill B's inbox past capacity so both the ring and the counter are
+	 * non-zero before Close. */
+	for (i = 0; i < NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY + 1u; i++)
+	{
+		MakeAuxPayload(payload, 0xAu, i);
+		CHECK(NativeLockstepPeerLink_SendAux(&linkA, payload, sizeof(payload)) == 1);
+	}
+	PumpPollUntilAuxTotal(&linkB, NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY + 1u);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkB) == 1u);
+
+	NativeLockstepPeerLink_Close(&linkB);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_IDLE);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_TakeAux(&linkB, out, sizeof(out), &size) == 0);
+	NativeLockstepPeerLink_Close(&linkB);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 0u);
+	NativeLockstepPeerLink_Close(&linkA);
+
+	/* Reopen both on the same structs and ports: empty from the start, and
+	 * still empty once RUNNING again. */
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)AUX_RESET_PORT_A, (uint16_t)AUX_RESET_PORT_B, &addrA, &addrB) == 0);
+	CHECK(NativeLockstepPeerLink_TakeAux(&linkB, out, sizeof(out), &size) == 0);
+
+	MakeAuxPayload(payload, 0xAu, 99u);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, payload, sizeof(payload)) == 1);
+	PumpPollUntilAuxTotal(&linkB, 1u);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 1u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkB) == 0u);
+	CHECK(ExpectTakeAux(&linkB, 0xAu, 99u) == 0);
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+/*
+ * 63- and 65-byte datagrams from the peer are neither aux datagrams nor
+ * wire records: dropped, inbox untouched, modes unchanged. A trailing
+ * genuine aux datagram on the same socket pair proves the odd ones were
+ * already consumed (and not stored) by the time it arrives.
+ */
+static int TestAuxOddSizesDropped(void)
+{
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t odd[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES + 1u];
+	uint8_t payload[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)AUX_ODD_SIZE_PORT_A, (uint16_t)AUX_ODD_SIZE_PORT_B, &addrA, &addrB) == 0);
+
+	memset(odd, 0x5A, sizeof(odd));
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, odd, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES - 1u));
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, odd, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES + 1u));
+	MakeAuxPayload(payload, 0xAu, 7u);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, payload, sizeof(payload)) == 1);
+
+	PumpPollUntilAuxTotal(&linkB, 1u);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 1u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkB) == 0u);
+	CHECK(ExpectTakeAux(&linkB, 0xAu, 7u) == 0);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_Mode(&linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+/*
+ * An aux-sized datagram from a sender other than the configured peer is
+ * discarded by the existing sender filter (TestSenderAddressFiltering's
+ * bystander construction), while the configured peer's own aux datagram is
+ * accepted normally.
+ */
+static int TestAuxForeignSenderDiscarded(void)
+{
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransport bystander = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t payload[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	uint32_t attempt;
+
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)AUX_FOREIGN_PORT_A, (uint16_t)AUX_FOREIGN_PORT_B, &addrA, &addrB) == 0);
+
+	CHECK(NativeUdpTransport_GlobalInit());
+	CHECK(NativeUdpTransport_Open(&bystander, (uint16_t)AUX_FOREIGN_PORT_BYSTANDER));
+
+	MakeAuxPayload(payload, 0xCu, 0u);
+	CHECK(NativeUdpTransport_Send(&bystander, &addrB, payload, sizeof(payload)));
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Poll(&linkB);
+	}
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkB) == 0u);
+
+	MakeAuxPayload(payload, 0xAu, 0u);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, payload, sizeof(payload)) == 1);
+	PumpPollUntilAuxTotal(&linkB, 1u);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 1u);
+	CHECK(ExpectTakeAux(&linkB, 0xAu, 0u) == 0);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 0u);
+
+	NativeUdpTransport_Close(&bystander);
+	NativeUdpTransport_GlobalShutdown();
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestEarlyBundleArrival() == 0);
 	CHECK(TestEarlyBundleCapacityBound() == 0);
 	CHECK(TestRetransmitBeforePollRegression() == 0);
 	CHECK(TestSenderAddressFiltering() == 0);
+	CHECK(TestAuxRoundTrip() == 0);
+	CHECK(TestAuxDroppedWhileHandshaking() == 0);
+	CHECK(TestAuxInterleavedWithBundles() == 0);
+	CHECK(TestAuxOverflowKeepsNewest() == 0);
+	CHECK(TestAuxRefusals() == 0);
+	CHECK(TestAuxResetOnCloseAndReopen() == 0);
+	CHECK(TestAuxOddSizesDropped() == 0);
+	CHECK(TestAuxForeignSenderDiscarded() == 0);
 	puts("native_lockstep_peer_link_test: passed");
 	return 0;
 }

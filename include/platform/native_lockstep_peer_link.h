@@ -40,6 +40,20 @@
 #define NATIVE_LOCKSTEP_PEER_LINK_EARLY_BUNDLE_CAPACITY NATIVE_LOCKSTEP_RING_CAPACITY
 
 /*
+ * Generic aux route (see the NativeLockstepPeerLink_Poll doc comment below):
+ * higher-layer aux datagrams are opaque to this module and are exactly
+ * NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES long, a width distinct from both wire
+ * records this link routes (the 284-byte handshake message and the 128-byte
+ * lockstep bundle), so routing by exact byte count stays unambiguous.
+ * Received ones wait in a bounded inbox of
+ * NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY entries until the caller takes them
+ * with NativeLockstepPeerLink_TakeAux. Both values are frozen by
+ * tests/native_lockstep_isolation_test.cmake.
+ */
+#define NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES 64u
+#define NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY 16u
+
+/*
  * REJECTED means the handshake ended in rejection (see
  * NativeLockstepPeerLink_HandshakeResult for the reason). FAULTED/DIVERGED
  * mirror the underlying NativeLockstepSession's FirstFault/FirstDivergence
@@ -106,14 +120,33 @@ struct NativeLockstepPeerLink
 	 * NativeLockstepPeerLink_DroppedEarlyBundleCount.
 	 */
 	uint32_t droppedEarlyBundleCount;
+	/*
+	 * Aux inbox, also private bookkeeping: a ring of received higher-layer
+	 * aux datagrams (each exactly NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES, opaque
+	 * to this module), filled by NativeLockstepPeerLink_Poll only while mode
+	 * is RUNNING and emptied, oldest first, by NativeLockstepPeerLink_TakeAux.
+	 * auxHead indexes the oldest entry and auxCount is the number held (never
+	 * more than NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY). When the ring is
+	 * full, Poll discards the oldest entry to make room for the newest one
+	 * (newest-wins, which suits senders that replicate their whole state in
+	 * every datagram) and increments droppedAuxCount, readable through
+	 * NativeLockstepPeerLink_DroppedAuxCount. A successful
+	 * NativeLockstepPeerLink_Open and every NativeLockstepPeerLink_Close
+	 * reset the ring and the counter.
+	 */
+	uint8_t auxBytes[NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY][NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	uint32_t auxHead;
+	uint32_t auxCount;
+	uint32_t droppedAuxCount;
 };
 
 /*
  * Calls NativeUdpTransport_GlobalInit, opens the transport on localPort,
  * stores the peer address, calls NativeLockstepHandshake_Init then _Begin
- * with proposedConfig/localRole, stores inputDelay, sets mode HANDSHAKING,
- * and immediately composes and sends the first HELLO over the real socket
- * to the peer address. Returns 0 and cleans up anything partially opened
+ * with proposedConfig/localRole, stores inputDelay, empties the aux inbox
+ * and zeroes droppedAuxCount (so no aux datagram or count from a previous
+ * link survives), sets mode HANDSHAKING, and immediately composes and sends
+ * the first HELLO over the real socket to the peer address. Returns 0 and cleans up anything partially opened
  * (transport, global init) on any failure -- a NULL argument, a bad
  * transport open, a handshake Begin rejection (bad role, invalid config, a
  * role not present in the config), or a failure composing/sending the first
@@ -213,8 +246,19 @@ void NativeLockstepPeerLink_Retransmit(struct NativeLockstepPeerLink *link);
  *     NativeLockstepPeerLink_DroppedEarlyBundleCount, so the loss is
  *     observable rather than only surfacing much later as a
  *     TakeFrameInputs stall).
- *   - Any other byte count matches neither wire record at this seam and is
- *     dropped.
+ *   - Exactly NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES (64): a higher-layer aux
+ *     datagram, opaque to this module. While mode is RUNNING it is copied,
+ *     unmodified, to the back of the aux inbox for
+ *     NativeLockstepPeerLink_TakeAux; if the inbox already holds
+ *     NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY entries, the oldest entry is
+ *     discarded first and droppedAuxCount increments (readable through
+ *     NativeLockstepPeerLink_DroppedAuxCount). While mode is still
+ *     HANDSHAKING it is dropped exactly like an unknown byte count, and not
+ *     counted. This route never touches the handshake, the session, or link
+ *     mode, and it is subject to the same sender-address filter as the
+ *     other two.
+ *   - Any other byte count matches none of the three routes at this seam
+ *     and is dropped.
  * If handling a datagram makes link mode become terminal (REJECTED,
  * FAULTED, or DIVERGED) partway through the drain budget, this call stops
  * draining immediately rather than inspecting further already-waiting
@@ -248,6 +292,36 @@ enum NativeLockstepPeerLinkMode NativeLockstepPeerLink_Mode(const struct NativeL
 uint32_t NativeLockstepPeerLink_DroppedEarlyBundleCount(const struct NativeLockstepPeerLink *link);
 
 /*
+ * Sends one higher-layer aux datagram, opaque to this module, to the peer
+ * address. Requires a non-NULL link and bytes, mode RUNNING, and size
+ * exactly NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES. Returns 1 on a successful
+ * send and 0 otherwise; never changes link state either way (a failed send
+ * is simply lossy, like UDP itself).
+ */
+int NativeLockstepPeerLink_SendAux(struct NativeLockstepPeerLink *link, const uint8_t *bytes, size_t size);
+
+/*
+ * Pops the oldest aux datagram from the aux inbox (see the
+ * NativeLockstepPeerLink_Poll doc comment above) into out, stores
+ * NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES in *sizeOut, and returns 1. Returns 0
+ * and pops nothing when the inbox is empty, when link, out, or sizeOut is
+ * NULL, or when capacity is smaller than NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES.
+ * Works in every mode, so entries received before a terminal transition can
+ * still be read.
+ */
+int NativeLockstepPeerLink_TakeAux(struct NativeLockstepPeerLink *link, uint8_t *out, size_t capacity, size_t *sizeOut);
+
+/* Number of aux datagrams currently waiting in the aux inbox (at most
+ * NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY). Returns 0 for a NULL link. */
+uint32_t NativeLockstepPeerLink_AuxCount(const struct NativeLockstepPeerLink *link);
+
+/* Number of aux datagrams NativeLockstepPeerLink_Poll has discarded because
+ * the aux inbox was full (oldest-discarded, newest-wins) since the last
+ * successful Open or Close. Aux datagrams dropped for arriving while not
+ * RUNNING are not counted. Returns 0 for a NULL link. */
+uint32_t NativeLockstepPeerLink_DroppedAuxCount(const struct NativeLockstepPeerLink *link);
+
+/*
  * Non-const accessor to the underlying session, so the caller can call
  * SubmitLocalInput, RecordLocalDigests, TakeFrameInputs, FirstDivergence,
  * and FirstFault directly on it once mode is RUNNING; this module does not
@@ -267,7 +341,9 @@ const struct NativeLockstepHandshakeResult *NativeLockstepPeerLink_HandshakeResu
  * Closes the transport and calls NativeUdpTransport_GlobalShutdown, but only
  * when this link's own Open actually performed the matching GlobalInit;
  * safe to call on a never-opened link (e.g. a zero-initialized struct) or an
- * already-closed one, and safe to call twice in a row. Leaves mode IDLE.
+ * already-closed one, and safe to call twice in a row. Always empties the
+ * aux inbox and zeroes droppedAuxCount, so nothing received on this link
+ * survives into a later Open. Leaves mode IDLE.
  */
 void NativeLockstepPeerLink_Close(struct NativeLockstepPeerLink *link);
 
