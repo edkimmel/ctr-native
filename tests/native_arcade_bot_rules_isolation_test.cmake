@@ -18,6 +18,29 @@
 # when both words are 0. Both sides are parsed here, so a change to either
 # fails this test. The V1 tag, version, and encoded size are frozen: a change
 # is a new bot-rules version.
+#
+# The ONE_CAB (1P) rules (RS-1 both profiles, RS-19 per-profile encoding,
+# RS-20 LOAD_Robots1P bots) mirror retail too: NATIVE_ARCADE_BOT_RULES_1P_
+# CANDIDATE_COUNT must equal LOAD_CHARACTER_ID_COUNT in
+# include/namespace_Load.h (8), and the LOAD_Robots1P body in
+# game/LOAD/LOAD_Assets.c is pinned statement by statement (the human in
+# characterIDs[0], the loop from i = 1 below LOAD_CHARACTER_ID_COUNT with
+# newCharacterID++ in the increment, the skip of the human's ID, and
+# characterIDs[i] = newCharacterID), so a retail change fails this test.
+# LOAD_Robots1P must be defined exactly once across game/. Its 1P arcade call
+# site in game/LOAD/LOAD_Assets.c is pinned too: the guard
+# `if ((gameMode1 & (TIME_TRIAL | MAIN_MENU)) != MAIN_MENU)` around
+# `LOAD_Robots1P(data.characterIDs[0]);`, so the human's character is the
+# rule's input. The 1P shape is pinned in game/MAIN/MainInit.c
+# MainInit_Drivers: the branch `else if (numPlyrCurrGame == 1)` assigning
+# `numDrivers = 8;` and the single bot spawn loop
+# `for (int i = numPlyrCurrGame; i < numDrivers; i++)` calling
+# `BOTS_Driver_Init(i);`. The parsed values are tied to the header: the
+# branch's player count to NATIVE_ARCADE_BOT_RULES_1P_HUMAN_COUNT and
+# NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT (1, the loop starts at
+# numPlyrCurrGame), its driver count to NATIVE_ARCADE_BOT_RULES_1P_DRIVER_COUNT
+# (8), and NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT to their difference (7). The
+# 1P tag and 1P encoded size are frozen like V1's.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade bot rules isolation")
@@ -285,3 +308,206 @@ ctr_header_define(NATIVE_ARCADE_BOT_RULES_V1_VERSION header_version)
 ctr_require_equal("NATIVE_ARCADE_BOT_RULES_V1_VERSION" "${header_version}" "1")
 ctr_header_define(NATIVE_ARCADE_BOT_RULES_V1_ENCODED_BYTES header_encoded_bytes)
 ctr_require_equal("NATIVE_ARCADE_BOT_RULES_V1_ENCODED_BYTES" "${header_encoded_bytes}" "111")
+
+# 14. Frozen 1P V1 identity: the 1P tag and the 1P encoded size. The tag
+#     literal appears only in the header's define (the source check above
+#     covers every "CTRN arcade bot rules" literal).
+string(REGEX MATCHALL "#define NATIVE_ARCADE_BOT_RULES_1P_V1_TAG [^\r\n]*" tag_1p_defines "${module_header}")
+list(LENGTH tag_1p_defines tag_1p_define_count)
+if(NOT tag_1p_define_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: NATIVE_ARCADE_BOT_RULES_1P_V1_TAG must be defined exactly once (found ${tag_1p_define_count})")
+endif()
+if(NOT tag_1p_defines MATCHES "^#define NATIVE_ARCADE_BOT_RULES_1P_V1_TAG \"CTRN arcade bot rules 1P v1\"[ \t]*$")
+    message(FATAL_ERROR "${prefix}: NATIVE_ARCADE_BOT_RULES_1P_V1_TAG is frozen as \"CTRN arcade bot rules 1P v1\" (found '${tag_1p_defines}')")
+endif()
+ctr_header_define(NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES header_1p_encoded_bytes)
+ctr_require_equal("NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES" "${header_1p_encoded_bytes}" "93")
+
+# 15. The 1P candidate count is LOAD_CHARACTER_ID_COUNT, the loop bound of
+#     LOAD_Robots1P, initialized exactly once in include/namespace_Load.h.
+ctr_read_source("include/namespace_Load.h" load_header)
+string(REGEX MATCHALL "LOAD_CHARACTER_ID_COUNT[ \t]*=[ \t]*[^,\r\n]*" load_count_defs "${load_header}")
+list(LENGTH load_count_defs load_count_def_count)
+if(NOT load_count_def_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: LOAD_CHARACTER_ID_COUNT must be initialized exactly once in include/namespace_Load.h (found ${load_count_def_count})")
+endif()
+if(NOT load_count_defs MATCHES "^LOAD_CHARACTER_ID_COUNT[ \t]*=[ \t]*([0-9]+)[ \t]*$")
+    message(FATAL_ERROR "${prefix}: LOAD_CHARACTER_ID_COUNT in include/namespace_Load.h is not a decimal literal (found '${load_count_defs}')")
+endif()
+set(retail_character_id_count "${CMAKE_MATCH_1}")
+ctr_header_define(NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT header_1p_candidate_count)
+ctr_require_equal("NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT vs LOAD_CHARACTER_ID_COUNT" "${header_1p_candidate_count}"
+    "${retail_character_id_count}")
+ctr_require_equal("NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT" "${header_1p_candidate_count}" "8")
+
+# 16. The LOAD_Robots1P body in game/LOAD/LOAD_Assets.c: defined exactly
+#     once across game/ (and so nowhere else), and every statement of the
+#     rule the module mirrors is present, in order, with nothing added or
+#     removed. The body runs from the signature to the first closing brace at
+#     the start of a line. Every ';' in it is mapped to '@' first, so the
+#     value is never split as a CMake list and the patterns below match '@'
+#     where C has ';'.
+set(robots1p_definition_pattern "LOAD_Robots1P[ \t]*\\([ \t]*int[ \t][^);{]*\\)[ \t\r\n]*\\{")
+file(GLOB_RECURSE game_sources RELATIVE "${repo}" "${repo}/game/*.c" "${repo}/game/*.h")
+set(robots1p_definition_count 0)
+set(robots1p_definition_files "")
+foreach(relative_path IN LISTS game_sources)
+    file(READ "${repo}/${relative_path}" game_source)
+    string(FIND "${game_source}" "LOAD_Robots1P" mention_at)
+    if(mention_at EQUAL -1)
+        continue()
+    endif()
+    string(REGEX MATCHALL "${robots1p_definition_pattern}" definitions "${game_source}")
+    list(LENGTH definitions definition_count)
+    if(definition_count GREATER 0)
+        math(EXPR robots1p_definition_count "${robots1p_definition_count} + ${definition_count}")
+        list(APPEND robots1p_definition_files "${relative_path}")
+    endif()
+endforeach()
+if(NOT robots1p_definition_count EQUAL 1 OR NOT "${robots1p_definition_files}" STREQUAL "game/LOAD/LOAD_Assets.c")
+    message(FATAL_ERROR "${prefix}: expected exactly one LOAD_Robots1P definition across game/, in game/LOAD/LOAD_Assets.c (found ${robots1p_definition_count} in '${robots1p_definition_files}')")
+endif()
+ctr_read_source("game/LOAD/LOAD_Assets.c" load_assets)
+set(robots1p_signature "void LOAD_Robots1P(int characterID)")
+string(FIND "${load_assets}" "${robots1p_signature}" robots1p_at)
+if(robots1p_at EQUAL -1)
+    message(FATAL_ERROR "${prefix}: missing '${robots1p_signature}' in game/LOAD/LOAD_Assets.c")
+endif()
+string(SUBSTRING "${load_assets}" "${robots1p_at}" -1 robots1p_rest)
+string(FIND "${robots1p_rest}" "\n}" robots1p_end)
+if(robots1p_end EQUAL -1)
+    message(FATAL_ERROR "${prefix}: could not find the end of LOAD_Robots1P in game/LOAD/LOAD_Assets.c")
+endif()
+math(EXPR robots1p_length "${robots1p_end} + 2")
+string(SUBSTRING "${robots1p_rest}" 0 "${robots1p_length}" robots1p_body)
+string(REPLACE ";" "@" robots1p_body "${robots1p_body}")
+
+set(ws "[ \t\r\n]*")
+set(robots1p_statement_0 "int[ \t]+newCharacterID${ws}=${ws}0${ws}@")
+set(robots1p_name_0 "int newCharacterID = 0")
+set(robots1p_statement_1 "data\\.characterIDs\\[0\\]${ws}=${ws}characterID${ws}@")
+set(robots1p_name_1 "data.characterIDs[0] = characterID")
+set(robots1p_statement_2
+    "for${ws}\\(${ws}int[ \t]+i${ws}=${ws}1${ws}@${ws}i${ws}<${ws}LOAD_CHARACTER_ID_COUNT${ws}@${ws}i\\+\\+${ws},${ws}newCharacterID\\+\\+${ws}\\)")
+set(robots1p_name_2 "for (int i = 1, i < LOAD_CHARACTER_ID_COUNT, i++, newCharacterID++)")
+set(robots1p_statement_3 "if${ws}\\(${ws}newCharacterID${ws}==${ws}characterID${ws}\\)${ws}\\{${ws}newCharacterID\\+\\+${ws}@${ws}\\}")
+set(robots1p_name_3 "if (newCharacterID == characterID) { newCharacterID++ }")
+set(robots1p_statement_4 "data\\.characterIDs\\[i\\]${ws}=${ws}newCharacterID${ws}@")
+set(robots1p_name_4 "data.characterIDs[i] = newCharacterID")
+set(robots1p_previous -1)
+foreach(index RANGE 0 4)
+    string(REGEX MATCH "${robots1p_statement_${index}}" found "${robots1p_body}")
+    if(found STREQUAL "")
+        message(FATAL_ERROR "${prefix}: LOAD_Robots1P in game/LOAD/LOAD_Assets.c no longer holds '${robots1p_name_${index}}'")
+    endif()
+    string(FIND "${robots1p_body}" "${found}" found_at)
+    if(NOT found_at GREATER robots1p_previous)
+        message(FATAL_ERROR "${prefix}: LOAD_Robots1P in game/LOAD/LOAD_Assets.c: '${robots1p_name_${index}}' is out of order")
+    endif()
+    set(robots1p_previous "${found_at}")
+endforeach()
+
+# The whole body, whitespace removed, is exactly the rule.
+string(REGEX REPLACE "[ \t\r\n]+" "" robots1p_compact "${robots1p_body}")
+set(robots1p_expected
+    "voidLOAD_Robots1P(intcharacterID){intnewCharacterID=0@data.characterIDs[0]=characterID@for(inti=1@i<LOAD_CHARACTER_ID_COUNT@i++,newCharacterID++){if(newCharacterID==characterID){newCharacterID++@}data.characterIDs[i]=newCharacterID@}}")
+if(NOT robots1p_compact STREQUAL robots1p_expected)
+    message(FATAL_ERROR "${prefix}: the LOAD_Robots1P body in game/LOAD/LOAD_Assets.c changed; NativeArcadeBotRules_ExpectedBots1P mirrors it (found '${robots1p_compact}')")
+endif()
+
+# 17. The 1P call site in game/LOAD/LOAD_Assets.c: exactly one
+#     `LOAD_Robots1P(data.characterIDs[0]);`, the only LOAD_Robots1P call in
+#     the file, guarded by `if ((gameMode1 & (TIME_TRIAL | MAIN_MENU)) !=
+#     MAIN_MENU)`. The human's character (characterIDs[0]) is the rule's
+#     input, as ExpectedBots1P takes CAB1's character. ';' is mapped to '@'
+#     as in 16.
+string(REPLACE ";" "@" load_assets_mapped "${load_assets}")
+string(REGEX MATCHALL "LOAD_Robots1P${ws}\\([^)]*\\)${ws}@" robots1p_calls "${load_assets_mapped}")
+list(LENGTH robots1p_calls robots1p_call_count)
+if(NOT robots1p_call_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: expected exactly one LOAD_Robots1P call in game/LOAD/LOAD_Assets.c (found ${robots1p_call_count})")
+endif()
+if(NOT robots1p_calls MATCHES "^LOAD_Robots1P${ws}\\(${ws}data\\.characterIDs\\[0\\]${ws}\\)${ws}@$")
+    message(FATAL_ERROR "${prefix}: the LOAD_Robots1P call in game/LOAD/LOAD_Assets.c must be 'LOAD_Robots1P(data.characterIDs[0]);' (found '${robots1p_calls}')")
+endif()
+set(robots1p_call_site_pattern
+    "if${ws}\\(${ws}\\(${ws}gameMode1${ws}&${ws}\\(${ws}TIME_TRIAL${ws}\\|${ws}MAIN_MENU${ws}\\)${ws}\\)${ws}!=${ws}MAIN_MENU${ws}\\)${ws}\\{${ws}LOAD_Robots1P${ws}\\(${ws}data\\.characterIDs\\[0\\]${ws}\\)${ws}@${ws}\\}")
+string(REGEX MATCHALL "${robots1p_call_site_pattern}" robots1p_call_sites "${load_assets_mapped}")
+list(LENGTH robots1p_call_sites robots1p_call_site_count)
+if(NOT robots1p_call_site_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: the LOAD_Robots1P call in game/LOAD/LOAD_Assets.c must sit alone in 'if ((gameMode1 & (TIME_TRIAL | MAIN_MENU)) != MAIN_MENU) { ... }' (found ${robots1p_call_site_count})")
+endif()
+
+# 18. The 1P shape in game/MAIN/MainInit.c MainInit_Drivers: defined exactly
+#     once; the branch `else if (numPlyrCurrGame == <players>) { numDrivers =
+#     <drivers>; }` appears exactly once, before the single bot spawn loop
+#     `for (int i = numPlyrCurrGame; i < numDrivers; i++) { ...
+#     BOTS_Driver_Init(i); }`, and BOTS_Driver_Init is called nowhere else in
+#     the function. So the first bot slot is numPlyrCurrGame = <players>, and
+#     the bots fill slots <players>..<drivers> - 1. The body runs from the
+#     signature to the first closing brace at the start of a line; ';' is
+#     mapped to '@' as in 16.
+ctr_read_source("game/MAIN/MainInit.c" main_init)
+set(drivers_signature "void MainInit_Drivers(struct GameTracker *gGT)")
+string(REGEX MATCHALL "void[ \t]+MainInit_Drivers[ \t]*\\(" drivers_definitions "${main_init}")
+list(LENGTH drivers_definitions drivers_definition_count)
+string(FIND "${main_init}" "${drivers_signature}" drivers_at)
+if(NOT drivers_definition_count EQUAL 1 OR drivers_at EQUAL -1)
+    message(FATAL_ERROR "${prefix}: expected exactly one '${drivers_signature}' in game/MAIN/MainInit.c (found ${drivers_definition_count})")
+endif()
+string(SUBSTRING "${main_init}" "${drivers_at}" -1 drivers_rest)
+string(FIND "${drivers_rest}" "\n}" drivers_end)
+if(drivers_end EQUAL -1)
+    message(FATAL_ERROR "${prefix}: could not find the end of MainInit_Drivers in game/MAIN/MainInit.c")
+endif()
+math(EXPR drivers_length "${drivers_end} + 2")
+string(SUBSTRING "${drivers_rest}" 0 "${drivers_length}" drivers_body)
+string(REPLACE ";" "@" drivers_body "${drivers_body}")
+
+set(one_player_branch_pattern
+    "else${ws}if${ws}\\(${ws}numPlyrCurrGame${ws}==${ws}[0-9]+${ws}\\)${ws}\\{${ws}numDrivers${ws}=${ws}[0-9]+${ws}@${ws}\\}")
+string(REGEX MATCHALL "${one_player_branch_pattern}" one_player_branches "${drivers_body}")
+list(LENGTH one_player_branches one_player_branch_count)
+if(NOT one_player_branch_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: expected exactly one 'else if (numPlyrCurrGame == N) { numDrivers = M; }' in MainInit_Drivers, game/MAIN/MainInit.c (found ${one_player_branch_count})")
+endif()
+string(REGEX MATCH
+    "numPlyrCurrGame${ws}==${ws}([0-9]+)${ws}\\)${ws}\\{${ws}numDrivers${ws}=${ws}([0-9]+)" found "${one_player_branches}")
+set(retail_1p_players "${CMAKE_MATCH_1}")
+set(retail_1p_drivers "${CMAKE_MATCH_2}")
+string(FIND "${drivers_body}" "${one_player_branches}" one_player_branch_at)
+
+set(bot_loop_pattern
+    "for${ws}\\(${ws}int[ \t]+i${ws}=${ws}numPlyrCurrGame${ws}@${ws}i${ws}<${ws}numDrivers${ws}@${ws}i\\+\\+${ws}\\)${ws}\\{[^{}]*BOTS_Driver_Init${ws}\\(${ws}i${ws}\\)${ws}@[^{}]*\\}")
+string(REGEX MATCHALL "${bot_loop_pattern}" bot_loops "${drivers_body}")
+list(LENGTH bot_loops bot_loop_count)
+if(NOT bot_loop_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: expected exactly one 'for (int i = numPlyrCurrGame; i < numDrivers; i++) { BOTS_Driver_Init(i); }' in MainInit_Drivers, game/MAIN/MainInit.c (found ${bot_loop_count})")
+endif()
+string(REGEX MATCHALL "BOTS_Driver_Init${ws}\\(" bot_inits "${drivers_body}")
+list(LENGTH bot_inits bot_init_count)
+if(NOT bot_init_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: MainInit_Drivers in game/MAIN/MainInit.c must call BOTS_Driver_Init exactly once, in the bot spawn loop (found ${bot_init_count})")
+endif()
+string(FIND "${drivers_body}" "${bot_loops}" bot_loop_at)
+if(NOT one_player_branch_at LESS bot_loop_at)
+    message(FATAL_ERROR "${prefix}: in MainInit_Drivers, game/MAIN/MainInit.c, the 1P numDrivers branch must precede the bot spawn loop")
+endif()
+
+ctr_header_define(NATIVE_ARCADE_BOT_RULES_1P_HUMAN_COUNT header_1p_human_count)
+ctr_header_define(NATIVE_ARCADE_BOT_RULES_1P_DRIVER_COUNT header_1p_driver_count)
+ctr_header_define(NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT header_1p_first_bot_slot)
+ctr_header_define(NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT header_1p_bot_count)
+ctr_require_equal("NATIVE_ARCADE_BOT_RULES_1P_HUMAN_COUNT vs the MainInit_Drivers 1P branch's numPlyrCurrGame"
+    "${header_1p_human_count}" "${retail_1p_players}")
+ctr_require_equal("NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT vs the bot loop start numPlyrCurrGame in the 1P branch"
+    "${header_1p_first_bot_slot}" "${retail_1p_players}")
+ctr_require_equal("NATIVE_ARCADE_BOT_RULES_1P_DRIVER_COUNT vs the MainInit_Drivers 1P branch's numDrivers"
+    "${header_1p_driver_count}" "${retail_1p_drivers}")
+math(EXPR retail_1p_bots "${retail_1p_drivers} - ${retail_1p_players}")
+ctr_require_equal("NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT vs numDrivers - numPlyrCurrGame in the 1P branch"
+    "${header_1p_bot_count}" "${retail_1p_bots}")
+ctr_require_equal("NATIVE_ARCADE_BOT_RULES_1P_HUMAN_COUNT" "${header_1p_human_count}" "1")
+ctr_require_equal("NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT" "${header_1p_first_bot_slot}" "1")
+ctr_require_equal("NATIVE_ARCADE_BOT_RULES_1P_DRIVER_COUNT" "${header_1p_driver_count}" "8")
+ctr_require_equal("NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT" "${header_1p_bot_count}" "7")

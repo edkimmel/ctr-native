@@ -73,6 +73,61 @@ static const uint8_t k_goldenDigest[NATIVE_SHA256_DIGEST_BYTES] = {
 };
 
 /*
+ * The full 1P V1 encoding (ARCADE_ONE_CAB), spelled out by hand from the
+ * header's 1P offset table (not produced by the module). Frozen: changing any
+ * byte changes the bot rules digest every ONE_CAB config carries.
+ */
+static const uint8_t k_golden1PEncoding[NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES] = {
+	/* 0: tag "CTRN arcade bot rules 1P v1" */
+	0x43, 0x54, 0x52, 0x4e, 0x20, 0x61, 0x72, 0x63, 0x61, 0x64, 0x65, 0x20, 0x62, 0x6f,
+	0x74, 0x20, 0x72, 0x75, 0x6c, 0x65, 0x73, 0x20, 0x31, 0x50, 0x20, 0x76, 0x31,
+	/* 27: rulesVersion 1 */
+	0x01, 0x00, 0x00, 0x00,
+	/* 31: profile ARCADE_ONE_CAB */
+	0x02, 0x00, 0x00, 0x00,
+	/* 35: slot roles CAB1, BOT x7 */
+	0x01, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+	/* 43: humanCount, driverCount, firstBotSlot, botCount */
+	0x01, 0x08, 0x01, 0x07,
+	/* 47: difficultyCount, difficulty table */
+	0x03, 0x50, 0xa0, 0xf0,
+	/* 51: difficultyPolicy, botCharacterPolicy (retail 1P), modePolicy */
+	0x01, 0x02, 0x01,
+	/* 54: candidateCount, candidates in LOAD_Robots1P walk order */
+	0x08, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+	/* 63: rngDerivationVersion 1 */
+	0x01, 0x00, 0x00, 0x00,
+	/* 67: seed stream tag MATCH_SETUP 0x4d415443 */
+	0x43, 0x54, 0x41, 0x4d,
+	/* 71: seedTargetCount, target codes */
+	0x05, 0x01, 0x02, 0x03, 0x04, 0x05,
+	/* 77: randomNumberMask 0xFFFF */
+	0xff, 0xff, 0x00, 0x00,
+	/* 81: advRngFallback0 0x30215400 */
+	0x00, 0x54, 0x21, 0x30,
+	/* 85: advRngFallback1 0x493583fe */
+	0xfe, 0x83, 0x35, 0x49,
+	/* 89: reservedStreamMask 0x3FF */
+	0xff, 0x03, 0x00, 0x00,
+};
+
+/*
+ * SHA-256 of k_golden1PEncoding,
+ * 8d06649af8aa2594fbaca395aba3ebf1cce24689f8c193f5055f4441f1d8b0e3. Obtained
+ * independently of this module: the 93 bytes above were written to a file
+ * with the shell's printf and hashed with both `sha256sum` and
+ * `certutil -hashfile <file> SHA256` (identical results); the module's own
+ * Encode1PV1 output was also dumped once by a throwaway program and hashed
+ * the same way (identical). The dumps were not committed. At review the
+ * digest was cross-checked once more with `sha256sum` over the 93 bytes
+ * hand-spelled in a printf format string (identical). Frozen.
+ */
+static const uint8_t k_golden1PDigest[NATIVE_SHA256_DIGEST_BYTES] = {
+	0x8d, 0x06, 0x64, 0x9a, 0xf8, 0xaa, 0x25, 0x94, 0xfb, 0xac, 0xa3, 0x95, 0xab, 0xa3, 0xeb, 0xf1,
+	0xcc, 0xe2, 0x46, 0x89, 0xf8, 0xc1, 0x93, 0xf5, 0x05, 0x5f, 0x44, 0x41, 0xf1, 0xd8, 0xb0, 0xe3,
+};
+
+/*
  * The first five NextU32 draws of the MATCH_SETUP stream (global slot) for
  * masterSeed FIXTURE_SEED, derivation version 1, and their mapping. Obtained
  * independently with a Perl (Digest::SHA, Math::BigInt) reference of the
@@ -399,6 +454,241 @@ static int TestExpectedBots2P(void)
 	return 0;
 }
 
+static int TestEncoding1P(void)
+{
+	uint8_t buffer[NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES + 16u];
+	uint8_t digest[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t reference[NATIVE_SHA256_DIGEST_BYTES];
+	struct NativeCodecWriter writer;
+	struct NativeCodecDigest64 fnvWriter;
+	struct NativeCodecDigest64 fnvReference;
+	struct NativeMatchConfigV1 oneCab;
+	struct NativeSha256 sha;
+
+	CHECK(NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES == 93u);
+	CHECK(NativeArcadeBotRules_EncodedSize1PV1() == NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES);
+	CHECK(sizeof(NATIVE_ARCADE_BOT_RULES_1P_V1_TAG) - 1u == 27u);
+	CHECK(memcmp(k_golden1PEncoding, NATIVE_ARCADE_BOT_RULES_1P_V1_TAG, 27u) == 0);
+	CHECK((NATIVE_ARCADE_BOT_RULES_1P_HUMAN_COUNT == 1u) && (NATIVE_ARCADE_BOT_RULES_1P_DRIVER_COUNT == 8u) &&
+	      (NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT == 1u) && (NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT == 7u) &&
+	      (NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT == 8u) && (NATIVE_ARCADE_BOT_RULES_MAX_BOT_COUNT == 7u));
+
+	/* The whole encoding, byte for byte, at offset 0. */
+	memset(buffer, SENTINEL_BYTE, sizeof(buffer));
+	NativeCodecWriter_Init(&writer, buffer, sizeof(buffer), NULL);
+	CHECK(NativeArcadeBotRules_Encode1PV1(&writer) == 1);
+	CHECK(NativeCodecWriter_Ok(&writer));
+	CHECK(NativeCodecWriter_Size(&writer) == NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES);
+	CHECK(memcmp(buffer, k_golden1PEncoding, sizeof(k_golden1PEncoding)) == 0);
+	CHECK(IsAllByte(&buffer[NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES], 16u, SENTINEL_BYTE));
+
+	/* The roles in the encoding are the live ONE_CAB profile, not a copy. */
+	memset(&oneCab, 0, sizeof(oneCab));
+	NativeMatchConfigV1_InitArcadeOneCab(&oneCab);
+	for (uint32_t i = 0; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		CHECK(buffer[35u + i] == oneCab.slots[i].role);
+	}
+	/* The candidates are the base characters. */
+	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT; i++)
+	{
+		CHECK(buffer[55u + i] == NativeMatchSelect_CharacterAt(i));
+	}
+
+	/* At a nonzero offset, after other bytes, with a running digest. */
+	memset(buffer, SENTINEL_BYTE, sizeof(buffer));
+	NativeCodecDigest64_Init(&fnvWriter);
+	NativeCodecWriter_Init(&writer, buffer, sizeof(buffer), &fnvWriter);
+	CHECK(NativeCodecWriter_WriteU32(&writer, UINT32_C(0x01020304)) == 1);
+	CHECK(NativeArcadeBotRules_Encode1PV1(&writer) == 1);
+	CHECK(NativeCodecWriter_Size(&writer) == 4u + NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES);
+	CHECK(memcmp(&buffer[4], k_golden1PEncoding, sizeof(k_golden1PEncoding)) == 0);
+	NativeCodecDigest64_Init(&fnvReference);
+	NativeCodecDigest64_Update(&fnvReference, buffer, 4u + NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES);
+	CHECK(fnvWriter.value == fnvReference.value);
+
+	/* The golden digest, and SHA-256 of the golden bytes via NativeSha256. */
+	memset(digest, SENTINEL_BYTE, sizeof(digest));
+	CHECK(NativeArcadeBotRules_Digest1PV1(digest) == 1);
+	CHECK(memcmp(digest, k_golden1PDigest, sizeof(digest)) == 0);
+	NativeSha256_Init(&sha);
+	NativeSha256_Update(&sha, k_golden1PEncoding, sizeof(k_golden1PEncoding));
+	NativeSha256_Final(&sha, reference);
+	CHECK(memcmp(reference, k_golden1PDigest, sizeof(reference)) == 0);
+
+	/* Deterministic across calls, and distinct from the TWO_CAB digest. */
+	memset(reference, 0, sizeof(reference));
+	CHECK(NativeArcadeBotRules_Digest1PV1(reference) == 1);
+	CHECK(memcmp(reference, digest, sizeof(digest)) == 0);
+	CHECK(memcmp(k_golden1PDigest, k_goldenDigest, sizeof(k_goldenDigest)) != 0);
+
+	CHECK(NativeArcadeBotRules_Digest1PV1(NULL) == 0);
+	return 0;
+}
+
+static int TestEncode1PTransactional(void)
+{
+	uint8_t buffer[NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES + 8u];
+	struct NativeCodecWriter writer;
+	struct NativeCodecWriter before;
+	struct NativeCodecDigest64 fnv;
+
+	CHECK(NativeArcadeBotRules_Encode1PV1(NULL) == 0);
+
+	/* One byte short of room, from offset 0. */
+	memset(buffer, SENTINEL_BYTE, sizeof(buffer));
+	NativeCodecDigest64_Init(&fnv);
+	NativeCodecWriter_Init(&writer, buffer, NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES - 1u, &fnv);
+	before = writer;
+	CHECK(NativeArcadeBotRules_Encode1PV1(&writer) == 0);
+	CHECK(memcmp(&writer, &before, sizeof(writer)) == 0);
+	CHECK(IsAllByte(buffer, sizeof(buffer), SENTINEL_BYTE));
+	{
+		struct NativeCodecDigest64 initial;
+
+		NativeCodecDigest64_Init(&initial);
+		CHECK(fnv.value == initial.value);
+	}
+
+	/* One byte short of room after earlier bytes. */
+	memset(buffer, SENTINEL_BYTE, sizeof(buffer));
+	NativeCodecWriter_Init(&writer, buffer, NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES + 3u, NULL);
+	CHECK(NativeCodecWriter_WriteU32(&writer, 0) == 1);
+	before = writer;
+	CHECK(NativeArcadeBotRules_Encode1PV1(&writer) == 0);
+	CHECK(memcmp(&writer, &before, sizeof(writer)) == 0);
+	CHECK(IsAllByte(&buffer[4], sizeof(buffer) - 4u, SENTINEL_BYTE));
+
+	/* Room for the 1P encoding but not the (longer) V1 one: only 1P fits. */
+	NativeCodecWriter_Init(&writer, buffer, NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES, NULL);
+	before = writer;
+	CHECK(NativeArcadeBotRules_EncodeV1(&writer) == 0);
+	CHECK(memcmp(&writer, &before, sizeof(writer)) == 0);
+
+	/* Exactly enough room succeeds. */
+	CHECK(NativeArcadeBotRules_Encode1PV1(&writer) == 1);
+	CHECK(NativeCodecWriter_Size(&writer) == NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES);
+
+	/* A failed writer is refused and left alone. */
+	memset(buffer, SENTINEL_BYTE, sizeof(buffer));
+	NativeCodecWriter_Init(&writer, buffer, sizeof(buffer), NULL);
+	writer.failed = 1;
+	before = writer;
+	CHECK(NativeArcadeBotRules_Encode1PV1(&writer) == 0);
+	CHECK(memcmp(&writer, &before, sizeof(writer)) == 0);
+	CHECK(IsAllByte(buffer, sizeof(buffer), SENTINEL_BYTE));
+
+	/* An offset beyond capacity is refused. */
+	NativeCodecWriter_Init(&writer, buffer, sizeof(buffer), NULL);
+	writer.offset = sizeof(buffer) + 1u;
+	before = writer;
+	CHECK(NativeArcadeBotRules_Encode1PV1(&writer) == 0);
+	CHECK(memcmp(&writer, &before, sizeof(writer)) == 0);
+	CHECK(IsAllByte(buffer, sizeof(buffer), SENTINEL_BYTE));
+	return 0;
+}
+
+static int TestDigestForProfile(void)
+{
+	static const uint32_t badProfiles[] = { 0u, 3u, 0xffu, UINT32_MAX };
+	uint8_t digest[NATIVE_SHA256_DIGEST_BYTES];
+
+	memset(digest, SENTINEL_BYTE, sizeof(digest));
+	CHECK(NativeArcadeBotRules_DigestForProfileV1(NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB, digest) == 1);
+	CHECK(memcmp(digest, k_goldenDigest, sizeof(digest)) == 0);
+
+	memset(digest, SENTINEL_BYTE, sizeof(digest));
+	CHECK(NativeArcadeBotRules_DigestForProfileV1(NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB, digest) == 1);
+	CHECK(memcmp(digest, k_golden1PDigest, sizeof(digest)) == 0);
+
+	for (uint32_t i = 0; i < sizeof(badProfiles) / sizeof(badProfiles[0]); i++)
+	{
+		memset(digest, SENTINEL_BYTE, sizeof(digest));
+		CHECK(NativeArcadeBotRules_DigestForProfileV1(badProfiles[i], digest) == 0);
+		CHECK(IsAllByte(digest, sizeof(digest), SENTINEL_BYTE));
+	}
+	CHECK(NativeArcadeBotRules_DigestForProfileV1(NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB, NULL) == 0);
+	CHECK(NativeArcadeBotRules_DigestForProfileV1(NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB, NULL) == 0);
+	return 0;
+}
+
+/*
+ * Independent transcription of LOAD_Robots1P (game/LOAD/LOAD_Assets.c:61-76)
+ * on the retail array type: retail declares `s16 characterIDs[8]`
+ * (include/regionsEXE.h:2241), here int16_t characterIDs[8]; the loop bound
+ * LOAD_CHARACTER_ID_COUNT is 8 too.
+ */
+static void ReferenceRobots1P(int characterID, int16_t characterIDs[8])
+{
+	int newCharacterID = 0;
+
+	characterIDs[0] = (int16_t)characterID;
+
+	for (int i = 1; i < 8; i++, newCharacterID++)
+	{
+		if (newCharacterID == characterID)
+		{
+			newCharacterID++;
+		}
+
+		characterIDs[i] = (int16_t)newCharacterID;
+	}
+}
+
+static int TestExpectedBots1P(void)
+{
+	uint8_t bots[NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT];
+
+	for (uint32_t h = 0; h < NATIVE_MATCH_SELECT_CHARACTER_COUNT; h++)
+	{
+		const uint8_t human = NativeMatchSelect_CharacterAt(h);
+		int16_t characterIDs[8];
+		uint32_t seen = 0;
+
+		ReferenceRobots1P(human, characterIDs);
+		CHECK(characterIDs[0] == human);
+		memset(bots, SENTINEL_BYTE, sizeof(bots));
+		CHECK(NativeArcadeBotRules_ExpectedBots1P(human, bots) == 1);
+		for (uint32_t bot = 0; bot < NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT; bot++)
+		{
+			/* Slot FIRST_BOT_SLOT + bot is driver index 1 + bot of the retail array. */
+			CHECK((int16_t)bots[bot] == characterIDs[NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT + bot]);
+			CHECK(bots[bot] != human);
+			CHECK(bots[bot] < NATIVE_MATCH_SELECT_CHARACTER_COUNT);
+			CHECK((bot == 0) || (bots[bot - 1u] < bots[bot]));
+			seen |= 1u << bots[bot];
+		}
+		/* Every base character but the human, once each. */
+		CHECK((seen | (1u << human)) == 0xffu);
+		CHECK((seen & (1u << human)) == 0u);
+	}
+
+	/* Spot values: human 0 -> 1..7; human 7 -> 0..6; human 3 -> 0, 1, 2, 4, 5, 6, 7. */
+	CHECK(NativeArcadeBotRules_ExpectedBots1P(0, bots) == 1);
+	CHECK((bots[0] == 1) && (bots[1] == 2) && (bots[2] == 3) && (bots[3] == 4) && (bots[4] == 5) && (bots[5] == 6) &&
+	      (bots[6] == 7));
+	CHECK(NativeArcadeBotRules_ExpectedBots1P(7, bots) == 1);
+	CHECK((bots[0] == 0) && (bots[1] == 1) && (bots[2] == 2) && (bots[3] == 3) && (bots[4] == 4) && (bots[5] == 5) &&
+	      (bots[6] == 6));
+	CHECK(NativeArcadeBotRules_ExpectedBots1P(3, bots) == 1);
+	CHECK((bots[0] == 0) && (bots[1] == 1) && (bots[2] == 2) && (bots[3] == 4) && (bots[4] == 5) && (bots[5] == 6) &&
+	      (bots[6] == 7));
+
+	/* Non-base characters and a NULL output are rejected with the output untouched. */
+	{
+		static const uint8_t nonBase[] = { 8, 15, 0xff };
+
+		for (uint32_t i = 0; i < sizeof(nonBase); i++)
+		{
+			memset(bots, SENTINEL_BYTE, sizeof(bots));
+			CHECK(NativeArcadeBotRules_ExpectedBots1P(nonBase[i], bots) == 0);
+			CHECK(IsAllByte(bots, sizeof(bots), SENTINEL_BYTE));
+		}
+	}
+	CHECK(NativeArcadeBotRules_ExpectedBots1P(0, NULL) == 0);
+	return 0;
+}
+
 static int TestMapRetailSeeds(void)
 {
 	static const uint32_t draws[NATIVE_ARCADE_BOT_RULES_SEED_TARGET_COUNT] = {
@@ -631,7 +921,11 @@ static int TestValidateConfig(void)
 
 	CHECK(NativeArcadeBotRules_ValidateConfigV1(NULL) == 0);
 
-	/* ONE_CAB profile: a flipped profile field, and a well-formed ONE_CAB config. */
+	/*
+	 * ONE_CAB profile (RS-19): a flipped profile field on a TWO_CAB config is
+	 * rejected; a well-formed ONE_CAB config is rejected with the TWO_CAB
+	 * digest and accepted with its own Digest1PV1.
+	 */
 	config = valid;
 	config.profile = NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB;
 	CHECK(NativeArcadeBotRules_ValidateConfigV1(&config) == 0);
@@ -650,6 +944,13 @@ static int TestValidateConfig(void)
 		config.slots[i].characterID = (uint8_t)i;
 		config.slots[i].difficulty = i == 0 ? 0u : 0xa0u;
 	}
+	CHECK(ExpectRulesReject(&config) == 0);
+	CHECK(NativeArcadeBotRules_Digest1PV1(config.botRulesDigest) == 1);
+	CHECK(NativeArcadeBotRules_ValidateConfigV1(&config) == 1);
+
+	/* A TWO_CAB config carrying the 1P digest. */
+	config = valid;
+	CHECK(NativeArcadeBotRules_Digest1PV1(config.botRulesDigest) == 1);
 	CHECK(ExpectRulesReject(&config) == 0);
 
 	/* Mode fields. */
@@ -769,6 +1070,183 @@ static int TestValidateConfig(void)
 	return 0;
 }
 
+/*
+ * A hand-built ONE_CAB config with the 1P rules: the human in slot 0 at
+ * difficulty 0, and the bots of slots 1..7 from the independent LOAD_Robots1P
+ * transcription (not the module), all at botDifficulty.
+ */
+static int BuildValidOneCabConfig(struct NativeMatchConfigV1 *config, uint8_t human, uint8_t botDifficulty)
+{
+	int16_t characterIDs[8];
+
+	memset(config, 0, sizeof(*config));
+	NativeMatchConfigV1_InitArcadeOneCab(config);
+	config->trackID = 3;
+	config->lapCount = 3;
+	config->tickRateNumerator = 30;
+	config->tickRateDenominator = 1;
+	config->masterSeed = FIXTURE_SEED;
+	FillCounting(config->buildIdentity, sizeof(config->buildIdentity), 0x40u);
+	FillCounting(config->contentIdentity, sizeof(config->contentIdentity), 0x80u);
+	if (!NativeArcadeBotRules_Digest1PV1(config->botRulesDigest))
+	{
+		return 0;
+	}
+	ReferenceRobots1P(human, characterIDs);
+	for (uint32_t i = 0; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		config->slots[i].characterID = (uint8_t)characterIDs[i];
+		config->slots[i].difficulty = i == 0 ? 0u : botDifficulty;
+	}
+	return 1;
+}
+
+static int TestValidateConfig1P(void)
+{
+	struct NativeMatchConfigV1 valid;
+	struct NativeMatchConfigV1 config;
+	uint8_t twoCabDigest[NATIVE_SHA256_DIGEST_BYTES];
+
+	/* Every base human at every table difficulty. */
+	for (uint32_t h = 0; h < NATIVE_MATCH_SELECT_CHARACTER_COUNT; h++)
+	{
+		for (uint32_t d = 0; d < NATIVE_ARCADE_BOT_RULES_DIFFICULTY_COUNT; d++)
+		{
+			CHECK(BuildValidOneCabConfig(&config, NativeMatchSelect_CharacterAt(h), NativeArcadeBotRules_DifficultyAt(d)) == 1);
+			CHECK(config.profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB);
+			CHECK(NativeArcadeBotRules_ValidateConfigV1(&config) == 1);
+		}
+	}
+
+	/* The base case for the one-field rejections: human 4 (N_GIN), medium bots. */
+	CHECK(BuildValidOneCabConfig(&valid, 4u, NATIVE_ARCADE_BOT_RULES_DIFFICULTY_MEDIUM) == 1);
+	CHECK((valid.slots[0].characterID == 4u) && (valid.slots[1].characterID == 0u) && (valid.slots[4].characterID == 3u) &&
+	      (valid.slots[5].characterID == 5u) && (valid.slots[7].characterID == 7u));
+	CHECK(NativeArcadeBotRules_ValidateConfigV1(&valid) == 1);
+
+	/* The TWO_CAB digest on a ONE_CAB config. */
+	config = valid;
+	CHECK(NativeArcadeBotRules_DigestV1(twoCabDigest) == 1);
+	memcpy(config.botRulesDigest, twoCabDigest, sizeof(config.botRulesDigest));
+	CHECK(ExpectRulesReject(&config) == 0);
+
+	/* A flipped Digest1PV1 byte, anywhere. */
+	for (uint32_t i = 0; i < NATIVE_SHA256_DIGEST_BYTES; i++)
+	{
+		config = valid;
+		config.botRulesDigest[i] ^= 0x01u;
+		CHECK(ExpectRulesReject(&config) == 0);
+	}
+
+	/* Mode fields. */
+	config = valid;
+	config.gameMode1 = 1u;
+	CHECK(ExpectRulesReject(&config) == 0);
+	config = valid;
+	config.gameMode2 = 1u;
+	CHECK(ExpectRulesReject(&config) == 0);
+	config = valid;
+	config.rules = 1u;
+	CHECK(ExpectRulesReject(&config) == 0);
+
+	/* Off-table track and laps, including values above a byte. */
+	config = valid;
+	config.trackID = 13; /* OXIDE_STATION */
+	CHECK(ExpectRulesReject(&config) == 0);
+	config = valid;
+	config.trackID = 0x103u; /* 3 in the low byte */
+	CHECK(ExpectRulesReject(&config) == 0);
+	config = valid;
+	config.lapCount = 4;
+	CHECK(ExpectRulesReject(&config) == 0);
+	config = valid;
+	config.lapCount = 0x105u; /* 5 in the low byte */
+	CHECK(ExpectRulesReject(&config) == 0);
+
+	/* Nonzero human difficulty. */
+	config = valid;
+	config.slots[0].difficulty = 0xa0u;
+	CHECK(ExpectRulesReject(&config) == 0);
+	config = valid;
+	config.slots[0].difficulty = 1u;
+	CHECK(ExpectRulesReject(&config) == 0);
+
+	/* A non-base human, with or without matching bots. */
+	config = valid;
+	config.slots[0].characterID = 8;
+	CHECK(ExpectRulesReject(&config) == 0);
+	CHECK(BuildValidOneCabConfig(&config, 8u, NATIVE_ARCADE_BOT_RULES_DIFFICULTY_MEDIUM) == 1);
+	CHECK(ExpectRulesReject(&config) == 0);
+
+	/* Bot difficulty off the table (all bots equal). */
+	config = valid;
+	for (uint32_t i = 1; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		config.slots[i].difficulty = 0x51u;
+	}
+	CHECK(ExpectRulesReject(&config) == 0);
+	config = valid;
+	for (uint32_t i = 1; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		config.slots[i].difficulty = 0u;
+	}
+	CHECK(ExpectRulesReject(&config) == 0);
+
+	/* Unequal bot difficulties (each other table value, in each bot slot). */
+	for (uint32_t i = 1; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		config = valid;
+		config.slots[i].difficulty = NATIVE_ARCADE_BOT_RULES_DIFFICULTY_HARD;
+		CHECK(ExpectRulesReject(&config) == 0);
+		config = valid;
+		config.slots[i].difficulty = NATIVE_ARCADE_BOT_RULES_DIFFICULTY_EASY;
+		CHECK(ExpectRulesReject(&config) == 0);
+	}
+
+	/* A bot character not matching the rule: a repeated base character, or a non-base one. */
+	for (uint32_t i = 1; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		config = valid;
+		config.slots[i].characterID = config.slots[i == 1u ? 2u : 1u].characterID;
+		CHECK(ExpectRulesReject(&config) == 0);
+		config = valid;
+		config.slots[i].characterID = 8u;
+		CHECK(ExpectRulesReject(&config) == 0);
+	}
+
+	/* Two bots swapped: every adjacent pair. */
+	for (uint32_t i = 1; i + 1u < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		const uint8_t swap = valid.slots[i].characterID;
+
+		config = valid;
+		config.slots[i].characterID = config.slots[i + 1u].characterID;
+		config.slots[i + 1u].characterID = swap;
+		CHECK(config.slots[i].characterID != config.slots[i + 1u].characterID);
+		CHECK(ExpectRulesReject(&config) == 0);
+	}
+
+	/* A bot equal to the human, in each bot slot. */
+	for (uint32_t i = 1; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		config = valid;
+		config.slots[i].characterID = config.slots[0].characterID;
+		CHECK(ExpectRulesReject(&config) == 0);
+	}
+
+	/* Another human with the bots of the base case. */
+	config = valid;
+	config.slots[0].characterID = 5u;
+	CHECK(ExpectRulesReject(&config) == 0);
+
+	/* A config the generic validator rejects is rejected too. */
+	config = valid;
+	config.slots[7].initialLifecycle = NATIVE_MATCH_SLOT_LIFECYCLE_INACTIVE;
+	CHECK(NativeMatchConfigV1_Validate(&config) == 0);
+	CHECK(NativeArcadeBotRules_ValidateConfigV1(&config) == 0);
+	return 0;
+}
+
 /* The v1 rules on a two-human config: the humans, the digest, and ExpectedBots2P at difficulty 0xA0. */
 static int CheckRulesConfig(const struct NativeMatchConfigV1 *config, uint8_t human0, uint8_t human1)
 {
@@ -872,9 +1350,14 @@ int main(void)
 	CHECK(TestEncoding() == 0);
 	CHECK(TestEncodeTransactional() == 0);
 	CHECK(TestExpectedBots2P() == 0);
+	CHECK(TestEncoding1P() == 0);
+	CHECK(TestEncode1PTransactional() == 0);
+	CHECK(TestDigestForProfile() == 0);
+	CHECK(TestExpectedBots1P() == 0);
 	CHECK(TestMapRetailSeeds() == 0);
 	CHECK(TestDeriveRetailSeeds() == 0);
 	CHECK(TestValidateConfig() == 0);
+	CHECK(TestValidateConfig1P() == 0);
 	CHECK(TestFixtureThroughMatchSelect() == 0);
 	puts("native_arcade_bot_rules_test: ok");
 	return 0;

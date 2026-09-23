@@ -177,6 +177,40 @@ static int ExpectBuildReject(const struct NativeMatchConfigV1 *config, const str
 	return 0;
 }
 
+/*
+ * A well-formed ARCADE_ONE_CAB config (RS-19, RS-20): the ONE_CAB profile,
+ * *valid's table track, lap count, and nonzero identities and seed, 30/1 ticks,
+ * CAB1 a base character at difficulty 0, slots 1..7 exactly ExpectedBots1P at
+ * one table difficulty, and the 1P bot rules digest.
+ */
+static int BuildOneCab(const struct NativeMatchConfigV1 *valid, uint8_t human, uint8_t difficulty,
+	struct NativeMatchConfigV1 *config)
+{
+	uint8_t bots[NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT];
+
+	if (!NativeArcadeBotRules_ExpectedBots1P(human, bots))
+	{
+		return 0;
+	}
+	memset(config, 0, sizeof(*config));
+	NativeMatchConfigV1_InitArcadeOneCab(config);
+	config->trackID = valid->trackID;
+	config->lapCount = valid->lapCount;
+	config->tickRateNumerator = 30u;
+	config->tickRateDenominator = 1u;
+	config->masterSeed = valid->masterSeed;
+	memcpy(config->buildIdentity, valid->buildIdentity, sizeof(config->buildIdentity));
+	memcpy(config->contentIdentity, valid->contentIdentity, sizeof(config->contentIdentity));
+	config->slots[0].characterID = human;
+	config->slots[0].difficulty = 0u;
+	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT; i++)
+	{
+		config->slots[NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT + i].characterID = bots[i];
+		config->slots[NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT + i].difficulty = difficulty;
+	}
+	return NativeArcadeBotRules_Digest1PV1(config->botRulesDigest);
+}
+
 /* Build succeeds, and MainArcadeRoster_ValidateNativeFacts rejects with its output untouched. */
 static int ExpectRosterReject(const struct NativeMatchConfigV1 *config, const struct Race *race)
 {
@@ -341,10 +375,33 @@ static int TestRejections(void)
 	CHECK(IsAllByte(&rosterFacts, sizeof(rosterFacts), SENTINEL_BYTE));
 	CHECK(IsAllByte(&setupFacts, sizeof(setupFacts), SENTINEL_BYTE));
 
-	/* ONE_CAB config. */
+	/* The ONE_CAB profile over TWO_CAB slot roles: the generic validator rejects it. */
 	oneCab = config;
 	oneCab.profile = NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB;
+	CHECK(NativeMatchConfigV1_Validate(&oneCab) == 0);
 	CHECK(ExpectBuildReject(&oneCab, &valid) == 0);
+
+	/*
+	 * A well-formed ONE_CAB config over a retail 1P race snapshot (slot 0 human,
+	 * slots 1..7 bots): valid under the bot rules, but the facts builder is
+	 * TWO_CAB-only for now.
+	 */
+	CHECK(BuildOneCab(&config, 2u, NATIVE_ARCADE_BOT_RULES_DIFFICULTY_HARD, &oneCab) == 1);
+	CHECK(NativeMatchConfigV1_Validate(&oneCab) == 1);
+	CHECK(NativeArcadeBotRules_ValidateConfigV1(&oneCab) == 1);
+	race = valid;
+	race.snapshot.numPlyrCurrGame = (uint8_t)NATIVE_ARCADE_BOT_RULES_1P_HUMAN_COUNT;
+	race.snapshot.numBotsNextGame = (uint8_t)NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT;
+	for (uint8_t slot = 0; slot < SLOTS; slot++)
+	{
+		race.snapshot.driverPresent[slot] = 1;
+		race.snapshot.driverID[slot] = slot;
+		race.snapshot.driverIsBot[slot] = (uint8_t)(slot >= NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT);
+		race.snapshot.characterIDs[slot] = (int16_t)oneCab.slots[slot].characterID;
+	}
+	race.snapshot.arcadeDifficulty = (int32_t)oneCab.slots[NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT].difficulty;
+	BuildRosterInput(&race, (int8_t)oneCab.lapCount);
+	CHECK(ExpectBuildReject(&oneCab, &race) == 0);
 
 	/* A human in slot 3: no TWO_CAB role. */
 	race = valid;

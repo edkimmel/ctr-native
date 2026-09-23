@@ -374,6 +374,40 @@ static int ExpectBuildReject(const struct NativeMatchConfigV1 *config)
 	return 0;
 }
 
+/*
+ * A well-formed ARCADE_ONE_CAB config (RS-19, RS-20): the ONE_CAB profile,
+ * *valid's table track, lap count, and nonzero identities and seed, 30/1 ticks,
+ * CAB1 a base character at difficulty 0, slots 1..7 exactly ExpectedBots1P at
+ * one table difficulty, and the 1P bot rules digest.
+ */
+static int BuildOneCab(const struct NativeMatchConfigV1 *valid, uint8_t human, uint8_t difficulty,
+	struct NativeMatchConfigV1 *config)
+{
+	uint8_t bots[NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT];
+
+	if (!NativeArcadeBotRules_ExpectedBots1P(human, bots))
+	{
+		return 0;
+	}
+	memset(config, 0, sizeof(*config));
+	NativeMatchConfigV1_InitArcadeOneCab(config);
+	config->trackID = valid->trackID;
+	config->lapCount = valid->lapCount;
+	config->tickRateNumerator = 30u;
+	config->tickRateDenominator = 1u;
+	config->masterSeed = valid->masterSeed;
+	memcpy(config->buildIdentity, valid->buildIdentity, sizeof(config->buildIdentity));
+	memcpy(config->contentIdentity, valid->contentIdentity, sizeof(config->contentIdentity));
+	config->slots[0].characterID = human;
+	config->slots[0].difficulty = 0u;
+	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT; i++)
+	{
+		config->slots[NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT + i].characterID = bots[i];
+		config->slots[NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT + i].difficulty = difficulty;
+	}
+	return NativeArcadeBotRules_Digest1PV1(config->botRulesDigest);
+}
+
 static int TestBuildRejects(void)
 {
 	struct NativeMatchConfigV1 valid;
@@ -392,8 +426,9 @@ static int TestBuildRejects(void)
 	config.slots[6].characterID = 1u;
 	CHECK(NativeMatchConfigV1_Validate(&config) == 0);
 	CHECK(ExpectBuildReject(&config) == 0);
-	config = valid; /* profile */
+	config = valid; /* generic validator: the ONE_CAB profile over TWO_CAB slot roles */
 	config.profile = NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB;
+	CHECK(NativeMatchConfigV1_Validate(&config) == 0);
 	CHECK(ExpectBuildReject(&config) == 0);
 	config = valid; /* mode fields */
 	config.gameMode1 = 1u;
@@ -452,6 +487,12 @@ static int TestBuildRejects(void)
 	config = valid;
 	config.tickRateNumerator = 30u;
 	config.tickRateDenominator = 2u;
+	CHECK(NativeArcadeBotRules_ValidateConfigV1(&config) == 1);
+	CHECK(ExpectBuildReject(&config) == 0);
+
+	/* A well-formed ONE_CAB config: valid under the bot rules, but the plan is TWO_CAB-only for now. */
+	CHECK(BuildOneCab(&valid, 2u, NATIVE_ARCADE_BOT_RULES_DIFFICULTY_HARD, &config) == 1);
+	CHECK(NativeMatchConfigV1_Validate(&config) == 1);
 	CHECK(NativeArcadeBotRules_ValidateConfigV1(&config) == 1);
 	CHECK(ExpectBuildReject(&config) == 0);
 	return 0;

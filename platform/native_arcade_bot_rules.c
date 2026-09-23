@@ -33,6 +33,38 @@ _Static_assert(NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT + NATIVE_ARCADE_BOT_RULES_
 _Static_assert(NATIVE_ARCADE_BOT_RULES_HUMAN_COUNT == NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT, "the humans hold slots 0 and 1");
 _Static_assert(NATIVE_ARCADE_BOT_RULES_BOT_COUNT == NATIVE_MATCH_SELECT_AI_SET_RACERS, "one bot per 2P AI set racer");
 _Static_assert(NATIVE_ARCADE_BOT_RULES_DRIVER_COUNT <= NATIVE_MATCH_CONFIG_V1_SLOT_COUNT, "every driver has a config slot");
+/* The 1P encoding size, field by field, in the order of the header's 1P table. */
+_Static_assert((sizeof(NATIVE_ARCADE_BOT_RULES_1P_V1_TAG) - 1u) /* tag */
+		+ 4u /* rulesVersion */
+		+ 4u /* profile */
+		+ NATIVE_MATCH_CONFIG_V1_SLOT_COUNT /* slot roles */
+		+ 4u /* humanCount, driverCount, firstBotSlot, botCount */
+		+ 1u + NATIVE_ARCADE_BOT_RULES_DIFFICULTY_COUNT /* difficultyCount, difficulty table */
+		+ 3u /* difficultyPolicy, botCharacterPolicy, modePolicy */
+		+ 1u + NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT /* candidateCount, candidates */
+		+ 4u /* rngDerivationVersion */
+		+ 4u /* seed stream tag */
+		+ 1u + NATIVE_ARCADE_BOT_RULES_SEED_TARGET_COUNT /* seedTargetCount, target codes */
+		+ 4u /* randomNumberMask */
+		+ 4u + 4u /* advRngFallback0, advRngFallback1 */
+		+ 4u /* reservedStreamMask */
+		== NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES,
+	"NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES must equal the 1P V1 field list");
+_Static_assert(sizeof(NATIVE_ARCADE_BOT_RULES_1P_V1_TAG) - 1u == 27u, "the 1P V1 tag is 27 ASCII bytes");
+_Static_assert(NATIVE_ARCADE_BOT_RULES_1P_HUMAN_COUNT == NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT, "the human holds slot 0");
+_Static_assert(NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT + NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT ==
+		NATIVE_ARCADE_BOT_RULES_1P_DRIVER_COUNT,
+	"the 1P bots fill the slots after the human");
+/* LOAD_Robots1P fills one characterIDs entry per driver: entry i is the character of slot i. */
+_Static_assert(NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT == NATIVE_ARCADE_BOT_RULES_1P_DRIVER_COUNT,
+	"LOAD_Robots1P fills one entry per 1P driver");
+_Static_assert(NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT == NATIVE_MATCH_SELECT_CHARACTER_COUNT,
+	"LOAD_Robots1P walks exactly the base characters");
+_Static_assert(NATIVE_ARCADE_BOT_RULES_1P_DRIVER_COUNT <= NATIVE_MATCH_CONFIG_V1_SLOT_COUNT, "every 1P driver has a config slot");
+_Static_assert(NATIVE_ARCADE_BOT_RULES_MAX_BOT_COUNT ==
+		(NATIVE_ARCADE_BOT_RULES_BOT_COUNT > NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT ? NATIVE_ARCADE_BOT_RULES_BOT_COUNT
+		                                                                          : NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT),
+	"NATIVE_ARCADE_BOT_RULES_MAX_BOT_COUNT is the larger bot count");
 /* The digest encodes the RNG derivation version; the config validator checks its own copy of it. */
 _Static_assert(NATIVE_MATCH_CONFIG_V1_RNG_DERIVATION_VERSION == NATIVE_DETERMINISTIC_RNG_DERIVATION_VERSION,
 	"the config and the bank must agree on the RNG derivation version");
@@ -46,9 +78,11 @@ static const uint8_t k_arcadeBotRulesDifficulty[NATIVE_ARCADE_BOT_RULES_DIFFICUL
 
 #define NATIVE_ARCADE_BOT_RULES_DIFFICULTY_POLICY_GLOBAL 1u
 #define NATIVE_ARCADE_BOT_RULES_BOT_CHARACTER_POLICY_RETAIL_2P_AI_SET 1u
+#define NATIVE_ARCADE_BOT_RULES_BOT_CHARACTER_POLICY_RETAIL_1P 2u
 #define NATIVE_ARCADE_BOT_RULES_MODE_POLICY_ARCADE_SINGLE_RACE 1u
 
 static const char k_arcadeBotRulesTag[] = NATIVE_ARCADE_BOT_RULES_V1_TAG;
+static const char k_arcadeBotRules1PTag[] = NATIVE_ARCADE_BOT_RULES_1P_V1_TAG;
 
 uint8_t NativeArcadeBotRules_DifficultyAt(uint32_t index)
 {
@@ -166,6 +200,117 @@ int NativeArcadeBotRules_DigestV1(uint8_t digest[NATIVE_SHA256_DIGEST_BYTES])
 	return 1;
 }
 
+size_t NativeArcadeBotRules_EncodedSize1PV1(void)
+{
+	return NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES;
+}
+
+int NativeArcadeBotRules_Encode1PV1(struct NativeCodecWriter *writer)
+{
+	struct NativeMatchConfigV1 oneCab;
+	struct NativeCodecWriter encoded;
+	const size_t start = writer != NULL ? writer->offset : 0u;
+	uint32_t index = 0;
+
+	if ((writer == NULL) || !NativeCodecWriter_Ok(writer) || (writer->offset > writer->capacity) ||
+	    (NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES > writer->capacity - writer->offset))
+	{
+		return 0;
+	}
+
+	/* The slot roles come from the profile initializer, not a copy of it. */
+	NativeMatchConfigV1_InitArcadeOneCab(&oneCab);
+
+	encoded = *writer;
+	if (!NativeCodecWriter_WriteBytes(&encoded, k_arcadeBotRules1PTag, sizeof(k_arcadeBotRules1PTag) - 1u) ||
+	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_ARCADE_BOT_RULES_V1_VERSION) ||
+	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB))
+	{
+		return 0;
+	}
+	for (uint32_t i = 0; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
+	{
+		if (!NativeCodecWriter_WriteU8(&encoded, oneCab.slots[i].role))
+		{
+			return 0;
+		}
+	}
+	if (!NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_1P_HUMAN_COUNT) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_1P_DRIVER_COUNT) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_DIFFICULTY_COUNT) ||
+	    !NativeCodecWriter_WriteBytes(&encoded, k_arcadeBotRulesDifficulty, sizeof(k_arcadeBotRulesDifficulty)) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_DIFFICULTY_POLICY_GLOBAL) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_BOT_CHARACTER_POLICY_RETAIL_1P) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_MODE_POLICY_ARCADE_SINGLE_RACE) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT))
+	{
+		return 0;
+	}
+	/* The IDs LOAD_Robots1P's newCharacterID walks, from 0 upward; each is a base character. */
+	for (uint32_t candidate = 0; candidate < NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT; candidate++)
+	{
+		if (!NativeMatchSelect_CharacterIndex((uint8_t)candidate, &index) ||
+		    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)candidate))
+		{
+			return 0;
+		}
+	}
+	if (!NativeCodecWriter_WriteU32(&encoded, NATIVE_DETERMINISTIC_RNG_DERIVATION_VERSION) ||
+	    !NativeCodecWriter_WriteU32(&encoded, (uint32_t)NATIVE_DETERMINISTIC_RNG_STREAM_MATCH_SETUP) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_SEED_TARGET_COUNT) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_SEED_RANDOM_NUMBER) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_SEED_ADV_RNG0) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_SEED_ADV_RNG1) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_SEED_PSX_RAND) ||
+	    !NativeCodecWriter_WriteU8(&encoded, (uint8_t)NATIVE_ARCADE_BOT_RULES_SEED_AUDIO_RNG) ||
+	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_ARCADE_BOT_RULES_RANDOM_NUMBER_MASK) ||
+	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_ARCADE_BOT_RULES_ADV_RNG_FALLBACK0) ||
+	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_ARCADE_BOT_RULES_ADV_RNG_FALLBACK1) ||
+	    !NativeCodecWriter_WriteU32(&encoded, NATIVE_ARCADE_BOT_RULES_RESERVED_STREAM_MASK) ||
+	    (encoded.offset - start != NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES))
+	{
+		return 0;
+	}
+	*writer = encoded;
+	return 1;
+}
+
+int NativeArcadeBotRules_Digest1PV1(uint8_t digest[NATIVE_SHA256_DIGEST_BYTES])
+{
+	uint8_t bytes[NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES];
+	struct NativeCodecWriter writer;
+	struct NativeSha256 sha;
+
+	if (digest == NULL)
+	{
+		return 0;
+	}
+	NativeCodecWriter_Init(&writer, bytes, sizeof(bytes), NULL);
+	if (!NativeArcadeBotRules_Encode1PV1(&writer) || (NativeCodecWriter_Size(&writer) != sizeof(bytes)))
+	{
+		return 0;
+	}
+	NativeSha256_Init(&sha);
+	NativeSha256_Update(&sha, bytes, sizeof(bytes));
+	NativeSha256_Final(&sha, digest);
+	return 1;
+}
+
+int NativeArcadeBotRules_DigestForProfileV1(uint32_t profile, uint8_t digest[NATIVE_SHA256_DIGEST_BYTES])
+{
+	if (profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB)
+	{
+		return NativeArcadeBotRules_DigestV1(digest);
+	}
+	if (profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB)
+	{
+		return NativeArcadeBotRules_Digest1PV1(digest);
+	}
+	return 0;
+}
+
 static int NativeArcadeBotRules_AiSetHolds(uint32_t setIndex, uint8_t characterID)
 {
 	for (uint32_t racer = 0; racer < NATIVE_MATCH_SELECT_AI_SET_RACERS; racer++)
@@ -203,6 +348,41 @@ int NativeArcadeBotRules_ExpectedBots2P(uint8_t human0, uint8_t human1, uint8_t 
 		}
 	}
 	return 0;
+}
+
+int NativeArcadeBotRules_ExpectedBots1P(uint8_t human, uint8_t bots[NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT])
+{
+	uint8_t characterIDs[NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT];
+	uint32_t newCharacterID = 0;
+	uint32_t index = 0;
+
+	if ((bots == NULL) || !NativeMatchSelect_CharacterIndex(human, &index))
+	{
+		return 0;
+	}
+
+	/*
+	 * LOAD_Robots1P (game/LOAD/LOAD_Assets.c:61-76), statement for statement:
+	 * characterIDs[0] is the human; newCharacterID walks up from 0 and skips
+	 * the human's ID once. For a base human it never passes the last base ID.
+	 */
+	characterIDs[0] = human;
+	for (uint32_t i = 1; i < NATIVE_ARCADE_BOT_RULES_1P_CANDIDATE_COUNT; i++, newCharacterID++)
+	{
+		if (newCharacterID == human)
+		{
+			newCharacterID++;
+		}
+
+		characterIDs[i] = (uint8_t)newCharacterID;
+	}
+
+	/* characterIDs[i] is driver i's character: the bots are slots FIRST_BOT_SLOT.. in order. */
+	for (uint32_t bot = 0; bot < NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT; bot++)
+	{
+		bots[bot] = characterIDs[NATIVE_ARCADE_BOT_RULES_1P_FIRST_BOT_SLOT + bot];
+	}
+	return 1;
 }
 
 int NativeArcadeBotRules_MapRetailSeedsV1(const uint32_t draws[NATIVE_ARCADE_BOT_RULES_SEED_TARGET_COUNT],
@@ -263,21 +443,24 @@ int NativeArcadeBotRules_DeriveRetailSeedsV1(struct NativeDeterministicRngBankV1
 int NativeArcadeBotRules_ValidateConfigV1(const struct NativeMatchConfigV1 *config)
 {
 	uint8_t rulesDigest[NATIVE_SHA256_DIGEST_BYTES];
-	uint8_t expectedBots[NATIVE_ARCADE_BOT_RULES_BOT_COUNT];
+	uint8_t expectedBots[NATIVE_ARCADE_BOT_RULES_MAX_BOT_COUNT];
 	uint8_t aiSetIndex = 0;
 	uint8_t cab1Slot = 0;
 	uint8_t cab2Slot = 0;
 	uint8_t botDifficulty = 0;
+	uint32_t expectedBotCount = 0;
 	uint32_t botCount = 0;
 	uint32_t index = 0;
 
 	if ((config == NULL) || !NativeMatchConfigV1_Validate(config) ||
-	    (config->profile != NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB) || (config->gameMode1 != 0) ||
-	    (config->gameMode2 != 0) || (config->rules != 0))
+	    ((config->profile != NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB) &&
+	     (config->profile != NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB)) ||
+	    (config->gameMode1 != 0) || (config->gameMode2 != 0) || (config->rules != 0))
 	{
 		return 0;
 	}
-	if (!NativeArcadeBotRules_DigestV1(rulesDigest) ||
+	/* RS-19: a config carries the digest of its own profile's rules. */
+	if (!NativeArcadeBotRules_DigestForProfileV1(config->profile, rulesDigest) ||
 	    (memcmp(rulesDigest, config->botRulesDigest, sizeof(rulesDigest)) != 0))
 	{
 		return 0;
@@ -291,12 +474,29 @@ int NativeArcadeBotRules_ValidateConfigV1(const struct NativeMatchConfigV1 *conf
 	}
 
 	if (!NativeMatchConfigV1_FindRoleSlot(config, NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &cab1Slot) ||
-	    !NativeMatchConfigV1_FindRoleSlot(config, NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &cab2Slot) ||
-	    (config->slots[cab1Slot].difficulty != 0) || (config->slots[cab2Slot].difficulty != 0) ||
-	    !NativeArcadeBotRules_ExpectedBots2P(config->slots[cab1Slot].characterID, config->slots[cab2Slot].characterID,
-	        expectedBots, &aiSetIndex))
+	    (config->slots[cab1Slot].difficulty != 0))
 	{
 		return 0;
+	}
+	if (config->profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB)
+	{
+		if (!NativeMatchConfigV1_FindRoleSlot(config, NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &cab2Slot) ||
+		    (config->slots[cab2Slot].difficulty != 0) ||
+		    !NativeArcadeBotRules_ExpectedBots2P(config->slots[cab1Slot].characterID,
+		        config->slots[cab2Slot].characterID, expectedBots, &aiSetIndex))
+		{
+			return 0;
+		}
+		expectedBotCount = NATIVE_ARCADE_BOT_RULES_BOT_COUNT;
+	}
+	else
+	{
+		/* RS-20: a base human, and exactly LOAD_Robots1P's bots for that human. */
+		if (!NativeArcadeBotRules_ExpectedBots1P(config->slots[cab1Slot].characterID, expectedBots))
+		{
+			return 0;
+		}
+		expectedBotCount = NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT;
 	}
 
 	for (uint32_t i = 0; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
@@ -307,7 +507,7 @@ int NativeArcadeBotRules_ValidateConfigV1(const struct NativeMatchConfigV1 *conf
 		{
 			continue;
 		}
-		if (botCount >= NATIVE_ARCADE_BOT_RULES_BOT_COUNT)
+		if (botCount >= expectedBotCount)
 		{
 			return 0;
 		}
@@ -321,7 +521,7 @@ int NativeArcadeBotRules_ValidateConfigV1(const struct NativeMatchConfigV1 *conf
 		}
 		botCount++;
 	}
-	if ((botCount != NATIVE_ARCADE_BOT_RULES_BOT_COUNT) || !NativeArcadeBotRules_IsDifficulty(botDifficulty))
+	if ((botCount != expectedBotCount) || !NativeArcadeBotRules_IsDifficulty(botDifficulty))
 	{
 		return 0;
 	}
