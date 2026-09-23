@@ -14,13 +14,26 @@
 /* The fixed fields every built plan carries; anything else is refused. */
 static int MainArcadeRaceSetupPlan_IsWellFormed(const struct MainArcadeRaceSetupPlan *plan)
 {
-	return (plan->locked == 1u) && (plan->numPlyrNextGame == MAIN_ARCADE_RACE_SETUP_NUM_PLAYERS) &&
-	       (plan->boolDemoMode == 0u) && (plan->gameMode1ClearMask == MAIN_ARCADE_RACE_SETUP_GM1_CLEAR_MASK) &&
-	       (plan->gameMode1SetMask == MAIN_ARCADE_RACE_SETUP_GM1_SET_MASK) &&
-	       (plan->gameMode2ClearMask == MAIN_ARCADE_RACE_SETUP_GM2_CLEAR_MASK) &&
-	       (plan->gameMode2SetMask == MAIN_ARCADE_RACE_SETUP_GM2_SET_MASK) &&
-	       (plan->characterWriteMask == MAIN_ARCADE_RACE_SETUP_CHARACTER_WRITE_MASK) && (plan->reserved[0] == 0u) &&
-	       (plan->reserved[1] == 0u) && (plan->characterIDs[6] == 0) && (plan->characterIDs[7] == 0);
+	if (!((plan->locked == 1u) && (plan->numPlyrNextGame == MAIN_ARCADE_RACE_SETUP_NUM_PLAYERS) &&
+	        (plan->boolDemoMode == 0u) && (plan->gameMode1ClearMask == MAIN_ARCADE_RACE_SETUP_GM1_CLEAR_MASK) &&
+	        (plan->gameMode1SetMask == MAIN_ARCADE_RACE_SETUP_GM1_SET_MASK) &&
+	        (plan->gameMode2ClearMask == MAIN_ARCADE_RACE_SETUP_GM2_CLEAR_MASK) &&
+	        (plan->gameMode2SetMask == MAIN_ARCADE_RACE_SETUP_GM2_SET_MASK) &&
+	        (plan->characterWriteMask == MAIN_ARCADE_RACE_SETUP_CHARACTER_WRITE_MASK) && (plan->reserved[0] == 0u) &&
+	        (plan->reserved[1] == 0u) && (plan->characterIDs[6] == 0) && (plan->characterIDs[7] == 0) &&
+	        (plan->arcadeDifficulty >= 0) && NativeArcadeBotRules_IsDifficulty((uint32_t)plan->arcadeDifficulty)))
+	{
+		return 0;
+	}
+	/* The bot slots carry exactly the expected bots. */
+	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_BOT_COUNT; i++)
+	{
+		if (plan->characterIDs[NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT + i] != (int16_t)plan->expectedBots[i])
+		{
+			return 0;
+		}
+	}
+	return 1;
 }
 
 int MainArcadeRaceSetupPlan_Build(const struct NativeMatchConfigV1 *config, struct MainArcadeRaceSetupPlan *out)

@@ -51,12 +51,19 @@
  *
  * gameMode1 (include/namespace_Main.h:4-40, ADVENTURE_BOSS :40)
  * bit        name               class      evidence
- * 0x00000001 PAUSE_1            TRANSIENT  set only by MainFreeze.c:1211, which returns
- *                                          first at MAIN_MENU_LEVEL and in demo
- *                                          (:1181-1194); sim gate MainFrame.c:134
- * 0x00000002 PAUSE_2            TRANSIENT  no writer in game/; read MainFrame.c:466
- * 0x00000004 PAUSE_3            TRANSIENT  no reader or writer in game/
- * 0x00000008 PAUSE_4            TRANSIENT  no reader or writer in game/
+ * 0x00000001 PAUSE_1            MODE clear set only by MainFreeze.c:1211 (which returns
+ *                                          first at MAIN_MENU_LEVEL and in demo,
+ *                                          :1181-1194); cleared only by unpause
+ *                                          (MainFrame.c:397, MainFreeze.c:811, :952,
+ *                                          :987, :1012); no load or race path resets it
+ * 0x00000002 PAUSE_2            MODE clear no writer in game/ (MainFrame.c:466 tests
+ *                                          gameModeEnd, not gameMode1)
+ * 0x00000004 PAUSE_3            MODE clear no named reader or writer in game/
+ * 0x00000008 PAUSE_4            MODE clear no named reader or writer in game/
+ *                                          PAUSE_1..4: no load or race path resets
+ *                                          them, and the simulation reads all four
+ *                                          through PAUSE_ALL (sim MainFrame.c:134,
+ *                                          MainMain.c:343, CAM.c:1814, GAMEPAD.c:705)
  * 0x00000010 DEBUG_MENU         MODE clear no writer in game/; sim Particle.c:521,
  *                                          MainFrame.c:213, :296
  * 0x00000020 BATTLE_MODE        MODE clear retail clears MM_MenuFlow.c:152; sim BOTS.c:388,
@@ -123,8 +130,8 @@
  * 0x00000800 CHEAT_TURBO        CHEAT/CUP  set MM_CheatCodes.c:71; sim VehBirth.c:512
  * 0x00001000 CUP_NEW_WIN        CHEAT/CUP  cleared CS_Camera.c:257; read UI_CupStandings.c:704
  * 0x00002000 CUP_NEW_BATTLE     CHEAT/CUP  cleared CS_Camera.c:257; read UI_CupStandings.c:731
- * 0x00004000 VEH_FREEZE_DOOR    MODE clear cleared AH_MaskHint.c:477; sim VehBirth.c:63,
- *                                          VehPhysProc.c:690
+ * 0x00004000 VEH_FREEZE_DOOR    MODE clear cleared VehBirth.c:63, AH_MaskHint.c:477; set
+ *                                          VehBirth.c:169; sim VehPhysProc.c:690
  * 0x00008000 CHEAT_INVISIBLE    CHEAT/CUP  set MM_CheatCodes.c:77; sim VehPhysProc.c:651
  * 0x00010000 CHEAT_ENGINE       CHEAT/CUP  set MM_CheatCodes.c:83; sim VehPhysProc.c:356
  * 0x00020000 GARAGE_OSK         MODE clear set by cutscene script R233.c:2573; cleared
@@ -170,17 +177,36 @@
  *   LOAD_Assets.c:134, which the plan clears); numPlyrCurrGame and
  *   numBotsNextGame (set by the load and bot init, LOAD_TenStages.c:102,
  *   BOTS.c:328).
- * - Live-adapter notes for R-5: the pending load bits
- *   (Loading.OnBegin.AddBitsConfig0/8, RemBitsConfig0/8) are ORed into and
- *   masked out of both words when the load starts (game/MAIN/MainMain.c:270-289);
- *   RaceConfig_LoadGameOptions ORs the saved vibration bits in once
- *   (RaceConfig.c:19); the pause menu toggles them mid-race (MainFreeze.c:518).
  *
  * Candidate defaults for review: RS-14, the plan requires the retail 30 Hz
  * tick rate (tickRateNumerator/tickRateDenominator exactly 30/1); vibration
  * pinned to 0 (rumble enabled for every pad, the retail default without a
  * memory card), so a cabinet's saved rumble preference does not apply to a
  * linked race; boolDemoMode pinned to 0.
+ * ---------------------------------------------------------------------------
+ * Contract for the R-5 live adapter:
+ * - Apply runs twice: once before MainRaceTrack_RequestLoad, and again at the
+ *   pre-drivers hook in MainInit_FinalizeInit (game/MAIN/MainInit.c, after
+ *   the WARPBALL_HELD clear at :416 and before MainInit_Drivers at :466). The
+ *   demo race behind the link screens keeps running until LOADING and can
+ *   set ROLLING_ITEM and AKU_SONG/UKA_SONG, and the pending OnBegin mode bits
+ *   (Loading.OnBegin.AddBitsConfig0/8, RemBitsConfig0/8) are ORed into and
+ *   masked out of both words when the load starts (game/MAIN/MainMain.c:270-290),
+ *   so only the second Apply fixes the words the race reads.
+ * - The adapter never writes levelID into gGT while the old level runs: the
+ *   load request carries it (MainRaceTrack_RequestLoad), and LOAD_LevelFile
+ *   writes it.
+ * - The adapter saves the cabinet's vibration bits (P1..P4_VIBRATE) at Arm
+ *   and restores them at Disarm; RaceConfig_LoadGameOptions ORs the saved
+ *   bits in once (RaceConfig.c:19).
+ * - Launch preconditions: sdata->Loading.stage is LOAD_IDLE; all four pending
+ *   OnBegin mode words are 0; sdata->boolHasLoadedOptions != 0 (so the
+ *   one-time options load cannot OR vibration bits in after Apply).
+ * - Recorded as Task 8 / R-7 risks, not handled here: the pause-menu
+ *   vibration toggle flips gameMode1 mid-race (MainFreeze.c:518); data.rwd
+ *   (racing wheel calibration, loaded from the options by RaceConfig.c:16)
+ *   only affects NeGcon/JogCon pads, and native input produces only digital
+ *   or analog pads.
  * ---------------------------------------------------------------------------
  */
 
@@ -251,15 +277,14 @@
 
 /* The plan's policy (the audit above). */
 #define MAIN_ARCADE_RACE_SETUP_GM1_TRANSIENT_MASK                                                                 \
-	(MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_ALL | MAIN_ARCADE_RACE_SETUP_GM1_START_OF_RACE |                            \
-	 MAIN_ARCADE_RACE_SETUP_GM1_WARPBALL_HELD | MAIN_ARCADE_RACE_SETUP_GM1_MAIN_MENU |                            \
-	 MAIN_ARCADE_RACE_SETUP_GM1_END_OF_RACE | MAIN_ARCADE_RACE_SETUP_GM1_GAME_CUTSCENE |                          \
-	 MAIN_ARCADE_RACE_SETUP_GM1_LOADING)
+	(MAIN_ARCADE_RACE_SETUP_GM1_START_OF_RACE | MAIN_ARCADE_RACE_SETUP_GM1_WARPBALL_HELD |                        \
+	 MAIN_ARCADE_RACE_SETUP_GM1_MAIN_MENU | MAIN_ARCADE_RACE_SETUP_GM1_END_OF_RACE |                              \
+	 MAIN_ARCADE_RACE_SETUP_GM1_GAME_CUTSCENE | MAIN_ARCADE_RACE_SETUP_GM1_LOADING)
 #define MAIN_ARCADE_RACE_SETUP_GM1_HOST_LOCAL_MASK                                                                \
 	(MAIN_ARCADE_RACE_SETUP_GM1_P1_VIBRATE | MAIN_ARCADE_RACE_SETUP_GM1_P2_VIBRATE |                              \
 	 MAIN_ARCADE_RACE_SETUP_GM1_P3_VIBRATE | MAIN_ARCADE_RACE_SETUP_GM1_P4_VIBRATE)
 #define MAIN_ARCADE_RACE_SETUP_GM1_SET_MASK MAIN_ARCADE_RACE_SETUP_GM1_ARCADE_MODE
-/* Every other bit, the HOST-LOCAL vibration bits included (pinned to 0). */
+/* Every other bit, the PAUSE and HOST-LOCAL vibration bits included (pinned to 0). */
 #define MAIN_ARCADE_RACE_SETUP_GM1_CLEAR_MASK \
 	(UINT32_C(0xFFFFFFFF) & ~(MAIN_ARCADE_RACE_SETUP_GM1_TRANSIENT_MASK | MAIN_ARCADE_RACE_SETUP_GM1_SET_MASK))
 #define MAIN_ARCADE_RACE_SETUP_GM2_TRANSIENT_MASK \
@@ -327,7 +352,9 @@ int MainArcadeRaceSetupPlan_Build(const struct NativeMatchConfigV1 *config, stru
  * arcadeDifficulty, and boolDemoMode replaced; each mode word cleared by its
  * clear mask and ORed with its set mask; characterIDs[i] replaced where bit i
  * of characterWriteMask is set. before and after may alias. Fails on a plan
- * that is not locked or whose fixed fields differ from the policy above.
+ * that is not locked, whose fixed fields differ from the policy above, whose
+ * characterIDs[2..5] differ from expectedBots, or whose arcadeDifficulty is
+ * not a bot-rules table value (NativeArcadeBotRules_IsDifficulty).
  */
 int MainArcadeRaceSetupPlan_Apply(const struct MainArcadeRaceSetupPlan *plan,
 	const struct MainArcadeRaceSetupRetailFields *before, struct MainArcadeRaceSetupRetailFields *after);

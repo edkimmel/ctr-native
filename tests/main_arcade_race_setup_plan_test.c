@@ -28,8 +28,8 @@ static const uint8_t k_goldenEncoding[MAIN_ARCADE_RACE_SETUP_PLAN_V1_ENCODED_BYT
 	0x01, 0x02, 0x03, 0x00,
 	/* 34: levelID 3 */
 	0x03, 0x00, 0x00, 0x00,
-	/* 38: gameMode1 clear 0x9F9FCFB0, set 0x00400000 */
-	0xb0, 0xcf, 0x9f, 0x9f, 0x00, 0x00, 0x40, 0x00,
+	/* 38: gameMode1 clear 0x9F9FCFBF, set 0x00400000 */
+	0xbf, 0xcf, 0x9f, 0x9f, 0x00, 0x00, 0x40, 0x00,
 	/* 46: gameMode2 clear 0xFFFFFE5F, set 0 */
 	0x5f, 0xfe, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
 	/* 54: arcadeDifficulty 0xA0 */
@@ -51,13 +51,15 @@ static const uint8_t k_goldenEncoding[MAIN_ARCADE_RACE_SETUP_PLAN_V1_ENCODED_BYT
 
 /*
  * SHA-256 of k_goldenEncoding. Obtained independently of this module: the
- * 126 bytes above were written to a file with the shell's printf and hashed
- * with both `sha256sum` and `certutil -hashfile <file> SHA256` (identical
- * results). The file was not committed. Frozen.
+ * 126 bytes above were written to a file field by field with the shell's
+ * printf and hashed with both `sha256sum` and `certutil -hashfile <file>
+ * SHA256` (identical results); the same script with the previous gameMode1
+ * clear byte reproduced the previous golden digest. The file was not
+ * committed. Frozen.
  */
 static const uint8_t k_goldenDigest[NATIVE_SHA256_DIGEST_BYTES] = {
-	0xcf, 0xbe, 0x82, 0x35, 0xab, 0x17, 0x06, 0x3d, 0xe5, 0x43, 0xb1, 0x44, 0x28, 0x16, 0x28, 0xc1,
-	0x8f, 0xf6, 0xb1, 0x91, 0x5a, 0xab, 0x61, 0xac, 0x38, 0xfc, 0x1a, 0xdc, 0xc5, 0xc4, 0x8a, 0x55,
+	0xeb, 0x8e, 0xac, 0x76, 0xc4, 0x05, 0xa1, 0xea, 0x87, 0x61, 0x9a, 0xa4, 0x01, 0x02, 0x19, 0x05,
+	0x40, 0xb2, 0xd6, 0xcd, 0x26, 0x3d, 0x87, 0x76, 0x88, 0x85, 0x86, 0x4b, 0xd2, 0x47, 0xeb, 0x55,
 };
 
 #define GOLDEN_MASTER_SEED UINT64_C(0x0123456789abcdef)
@@ -96,7 +98,7 @@ static void BuildGoldenPlan(struct MainArcadeRaceSetupPlan *plan)
 	plan->numLaps = 3;
 	plan->boolDemoMode = 0;
 	plan->levelID = 3;
-	plan->gameMode1ClearMask = UINT32_C(0x9F9FCFB0);
+	plan->gameMode1ClearMask = UINT32_C(0x9F9FCFBF);
 	plan->gameMode1SetMask = UINT32_C(0x00400000);
 	plan->gameMode2ClearMask = UINT32_C(0xFFFFFE5F);
 	plan->gameMode2SetMask = 0;
@@ -169,9 +171,9 @@ static int BuildResolved(uint8_t human0, uint8_t human1, uint8_t trackID, uint8_
 
 static int TestPolicyConstants(void)
 {
-	CHECK(MAIN_ARCADE_RACE_SETUP_GM1_TRANSIENT_MASK == UINT32_C(0x6020304F));
+	CHECK(MAIN_ARCADE_RACE_SETUP_GM1_TRANSIENT_MASK == UINT32_C(0x60203040));
 	CHECK(MAIN_ARCADE_RACE_SETUP_GM1_SET_MASK == UINT32_C(0x00400000));
-	CHECK(MAIN_ARCADE_RACE_SETUP_GM1_CLEAR_MASK == UINT32_C(0x9F9FCFB0));
+	CHECK(MAIN_ARCADE_RACE_SETUP_GM1_CLEAR_MASK == UINT32_C(0x9F9FCFBF));
 	CHECK(MAIN_ARCADE_RACE_SETUP_GM1_HOST_LOCAL_MASK == UINT32_C(0x00000F00));
 	CHECK(MAIN_ARCADE_RACE_SETUP_GM2_TRANSIENT_MASK == UINT32_C(0x000001A0));
 	CHECK(MAIN_ARCADE_RACE_SETUP_GM2_SET_MASK == 0u);
@@ -189,6 +191,13 @@ static int TestPolicyConstants(void)
 	/* HOST-LOCAL vibration is pinned to 0; every cheat and cup bit and every retail mode bit but ARCADE is cleared. */
 	CHECK((MAIN_ARCADE_RACE_SETUP_GM1_CLEAR_MASK & MAIN_ARCADE_RACE_SETUP_GM1_HOST_LOCAL_MASK) ==
 	      MAIN_ARCADE_RACE_SETUP_GM1_HOST_LOCAL_MASK);
+	/* PAUSE_1..4 are MODE clear: no load or race path resets them. */
+	CHECK((MAIN_ARCADE_RACE_SETUP_GM1_CLEAR_MASK & MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_ALL) ==
+	      MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_ALL);
+	CHECK((MAIN_ARCADE_RACE_SETUP_GM1_TRANSIENT_MASK & MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_ALL) == 0u);
+	CHECK(MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_ALL ==
+	      (MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_1 | MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_2 | MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_3 |
+	          MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_4));
 	CHECK((MAIN_ARCADE_RACE_SETUP_GM2_CLEAR_MASK & MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_ALL) == MAIN_ARCADE_RACE_SETUP_GM2_CHEAT_ALL);
 	CHECK((MAIN_ARCADE_RACE_SETUP_GM2_CLEAR_MASK & MAIN_ARCADE_RACE_SETUP_GM2_CUP_ANY_KIND) != 0u);
 	CHECK((MAIN_ARCADE_RACE_SETUP_GM2_CLEAR_MASK & MAIN_ARCADE_RACE_SETUP_GM2_CUP_NEW_WIN) != 0u);
@@ -227,16 +236,69 @@ static const struct ExpectedCase k_cases[] = {
 	{ 7, 0, 6, 7, 0, { 6, 4, 2, 3 } },
 };
 
+/* The seven retail 2P AI sets, copied by hand from game/zGlobal_DATA.c:3558-3580. */
+static const uint8_t k_retailAiSets[7][NATIVE_ARCADE_BOT_RULES_BOT_COUNT] = {
+	{ 6, 4, 2, 3 }, { 0, 6, 3, 5 }, { 0, 6, 1, 2 }, { 0, 6, 4, 7 }, { 1, 2, 3, 5 }, { 4, 7, 3, 5 }, { 4, 7, 1, 2 },
+};
+
+/* The LOAD_Robots2P rule over k_retailAiSets: the first set holding neither human. */
+static int ExpectedFromRetailSets(uint8_t human0, uint8_t human1, struct ExpectedCase *expected)
+{
+	for (uint32_t set = 0; set < 7u; set++)
+	{
+		int holdsHuman = 0;
+
+		for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_BOT_COUNT; i++)
+		{
+			holdsHuman |= (k_retailAiSets[set][i] == human0) || (k_retailAiSets[set][i] == human1);
+		}
+		if (!holdsHuman)
+		{
+			expected->human0 = human0;
+			expected->human1 = human1;
+			expected->aiSetIndex = (uint8_t)set;
+			memcpy(expected->bots, k_retailAiSets[set], sizeof(expected->bots));
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static int TestBuild(void)
 {
 	static const uint8_t difficulties[3] = { 0x50, 0xa0, 0xf0 };
 	struct MainArcadeRaceSetupPlan plan;
 	struct NativeMatchConfigV1 config;
 	uint8_t digest[NATIVE_SHA256_DIGEST_BYTES];
+	uint32_t pairCount = 0;
 
+	/* The retail-set derivation agrees with the hand-derived cases. */
 	for (uint32_t c = 0; c < sizeof(k_cases) / sizeof(k_cases[0]); c++)
 	{
-		const struct ExpectedCase *expected = &k_cases[c];
+		struct ExpectedCase derived;
+
+		CHECK(ExpectedFromRetailSets(k_cases[c].human0, k_cases[c].human1, &derived) == 1);
+		CHECK(derived.aiSetIndex == k_cases[c].aiSetIndex);
+		CHECK(memcmp(derived.bots, k_cases[c].bots, sizeof(derived.bots)) == 0);
+	}
+
+	/* Every ordered pair of distinct base characters, over every track, lap option, and difficulty. */
+	for (uint32_t pair = 0; pair < 64u; pair++)
+	{
+		struct ExpectedCase expectedCase;
+		const struct ExpectedCase *expected = &expectedCase;
+		const uint8_t human0 = (uint8_t)(pair / 8u);
+		const uint8_t human1 = (uint8_t)(pair % 8u);
+
+		if (human0 == human1)
+		{
+			continue;
+		}
+		CHECK(ExpectedFromRetailSets(human0, human1, &expectedCase) == 1);
+		expectedCase.trackID = NativeMatchSelect_TrackAt(pairCount % NATIVE_MATCH_SELECT_TRACK_COUNT);
+		expectedCase.lapCount = NativeMatchSelect_LapOptionAt(pairCount % NATIVE_MATCH_SELECT_LAP_OPTION_COUNT);
+		CHECK((expectedCase.trackID != 0xffu) && (expectedCase.lapCount != 0xffu));
+		pairCount++;
 
 		for (uint32_t d = 0; d < 3u; d++)
 		{
@@ -250,7 +312,7 @@ static int TestBuild(void)
 			CHECK(plan.numLaps == (int8_t)expected->lapCount);
 			CHECK(plan.boolDemoMode == 0u);
 			CHECK(plan.levelID == (int32_t)expected->trackID);
-			CHECK(plan.gameMode1ClearMask == UINT32_C(0x9F9FCFB0));
+			CHECK(plan.gameMode1ClearMask == UINT32_C(0x9F9FCFBF));
 			CHECK(plan.gameMode1SetMask == UINT32_C(0x00400000));
 			CHECK(plan.gameMode2ClearMask == UINT32_C(0xFFFFFE5F));
 			CHECK(plan.gameMode2SetMask == 0u);
@@ -275,6 +337,7 @@ static int TestBuild(void)
 			CHECK(MainArcadeRaceSetupPlan_Digest(&plan, digest) == 1);
 		}
 	}
+	CHECK(pairCount == 56u);
 
 	/* The fixture's own race, with the golden seed and config digest, is the golden plan. */
 	{
@@ -415,7 +478,8 @@ static void LongHistoryFields(struct MainArcadeRaceSetupRetailFields *fields)
 {
 	memset(fields, 0, sizeof(*fields));
 	fields->levelID = 17;
-	fields->gameMode1 = MAIN_ARCADE_RACE_SETUP_GM1_MAIN_MENU | MAIN_ARCADE_RACE_SETUP_GM1_ADVENTURE_MODE |
+	fields->gameMode1 = MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_1 | MAIN_ARCADE_RACE_SETUP_GM1_PAUSE_4 |
+	                    MAIN_ARCADE_RACE_SETUP_GM1_MAIN_MENU | MAIN_ARCADE_RACE_SETUP_GM1_ADVENTURE_MODE |
 	                    MAIN_ARCADE_RACE_SETUP_GM1_RELIC_RACE | MAIN_ARCADE_RACE_SETUP_GM1_ADVENTURE_BOSS |
 	                    MAIN_ARCADE_RACE_SETUP_GM1_HOST_LOCAL_MASK | MAIN_ARCADE_RACE_SETUP_GM1_ROLLING_ITEM |
 	                    MAIN_ARCADE_RACE_SETUP_GM1_AKU_SONG | MAIN_ARCADE_RACE_SETUP_GM1_BATTLE_MODE |
@@ -617,6 +681,43 @@ static int TestMalformedPlans(void)
 	plan.characterIDs[7] = 3;
 	CHECK(ExpectApplyReject(&plan) == 0);
 	CHECK(ExpectDigestReject(&plan) == 0);
+
+	/* A bot slot that differs from expectedBots, either side. */
+	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_BOT_COUNT; i++)
+	{
+		plan = valid;
+		plan.characterIDs[NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT + i] = 7;
+		CHECK(ExpectApplyReject(&plan) == 0);
+		CHECK(ExpectDigestReject(&plan) == 0);
+		plan = valid;
+		plan.expectedBots[i] = 7u;
+		CHECK(ExpectApplyReject(&plan) == 0);
+		CHECK(ExpectDigestReject(&plan) == 0);
+	}
+	plan = valid;
+	plan.characterIDs[2] = (int16_t)(plan.expectedBots[0] + 256); /* same low byte */
+	CHECK(ExpectApplyReject(&plan) == 0);
+	CHECK(ExpectDigestReject(&plan) == 0);
+
+	/* arcadeDifficulty off the bot-rules table. */
+	{
+		static const int32_t offTable[] = { 0, 0x4f, 0x51, 0xa1, 0xef, 0xf1, 0x1a0, -0xa0, INT32_MIN, INT32_MAX };
+
+		for (uint32_t i = 0; i < sizeof(offTable) / sizeof(offTable[0]); i++)
+		{
+			plan = valid;
+			plan.arcadeDifficulty = offTable[i];
+			CHECK(ExpectApplyReject(&plan) == 0);
+			CHECK(ExpectDigestReject(&plan) == 0);
+		}
+	}
+	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_DIFFICULTY_COUNT; i++)
+	{
+		plan = valid;
+		plan.arcadeDifficulty = (int32_t)NativeArcadeBotRules_DifficultyAt(i);
+		FreshBootFields(&fields);
+		CHECK(MainArcadeRaceSetupPlan_Apply(&plan, &fields, &fields) == 1);
+	}
 	return 0;
 }
 
@@ -655,8 +756,8 @@ static int TestDigest(void)
 		case 2: plan.arcadeDifficulty = 0x50; break;
 		case 3: plan.aiSetIndex = 1; break;
 		case 4: plan.characterIDs[1] = 7; break;
-		case 5: plan.characterIDs[5] = -3; break;
-		case 6: plan.expectedBots[3] = 5; break;
+		case 5: plan.characterIDs[0] = -3; break;
+		case 6: plan.expectedBots[3] = 5; plan.characterIDs[5] = 5; break;
 		case 7: plan.masterSeed ^= UINT64_C(0x8000000000000000); break;
 		case 8: plan.rngDerivationVersion = 2; break;
 		case 9: plan.configDigest[31] ^= 0x01u; break;

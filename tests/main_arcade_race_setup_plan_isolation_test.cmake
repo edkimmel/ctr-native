@@ -1,17 +1,20 @@
 # Structural isolation for the race setup pure core (game/MAIN/
 # MainArcadeRaceSetupPlan, docs/ROSTER_MILESTONE.md section 3.2, R-4):
 #  1. the module is pure: no game global, load, heap, stdio, clock, lease or
-#     topology, checkpoint, replay, lockstep, or match-select token in its code;
+#     topology (lease verbs included), checkpoint, replay, canonical-state,
+#     lockstep, or match-select token in its code, and no mutable static
+#     state (every static is a function or a const object);
 #  2. its includes are limited to the allowlist (no retail header);
-#  3. ctr_native_arcade_race_setup_plan builds only the module's .c and links
-#     exactly ctr_native_arcade_bot_rules and ctr_native_match_config;
+#  3. ctr_native_arcade_race_setup_plan builds only the module's .c, the .c is
+#     named by exactly one CMake target, and the library links exactly
+#     ctr_native_arcade_bot_rules and ctr_native_match_config;
 #  4. the target is C17 with extensions off;
 #  5. the mirrored GameMode1, ADVENTURE_BOSS, and GameMode2 values equal
 #     include/namespace_Main.h, every retail name is mirrored, and every
 #     mirror names a retail value;
 #  6. the retail field widths the mirror struct assumes still hold
 #     (include/namespace_Main.h GameTracker, include/regionsEXE.h);
-#  7. it is dormant: no game/ file other than the module names
+#  7. it is dormant: no game/ or platform/ file other than the module names
 #     MainArcadeRaceSetupPlan (R-5 relaxes this for the live adapter), it is
 #     not in game/game_unity.h, and only its unit test links it.
 
@@ -50,11 +53,54 @@ function(ctr_require relative_path source term)
     endif()
 endfunction()
 
+# Requires a whole declaration "<type> <name>;" at the start of a line (after
+# indentation), so "int gameMode1;" does not match "unsigned int gameMode1;".
+# name_regex is a regex (brackets escaped by the caller).
+function(ctr_require_field relative_path source type name_regex)
+    string(REGEX MATCH "(^|[\r\n])[ \t]*${type}[ \t]+${name_regex}[ \t]*;" found "${source}")
+    if(found STREQUAL "")
+        message(FATAL_ERROR "race setup plan isolation: declaration '${type} ${name_regex};' missing from ${relative_path}")
+    endif()
+endfunction()
+
+# Sets out_var to the static declarations in code (comments stripped) that
+# are mutable state: every static must be a function (an identifier directly
+# followed by '(') or a const object that is not a pointer to mutable data.
+function(ctr_mutable_statics code out_var)
+    set(violations "")
+    string(REGEX MATCHALL "(^|[^A-Za-z0-9_])static[ \t\r\n][^;{=]*" heads "${code}")
+    foreach(head IN LISTS heads)
+        string(REGEX REPLACE "^[^s]*static" "static" head "${head}")
+        string(REGEX REPLACE "[ \t\r\n]+" " " head "${head}")
+        string(STRIP "${head}" head)
+        if(head MATCHES "^static( inline)? [A-Za-z_][A-Za-z0-9_ *]*[ *]([A-Za-z_][A-Za-z0-9_]*) ?\\(" AND NOT head MATCHES "\\( ?\\*")
+            continue()
+        endif()
+        if(head MATCHES "^static const " AND NOT head MATCHES "\\(")
+            if(NOT head MATCHES "\\*" OR head MATCHES "\\* ?const ")
+                continue()
+            endif()
+        endif()
+        list(APPEND violations "${head}")
+    endforeach()
+    set(${out_var} "${violations}" PARENT_SCOPE)
+endfunction()
+
+# The mutable-static scan must itself work.
+ctr_mutable_statics("static int counter;\nstatic uint8_t buffer[4] = {0};\nstatic const uint8_t *cursor;\nstatic int (*hook)(void);\nvoid F(void) { static int calls; }\n" probe_bad)
+list(LENGTH probe_bad probe_bad_count)
+ctr_mutable_statics("static int IsOk(const struct A *a)\n{\n}\nstatic const uint8_t k_table[2] = { 1, 2 };\nstatic const char *const k_name = \"x\";\n" probe_good)
+list(LENGTH probe_good probe_good_count)
+if(NOT probe_bad_count EQUAL 5 OR NOT probe_good_count EQUAL 0)
+    message(FATAL_ERROR "race setup plan isolation: the mutable-static scan is broken (flagged ${probe_bad_count} of 5 bad, ${probe_good_count} of 0 good: '${probe_bad}' '${probe_good}')")
+endif()
+
 # 1. Purity, on the code with comments removed (the header's audit comment
 #    cites retail files and globals by name).
 set(pure_tokens
     gGT sdata "data." GameTracker MEMPACK LOAD_
-    Lease lease Topology topology
+    Lease lease Topology topology Acquire Activate Publish Retire
+    NativeCanonical CanonicalState MainCanonical
     Checkpoint checkpoint Replay replay Lockstep lockstep LOCKSTEP
     NativeMatchSelect native_match_select
     malloc calloc realloc "free(" alloca
@@ -66,6 +112,10 @@ foreach(relative_path IN ITEMS "${module_header}" "${module_source}")
     foreach(term IN LISTS pure_tokens)
         ctr_forbid("${relative_path}" "${code}" "${term}")
     endforeach()
+    ctr_mutable_statics("${code}" mutable_statics)
+    if(NOT "${mutable_statics}" STREQUAL "")
+        message(FATAL_ERROR "race setup plan isolation: mutable static state in ${relative_path}: '${mutable_statics}'")
+    endif()
 
     # 2. Include allowlist.
     string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${code}")
@@ -93,6 +143,19 @@ string(REGEX REPLACE "[ \t\r\n]+" " " add_call "${add_call}")
 if(NOT add_call STREQUAL "add_library(${target} STATIC ${module_source})")
     message(FATAL_ERROR "race setup plan isolation: ${target} must build exactly ${module_source} (found '${add_call}')")
 endif()
+# The .c is named once in CMakeLists.txt (that add_library), so no other
+# target compiles it, and no other CMake file names it.
+string(REGEX MATCHALL "MainArcadeRaceSetupPlan\\.c" source_mentions "${cmake}")
+list(LENGTH source_mentions source_mention_count)
+if(NOT source_mention_count EQUAL 1)
+    message(FATAL_ERROR "race setup plan isolation: ${module_source} must be named by exactly one target in CMakeLists.txt (found ${source_mention_count} mentions)")
+endif()
+file(GLOB_RECURSE cmake_files "${repo}/cmake/*" "${repo}/game/*.txt" "${repo}/platform/*.txt")
+foreach(path IN LISTS cmake_files)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    file(READ "${path}" other_cmake)
+    ctr_forbid("${relative_path}" "${other_cmake}" "MainArcadeRaceSetupPlan.c")
+endforeach()
 string(REGEX MATCHALL "target_link_libraries\\([ \t\r\n]*${target}[ \t\r\n][^)]*\\)" link_calls "${cmake}")
 list(LENGTH link_calls link_call_count)
 if(NOT link_call_count EQUAL 1)
@@ -221,12 +284,21 @@ endif()
 string(SUBSTRING "${retail_main_code}" ${tracker_at} -1 tracker_tail)
 string(FIND "${tracker_tail}" "\n};" tracker_end)
 string(SUBSTRING "${tracker_tail}" 0 ${tracker_end} tracker_body)
-foreach(field IN ITEMS "int gameMode1;" "int gameMode2;" "int levelID;" "s8 numLaps;" "u8 numPlyrNextGame;"
-        "int arcadeDifficulty;" "char boolDemoMode;")
-    ctr_require("include/namespace_Main.h (struct GameTracker)" "${tracker_body}" "${field}")
+foreach(field IN ITEMS "int gameMode1" "int gameMode2" "int levelID" "s8 numLaps" "u8 numPlyrNextGame"
+        "int arcadeDifficulty" "char boolDemoMode")
+    string(REPLACE " " ";" field_parts "${field}")
+    list(GET field_parts 0 field_type)
+    list(GET field_parts 1 field_name)
+    ctr_require_field("include/namespace_Main.h (struct GameTracker)" "${tracker_body}" "${field_type}" "${field_name}")
 endforeach()
+# The anchored check itself rejects a widened or re-signed declaration.
+ctr_require_field("probe" "\n\tint gameMode1;\n" "int" "gameMode1")
+string(REGEX MATCH "(^|[\r\n])[ \t]*int[ \t]+gameMode1[ \t]*;" probe_found "\n\tunsigned int gameMode1;\n")
+if(NOT probe_found STREQUAL "")
+    message(FATAL_ERROR "race setup plan isolation: the field-width check accepts 'unsigned int gameMode1;' for 'int gameMode1;'")
+endif()
 ctr_read_source("include/regionsEXE.h" regions)
-ctr_require("include/regionsEXE.h" "${regions}" "s16 characterIDs[8];")
+ctr_require_field("include/regionsEXE.h" "${regions}" "s16" "characterIDs\\[8\\]")
 string(FIND "${header}" "struct MainArcadeRaceSetupRetailFields\n{" fields_at)
 if(fields_at EQUAL -1)
     string(FIND "${header}" "struct MainArcadeRaceSetupRetailFields\r\n{" fields_at)
@@ -237,16 +309,22 @@ endif()
 string(SUBSTRING "${header}" ${fields_at} -1 fields_tail)
 string(FIND "${fields_tail}" "};" fields_end)
 string(SUBSTRING "${fields_tail}" 0 ${fields_end} fields_body)
-foreach(field IN ITEMS "int32_t levelID;" "uint32_t gameMode1;" "uint32_t gameMode2;" "int32_t arcadeDifficulty;"
-        "int16_t characterIDs[MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT];" "int8_t numLaps;" "uint8_t numPlyrNextGame;"
-        "uint8_t boolDemoMode;")
-    ctr_require("${module_header} (struct MainArcadeRaceSetupRetailFields)" "${fields_body}" "${field}")
+foreach(field IN ITEMS "int32_t levelID" "uint32_t gameMode1" "uint32_t gameMode2" "int32_t arcadeDifficulty"
+        "int16_t characterIDs\\[MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT\\]" "int8_t numLaps" "uint8_t numPlyrNextGame"
+        "uint8_t boolDemoMode")
+    string(REPLACE " " ";" field_parts "${field}")
+    list(GET field_parts 0 field_type)
+    list(GET field_parts 1 field_name)
+    ctr_require_field("${module_header} (struct MainArcadeRaceSetupRetailFields)" "${fields_body}" "${field_type}" "${field_name}")
 endforeach()
 ctr_require("${module_header}" "${header}" "#define MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT 8u")
 
 # 7. Dormant.
-file(GLOB_RECURSE game_files "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/game/*.inc")
+file(GLOB_RECURSE game_files "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/game/*.inc"
+    "${repo}/platform/*.c" "${repo}/platform/*.h" "${repo}/platform/*.inc"
+    "${repo}/include/platform/*.h" "${repo}/main.c")
 set(scanned 0)
+set(scanned_platform 0)
 foreach(path IN LISTS game_files)
     file(RELATIVE_PATH relative_path "${repo}" "${path}")
     if(relative_path STREQUAL module_header OR relative_path STREQUAL module_source)
@@ -255,9 +333,12 @@ foreach(path IN LISTS game_files)
     file(READ "${path}" game_source)
     ctr_forbid("${relative_path}" "${game_source}" "MainArcadeRaceSetupPlan")
     math(EXPR scanned "${scanned} + 1")
+    if(relative_path MATCHES "^platform/")
+        math(EXPR scanned_platform "${scanned_platform} + 1")
+    endif()
 endforeach()
-if(scanned LESS 100)
-    message(FATAL_ERROR "race setup plan isolation: scanned only ${scanned} game/ files; the scan is broken")
+if(scanned LESS 100 OR scanned_platform LESS 20)
+    message(FATAL_ERROR "race setup plan isolation: scanned only ${scanned} game/ and platform/ files (${scanned_platform} in platform/); the scan is broken")
 endif()
 ctr_read_source("game/game_unity.h" unity)
 ctr_forbid("game/game_unity.h" "${unity}" "MainArcadeRaceSetupPlan")
