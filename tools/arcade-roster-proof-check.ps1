@@ -28,7 +28,7 @@ param(
 )
 
 # Live roster determinism check (docs/ROSTER_MILESTONE.md section 3.4, R-6,
-# R-6b, and R-6c).  Runs five live roster proofs and compares their reports:
+# R-6b, R-6c, and R-6d).  Runs five live roster proofs and compares their reports:
 #   A  seed 0x5EED, dwell 0     (launches from the title)
 #   B  seed 0x5EED, dwell 0     (A again: byte-identical report)
 #   C  seed 0x5EED, dwell 5400  (launches from inside the attract demo race)
@@ -43,13 +43,14 @@ param(
 # input, drivers, and race-relative control (rcontrol) digests.  rcontrol is
 # the V1 control digest with the boot-relative counters (frameTimer,
 # frameCounter, timer) zeroed; the full control digest also carries those
-# counters.  The race setup pins gGT->timer (and gGT->frameTimer_Confetti)
-# at race init (RS-17), so C and E must start the race with A's timer; the
-# two counters it leaves (frameCounter and frameTimer, presentation and
-# platform only, RS-17's audit) still differ, so the full control digest is
-# informational and the check only reports it (RS-12).  The report header
-# logs the three counters at the launch tick and at race tick 0, and the
-# check prints the C-A and E-A offsets of both and their values mod 8.
+# counters.  The race setup pins gGT->timer and gGT->frameTimer_Confetti at
+# race init (RS-17), so C and E must start the race with A's timer and
+# frameTimerConfetti; the two counters it leaves (frameCounter and
+# frameTimer, presentation and platform only, RS-17's audit) still differ,
+# so the full control digest is informational and the check only reports it
+# (RS-12).  The report header logs the four counters (those three and
+# frameTimerConfetti) at the launch tick and at race tick 0, and the check
+# prints the C-A and E-A offsets of both and their values mod 8.
 #
 # Host timing.  The proof runs with the fixed VBlank pacing that main.c turns
 # on for it (Platform_SetFixedVBlankPacing): a slow host frame emits no late
@@ -69,7 +70,7 @@ $skipExitCode = 77
 $noDisplayMarker = 'No displays available'
 $notInternalMarker = '--arcade-roster-proof is available in internal builds only.'
 $tickPattern = '^tick ([0-9]+) control ([0-9a-f]{16}) rcontrol ([0-9a-f]{16}) rng ([0-9a-f]{16}) input ([0-9a-f]{16}) drivers ([0-9a-f]{64})$'
-$countersPattern = '^timer (-?[0-9]+) frameCounter (-?[0-9]+) frameTimer (-?[0-9]+)$'
+$countersPattern = '^timer (-?[0-9]+) frameCounter (-?[0-9]+) frameTimer (-?[0-9]+) frameTimerConfetti (-?[0-9]+)$'
 $runs = @()
 
 function Exit-Skipped([string]$Reason) {
@@ -208,20 +209,22 @@ function Read-Report($Run) {
             $report.Header[$Matches[1]] = $Matches[2]
         }
     }
-    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v6') -or ($lines[1] -ne 'drivers digest excludes physics')) {
-        $report.Problems += 'the report does not start with the v6 header and "drivers digest excludes physics"'
+    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v7') -or ($lines[1] -ne 'drivers digest excludes physics')) {
+        $report.Problems += 'the report does not start with the v7 header and "drivers digest excludes physics"'
     }
     if ($report.Header['result'] -ne 'PASS (0)') {
         $report.Problems += "result is '$($report.Header['result'])', not 'PASS (0)'"
     }
     if (($null -ne $report.Header['race tick 0 counters']) -and ($report.Header['race tick 0 counters'] -match $countersPattern)) {
-        $report.Counters = [pscustomobject]@{ Timer = [long]$Matches[1]; FrameCounter = [long]$Matches[2]; FrameTimer = [long]$Matches[3] }
+        $report.Counters = [pscustomobject]@{ Timer = [long]$Matches[1]; FrameCounter = [long]$Matches[2]; FrameTimer = [long]$Matches[3]
+            FrameTimerConfetti = [long]$Matches[4] }
     }
     else {
         $report.Problems += "the race tick 0 counters line is missing or malformed: '$($report.Header['race tick 0 counters'])'"
     }
     if (($null -ne $report.Header['launch counters']) -and ($report.Header['launch counters'] -match $countersPattern)) {
-        $report.LaunchCounters = [pscustomobject]@{ Timer = [long]$Matches[1]; FrameCounter = [long]$Matches[2]; FrameTimer = [long]$Matches[3] }
+        $report.LaunchCounters = [pscustomobject]@{ Timer = [long]$Matches[1]; FrameCounter = [long]$Matches[2]; FrameTimer = [long]$Matches[3]
+            FrameTimerConfetti = [long]$Matches[4] }
     }
     else {
         $report.Problems += "the launch counters line is missing or malformed: '$($report.Header['launch counters'])'"
@@ -264,12 +267,15 @@ function Get-CounterOffsets($A, $Other, [switch]$Launch) {
     $timer = $countersOther.Timer - $countersA.Timer
     $frameCounter = $countersOther.FrameCounter - $countersA.FrameCounter
     $frameTimer = $countersOther.FrameTimer - $countersA.FrameTimer
+    $frameTimerConfetti = $countersOther.FrameTimerConfetti - $countersA.FrameTimerConfetti
     return [pscustomobject]@{
         Timer = $timer
         FrameCounter = $frameCounter
         FrameTimer = $frameTimer
-        Text = ("timer {0:+#;-#;0} (mod 8 = {1}), frameCounter {2:+#;-#;0} (mod 8 = {3}), frameTimer {4:+#;-#;0} (mod 8 = {5})" -f `
-            $timer, (Get-Mod8 $timer), $frameCounter, (Get-Mod8 $frameCounter), $frameTimer, (Get-Mod8 $frameTimer))
+        FrameTimerConfetti = $frameTimerConfetti
+        Text = (("timer {0:+#;-#;0} (mod 8 = {1}), frameCounter {2:+#;-#;0} (mod 8 = {3}), frameTimer {4:+#;-#;0} (mod 8 = {5}), " +
+            "frameTimerConfetti {6:+#;-#;0} (mod 8 = {7})") -f $timer, (Get-Mod8 $timer), $frameCounter, (Get-Mod8 $frameCounter),
+            $frameTimer, (Get-Mod8 $frameTimer), $frameTimerConfetti, (Get-Mod8 $frameTimerConfetti))
     }
 }
 
@@ -475,8 +481,8 @@ try {
 
     # The boot-relative counters at the launch tick (the boot history each
     # run brings) and at race tick 0, and the offsets from A.  E must bring
-    # an odd timer offset, and the race setup's pin (RS-17) must remove it:
-    # C and E start the race with A's timer.
+    # an odd timer offset, and the race setup's pins (RS-17) must remove it:
+    # C and E start the race with A's timer and frameTimerConfetti.
     Write-Output "A launch counters: $($a.Header['launch counters'])"
     Write-Output "A race tick 0 counters: $($a.Header['race tick 0 counters'])"
     $launchC = Get-CounterOffsets $a $c -Launch
@@ -493,6 +499,9 @@ try {
     foreach ($pair in @(@('C', $offsetsC), @('E', $offsetsE))) {
         if ($pair[1].Timer -ne 0) {
             $failures += "$($pair[0])'s timer at race tick 0 is $($pair[1].Timer) off A's: the race setup's timer pin (RS-17) did not hold"
+        }
+        if ($pair[1].FrameTimerConfetti -ne 0) {
+            $failures += "$($pair[0])'s frameTimerConfetti at race tick 0 is $($pair[1].FrameTimerConfetti) off A's: the race setup's frameTimer_Confetti pin (RS-17) did not hold"
         }
     }
 

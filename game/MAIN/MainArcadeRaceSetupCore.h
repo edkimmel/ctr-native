@@ -105,7 +105,7 @@
  * compared with it (a reset would make a bogus delta), and the platform.
  * Verdicts: PIN (feeds the simulation or its RNG and is safe to set), LEAVE
  * (presentation or platform only), UNSAFE (feeds the simulation but cannot
- * be reset safely; none found). File:line as of R-6c.
+ * be reset safely; none found). File:line as of R-6d.
  *
  * - gGT->timer (V1 control "timer"): +1 per MainFrame_GameLogic
  *   (MainFrame.c:184), never reset by a load. Race readers: the exhaust
@@ -121,9 +121,14 @@
  *   airborne speedometer needle, Driver state (VehPhysGeneral.c:1618, read
  *   by VehStuckProc.c:1265), and the bot wiggle under a cloud (BOTS.c:2520).
  *   Stored timestamp: HOWL_Voiceline.c:280 stores it in a voiceline, never
- *   compared with it again. The rest is presentation (UI, water, texture
- *   cycling, DecalMP.c:110, rumble at GAMEPAD.c:720, :763, :851, the frozen
- *   clock tick sound at MainFrame.c:232). Platform: not read. PIN 0.
+ *   compared with it again. The rest is presentation or rumble, none treating
+ *   0 specially (UI, water, texture cycling, DecalMP.c:110, rumble at
+ *   GAMEPAD.c:720, :763, :851, the frozen clock tick sound at
+ *   MainFrame.c:232, the invincibility flicker on instFlags at
+ *   231/RB_Player.c:247, the shield instance scale by timer % 6 at
+ *   231/RB_MaskShieldCloud.c:363-371, the wobble rumble at
+ *   VehEmitter.c:1770, the HUD beep at UI/UI_RaceHud.c:379, Display.c:135).
+ *   Platform: not read. PIN 0.
  * - gGT->frameTimer_Confetti: +1 per emitted VBlank while not paused (the
  *   VBlank callback, MainDrawCb.c:25), never reset by a load. Race readers:
  *   every particle oscillator's value (Particle.c:247) and each new
@@ -133,15 +138,15 @@
  *   confetti (MainFrame_RenderFrame.c:524). Stored timestamps: only the
  *   oscillator phases, whose pool the load rebuilt (LOAD_TenStages.c:202,
  *   :503) and MainInit_FinalizeInit clears again right after the hook
- *   (MainInit.c:468), so no live phase spans the pin. Platform: native VSync
+ *   (MainInit.c:469), so no live phase spans the pin. Platform: native VSync
  *   emits the callback on the game thread (native_platform.c,
  *   Native_EmitVBlank) and never reads the field; the platform keeps its own
  *   VBlank count. PIN 0.
  * - sdata->frameCounter (V1 control "frameCounter"): +1 per main-loop frame
  *   (MainMain.c:359). Readers: menu, pause, hub, and profile screens only
  *   (230.c:54, MainFrame_RenderFrame.c:475, MainFreeze.c:57, :135, :179,
- *   SelectProfile.c:1165, :1261, 232/AH_*.c); no race simulation or RNG
- *   reader. LEAVE.
+ *   SelectProfile.c:1165, :1261, 232/AH_*.c, 233/CS_Garage.c:290); no race
+ *   simulation or RNG reader. LEAVE.
  * - gGT->frameTimer_VsyncCallback (V1 control "frameTimer"): +1 per emitted
  *   VBlank (MainDrawCb.c:22). Readers: frameTimer_notPaused (written at
  *   MainFrame_RenderFrame.c:1372, never read), the level audio distortion
@@ -155,7 +160,10 @@
  *   only, each against a stored timestamp: the crash feedback cooldown
  *   (VehPhysCrash.c:259, :521-527; it gates sounds and voicelines, which
  *   draw audioRNG only), the voiceline cooldown (HOWL_Voiceline.c:179), XA
- *   seeks (HOWL_AudioState.c:297), channel durations (HOWL_Channel.c:95).
+ *   seeks (HOWL_AudioState.c:297, against the XA_PauseFrame stored at
+ *   CDSYS.c:813-909), channel durations (HOWL_Channel.c:95, against the
+ *   startFrame stored at HOWL_OtherFX.c:122); plus the options menu voice
+ *   preview every 25 frames (HOWL_Settings.c:317, no stored timestamp).
  *   LEAVE (a reset would also make bogus deltas).
  * - gGT->clockFrameStart and clockDurationStall: root-counter snapshots
  *   (MainFrame.c:188, MainFrame_RenderFrame.c:1265, :1333); only their

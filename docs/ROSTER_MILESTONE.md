@@ -227,14 +227,14 @@ A pure core plus a thin live adapter.
 - Each tick line also carries a race-relative control digest (rcontrol):
   the V1 control encoding and FNV-1a 64 digest with frameTimer,
   frameCounter, and timer zeroed, computed locally (no schema change). The
-  report header logs those three counters at the launch tick and at race
-  tick 0.
+  report header (format v7) logs those three counters and
+  frameTimerConfetti at the launch tick and at race tick 0.
 - A ctest (label "live") runs the exe five times in parallel: A and B (same
   seed, dwell 0) must produce byte-identical logs; C (same seed, dwell 5400,
   launched from inside the attract demo race) and E (same seed, dwell 37, an
   odd timer offset from A at launch) must match A in every RNG, input,
   DRIVERS, rcontrol, plan, and bank digest and start the race with A's timer
-  (the RS-17 pin); the full control digest differs only in the unpinned
+  and frameTimerConfetti (the RS-17 pins); the full control digest differs only in the unpinned
   boot-relative counters frameCounter and frameTimer and is informational,
   and the check reports the C-A and E-A offsets at launch and at race tick
   0, mod 8. D (another seed) must differ from A in the RNG digest

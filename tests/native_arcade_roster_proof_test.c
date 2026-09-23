@@ -599,10 +599,12 @@ static int TestTickLines(void)
 	report.raceTickZeroCounters.timer = 1466;
 	report.raceTickZeroCounters.frameCounter = 1523;
 	report.raceTickZeroCounters.frameTimer = -2;
+	report.raceTickZeroCounters.frameTimerConfetti = 57;
 	report.launchCountersValid = 1u;
 	report.launchCounters.timer = 701;
 	report.launchCounters.frameCounter = 733;
 	report.launchCounters.frameTimer = -7;
+	report.launchCounters.frameTimerConfetti = -1402;
 	(void)remove(path);
 	CHECK(NativeArcadeRosterProof_WriteReport(&report) == 1);
 	file = fopen(path, "rb");
@@ -611,11 +613,14 @@ static int TestTickLines(void)
 	(void)fclose(file);
 	(void)remove(path);
 	text[length] = '\0';
-	CHECK(strncmp(text, "arcade roster proof v6\ndrivers digest excludes physics\nresult PASS (0)\n", 71u) == 0);
+	CHECK(strncmp(text, "arcade roster proof v7\ndrivers digest excludes physics\nresult PASS (0)\n", 71u) == 0);
 	CHECK(strstr(text, "\ndwell 0\nticks 3\nmenu ready tick 732\n") != NULL);
-	CHECK(strstr(text, "\nlaunch window title\nlaunch counters timer 701 frameCounter 733 frameTimer -7\nvalidated tick 762\n") != NULL);
+	CHECK(strstr(text, "\nlaunch window title\n"
+	                   "launch counters timer 701 frameCounter 733 frameTimer -7 frameTimerConfetti -1402\n"
+	                   "validated tick 762\n") != NULL);
 	CHECK(strstr(text, "\nvalidated tick 762\nrace tick 0 tick 762\n"
-	                   "race tick 0 counters timer 1466 frameCounter 1523 frameTimer -2\nconfig digest none\n") != NULL);
+	                   "race tick 0 counters timer 1466 frameCounter 1523 frameTimer -2 frameTimerConfetti 57\n"
+	                   "config digest none\n") != NULL);
 	CHECK(strstr(text, "slot 7 none\n"
 	                   "tick 0 control 0123456789abcdef rcontrol a1b2c3d4e5f60718 rng 0000000000000000 input 0000000000000001 drivers 0001")
 	      != NULL);
@@ -923,7 +928,7 @@ static int TestSingletonAndReport(void)
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(length == strlen(text));
 	{
-		static const char head[] = "arcade roster proof v6\ndrivers digest excludes physics\nresult PASS (0)\n"
+		static const char head[] = "arcade roster proof v7\ndrivers digest excludes physics\nresult PASS (0)\n"
 		                           "setup status VALIDATED (4)\nsetup failure NONE (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);

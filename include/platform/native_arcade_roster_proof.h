@@ -86,8 +86,9 @@ struct NativeCanonicalStateV1;
  * encoding (NativeCanonicalDriversDetailedV1_Encode) of the topology-free
  * drivers candidate, a detailed record whose Physics groups are all at their
  * exact zero value (the report header says "drivers digest excludes
- * physics"). The report header also carries the three boot-relative counters
- * at the launch tick (before the race setup pinned gGT->timer, RS-17) and as
+ * physics"). The report header also carries four boot-relative counters (the
+ * three above and gGT->frameTimer_Confetti) at the launch tick (before the
+ * race setup pinned gGT->timer and gGT->frameTimer_Confetti, RS-17) and as
  * race tick 0 saw them. The report ends with "end ticks <count>".
  *
  * Host timing. main.c turns on the host-local fixed VBlank pacing
@@ -279,13 +280,16 @@ struct NativeArcadeRosterProofSlotLine
 	uint8_t reserved;
 };
 
-/* The boot-relative control counters (the V1 control values gGT->timer,
- * sdata->frameCounter, and gGT->frameTimer_VsyncCallback) of one frame. */
+/* The boot-relative counters of one frame: the V1 control values gGT->timer,
+ * sdata->frameCounter, and gGT->frameTimer_VsyncCallback, and
+ * gGT->frameTimer_Confetti (pinned by the setup, RS-17; not a V1 control
+ * value, so the game hook reads it from gGT on the same frame). */
 struct NativeArcadeRosterProofCounters
 {
 	int32_t timer;
 	int32_t frameCounter;
 	int32_t frameTimer;
+	int32_t frameTimerConfetti;
 };
 
 /* The boot-relative counters the race setup pins at its seeding point
@@ -441,12 +445,13 @@ const char *NativeArcadeRosterProof_LogPath(void);
 /*
  * Formats the report as text into buffer (NUL-terminated) and stores its
  * length without the NUL. Returns 0 on NULL arguments or a buffer too small.
- * The format is line based: a header line ("arcade roster proof v6"), the
+ * The format is line based: a header line ("arcade roster proof v7"), the
  * line "drivers digest excludes physics", then "result", "setup status",
  * "setup failure", "seed", "dwell", "ticks" (requested), "menu ready tick",
  * "demo race tick", "launch tick", "launch window" (title, demo race, or
- * none), "launch counters" (timer, frameCounter, and frameTimer at the launch
- * tick, as signed decimal, or "none"), "validated tick", "race tick 0 tick",
+ * none), "launch counters" (timer, frameCounter, frameTimer, and
+ * frameTimerConfetti at the launch tick, as signed decimal, or "none"),
+ * "validated tick", "race tick 0 tick",
  * "race tick 0 counters" (the same, at race tick 0), the four digests as
  * lowercase hex (or "none"), the "seeded" line (the five retail seed fields
  * and the two pinned counters, timer and frameTimerConfetti as signed

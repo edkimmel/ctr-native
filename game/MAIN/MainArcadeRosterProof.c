@@ -274,10 +274,12 @@ static int MainArcadeRosterProof_TryLaunch(struct GameTracker *gGT, struct Gamep
 		return 0;
 	}
 	/* The boot-relative counters as this boot history left them, before the
-	 * setup pins gGT->timer at race init (RS-17 evidence). */
+	 * setup pins gGT->timer and gGT->frameTimer_Confetti at race init (RS-17
+	 * evidence). */
 	state->launchCounters.timer = (int32_t)gGT->timer;
 	state->launchCounters.frameCounter = (int32_t)sdata->frameCounter;
 	state->launchCounters.frameTimer = (int32_t)gGT->frameTimer_VsyncCallback;
+	state->launchCounters.frameTimerConfetti = (int32_t)gGT->frameTimer_Confetti;
 	state->launchCountersValid = 1u;
 	if (!MainArcadeRaceSetup_Arm(NativeArcadeRosterProof_Config()))
 	{
@@ -621,9 +623,17 @@ void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct Native
 		state->raceTickZeroCounters.timer = frameState->control.timer;
 		state->raceTickZeroCounters.frameCounter = frameState->control.frameCounter;
 		state->raceTickZeroCounters.frameTimer = frameState->control.frameTimer;
+		/* frameTimer_Confetti is not a V1 control value, so it is read from
+		 * gGT here. It is the same frame the control values come from:
+		 * MainMain.c projects frameState right before this hook, on the game
+		 * thread, and the only writer (the VBlank callback, MainDrawCb.c) runs
+		 * on the game thread only inside VSync, which neither the projector
+		 * nor this hook calls. */
+		state->raceTickZeroCounters.frameTimerConfetti = (int32_t)gGT->frameTimer_Confetti;
 		state->countersValid = 1u;
-		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "race tick 0 counters: timer %ld frameCounter %ld frameTimer %ld\n",
-			(long)frameState->control.timer, (long)frameState->control.frameCounter, (long)frameState->control.frameTimer);
+		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "race tick 0 counters: timer %ld frameCounter %ld frameTimer %ld frameTimerConfetti %ld\n",
+			(long)frameState->control.timer, (long)frameState->control.frameCounter, (long)frameState->control.frameTimer,
+			(long)state->raceTickZeroCounters.frameTimerConfetti);
 	}
 	if (!NativeArcadeRosterProof_RecordTick(&line))
 	{

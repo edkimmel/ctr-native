@@ -688,7 +688,7 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_Name(report->setupStatusName, statusName);
 	NativeArcadeRosterProof_Name(report->setupFailureName, failureName);
 
-	NativeArcadeRosterProof_Append(&text, "arcade roster proof v6\n");
+	NativeArcadeRosterProof_Append(&text, "arcade roster proof v7\n");
 	NativeArcadeRosterProof_Append(&text, "drivers digest excludes physics\n");
 	NativeArcadeRosterProof_Append(&text, "result %s (%u)\n", NativeArcadeRosterProof_ResultName(report->result),
 		(unsigned)report->result);
@@ -708,9 +708,9 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	}
 	else
 	{
-		NativeArcadeRosterProof_Append(&text, "launch counters timer %ld frameCounter %ld frameTimer %ld\n",
+		NativeArcadeRosterProof_Append(&text, "launch counters timer %ld frameCounter %ld frameTimer %ld frameTimerConfetti %ld\n",
 			(long)report->launchCounters.timer, (long)report->launchCounters.frameCounter,
-			(long)report->launchCounters.frameTimer);
+			(long)report->launchCounters.frameTimer, (long)report->launchCounters.frameTimerConfetti);
 	}
 	NativeArcadeRosterProof_AppendTick(&text, "validated tick", report->validatedTick);
 	NativeArcadeRosterProof_AppendTick(&text, "race tick 0 tick", report->raceTickZeroTick);
@@ -720,9 +720,9 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	}
 	else
 	{
-		NativeArcadeRosterProof_Append(&text, "race tick 0 counters timer %ld frameCounter %ld frameTimer %ld\n",
+		NativeArcadeRosterProof_Append(&text, "race tick 0 counters timer %ld frameCounter %ld frameTimer %ld frameTimerConfetti %ld\n",
 			(long)report->raceTickZeroCounters.timer, (long)report->raceTickZeroCounters.frameCounter,
-			(long)report->raceTickZeroCounters.frameTimer);
+			(long)report->raceTickZeroCounters.frameTimer, (long)report->raceTickZeroCounters.frameTimerConfetti);
 	}
 	NativeArcadeRosterProof_AppendDigest(&text, "config digest", report->configDigest, digestsValid);
 	NativeArcadeRosterProof_AppendDigest(&text, "race plan digest", report->racePlanDigest, digestsValid);
