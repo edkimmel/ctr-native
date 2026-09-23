@@ -35,12 +35,17 @@
  * which the handshake rejects with CONFIG_MISMATCH; that is the intended
  * "LINK REFUSED: SETTINGS DO NOT MATCH" path.
  *
- * gameMode1, gameMode2, and rules are 0 in the fixture: mapping the fixture
- * onto the retail race flags is Task 7's to define. botRulesDigest is the
- * SHA-256 of NATIVE_ARCADE_LINK_FIXTURE_BOT_RULES_TEXT (without its
- * terminating NUL), a placeholder digest until integration step 3 defines
- * the bot rules. The fixture masterSeed seeds the first match only; each
- * rematch derives a new seed (UX-7).
+ * The fixture is a race the arcade bot rules v1 can build
+ * (include/platform/native_arcade_bot_rules.h, docs/ROSTER_MILESTONE.md
+ * section 4): gameMode1, gameMode2, and rules are 0, meaning a retail arcade
+ * single race without cheats or cup (RS-2); botRulesDigest is
+ * NativeArcadeBotRules_DigestV1, the SHA-256 of the bot rules' canonical
+ * encoding; the human slots carry difficulty 0 and every bot slot the
+ * default medium speed NATIVE_ARCADE_BOT_RULES_DEFAULT_DIFFICULTY, 0xA0
+ * (RS-3); and the bot characters are the LOAD_Robots2P rule's retail 2P AI
+ * set for the two human characters, in set order (RS-4). The fixture
+ * masterSeed seeds the first match only; each rematch derives a new seed
+ * (UX-7).
  *
  * Pure: caller-owned state, no heap use, no I/O, no hidden state, and fully
  * deterministic. The identity is supplied by the caller.
@@ -54,7 +59,6 @@
 #define NATIVE_ARCADE_LINK_FIXTURE_TICK_RATE_NUMERATOR 30u
 #define NATIVE_ARCADE_LINK_FIXTURE_TICK_RATE_DENOMINATOR 1u
 #define NATIVE_ARCADE_LINK_FIXTURE_MASTER_SEED UINT64_C(0x4354524e41524331) /* "CTRNARC1" */
-#define NATIVE_ARCADE_LINK_FIXTURE_BOT_RULES_TEXT "CTRN arcade-link fixture bot rules v1"
 
 /* Screens reachable through --arcade-link-preview, by name in comments. */
 enum NativeArcadeLinkPreview
@@ -129,14 +133,18 @@ const char *NativeArcadeLinkOptions_PreviewName(uint32_t preview);
 /*
  * Builds the fixed two-cabinet fixture for the caller's identity. Returns 0
  * with *config untouched on NULL arguments, an all-zero build or content
- * digest, or a candidate that fails NativeMatchConfigV1_Validate; otherwise
- * writes the fixture and returns 1.
+ * digest, or a candidate that fails NativeMatchConfigV1_Validate or
+ * NativeArcadeBotRules_ValidateConfigV1; otherwise writes the fixture and
+ * returns 1.
  *
  * Fixture: profile ARCADE_TWO_CAB; trackID, lapCount, tick rate, and
  * masterSeed from the FIXTURE defines; gameMode1 = gameMode2 = rules = 0;
- * slot characterIDs 0..5 for slots 0..5 (CAB1 Crash, CAB2 Cortex, then
- * bots), difficulty 0; build and content identity copied from *identity;
- * botRulesDigest as described above.
+ * slot 0 CAB1 Crash (characterID 0) and slot 1 CAB2 Cortex (1), difficulty
+ * 0; slots 2..5 the bots NativeArcadeBotRules_ExpectedBots2P(0, 1) in set
+ * order (retail 2P AI set 0: Polar 6, N. Gin 4, Tiny 2, Coco 3), each at
+ * difficulty NATIVE_ARCADE_BOT_RULES_DEFAULT_DIFFICULTY (0xA0); slots 6..7
+ * inactive; build and content identity copied from *identity;
+ * botRulesDigest = NativeArcadeBotRules_DigestV1.
  */
 int NativeArcadeLinkFixture_Build(const struct NativeIdentityV1 *identity, struct NativeMatchConfigV1 *config);
 

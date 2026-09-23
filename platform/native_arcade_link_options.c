@@ -1,8 +1,8 @@
 #include "platform/native_arcade_link_options.h"
 
+#include "platform/native_arcade_bot_rules.h"
 #include "platform/native_identity.h"
 #include "platform/native_match_config.h"
-#include "platform/native_sha256.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -265,9 +265,11 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
 
 int NativeArcadeLinkFixture_Build(const struct NativeIdentityV1 *identity, struct NativeMatchConfigV1 *config)
 {
-	static const char botRulesText[] = NATIVE_ARCADE_LINK_FIXTURE_BOT_RULES_TEXT;
+	/* CAB1 Crash (0) and CAB2 Cortex (1); the bots follow from them (RS-4). */
+	static const uint8_t humanCharacters[NATIVE_ARCADE_BOT_RULES_HUMAN_COUNT] = { 0u, 1u };
+	uint8_t bots[NATIVE_ARCADE_BOT_RULES_BOT_COUNT];
+	uint8_t aiSetIndex = 0;
 	struct NativeMatchConfigV1 candidate;
-	struct NativeSha256 sha;
 
 	if ((identity == NULL) || (config == NULL) || NativeArcadeLinkOptions_IsZero(identity->build, sizeof(identity->build)) ||
 	    NativeArcadeLinkOptions_IsZero(identity->content, sizeof(identity->content)))
@@ -284,19 +286,32 @@ int NativeArcadeLinkFixture_Build(const struct NativeIdentityV1 *identity, struc
 	candidate.tickRateNumerator = NATIVE_ARCADE_LINK_FIXTURE_TICK_RATE_NUMERATOR;
 	candidate.tickRateDenominator = NATIVE_ARCADE_LINK_FIXTURE_TICK_RATE_DENOMINATOR;
 	candidate.masterSeed = NATIVE_ARCADE_LINK_FIXTURE_MASTER_SEED;
-	for (uint32_t i = 0; i <= 5u; i++)
+
+	/* Humans in slots 0 and 1 at difficulty 0; bots in slots 2..5 in AI set order at the default (RS-3). */
+	if (!NativeArcadeBotRules_ExpectedBots2P(humanCharacters[0], humanCharacters[1], bots, &aiSetIndex))
 	{
-		candidate.slots[i].characterID = (uint8_t)i;
+		return 0;
+	}
+	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_HUMAN_COUNT; i++)
+	{
+		candidate.slots[i].characterID = humanCharacters[i];
 		candidate.slots[i].difficulty = 0;
+	}
+	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_BOT_COUNT; i++)
+	{
+		candidate.slots[NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT + i].characterID = bots[i];
+		candidate.slots[NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT + i].difficulty =
+			(uint8_t)NATIVE_ARCADE_BOT_RULES_DEFAULT_DIFFICULTY;
 	}
 	memcpy(candidate.buildIdentity, identity->build, sizeof(candidate.buildIdentity));
 	memcpy(candidate.contentIdentity, identity->content, sizeof(candidate.contentIdentity));
 
-	NativeSha256_Init(&sha);
-	NativeSha256_Update(&sha, botRulesText, sizeof(botRulesText) - 1u);
-	NativeSha256_Final(&sha, candidate.botRulesDigest);
+	if (!NativeArcadeBotRules_DigestV1(candidate.botRulesDigest))
+	{
+		return 0;
+	}
 
-	if (!NativeMatchConfigV1_Validate(&candidate))
+	if (!NativeMatchConfigV1_Validate(&candidate) || !NativeArcadeBotRules_ValidateConfigV1(&candidate))
 	{
 		return 0;
 	}

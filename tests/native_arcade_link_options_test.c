@@ -1,5 +1,6 @@
 #include "platform/native_arcade_link_options.h"
 
+#include "platform/native_arcade_bot_rules.h"
 #include "platform/native_sha256.h"
 
 #include <stdio.h>
@@ -9,11 +10,27 @@
 
 #define ARGC(args) ((int)(sizeof(args) / sizeof((args)[0])))
 
-/* SHA-256 of "CTRN arcade-link fixture bot rules v1" (37 bytes), from sha256sum. */
+/*
+ * The frozen R-2 bot rules v1 golden digest
+ * (9022154eab793fb25d0a2d3b0c787d62fdaf9af490b7e3f1d48fbec8d4065eab), copied
+ * from k_goldenDigest in tests/native_arcade_bot_rules_test.c, where it was
+ * obtained independently of the module (sha256sum and certutil over the
+ * hand-written encoding).
+ */
 static const uint8_t k_botRulesDigest[NATIVE_SHA256_DIGEST_BYTES] = {
-	0x26, 0x68, 0x46, 0x70, 0x32, 0x49, 0x6b, 0x64, 0xfc, 0x57, 0x02, 0xb7, 0x0d, 0x0c, 0x26, 0x04,
-	0x8a, 0xa6, 0x33, 0x46, 0x07, 0x8c, 0xd3, 0x46, 0x7f, 0xdf, 0xbb, 0x54, 0xc3, 0xf3, 0xea, 0x73,
+	0x90, 0x22, 0x15, 0x4e, 0xab, 0x79, 0x3f, 0xb2, 0x5d, 0x0a, 0x2d, 0x3b, 0x0c, 0x78, 0x7d, 0x62,
+	0xfd, 0xaf, 0x9a, 0xf4, 0x90, 0xb7, 0xe3, 0xf1, 0xd4, 0x8f, 0xbe, 0xc8, 0xd4, 0x06, 0x5e, 0xab,
 };
+
+/*
+ * Per-slot characters of the fixture: CAB1 Crash (0), CAB2 Cortex (1), then
+ * the retail 2P AI set 0 in set order, Polar (6), N. Gin (4), Tiny (2),
+ * Coco (3) (the first characterIDs_2P_AIs set holding neither human), and
+ * two inactive slots. Written out by hand from the retail table, not taken
+ * from the module.
+ */
+static const uint8_t k_fixtureCharacters[NATIVE_MATCH_CONFIG_V1_SLOT_COUNT] = { 0, 1, 6, 4, 2, 3, 0, 0 };
+static const uint8_t k_fixtureDifficulties[NATIVE_MATCH_CONFIG_V1_SLOT_COUNT] = { 0, 0, 0xa0, 0xa0, 0xa0, 0xa0, 0, 0 };
 
 static void Sentinel(struct NativeArcadeLinkOptions *options)
 {
@@ -425,14 +442,15 @@ static int TestFixture(void)
 	uint8_t secondDigest[NATIVE_SHA256_DIGEST_BYTES];
 	uint8_t otherDigest[NATIVE_SHA256_DIGEST_BYTES];
 	uint8_t computed[NATIVE_SHA256_DIGEST_BYTES];
-	struct NativeSha256 sha;
-	static const char text[] = NATIVE_ARCADE_LINK_FIXTURE_BOT_RULES_TEXT;
+	uint8_t bots[NATIVE_ARCADE_BOT_RULES_BOT_COUNT];
+	uint8_t aiSetIndex = 0xA5u;
 
 	FillIdentity(&identity, 0x11u, 0x80u);
 
 	memset(&first, 0xA5, sizeof(first));
 	CHECK(NativeArcadeLinkFixture_Build(&identity, &first));
 	CHECK(NativeMatchConfigV1_Validate(&first));
+	CHECK(NativeArcadeBotRules_ValidateConfigV1(&first));
 
 	/* Exact field values. */
 	CHECK(first.configurationVersion == NATIVE_MATCH_CONFIG_V1_VERSION);
@@ -459,7 +477,6 @@ static int TestFixture(void)
 
 		if (i <= 5u)
 		{
-			CHECK(first.slots[i].characterID == (uint8_t)i);
 			CHECK(first.slots[i].initialLifecycle == NATIVE_MATCH_SLOT_LIFECYCLE_ACTIVE);
 			if (i >= 2u)
 			{
@@ -470,9 +487,9 @@ static int TestFixture(void)
 		{
 			CHECK(first.slots[i].role == NATIVE_MATCH_SLOT_ROLE_INACTIVE);
 			CHECK(first.slots[i].initialLifecycle == NATIVE_MATCH_SLOT_LIFECYCLE_INACTIVE);
-			CHECK(first.slots[i].characterID == 0);
 		}
-		CHECK(first.slots[i].difficulty == 0);
+		CHECK(first.slots[i].characterID == k_fixtureCharacters[i]);
+		CHECK(first.slots[i].difficulty == k_fixtureDifficulties[i]);
 		CHECK(memcmp(first.slots[i].reserved, zeroReserved, sizeof(zeroReserved)) == 0);
 	}
 	for (uint32_t i = 0; i < NATIVE_MATCH_CONFIG_V1_RESERVED_BYTES; i++)
@@ -480,13 +497,23 @@ static int TestFixture(void)
 		CHECK(first.reserved[i] == 0);
 	}
 
-	/* botRulesDigest: the fixed external digest and a direct SHA-256 of the text. */
-	CHECK(sizeof(text) - 1u == 37u);
+	/* Humans at difficulty 0; bots are the LOAD_Robots2P set for the two humans, at medium (RS-3, RS-4). */
+	CHECK(first.slots[0].characterID == 0u); /* CRASH_BANDICOOT */
+	CHECK(first.slots[1].characterID == 1u); /* NEO_CORTEX */
+	CHECK(NativeArcadeBotRules_ExpectedBots2P(first.slots[0].characterID, first.slots[1].characterID, bots, &aiSetIndex));
+	CHECK(aiSetIndex == 0u);
+	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_BOT_COUNT; i++)
+	{
+		CHECK(first.slots[NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT + i].characterID == bots[i]);
+		CHECK(first.slots[NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT + i].difficulty ==
+		      NATIVE_ARCADE_BOT_RULES_DEFAULT_DIFFICULTY);
+	}
+	CHECK(NATIVE_ARCADE_BOT_RULES_DEFAULT_DIFFICULTY == 0xa0u);
+
+	/* botRulesDigest: the module's DigestV1, and the frozen R-2 golden digest. */
+	CHECK(NativeArcadeBotRules_DigestV1(computed));
+	CHECK(memcmp(first.botRulesDigest, computed, sizeof(computed)) == 0);
 	CHECK(memcmp(first.botRulesDigest, k_botRulesDigest, sizeof(k_botRulesDigest)) == 0);
-	NativeSha256_Init(&sha);
-	NativeSha256_Update(&sha, text, sizeof(text) - 1u);
-	NativeSha256_Final(&sha, computed);
-	CHECK(memcmp(computed, k_botRulesDigest, sizeof(computed)) == 0);
 
 	/* Deterministic: a second cabinet with the same identity builds identical bytes. */
 	memset(&second, 0x5A, sizeof(second));

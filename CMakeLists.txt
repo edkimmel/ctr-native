@@ -380,8 +380,9 @@ target_include_directories(ctr_native_arcade_link_policy PUBLIC ${CMAKE_SOURCE_D
 
 # Arcade-link host options and fixed race fixture (docs/GAME_LOOP_UI_MILESTONE.md
 # sections 2.5 and 3, UX-8, Task 6a): pure argv parsing and a pure fixture
-# builder over a caller-supplied identity. Uses only the identity struct, so
-# it does not link ctr_native_identity. Reaches ctr_native through the host glue.
+# builder over a caller-supplied identity, valid under the arcade bot rules
+# (R-3). Uses only the identity struct, so it does not link
+# ctr_native_identity. Reaches ctr_native through the host glue.
 add_library(ctr_native_arcade_link_options STATIC platform/native_arcade_link_options.c)
 set_target_properties(ctr_native_arcade_link_options PROPERTIES
     C_STANDARD 17
@@ -389,7 +390,7 @@ set_target_properties(ctr_native_arcade_link_options PROPERTIES
     C_EXTENSIONS OFF
 )
 target_include_directories(ctr_native_arcade_link_options PUBLIC ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_config ctr_native_sha256)
+target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_config ctr_native_sha256 ctr_native_arcade_bot_rules)
 
 # Match-select resolution rules (docs/MATCH_SELECT_MILESTONE.md section 2.1,
 # MS-2): pure tables mirrored from retail, seed derivation, tie draws, vote,
@@ -409,7 +410,8 @@ target_link_libraries(ctr_native_match_select_rules PUBLIC ctr_native_match_conf
 # pure, versioned rule choices for the two-cabinet arcade race (shape,
 # difficulty table, retail 2P AI set rule, mode policy, retail RNG seed
 # recipe), their canonical encoding and SHA-256 digest, the seed mapping
-# and derivation, and the config validator. Nothing links it yet (R-3/R-4).
+# and derivation, and the config validator. The arcade-link fixture builds on
+# it (R-3).
 add_library(ctr_native_arcade_bot_rules STATIC platform/native_arcade_bot_rules.c)
 set_target_properties(ctr_native_arcade_bot_rules PROPERTIES
     C_STANDARD 17

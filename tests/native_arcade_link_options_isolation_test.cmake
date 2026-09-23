@@ -4,10 +4,11 @@
 # netplay, topology-lease, heap, clock, game, or deterministic-state
 # dependency, and the identity arrives from the caller (the module never
 # fetches it). Its includes are limited to stddef.h, stdint.h, string.h, its
-# own header, and the identity, match-config, and SHA-256 headers; the
-# library links exactly ctr_native_match_config and ctr_native_sha256; the
-# target stays portable C17 with extensions off; and the fixture values
-# (UX-8) cannot silently change.
+# own header, and the arcade-bot-rules, identity, match-config, and SHA-256
+# headers; the library links exactly ctr_native_arcade_bot_rules,
+# ctr_native_match_config, and ctr_native_sha256; the target stays portable
+# C17 with extensions off; the fixture values (UX-8) cannot silently change;
+# and the fixture's botRulesDigest comes from the real bot rules (R-3).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -71,15 +72,16 @@ foreach(relative_path IN LISTS options_files)
     # 7. #include lines may only name the allowlisted headers.
     string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${source}")
     foreach(include_line IN LISTS include_lines)
-        if(NOT include_line MATCHES "^#[ \t]*include[ \t]*(<stddef\\.h>|<stdint\\.h>|<string\\.h>|\"platform/native_arcade_link_options\\.h\"|\"platform/native_identity\\.h\"|\"platform/native_match_config\\.h\"|\"platform/native_sha256\\.h\")[ \t]*$")
+        if(NOT include_line MATCHES "^#[ \t]*include[ \t]*(<stddef\\.h>|<stdint\\.h>|<string\\.h>|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_bot_rules\\.h\"|\"platform/native_identity\\.h\"|\"platform/native_match_config\\.h\"|\"platform/native_sha256\\.h\")[ \t]*$")
             message(FATAL_ERROR "arcade link options isolation: disallowed include '${include_line}' in ${relative_path}")
         endif()
     endforeach()
 endforeach()
 
-# 8. ctr_native_arcade_link_options links exactly ctr_native_match_config and
-#    ctr_native_sha256, in exactly one target_link_libraries call. In
-#    particular it never links ctr_native_identity.
+# 8. ctr_native_arcade_link_options links exactly ctr_native_arcade_bot_rules,
+#    ctr_native_match_config, and ctr_native_sha256, in exactly one
+#    target_link_libraries call. In particular it never links
+#    ctr_native_identity.
 ctr_read_source("CMakeLists.txt" cmake)
 set(target ctr_native_arcade_link_options)
 string(REGEX MATCHALL "target_link_libraries\\([ \t\r\n]*${target}[ \t\r\n][^)]*\\)" link_calls "${cmake}")
@@ -93,8 +95,8 @@ string(REGEX REPLACE "\\)$" "" link_body "${link_body}")
 string(REGEX REPLACE "[ \t\r\n]+" ";" link_items "${link_body}")
 list(REMOVE_ITEM link_items "" PUBLIC PRIVATE INTERFACE)
 list(SORT link_items)
-if(NOT "${link_items}" STREQUAL "ctr_native_match_config;ctr_native_sha256")
-    message(FATAL_ERROR "arcade link options isolation: ${target} must link exactly ctr_native_match_config and ctr_native_sha256 (found '${link_items}')")
+if(NOT "${link_items}" STREQUAL "ctr_native_arcade_bot_rules;ctr_native_match_config;ctr_native_sha256")
+    message(FATAL_ERROR "arcade link options isolation: ${target} must link exactly ctr_native_arcade_bot_rules, ctr_native_match_config, and ctr_native_sha256 (found '${link_items}')")
 endif()
 
 # 9. C17, no extensions, on the options target, in order.
@@ -129,12 +131,10 @@ ctr_require_single("${options_header}" "TICK_RATE_DENOMINATOR 1u" "${header}"
     "#define NATIVE_ARCADE_LINK_FIXTURE_TICK_RATE_DENOMINATOR 1u[^0-9a-zA-Z_]")
 ctr_require_single("${options_header}" "MASTER_SEED UINT64_C(0x4354524e41524331)" "${header}"
     "#define NATIVE_ARCADE_LINK_FIXTURE_MASTER_SEED UINT64_C\\(0x4354524e41524331\\)[^0-9a-zA-Z_]")
-ctr_require_single("${options_header}" "BOT_RULES_TEXT" "${header}"
-    "#define NATIVE_ARCADE_LINK_FIXTURE_BOT_RULES_TEXT \"CTRN arcade-link fixture bot rules v1\"[\r\n]")
 
 # Each fixture define name is defined exactly once, so a second, conflicting
 # definition cannot slip in beside the frozen one.
-foreach(name TRACK_ID LAP_COUNT TICK_RATE_NUMERATOR TICK_RATE_DENOMINATOR MASTER_SEED BOT_RULES_TEXT)
+foreach(name TRACK_ID LAP_COUNT TICK_RATE_NUMERATOR TICK_RATE_DENOMINATOR MASTER_SEED)
     ctr_require_single("${options_header}" "${name} definition" "${header}"
         "#[ \t]*define[ \t]+NATIVE_ARCADE_LINK_FIXTURE_${name}[^0-9a-zA-Z_]")
 endforeach()
@@ -183,3 +183,28 @@ ctr_require_single("platform/native_arcade_link_options.c" "PREVIEW_LAST definit
 ctr_forbid("platform/native_arcade_link_options.c" "${options_source}" "selectEntropy")
 # (The pattern stops before the ';', which a CMake list would split on.)
 ctr_require_single("${options_header}" "the selectEntropy field" "${header}" "uint64_t selectEntropy")
+
+# 13. The fixture is built on the real bot rules (R-3): the builder takes
+#     botRulesDigest from NativeArcadeBotRules_DigestV1, exactly once, and
+#     checks the result with NativeArcadeBotRules_ValidateConfigV1. No
+#     placeholder remains: no BOT_RULES_TEXT define or use, no placeholder
+#     text, and no hashing of its own (the module never calls NativeSha256_).
+string(FIND "${options_source}" "int NativeArcadeLinkFixture_Build(" build_at)
+if(build_at EQUAL -1)
+    message(FATAL_ERROR "arcade link options isolation: missing NativeArcadeLinkFixture_Build in platform/native_arcade_link_options.c")
+endif()
+string(SUBSTRING "${options_source}" ${build_at} -1 build_body)
+ctr_require_single("platform/native_arcade_link_options.c" "NativeArcadeBotRules_DigestV1(candidate.botRulesDigest)"
+    "${build_body}" "NativeArcadeBotRules_DigestV1\\([ \t]*candidate\\.botRulesDigest[ \t]*\\)")
+ctr_require_single("platform/native_arcade_link_options.c" "NativeArcadeBotRules_DigestV1" "${options_source}"
+    "NativeArcadeBotRules_DigestV1")
+ctr_require_single("platform/native_arcade_link_options.c" "NativeArcadeBotRules_ValidateConfigV1(&candidate)"
+    "${build_body}" "NativeArcadeBotRules_ValidateConfigV1\\([ \t]*&candidate[ \t]*\\)")
+# botRulesDigest is written nowhere else in the module.
+ctr_require_single("platform/native_arcade_link_options.c" "botRulesDigest" "${options_source}" "botRulesDigest")
+foreach(relative_path IN LISTS options_files)
+    ctr_read_source("${relative_path}" source)
+    foreach(term IN ITEMS BOT_RULES_TEXT "arcade-link fixture bot rules" placeholder NativeSha256_)
+        ctr_forbid("${relative_path}" "${source}" "${term}")
+    endforeach()
+endforeach()
