@@ -1,7 +1,10 @@
 #include "platform/native_arcade_bot_rules.h"
 
+#include "platform/native_arcade_link_options.h"
 #include "platform/native_canonical_codec.h"
 #include "platform/native_deterministic_rng.h"
+#include "platform/native_identity.h"
+#include "platform/native_lockstep_rematch.h"
 #include "platform/native_match_config.h"
 #include "platform/native_match_select_rules.h"
 #include "platform/native_sha256.h"
@@ -551,7 +554,11 @@ static int TestDeriveRetailSeeds(void)
 	return 0;
 }
 
-/* A TWO_CAB base as the arcade-link fixture shapes it, with v1 bot rules. */
+/*
+ * A hand-built TWO_CAB base with v1 bot rules (not the arcade-link fixture:
+ * slots 0..5 hold characters 0..5 before resolution), resolved through match
+ * select to TINY_TIGER and DINGODILE with their 2P AI set.
+ */
 static int BuildValidConfig(struct NativeMatchConfigV1 *config, uint8_t botDifficulty)
 {
 	struct NativeMatchConfigV1 base;
@@ -762,6 +769,103 @@ static int TestValidateConfig(void)
 	return 0;
 }
 
+/* The v1 rules on a two-human config: the humans, the digest, and ExpectedBots2P at difficulty 0xA0. */
+static int CheckRulesConfig(const struct NativeMatchConfigV1 *config, uint8_t human0, uint8_t human1)
+{
+	uint8_t bots[NATIVE_ARCADE_BOT_RULES_BOT_COUNT];
+	uint8_t aiSetIndex = 0;
+	uint8_t digest[NATIVE_SHA256_DIGEST_BYTES];
+
+	CHECK(NativeArcadeBotRules_ValidateConfigV1(config) == 1);
+	CHECK(NativeArcadeBotRules_DigestV1(digest) == 1);
+	CHECK(memcmp(config->botRulesDigest, digest, sizeof(digest)) == 0);
+	CHECK((config->slots[0].characterID == human0) && (config->slots[1].characterID == human1));
+	CHECK((config->slots[0].difficulty == 0u) && (config->slots[1].difficulty == 0u));
+	CHECK(NativeArcadeBotRules_ExpectedBots2P(human0, human1, bots, &aiSetIndex) == 1);
+	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_BOT_COUNT; i++)
+	{
+		CHECK(config->slots[NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT + i].characterID == bots[i]);
+		CHECK(config->slots[NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT + i].difficulty == 0xa0u);
+	}
+	return 0;
+}
+
+/*
+ * End to end on the real arcade-link fixture: every ordered pair of distinct
+ * base characters resolved through match select, and a rematch of each
+ * result, satisfies the v1 bot rules.
+ */
+static int TestFixtureThroughMatchSelect(void)
+{
+	const uint64_t rematchMask = UINT64_C(0x5a5a5a5a5a5a5a5a);
+	struct NativeIdentityV1 identity;
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 resolved;
+	struct NativeMatchConfigV1 rematch;
+	struct NativeMatchSelectChoice choices[2];
+	struct NativeMatchSelectOutcome outcome;
+	uint32_t pairs = 0;
+
+	FillCounting(identity.build, sizeof(identity.build), 0x11u);
+	FillCounting(identity.content, sizeof(identity.content), 0x91u);
+	CHECK(NativeArcadeLinkFixture_Build(&identity, &fixture) == 1);
+	CHECK(CheckRulesConfig(&fixture, 0u, 1u) == 0);
+
+	for (uint32_t a = 0; a < NATIVE_MATCH_SELECT_CHARACTER_COUNT; a++)
+	{
+		for (uint32_t b = 0; b < NATIVE_MATCH_SELECT_CHARACTER_COUNT; b++)
+		{
+			if (a == b)
+			{
+				continue;
+			}
+			memset(choices, 0, sizeof(choices));
+			choices[0].characterID = NativeMatchSelect_CharacterAt(a);
+			choices[0].trackID = (uint8_t)fixture.trackID;
+			choices[0].lapCount = (uint8_t)fixture.lapCount;
+			choices[0].nonce = UINT64_C(0x1000000000000001) + a;
+			choices[1].characterID = NativeMatchSelect_CharacterAt(b);
+			choices[1].trackID = (uint8_t)fixture.trackID;
+			choices[1].lapCount = (uint8_t)fixture.lapCount;
+			choices[1].nonce = UINT64_C(0x2000000000000002) + ((uint64_t)b << 8);
+			CHECK(NativeMatchSelect_Resolve(&fixture, 2u, choices, &outcome) == 1);
+			CHECK(outcome.characterReassignedMask == 0u);
+			CHECK((outcome.trackDrawn == 0u) && (outcome.lapsDrawn == 0u));
+			CHECK(NativeMatchSelect_BuildConfig(&fixture, &outcome, &resolved) == 1);
+			CHECK((resolved.trackID == fixture.trackID) && (resolved.lapCount == fixture.lapCount));
+			CHECK(CheckRulesConfig(&resolved, choices[0].characterID, choices[1].characterID) == 0);
+
+			CHECK(NativeLockstepRematch_BuildConfig(&resolved, resolved.masterSeed ^ rematchMask, &rematch) == 1);
+			CHECK(rematch.masterSeed != resolved.masterSeed);
+			CHECK(CheckRulesConfig(&rematch, choices[0].characterID, choices[1].characterID) == 0);
+			pairs++;
+		}
+	}
+	CHECK(pairs == 56u);
+
+	/* Differing track and lap votes: both are drawn, and the result still meets the rules. */
+	memset(choices, 0, sizeof(choices));
+	choices[0].characterID = 7;
+	choices[0].trackID = 6;
+	choices[0].lapCount = 5;
+	choices[0].nonce = UINT64_C(0x0123456789abcdef);
+	choices[1].characterID = 4;
+	choices[1].trackID = (uint8_t)fixture.trackID;
+	choices[1].lapCount = 7;
+	choices[1].nonce = UINT64_C(0xfedcba9876543210);
+	CHECK(choices[0].trackID != fixture.trackID);
+	CHECK(NativeMatchSelect_Resolve(&fixture, 2u, choices, &outcome) == 1);
+	CHECK((outcome.trackDrawn == 1u) && (outcome.lapsDrawn == 1u));
+	CHECK(NativeMatchSelect_BuildConfig(&fixture, &outcome, &resolved) == 1);
+	CHECK((resolved.trackID == 6u) || (resolved.trackID == fixture.trackID));
+	CHECK((resolved.lapCount == 5u) || (resolved.lapCount == 7u));
+	CHECK(CheckRulesConfig(&resolved, 7u, 4u) == 0);
+	CHECK(NativeLockstepRematch_BuildConfig(&resolved, resolved.masterSeed ^ rematchMask, &rematch) == 1);
+	CHECK((rematch.trackID == resolved.trackID) && (rematch.lapCount == resolved.lapCount));
+	CHECK(CheckRulesConfig(&rematch, 7u, 4u) == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestTables() == 0);
@@ -771,6 +875,7 @@ int main(void)
 	CHECK(TestMapRetailSeeds() == 0);
 	CHECK(TestDeriveRetailSeeds() == 0);
 	CHECK(TestValidateConfig() == 0);
+	CHECK(TestFixtureThroughMatchSelect() == 0);
 	puts("native_arcade_bot_rules_test: ok");
 	return 0;
 }

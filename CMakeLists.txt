@@ -390,7 +390,7 @@ set_target_properties(ctr_native_arcade_link_options PROPERTIES
     C_EXTENSIONS OFF
 )
 target_include_directories(ctr_native_arcade_link_options PUBLIC ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_config ctr_native_sha256 ctr_native_arcade_bot_rules)
+target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_config ctr_native_arcade_bot_rules)
 
 # Match-select resolution rules (docs/MATCH_SELECT_MILESTONE.md section 2.1,
 # MS-2): pure tables mirrored from retail, seed derivation, tie draws, vote,
@@ -1318,14 +1318,16 @@ if(BUILD_TESTING)
 
     # Arcade bot rules v1 (docs/ROSTER_MILESTONE.md section 3.1, R-2): golden
     # encoding and digest; the isolation test checks purity and the retail
-    # difficulty and advRng fallback mirrors.
+    # difficulty and advRng fallback mirrors. The unit test also runs the real
+    # arcade-link fixture through match select and rematch (R-3b).
     add_executable(native_arcade_bot_rules_test tests/native_arcade_bot_rules_test.c)
     set_target_properties(native_arcade_bot_rules_test PROPERTIES
         C_STANDARD 17
         C_STANDARD_REQUIRED ON
         C_EXTENSIONS OFF
     )
-    target_link_libraries(native_arcade_bot_rules_test PRIVATE ctr_native_arcade_bot_rules)
+    target_link_libraries(native_arcade_bot_rules_test PRIVATE ctr_native_arcade_bot_rules ctr_native_arcade_link_options
+        ctr_native_lockstep_rematch)
     add_test(NAME native_arcade_bot_rules_unit COMMAND $<TARGET_FILE:native_arcade_bot_rules_test>)
 
     add_test(NAME native_arcade_bot_rules_isolation

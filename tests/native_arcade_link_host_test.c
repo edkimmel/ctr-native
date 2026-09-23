@@ -1,4 +1,5 @@
 #include "platform/native_arcade_link_host.h"
+#include "platform/native_arcade_bot_rules.h"
 #include "platform/native_arcade_flow.h"
 #include "platform/native_arcade_link_host_internal.h"
 #include "platform/native_arcade_netplay.h"
@@ -947,6 +948,14 @@ static int TestLinkSelectAndAgreedMatch(void)
 
 	agreed = NativeArcadeNetplay_AgreedConfig(&g_peer);
 	CHECK(agreed != NULL);
+	/* The agreed race meets the v1 bot rules, with every bot at the default difficulty. */
+	CHECK(NativeArcadeBotRules_ValidateConfigV1(agreed));
+	for (slot = NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT;
+	     slot < NATIVE_ARCADE_BOT_RULES_FIRST_BOT_SLOT + NATIVE_ARCADE_BOT_RULES_BOT_COUNT; slot++)
+	{
+		CHECK(agreed->slots[slot].difficulty == (uint8_t)NATIVE_ARCADE_BOT_RULES_DEFAULT_DIFFICULTY);
+		CHECK(agreed->slots[slot].difficulty == 0xA0u);
+	}
 	memset(&match, 0xA5, sizeof(match));
 	CHECK(NativeArcadeLinkHost_GetAgreedMatch(&match) == 1);
 	CHECK(match.trackID == agreed->trackID);

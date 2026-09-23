@@ -63,7 +63,10 @@ static int IsAllByte(const void *memory, size_t size, uint8_t value)
 	return 1;
 }
 
-/* The native_arcade_link_options fixture shape: two cabinets, characters 0..5. */
+/*
+ * A hand-built two-cabinet base (not the arcade-link fixture): characters
+ * 0..5 in slots 0..5, difficulty 0, and a counting-pattern botRulesDigest.
+ */
 static void BuildTwoCabBase(struct NativeMatchConfigV1 *config)
 {
 	memset(config, 0, sizeof(*config));
