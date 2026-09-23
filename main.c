@@ -235,7 +235,7 @@ int main(int argc, char *argv[])
 	NativeArcadeRosterProofOptions_SetDefaults(&rosterProofOptions);
 	if (!NativeArcadeRosterProofOptions_ApplyArgs(argc, argv, &rosterProofOptions))
 	{
-		fprintf(stderr, "[CTR Native] invalid arcade roster proof option; expected --arcade-roster-proof <log path> [--arcade-roster-proof-seed <u64, decimal or 0x hex>] [--arcade-roster-proof-dwell <0-7200>] [--arcade-roster-proof-ticks <1-3600>].\n");
+		fprintf(stderr, "[CTR Native] invalid arcade roster proof option; expected --arcade-roster-proof <log path> [--arcade-roster-proof-seed <u64, decimal or 0x hex>] [--arcade-roster-proof-dwell <0-7200>] [--arcade-roster-proof-ticks <1-3600>] [--arcade-roster-proof-profile <two-cab|one-cab>].\n");
 		return NativeConsole_Return(1);
 	}
 #if !defined(CTR_INTERNAL)
@@ -442,7 +442,8 @@ int main(int argc, char *argv[])
 			Platform_Shutdown();
 			return NativeConsole_Return(1);
 		}
-		printf("[CTR Native] arcade roster proof: seed 0x%08X%08X dwell %u ticks %u report %s\n", (unsigned)(uint32_t)(rosterProofOptions.seed >> 32),
+		printf("[CTR Native] arcade roster proof: profile %s seed 0x%08X%08X dwell %u ticks %u report %s\n",
+		       NativeArcadeRosterProof_ProfileName(rosterProofOptions.profile), (unsigned)(uint32_t)(rosterProofOptions.seed >> 32),
 		       (unsigned)(uint32_t)(rosterProofOptions.seed & 0xFFFFFFFFu), (unsigned)rosterProofOptions.dwellTicks,
 		       (unsigned)rosterProofOptions.tickCount, rosterProofOptions.logPath);
 		fflush(stdout);

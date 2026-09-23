@@ -600,10 +600,22 @@ static int TestOneCabConfigBuilder(void)
 	uint8_t rules2P[NATIVE_SHA256_DIGEST_BYTES];
 	uint8_t bots[NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT];
 	uint8_t cab1Slot = 0;
+	uint8_t botDifficulty = 0;
+	int botFound = 0;
 
 	TestIdentity(&identity);
 	CHECK(NativeArcadeLinkFixture_Build(&identity, &base) == 1);
 	CHECK(NativeMatchConfigV1_FindRoleSlot(&base, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &cab1Slot) == 1);
+	/* The fixture's bot difficulty: its first BOT slot, found as the builder finds it. */
+	for (uint32_t slot = 0; (slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT) && !botFound; slot++)
+	{
+		if (base.slots[slot].role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT)
+		{
+			botDifficulty = base.slots[slot].difficulty;
+			botFound = 1;
+		}
+	}
+	CHECK(botFound == 1);
 	CHECK(NativeArcadeBotRules_ExpectedBots1P(base.slots[cab1Slot].characterID, bots) == 1);
 	CHECK(NativeArcadeBotRules_Digest1PV1(rules1P) == 1);
 	CHECK(NativeArcadeBotRules_DigestV1(rules2P) == 1);
@@ -636,7 +648,7 @@ static int TestOneCabConfigBuilder(void)
 			{
 				CHECK(a.slots[slot].role == NATIVE_MATCH_SLOT_ROLE_BOT);
 				CHECK(a.slots[slot].characterID == bots[slot - 1u]);
-				CHECK(a.slots[slot].difficulty == base.slots[2].difficulty);
+				CHECK(a.slots[slot].difficulty == botDifficulty);
 				CHECK(a.slots[slot].difficulty == NATIVE_ARCADE_BOT_RULES_DEFAULT_DIFFICULTY);
 			}
 		}

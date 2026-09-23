@@ -147,11 +147,13 @@ static void MainArcadeRosterProof_Finish(uint32_t requested)
 	struct MainArcadeBotSetupSourceFacts facts;
 	const enum MainArcadeRaceSetupStatus status = MainArcadeRaceSetup_Status();
 	const enum MainArcadeRaceSetupFailure failure = MainArcadeRaceSetup_Failure();
+	const struct NativeMatchConfigV1 *config = NativeArcadeRosterProof_Config();
 	uint32_t result;
 	int exitCode;
 
 	memset(&report, 0, sizeof(report));
-	report.profile = NativeArcadeRosterProof_Profile();
+	/* The profile of the configured config, the one that ran. */
+	report.profile = (config != NULL) ? config->profile : 0u;
 	report.setupStatus = (uint32_t)status;
 	report.setupFailure = (uint32_t)failure;
 	MainArcadeRosterProof_CopyName(report.setupStatusName, MainArcadeRaceSetup_StatusName(status));

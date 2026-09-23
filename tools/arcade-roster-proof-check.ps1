@@ -64,11 +64,19 @@ param(
 # (tick lines, "end ticks N", the tick 0 comparisons) use that count.  The
 # ONE_CAB runs are capped at 90 ticks until the game/UI/UI_Rank.c Debug
 # run-time check failure (uninitialized pos.y in the 1P rank-icon HUD) is
-# resolved: in a 1P race, about 3 s after the start, the MSVC Debug runtime
-# stops the process with a modal "Run-Time Check Failure #3" dialog, and the
-# run never reports.  90 race ticks end inside the start countdown, before
-# the green light and so before any rank change reaches that code.  Once the
-# failure is resolved, F-H run the full -Ticks.
+# resolved.  The failure fires a few seconds after the green light, at the
+# first rank change: a rank icon that is transitioning (UI_Rank.c ~:177-196:
+# a nonzero transition timer, or a desired rank other than the current one)
+# leaves pos.y unset and ~:199 reads it, so the MSVC Debug runtime stops the
+# process with a modal "Run-Time Check Failure #3" dialog and the run never
+# reports.  90 race ticks end before the green light: MainGameStart.c
+# ~:17-20 sets trafficLightsTimer = 0xF00 (3840 ms) together with the
+# START_OF_RACE fly-in, and MainMain.c ~:341-356 counts it down only once
+# START_OF_RACE has cleared; the countdown alone is about 120 race ticks (at
+# about 32 ms a race tick), so the fly-in plus the countdown take well over
+# 115 race ticks.  So F, G, and H prove the 1P race setup and its pre-green
+# determinism, not bot driving or 1P race physics.  Once the UI_Rank failure
+# is resolved, F-H run the full -Ticks.
 #
 # Every report must be format v8 with result PASS, the profile line right
 # after the result line, the expected launch window, both counter lines, a
@@ -77,7 +85,11 @@ param(
 # profile's roles: TWO_CAB slot 0 CAB1_HUMAN, slot 1 CAB2_HUMAN, slots 2..5
 # BOT (all present), slots 6..7 "role INACTIVE"; ONE_CAB slot 0 CAB1_HUMAN
 # and slots 1..7 BOT, all present.  F differs from A in the config digest
-# and the race plan digest (another profile).
+# and the race plan digest (another profile).  The input digest (the raw pad
+# state only) proves the hook installs the ONE_CAB pads: F matches A at race
+# tick 0 (neutral pads, the same pad layout, RS-24), differs from A at every
+# later tick both logged (A's player 1 holds CROSS, F's is neutral), and
+# matches H at every tick (the pads do not depend on the seed).
 #
 # C and E must match A in the config, race plan, bot setup plan, and bank
 # digests, the seeded line, the slot lines, and at every race tick the rng,
@@ -664,6 +676,35 @@ try {
     if ($fDiffers) {
         Write-Output "F != A: config digest and race plan digest (ONE_CAB vs TWO_CAB)"
     }
+
+    # The ONE_CAB pads reach the game.  The input digest is the V1 INPUT
+    # domain digest: the raw pad state only (NativeCanonicalInputV1: each
+    # pad's status, id, buttons, analog, and connected).  Race tick 0 runs on
+    # neutral pads in both profiles (the same pad layout), so F = A there;
+    # from race tick 1 A's player 1 holds CROSS and F's player 1 is neutral,
+    # so F != A at every later tick; and the pads are a function of (profile,
+    # tick) only, so F = H at every tick.
+    $inputFailures = @()
+    $sharedTicks = [Math]::Min($Ticks, $OneCabTicks)
+    if ($f.Ticks[0].Input -ne $a.Ticks[0].Input) {
+        $inputFailures += "F differs from A in the tick 0 input digest (A $($a.Ticks[0].Input), F $($f.Ticks[0].Input)): the neutral pads of the two profiles are not the same pad layout"
+    }
+    for ($i = 1; $i -lt $sharedTicks; $i++) {
+        if ($f.Ticks[$i].Input -eq $a.Ticks[$i].Input) {
+            $inputFailures += "F does not differ from A in the tick $i input digest ($($a.Ticks[$i].Input)): the ONE_CAB pads did not reach the game"
+            break
+        }
+    }
+    for ($i = 0; $i -lt $OneCabTicks; $i++) {
+        if ($f.Ticks[$i].Input -ne $h.Ticks[$i].Input) {
+            $inputFailures += "F differs from H in the tick $i input digest (F $($f.Ticks[$i].Input), H $($h.Ticks[$i].Input)): the pads depend on the seed"
+            break
+        }
+    }
+    if ($inputFailures.Count -eq 0) {
+        Write-Output "F input digests: = A at tick 0 (neutral, same pad layout), != A at ticks 1..$($sharedTicks - 1) (ONE_CAB pads), = H at all $OneCabTicks ticks (seed-independent)"
+    }
+    $failures += $inputFailures
 
     Write-Output "report A first tick: $($a.Ticks[0].Line)"
     Write-Output "report A last tick:  $($a.Ticks[$Ticks - 1].Line)"
