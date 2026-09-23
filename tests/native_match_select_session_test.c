@@ -456,6 +456,63 @@ static int TestRefusedConfirmOnPeerCharacter(void)
 	return 0;
 }
 
+/* MS-8b: Base, HumanCount, LocalHuman, and PeerLockedCharacterMask. */
+static int TestBaseCountsAndPeerMask(void)
+{
+	struct NativeMatchConfigV1 base;
+	struct NativeMatchSelectSession a;
+	struct NativeMatchSelectSession b;
+	struct NativeMatchSelectSession c;
+	struct NativeMatchSelectSession zeroed;
+
+	/* NULL and uninitialized: NULL and 0. */
+	memset(&zeroed, 0, sizeof(zeroed));
+	CHECK(NativeMatchSelectSession_Base(NULL) == NULL && NativeMatchSelectSession_Base(&zeroed) == NULL);
+	CHECK(NativeMatchSelectSession_HumanCount(NULL) == 0u && NativeMatchSelectSession_HumanCount(&zeroed) == 0u);
+	CHECK(NativeMatchSelectSession_LocalHuman(NULL) == 0u && NativeMatchSelectSession_LocalHuman(&zeroed) == 0u);
+	CHECK(NativeMatchSelectSession_PeerLockedCharacterMask(NULL) == 0u);
+	CHECK(NativeMatchSelectSession_PeerLockedCharacterMask(&zeroed) == 0u);
+
+	/* Three humans; each session is one of them. */
+	BuildTwoCabBase(&base);
+	CHECK(NativeMatchSelectSession_Init(&a, &base, 3, 0, NONCE_A, 2, 3, 3, NULL));
+	CHECK(NativeMatchSelectSession_Init(&b, &base, 3, 1, NONCE_B, 4, 3, 3, NULL));
+	CHECK(NativeMatchSelectSession_Init(&c, &base, 3, 2, NONCE_C, 5, 3, 3, NULL));
+	CHECK(NativeMatchSelectSession_Base(&b) == &b.base);
+	CHECK(memcmp(NativeMatchSelectSession_Base(&b), &base, sizeof(base)) == 0);
+	CHECK(NativeMatchSelectSession_HumanCount(&a) == 3u && NativeMatchSelectSession_HumanCount(&c) == 3u);
+	CHECK(NativeMatchSelectSession_LocalHuman(&a) == 0u);
+	CHECK(NativeMatchSelectSession_LocalHuman(&b) == 1u);
+	CHECK(NativeMatchSelectSession_LocalHuman(&c) == 2u);
+	CHECK(NativeMatchSelectSession_PeerLockedCharacterMask(&b) == 0u);
+
+	/* A peer's cursor (unlocked) does not count. */
+	CHECK(Transfer(&a, &b) == NATIVE_MATCH_SELECT_ACCEPT_OK);
+	CHECK(Transfer(&c, &b) == NATIVE_MATCH_SELECT_ACCEPT_OK);
+	CHECK(NativeMatchSelectSession_PeerLockedCharacterMask(&b) == 0u);
+
+	/* A locks 2, C locks 5: B sees both bits; B's own lock never counts. */
+	CHECK(NativeMatchSelectSession_ApplyInput(&a, NATIVE_MATCH_SELECT_INPUT_CONFIRM) == 1);
+	CHECK(Transfer(&a, &b) == NATIVE_MATCH_SELECT_ACCEPT_OK);
+	CHECK(NativeMatchSelectSession_PeerLockedCharacterMask(&b) == (uint16_t)(1u << 2));
+	CHECK(NativeMatchSelectSession_ApplyInput(&c, NATIVE_MATCH_SELECT_INPUT_CONFIRM) == 1);
+	CHECK(Transfer(&c, &b) == NATIVE_MATCH_SELECT_ACCEPT_OK);
+	CHECK(NativeMatchSelectSession_PeerLockedCharacterMask(&b) == (uint16_t)((1u << 2) | (1u << 5)));
+	CHECK(NativeMatchSelectSession_ApplyInput(&b, NATIVE_MATCH_SELECT_INPUT_CONFIRM) == 1);
+	CHECK(NativeMatchSelectSession_PeerLockedCharacterMask(&b) == (uint16_t)((1u << 2) | (1u << 5)));
+	CHECK(Transfer(&b, &a) == NATIVE_MATCH_SELECT_ACCEPT_OK);
+	CHECK(NativeMatchSelectSession_PeerLockedCharacterMask(&a) == (uint16_t)(1u << 4));
+
+	/* The mask agrees with CharacterLockedByPeer on every bit. */
+	for (uint32_t character = 0; character < 16u; character++)
+	{
+		const int bit = (int)((NativeMatchSelectSession_PeerLockedCharacterMask(&b) >> character) & 1u);
+
+		CHECK(bit == NativeMatchSelectSession_CharacterLockedByPeer(&b, (uint8_t)character));
+	}
+	return 0;
+}
+
 static int TestExpiryAutoLock(void)
 {
 	struct NativeMatchConfigV1 base;
@@ -1083,6 +1140,7 @@ int main(void)
 	CHECK(TestCursorWrap() == 0);
 	CHECK(TestConfirmAndNoOps() == 0);
 	CHECK(TestRefusedConfirmOnPeerCharacter() == 0);
+	CHECK(TestBaseCountsAndPeerMask() == 0);
 	CHECK(TestExpiryAutoLock() == 0);
 	CHECK(TestPeerSilence() == 0);
 	CHECK(TestAcceptDrops() == 0);

@@ -356,16 +356,18 @@ static void NativeArcadeNetplay_BeginSelect(struct NativeArcadeNetplay *netplay)
 static void NativeArcadeNetplay_Relink(struct NativeArcadeNetplay *netplay)
 {
 	const struct NativeMatchSelectOutcome *outcome = NULL;
+	const struct NativeMatchConfigV1 *base = NULL;
 	struct NativeMatchConfigV1 resolved;
 	int built = 0;
 
 	if (netplay->selectActive != 0u)
 	{
 		outcome = NativeMatchSelectSession_Outcome(&netplay->select);
+		base = NativeMatchSelectSession_Base(&netplay->select);
 	}
-	if (outcome != NULL)
+	if ((outcome != NULL) && (base != NULL))
 	{
-		built = NativeMatchSelect_BuildConfig(&netplay->select.base, outcome, &resolved);
+		built = NativeMatchSelect_BuildConfig(base, outcome, &resolved);
 	}
 	NativeArcadeNetplay_CloseLobby(netplay);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
@@ -648,15 +650,14 @@ static void NativeArcadeNetplay_FillSelectView(const struct NativeArcadeNetplay 
 	const struct NativeMatchSelectOutcome *outcome;
 	const struct NativeMatchSelectHumanState *human;
 	uint32_t h;
-	uint32_t i;
 
 	if (session == NULL)
 	{
 		return;
 	}
 	view->active = 1u;
-	view->humanCount = (uint8_t)session->humanCount;
-	view->localHuman = (uint8_t)session->localHuman;
+	view->humanCount = (uint8_t)NativeMatchSelectSession_HumanCount(session);
+	view->localHuman = (uint8_t)NativeMatchSelectSession_LocalHuman(session);
 	view->currentItem = (uint8_t)NativeMatchSelectSession_CurrentItem(session);
 	view->ticksLeft = NativeMatchSelectSession_TicksLeft(session);
 	view->status = (uint8_t)NativeMatchSelectSession_Status(session);
@@ -675,15 +676,7 @@ static void NativeArcadeNetplay_FillSelectView(const struct NativeArcadeNetplay 
 		memcpy(view->botCharacter, outcome->botCharacter, sizeof(view->botCharacter));
 	}
 
-	for (i = 0u; i < NATIVE_MATCH_SELECT_CHARACTER_COUNT; i++)
-	{
-		uint8_t character = NativeMatchSelect_CharacterAt(i);
-
-		if ((character < 16u) && NativeMatchSelectSession_CharacterLockedByPeer(session, character))
-		{
-			view->peerLockedCharacterMask = (uint16_t)(view->peerLockedCharacterMask | (1u << character));
-		}
-	}
+	view->peerLockedCharacterMask = NativeMatchSelectSession_PeerLockedCharacterMask(session);
 
 	for (h = 0u; h < NATIVE_ARCADE_NETPLAY_VIEW_MAX_HUMANS; h++)
 	{

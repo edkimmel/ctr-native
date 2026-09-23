@@ -74,8 +74,9 @@
  *   Sending through the result hold is the linger: a peer still waiting for
  *   the confirming record receives it (section 2.3).
  * - RELINK closes the lobby and builds the resolved config
- *   (NativeMatchSelect_BuildConfig on the session's own base, the config its
- *   exchanged base digest covers, and the session outcome).
+ *   (NativeMatchSelect_BuildConfig on the session's own base, read through
+ *   NativeMatchSelectSession_Base: the config its exchanged base digest
+ *   covers, and the session outcome).
  *   On success it becomes the current config and a new lobby is begun on
  *   it: the relink handshake re-checks the full config byte for byte. On
  *   failure nothing is begun and the relink is blocked like a failed
@@ -85,6 +86,11 @@
  *   the base config.
  * - START_RACE arms the race on the current config, which is then the
  *   resolved config.
+ * - Every pre-race LINK ERROR (from SELECT, or from SELECT_RESULT before or
+ *   after RELINK) comes with CLOSE_LINK, so the lobby is closed on RESULTS:
+ *   a relink handshake the peer completes later cannot reach READY here and
+ *   so cannot replace lastReadyConfig behind the results screen (MS-8b).
+ *   The in-race path to RESULTS keeps the link open.
  *
  * The adapter itself reads the link every Tick, including during RACING:
  * the lobby poll drains arriving bundles into the session, and when that

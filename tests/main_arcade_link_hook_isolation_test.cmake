@@ -19,7 +19,9 @@
 # START_RACE abort gives the retail box back when the host falls back to mode
 # OFF. Since MS-8 the START_RACE branch also logs the agreed match before
 # the abort, and main.c fills the host-local select entropy only inside the
-# link-enabled branch. The policy's own rules are in
+# link-enabled branch. Since MS-8b no MainArcadeLink* game file names a
+# match-config slot role, the match-config struct, or a match-select value:
+# they use the host's own names. The policy's own rules are in
 # main_arcade_link_policy_isolation_test.cmake.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
@@ -499,3 +501,27 @@ string(FIND "${main_code}" "arcadeLinkOptions.selectEntropy" entropy_at)
 if(NOT (entropy_at GREATER identity_at AND entropy_at LESS enabled_end))
     message(FATAL_ERROR "arcade link hook isolation: main.c must fill arcadeLinkOptions.selectEntropy only inside its if (arcadeLinkOptions.enabled != 0u) block, after NativeIdentity_Get")
 endif()
+
+# 15. The arcade-link game files read select-view and agreed-match values
+#     only through the host names (NATIVE_ARCADE_LINK_HOST_ROLE_*,
+#     NATIVE_ARCADE_LINK_HOST_SELECT_*; MS-8b): no game/MAIN/MainArcadeLink*
+#     source or header names a match-config slot role, the match-config
+#     struct, or a match-select value. Scoped to the arcade-link files
+#     because other game/MAIN sources (MainArcadeBotSetup, MainArcadeRoster,
+#     MainArcadeSetupV4, MainArcadeBotTickEvidence, MainCanonicalStateV4,
+#     MainCanonicalRuntime) name the match config for unrelated reasons.
+file(GLOB arcade_link_game_paths "${repo}/game/MAIN/MainArcadeLink*.c" "${repo}/game/MAIN/MainArcadeLink*.h")
+list(LENGTH arcade_link_game_paths arcade_link_game_count)
+if(arcade_link_game_count LESS 6)
+    message(FATAL_ERROR "arcade link hook isolation: expected at least the six MainArcadeLink{,Layout,Policy}.{c,h} files, found ${arcade_link_game_count}; the scan is broken")
+endif()
+foreach(path IN LISTS arcade_link_game_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    file(READ "${path}" source)
+    foreach(term IN ITEMS NATIVE_MATCH_SLOT_ROLE_ NativeMatchConfig NATIVE_MATCH_SELECT_)
+        ctr_forbid("${relative_path}" "${source}" "${term}")
+    endforeach()
+endforeach()
+ctr_require_literal("${hook_source_path}" "${hook_code}" "case NATIVE_ARCADE_LINK_HOST_ROLE_CAB1:")
+ctr_require_literal("${hook_source_path}" "${hook_code}" "case NATIVE_ARCADE_LINK_HOST_ROLE_CAB2:")
+ctr_require_literal("${hook_source_path}" "${hook_code}" "case NATIVE_ARCADE_LINK_HOST_ROLE_BOT:")

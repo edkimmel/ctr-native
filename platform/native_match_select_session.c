@@ -587,6 +587,41 @@ int NativeMatchSelectSession_CharacterLockedByPeer(const struct NativeMatchSelec
 	return NativeMatchSelectSession_IsLive(session) ? NativeMatchSelectSession_PeerHoldsCharacter(session, characterID) : 0;
 }
 
+uint16_t NativeMatchSelectSession_PeerLockedCharacterMask(const struct NativeMatchSelectSession *session)
+{
+	uint16_t mask = 0;
+
+	if (!NativeMatchSelectSession_IsLive(session))
+	{
+		return 0;
+	}
+	for (uint32_t i = 0; i < NATIVE_MATCH_SELECT_CHARACTER_COUNT; i++)
+	{
+		const uint8_t characterID = NativeMatchSelect_CharacterAt(i);
+
+		if ((characterID < 16u) && NativeMatchSelectSession_PeerHoldsCharacter(session, characterID))
+		{
+			mask = (uint16_t)(mask | (1u << characterID));
+		}
+	}
+	return mask;
+}
+
+const struct NativeMatchConfigV1 *NativeMatchSelectSession_Base(const struct NativeMatchSelectSession *session)
+{
+	return NativeMatchSelectSession_IsLive(session) ? &session->base : NULL;
+}
+
+uint32_t NativeMatchSelectSession_HumanCount(const struct NativeMatchSelectSession *session)
+{
+	return NativeMatchSelectSession_IsLive(session) ? session->humanCount : 0u;
+}
+
+uint32_t NativeMatchSelectSession_LocalHuman(const struct NativeMatchSelectSession *session)
+{
+	return NativeMatchSelectSession_IsLive(session) ? session->localHuman : 0u;
+}
+
 static int NativeMatchSelectSession_HasOutcome(const struct NativeMatchSelectSession *session)
 {
 	return NativeMatchSelectSession_IsLive(session) && (session->resolved != 0) &&

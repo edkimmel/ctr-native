@@ -196,12 +196,17 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_TickMatchFound(struct Native
 	return NATIVE_ARCADE_FLOW_ACTION_NONE;
 }
 
-/* Every select-phase failure is shown as LINK ERROR on the results screen. */
+/* Every pre-race failure (SELECT, or SELECT_RESULT before or after RELINK)
+ * is shown as LINK ERROR on the results screen and closes the link: there is
+ * no race report to read, and a lobby left open could still complete a
+ * relink handshake in the background while the cabinet sits on RESULTS.
+ * RACING -> RESULTS instead keeps the link (and returns NONE) so the caller
+ * can read the latched session report. */
 static enum NativeArcadeFlowAction NativeArcadeFlow_SelectLinkError(struct NativeArcadeFlow *flow)
 {
 	flow->endReason = NATIVE_ARCADE_FLOW_END_LINK_ERROR;
 	NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
-	return NATIVE_ARCADE_FLOW_ACTION_NONE;
+	return NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK;
 }
 
 /* SELECT: menu events belong to the caller's select session (BACK is

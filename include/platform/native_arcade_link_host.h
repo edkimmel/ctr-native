@@ -42,6 +42,42 @@ enum NativeArcadeLinkHostMode
 #define NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS 8u
 #define NATIVE_ARCADE_LINK_HOST_MATCH_SLOTS 8u
 
+/*
+ * Host names for the values the select view and the agreed match carry, so
+ * game code (the select screens) reads them without naming the select or
+ * match-config modules. platform/native_arcade_link_host.c static-asserts
+ * each against the module value it mirrors.
+ */
+
+/* Select items: NativeArcadeLinkHostSelectView.currentItem and
+ * NativeArcadeLinkHostSelectHumanView.currentItem. */
+#define NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER 0u
+#define NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_TRACK 1u
+#define NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_LAPS 2u
+#define NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE 3u
+
+/* Lock bits: NativeArcadeLinkHostSelectHumanView.lockMask. */
+#define NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER 0x1u
+#define NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_TRACK 0x2u
+#define NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_LAPS 0x4u
+
+/* Select statuses: NativeArcadeLinkHostSelectView.status. */
+#define NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_PICKING 0u
+#define NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_WAITING 1u
+#define NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_RESOLVED 2u
+#define NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_CONFIRMED 3u
+#define NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_FAILED 4u
+
+/* Slot roles: NativeArcadeLinkHostMatch.slotRole. */
+#define NATIVE_ARCADE_LINK_HOST_ROLE_INACTIVE 0u
+#define NATIVE_ARCADE_LINK_HOST_ROLE_CAB1 1u
+#define NATIVE_ARCADE_LINK_HOST_ROLE_CAB2 2u
+#define NATIVE_ARCADE_LINK_HOST_ROLE_BOT 3u
+
+/* The most humans and bots a select can hold. */
+#define NATIVE_ARCADE_LINK_HOST_MAX_HUMANS 4u
+#define NATIVE_ARCADE_LINK_HOST_MAX_BOTS 8u
+
 /* One human on the select screens (docs/MATCH_SELECT_MILESTONE.md section
  * 2.7): the local human's own state, or a peer's latest state. Everything is
  * 0 while present is 0. */
@@ -55,9 +91,9 @@ struct NativeArcadeLinkHostSelectHumanView
 	uint8_t trackID;
 	/* cursor or locked value (3, 5, or 7): this human's vote */
 	uint8_t lapCount;
-	/* bit 0 character, bit 1 track, bit 2 laps locked */
+	/* NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_* bits */
 	uint8_t lockMask;
-	/* 0 character, 1 track, 2 laps, 3 done */
+	/* NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_* */
 	uint8_t currentItem;
 	uint8_t reserved[2];
 };
@@ -70,11 +106,11 @@ struct NativeArcadeLinkHostSelectView
 	uint8_t humanCount;
 	/* the local human's index (cabinet - 1) */
 	uint8_t localHuman;
-	/* the local human's current item: 0 character, 1 track, 2 laps, 3 done */
+	/* the local human's current item (NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_*) */
 	uint8_t currentItem;
 	/* ticks until the local current item auto-locks; 0 once done */
 	uint32_t ticksLeft;
-	/* 0 picking, 1 waiting, 2 resolved, 3 confirmed, 4 failed */
+	/* NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_* */
 	uint8_t status;
 	/* 1 when the outcome fields below are valid */
 	uint8_t resolved;
@@ -123,8 +159,9 @@ struct NativeArcadeLinkHostView
 	struct NativeArcadeLinkHostSelectView select;
 };
 
-/* The agreed match, for logging. slotRole uses the match-config slot roles
- * (0 inactive, 1 cabinet 1, 2 cabinet 2, 3 bot). */
+/* The agreed match, for logging. slotRole uses NATIVE_ARCADE_LINK_HOST_ROLE_*
+ * (the match-config slot roles: 0 inactive, 1 cabinet 1, 2 cabinet 2, 3
+ * bot). */
 struct NativeArcadeLinkHostMatch
 {
 	uint32_t trackID;

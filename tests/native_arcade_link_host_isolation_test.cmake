@@ -10,7 +10,10 @@
 # options, and stays portable C17 with extensions off. The host-side test
 # read-back header (native_arcade_link_host_internal.h, MS-8) follows the
 # header rules and is named by no game source or main.c, and the select
-# view keeps the adapter's layout.
+# view keeps the adapter's layout, field offset for field offset. Since
+# MS-8b the header names the select-view and agreed-match values itself
+# (NATIVE_ARCADE_LINK_HOST_SELECT_*, _ROLE_*, _MAX_*), each static-asserted
+# in the .c against the module value it mirrors.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -128,6 +131,45 @@ foreach(literal IN ITEMS
     string(FIND "${header}" "${literal}" literal_at)
     if(literal_at EQUAL -1)
         message(FATAL_ERROR "arcade link host isolation: required text '${literal}' missing from ${host_header}")
+    endif()
+endforeach()
+
+# 3d. The host names for the select view and agreed-match values (MS-8b):
+#     each is defined exactly once, literally, in the header, and the .c
+#     static-asserts it against the module value it mirrors. The .c also
+#     checks every select-view field offset against the adapter's.
+foreach(definition IN ITEMS
+        "SELECT_ITEM_CHARACTER=0u" "SELECT_ITEM_TRACK=1u" "SELECT_ITEM_LAPS=2u" "SELECT_ITEM_DONE=3u"
+        "SELECT_LOCK_CHARACTER=0x1u" "SELECT_LOCK_TRACK=0x2u" "SELECT_LOCK_LAPS=0x4u"
+        "SELECT_STATUS_PICKING=0u" "SELECT_STATUS_WAITING=1u" "SELECT_STATUS_RESOLVED=2u"
+        "SELECT_STATUS_CONFIRMED=3u" "SELECT_STATUS_FAILED=4u"
+        "ROLE_INACTIVE=0u" "ROLE_CAB1=1u" "ROLE_CAB2=2u" "ROLE_BOT=3u"
+        "MAX_HUMANS=4u" "MAX_BOTS=8u")
+    string(REPLACE "=" ";" definition_parts "${definition}")
+    list(GET definition_parts 0 name)
+    list(GET definition_parts 1 literal)
+    string(REGEX MATCHALL "#define NATIVE_ARCADE_LINK_HOST_${name}[ \t]" definitions "${header}")
+    list(LENGTH definitions definition_count)
+    if(NOT definition_count EQUAL 1)
+        message(FATAL_ERROR "arcade link host isolation: NATIVE_ARCADE_LINK_HOST_${name} must be defined exactly once in ${host_header} (found ${definition_count})")
+    endif()
+    string(REGEX MATCH "#define NATIVE_ARCADE_LINK_HOST_${name}[ \t]+${literal}[ \t\r\n]" defined "${header}")
+    if(defined STREQUAL "")
+        message(FATAL_ERROR "arcade link host isolation: NATIVE_ARCADE_LINK_HOST_${name} must be defined literally as ${literal} in ${host_header}")
+    endif()
+    string(FIND "${source}" "_Static_assert(NATIVE_ARCADE_LINK_HOST_${name} ==" asserted_at)
+    if(asserted_at EQUAL -1)
+        message(FATAL_ERROR "arcade link host isolation: ${host_source} must static-assert NATIVE_ARCADE_LINK_HOST_${name} against its module value")
+    endif()
+endforeach()
+foreach(literal IN ITEMS
+        "_Static_assert(offsetof(struct hostStruct, field) == offsetof(struct netplayStruct, field),"
+        "NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectHumanView, NativeArcadeNetplaySelectHumanView, currentItem);"
+        "NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, peerLockedCharacterMask);"
+        "NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, humans);")
+    string(FIND "${source}" "${literal}" literal_at)
+    if(literal_at EQUAL -1)
+        message(FATAL_ERROR "arcade link host isolation: required text '${literal}' missing from ${host_source}")
     endif()
 endforeach()
 

@@ -30,6 +30,78 @@ _Static_assert(sizeof(struct NativeArcadeLinkHostSelectHumanView) == sizeof(stru
 _Static_assert(NATIVE_ARCADE_LINK_HOST_MATCH_SLOTS == NATIVE_MATCH_CONFIG_V1_SLOT_COUNT,
 	"the agreed match holds exactly the config's slots");
 
+/* Field for field: every host select-view field sits at the adapter's
+ * offset. (The agreed match has no adapter counterpart: it is filled from
+ * the match config itself.) */
+#define NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(hostStruct, netplayStruct, field) \
+	_Static_assert(offsetof(struct hostStruct, field) == offsetof(struct netplayStruct, field), \
+		#hostStruct "." #field " must sit at its adapter offset")
+
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectHumanView, NativeArcadeNetplaySelectHumanView, present);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectHumanView, NativeArcadeNetplaySelectHumanView, characterID);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectHumanView, NativeArcadeNetplaySelectHumanView, trackID);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectHumanView, NativeArcadeNetplaySelectHumanView, lapCount);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectHumanView, NativeArcadeNetplaySelectHumanView, lockMask);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectHumanView, NativeArcadeNetplaySelectHumanView, currentItem);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectHumanView, NativeArcadeNetplaySelectHumanView, reserved);
+
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, active);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, humanCount);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, localHuman);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, currentItem);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, ticksLeft);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, status);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, resolved);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, trackID);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, lapCount);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, trackDrawn);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, lapsDrawn);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, characterReassignedMask);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, botCount);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, humanCharacter);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, botCharacter);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, peerLockedCharacterMask);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, reserved);
+NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, humans);
+
+/* The host names for the select view and agreed-match values equal the
+ * module values they mirror. */
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER == (unsigned)NATIVE_MATCH_SELECT_ITEM_CHARACTER,
+	"host select item CHARACTER");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_TRACK == (unsigned)NATIVE_MATCH_SELECT_ITEM_TRACK,
+	"host select item TRACK");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_LAPS == (unsigned)NATIVE_MATCH_SELECT_ITEM_LAPS,
+	"host select item LAPS");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE == (unsigned)NATIVE_MATCH_SELECT_ITEM_DONE,
+	"host select item DONE");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER == NATIVE_MATCH_SELECT_LOCK_CHARACTER,
+	"host select lock CHARACTER");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_TRACK == NATIVE_MATCH_SELECT_LOCK_TRACK, "host select lock TRACK");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_LAPS == NATIVE_MATCH_SELECT_LOCK_LAPS, "host select lock LAPS");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_PICKING == (unsigned)NATIVE_MATCH_SELECT_STATUS_PICKING,
+	"host select status PICKING");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_WAITING == (unsigned)NATIVE_MATCH_SELECT_STATUS_WAITING,
+	"host select status WAITING");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_RESOLVED == (unsigned)NATIVE_MATCH_SELECT_STATUS_RESOLVED,
+	"host select status RESOLVED");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_CONFIRMED == (unsigned)NATIVE_MATCH_SELECT_STATUS_CONFIRMED,
+	"host select status CONFIRMED");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_FAILED == (unsigned)NATIVE_MATCH_SELECT_STATUS_FAILED,
+	"host select status FAILED");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_ROLE_INACTIVE == (unsigned)NATIVE_MATCH_SLOT_ROLE_INACTIVE,
+	"host role INACTIVE");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_ROLE_CAB1 == (unsigned)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, "host role CAB1");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_ROLE_CAB2 == (unsigned)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, "host role CAB2");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_ROLE_BOT == (unsigned)NATIVE_MATCH_SLOT_ROLE_BOT, "host role BOT");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_MAX_HUMANS == NATIVE_MATCH_SELECT_MAX_HUMANS, "host max humans");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_MAX_HUMANS == NATIVE_ARCADE_NETPLAY_VIEW_MAX_HUMANS,
+	"host max humans is the adapter view's capacity");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_MAX_HUMANS == NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS,
+	"host max humans is the host view's capacity");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_MAX_BOTS == NATIVE_ARCADE_NETPLAY_VIEW_MAX_BOTS, "host max bots");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_MAX_BOTS == NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS,
+	"host max bots is the host view's capacity");
+
 /* The select entropy mix constant: 2^64 divided by the golden ratio. */
 #define NATIVE_ARCADE_LINK_HOST_ENTROPY_STEP UINT64_C(0x9E3779B97F4A7C15)
 
@@ -237,7 +309,7 @@ static void NativeArcadeLinkHost_PreviewSelectView(struct NativeArcadeLinkHostVi
 	sel->active = 1u;
 	sel->humanCount = 2u;
 	sel->localHuman = 0u;
-	sel->status = (uint8_t)NATIVE_MATCH_SELECT_STATUS_PICKING;
+	sel->status = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_PICKING;
 	sel->ticksLeft = NATIVE_ARCADE_LINK_HOST_PREVIEW_ITEM_TICKS - (g_previewTicks % NATIVE_ARCADE_LINK_HOST_PREVIEW_ITEM_TICKS);
 
 	/* Both start on the fixture cursors: their own character, CRASH_COVE,
@@ -254,34 +326,34 @@ static void NativeArcadeLinkHost_PreviewSelectView(struct NativeArcadeLinkHostVi
 	switch (g_options.preview)
 	{
 	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER:
-		local->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_CHARACTER;
-		opponent->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_CHARACTER;
+		local->currentItem = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER;
+		opponent->currentItem = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER;
 		opponent->characterID = NativeMatchSelect_CharacterAt(step % NATIVE_MATCH_SELECT_CHARACTER_COUNT);
 		break;
 	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK:
-		local->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_TRACK;
-		local->lockMask = (uint8_t)NATIVE_MATCH_SELECT_LOCK_CHARACTER;
-		opponent->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_TRACK;
-		opponent->lockMask = (uint8_t)NATIVE_MATCH_SELECT_LOCK_CHARACTER;
+		local->currentItem = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_TRACK;
+		local->lockMask = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER;
+		opponent->currentItem = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_TRACK;
+		opponent->lockMask = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER;
 		opponent->trackID = NativeMatchSelect_TrackAt(step % NATIVE_MATCH_SELECT_TRACK_COUNT);
 		break;
 	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS:
 	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT:
 		if (g_options.preview == (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS)
 		{
-			local->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_LAPS;
-			local->lockMask = (uint8_t)(NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK);
+			local->currentItem = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_LAPS;
+			local->lockMask = (uint8_t)(NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER | NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_TRACK);
 		}
 		else
 		{
-			local->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_DONE;
-			local->lockMask = (uint8_t)(NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK |
-				NATIVE_MATCH_SELECT_LOCK_LAPS);
-			sel->status = (uint8_t)NATIVE_MATCH_SELECT_STATUS_WAITING;
+			local->currentItem = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE;
+			local->lockMask = (uint8_t)(NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER | NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_TRACK |
+				NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_LAPS);
+			sel->status = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_WAITING;
 			sel->ticksLeft = 0u;
 		}
-		opponent->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_LAPS;
-		opponent->lockMask = (uint8_t)(NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK);
+		opponent->currentItem = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_LAPS;
+		opponent->lockMask = (uint8_t)(NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER | NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_TRACK);
 		opponent->trackID = NATIVE_ARCADE_LINK_HOST_PREVIEW_OPPONENT_TRACK;
 		opponent->lapCount = NativeMatchSelect_LapOptionAt(step % NATIVE_MATCH_SELECT_LAP_OPTION_COUNT);
 		break;
@@ -291,13 +363,13 @@ static void NativeArcadeLinkHost_PreviewSelectView(struct NativeArcadeLinkHostVi
 		 * (here TIGER_TEMPLE), and the laps agree. The bots are the first
 		 * retail 2P AI set holding neither CRASH nor CORTEX: set 0. */
 		view->screen = NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT;
-		local->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_DONE;
-		local->lockMask = (uint8_t)(NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK |
-			NATIVE_MATCH_SELECT_LOCK_LAPS);
-		opponent->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_DONE;
+		local->currentItem = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE;
+		local->lockMask = (uint8_t)(NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER | NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_TRACK |
+			NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_LAPS);
+		opponent->currentItem = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE;
 		opponent->lockMask = local->lockMask;
 		opponent->trackID = NATIVE_ARCADE_LINK_HOST_PREVIEW_OPPONENT_TRACK;
-		sel->status = (uint8_t)NATIVE_MATCH_SELECT_STATUS_CONFIRMED;
+		sel->status = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_CONFIRMED;
 		sel->ticksLeft = 0u;
 		sel->resolved = 1u;
 		sel->trackID = NATIVE_ARCADE_LINK_HOST_PREVIEW_OPPONENT_TRACK;
@@ -315,7 +387,7 @@ static void NativeArcadeLinkHost_PreviewSelectView(struct NativeArcadeLinkHostVi
 		break;
 	}
 	sel->currentItem = local->currentItem;
-	if ((opponent->lockMask & NATIVE_MATCH_SELECT_LOCK_CHARACTER) != 0u)
+	if ((opponent->lockMask & NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER) != 0u)
 	{
 		sel->peerLockedCharacterMask = (uint16_t)(1u << opponent->characterID);
 	}
@@ -462,7 +534,7 @@ int NativeArcadeLinkHost_GetView(struct NativeArcadeLinkHostView *view)
 	view->selectedRow = netplayView.selectedRow;
 	view->ticksInScreen = (netplayView.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF) ? g_idleTicks
 																						 : netplayView.ticksInScreen;
-	view->localCab = (uint8_t)((g_config.localRole == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN) ? 2u : 1u);
+	view->localCab = (uint8_t)((g_config.localRole == (uint8_t)NATIVE_ARCADE_LINK_HOST_ROLE_CAB2) ? 2u : 1u);
 	view->rowsEnabled = (uint8_t)(((netplayView.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS) &&
 									  (netplayView.menuArmed != 0u) &&
 									  (netplayView.ticksInScreen > g_config.timings.resultsDwellTicks))

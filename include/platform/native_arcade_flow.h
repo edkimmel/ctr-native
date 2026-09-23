@@ -28,7 +28,8 @@
  * - SELECT ignores every menu event (the caller routes them to its select
  *   session; BACK is ignored, SEL-7). Checked in order: a lobby status
  *   other than READY, then select status FAILED, each move to RESULTS with
- *   LINK_ERROR; select status CONFIRMED moves to SELECT_RESULT.
+ *   LINK_ERROR and return CLOSE_LINK; select status CONFIRMED moves to
+ *   SELECT_RESULT.
  * - SELECT_RESULT ignores every menu event. Phase 1: it shows the resolved
  *   match, ignoring the lobby status, and on the tick ticksInScreen reaches
  *   selectResultHoldTicks returns RELINK (the caller relinks on the
@@ -36,10 +37,16 @@
  *   READY still observed on the RELINK tick belongs to the old link; checked
  *   in order: READY moves to RACING (START_RACE); REJECTED, or
  *   launchTimeoutTicks ticks since RELINK, moves to RESULTS with
- *   LINK_ERROR; WAITING or LOST returns RESTART_LOBBY after
- *   lobbyRetryPauseTicks; CONNECTING stays.
+ *   LINK_ERROR and returns CLOSE_LINK; WAITING or LOST returns
+ *   RESTART_LOBBY after lobbyRetryPauseTicks; CONNECTING stays.
+ * - Every pre-race LINK_ERROR (from SELECT or SELECT_RESULT) closes the
+ *   link: a lobby left open on RESULTS could still complete a relink
+ *   handshake in the background, so a later REMATCH could derive from a
+ *   config the peer never agreed to.
  * - RACING ignores menu events; a link failure outranks a same-tick finish
- *   (UX-6). Either moves to RESULTS with the matching end reason.
+ *   (UX-6). Either moves to RESULTS with the matching end reason and returns
+ *   NONE: the link stays open so the caller can read the latched session
+ *   report.
  * - RESULTS has rows REMATCH (default focus, UX-7) and EXIT, ignores events
  *   for resultsDwellTicks (UX-3), and exits after resultsIdleTimeoutTicks
  *   without an accepted event (UX-10).

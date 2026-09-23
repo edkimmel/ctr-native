@@ -229,6 +229,16 @@ uint32_t NativeMatchSelectSession_TicksLeft(const struct NativeMatchSelectSessio
 const struct NativeMatchSelectHumanState *NativeMatchSelectSession_Human(const struct NativeMatchSelectSession *session, uint32_t human);
 /* 1 if any seen peer has locked the character item on characterID. */
 int NativeMatchSelectSession_CharacterLockedByPeer(const struct NativeMatchSelectSession *session, uint8_t characterID);
+/* Bit c set for every rules-table character c (below 16) that a seen peer has
+ * locked (NativeMatchSelectSession_CharacterLockedByPeer), so a view can grey
+ * it out. */
+uint16_t NativeMatchSelectSession_PeerLockedCharacterMask(const struct NativeMatchSelectSession *session);
+/* The agreed base config the select started on (the config its baseDigest
+ * covers); NULL when NULL or uninitialized. */
+const struct NativeMatchConfigV1 *NativeMatchSelectSession_Base(const struct NativeMatchSelectSession *session);
+/* The humanCount and localHuman given to Init. */
+uint32_t NativeMatchSelectSession_HumanCount(const struct NativeMatchSelectSession *session);
+uint32_t NativeMatchSelectSession_LocalHuman(const struct NativeMatchSelectSession *session);
 /* Non-NULL only in RESOLVED or CONFIRMED. */
 const struct NativeMatchSelectOutcome *NativeMatchSelectSession_Outcome(const struct NativeMatchSelectSession *session);
 /* NATIVE_MATCH_SELECT_RESOLVED_DIGEST_BYTES bytes; non-NULL only in RESOLVED or CONFIRMED. */

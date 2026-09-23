@@ -174,11 +174,11 @@ static char MainArcadeLink_RoleLetter(uint8_t role)
 {
 	switch (role)
 	{
-	case NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN:
+	case NATIVE_ARCADE_LINK_HOST_ROLE_CAB1:
 		return '1';
-	case NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN:
+	case NATIVE_ARCADE_LINK_HOST_ROLE_CAB2:
 		return '2';
-	case NATIVE_MATCH_SLOT_ROLE_BOT:
+	case NATIVE_ARCADE_LINK_HOST_ROLE_BOT:
 		return 'B';
 	default:
 		return '-';

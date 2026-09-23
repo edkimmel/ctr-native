@@ -431,7 +431,7 @@ static int TestInvalidObservations(void)
 	CHECK(RunQuiet(&flow, 299u, LS_CONNECTING, EV_NONE) == 0);
 	CHECK(ExpectInvalidIgnored(&flow) == 0);
 	/* Still exactly on the launch-timeout tick afterwards. */
-	CHECK(Step(&flow, LS_CONNECTING, END_NONE, 0u, EV_NONE) == ACT_NONE);
+	CHECK(Step(&flow, LS_CONNECTING, END_NONE, 0u, EV_NONE) == ACT_CLOSE_LINK);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
 	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
 	return 0;
@@ -604,8 +604,9 @@ static int TestSelect(void)
 	CHECK(Step(&flow, LS_READY, END_DESYNC, 1u, EV_NONE) == ACT_NONE);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT);
 
-	/* A lobby status other than READY is LINK ERROR, checked before the
-	 * select status: whatever the select status, and whatever the event. */
+	/* A lobby status other than READY is LINK ERROR and closes the link,
+	 * checked before the select status: whatever the select status, and
+	 * whatever the event. */
 	statuses[0] = LS_WAITING;
 	statuses[1] = LS_CONNECTING;
 	statuses[2] = LS_REJECTED;
@@ -620,7 +621,7 @@ static int TestSelect(void)
 			CHECK(ToSelect(&flow) == 0);
 			CHECK(RunQuiet(&flow, 7u, LS_READY, EV_NONE) == 0);
 			serial = NativeArcadeFlow_ScreenSerial(&flow);
-			CHECK(StepSel(&flow, statuses[i], selects[j], EV_BACK) == ACT_NONE);
+			CHECK(StepSel(&flow, statuses[i], selects[j], EV_BACK) == ACT_CLOSE_LINK);
 			CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
 			CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
 			CHECK(NativeArcadeFlow_SelectedRow(&flow) == ROW_REMATCH);
@@ -629,9 +630,10 @@ static int TestSelect(void)
 		}
 	}
 
-	/* FAILED with READY is LINK ERROR, on the very first select tick too. */
+	/* FAILED with READY is LINK ERROR and closes the link, on the very first
+	 * select tick too. */
 	CHECK(ToSelect(&flow) == 0);
-	CHECK(StepSel(&flow, LS_READY, SS_FAILED, EV_NONE) == ACT_NONE);
+	CHECK(StepSel(&flow, LS_READY, SS_FAILED, EV_NONE) == ACT_CLOSE_LINK);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
 	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
 
@@ -710,7 +712,7 @@ static int TestSelectResult(void)
 	/* REJECTED after RELINK is LINK ERROR. */
 	CHECK(ToRelinked(&flow) == 0);
 	CHECK(RunQuiet(&flow, 4u, LS_CONNECTING, EV_NONE) == 0);
-	CHECK(Step(&flow, LS_REJECTED, END_NONE, 0u, EV_NONE) == ACT_NONE);
+	CHECK(Step(&flow, LS_REJECTED, END_NONE, 0u, EV_NONE) == ACT_CLOSE_LINK);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
 	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
 	CHECK(NativeArcadeFlow_SelectedRow(&flow) == ROW_REMATCH);
@@ -720,7 +722,7 @@ static int TestSelectResult(void)
 	CHECK(RunQuiet(&flow, 299u, LS_CONNECTING, EV_BACK) == 0);
 	CHECK(flow.ticksSinceRelink == 299u);
 	CHECK(NativeArcadeFlow_TicksInScreen(&flow) == 359u);
-	CHECK(Step(&flow, LS_CONNECTING, END_NONE, 0u, EV_NONE) == ACT_NONE);
+	CHECK(Step(&flow, LS_CONNECTING, END_NONE, 0u, EV_NONE) == ACT_CLOSE_LINK);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
 	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
 
@@ -741,7 +743,7 @@ static int TestSelectResult(void)
 		CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
 		CHECK(flow.relinked == 1u);
 	}
-	CHECK(Step(&flow, LS_WAITING, END_NONE, 0u, EV_NONE) == ACT_NONE);
+	CHECK(Step(&flow, LS_WAITING, END_NONE, 0u, EV_NONE) == ACT_CLOSE_LINK);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
 	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
 
@@ -776,7 +778,9 @@ static int TestRacing(void)
 	failures[1] = END_DESYNC;
 	failures[2] = END_LINK_ERROR;
 
-	/* Each link failure maps to RESULTS with that reason. */
+	/* Each link failure maps to RESULTS with that reason and returns NONE:
+	 * unlike a pre-race LINK ERROR, the in-race path keeps the link open so
+	 * the caller can read the latched session report. */
 	for (i = 0; i < 3u; i++)
 	{
 		CHECK(ToRacing(&flow) == 0);
@@ -1232,7 +1236,7 @@ static int TestCustomTimings(void)
 	CHECK(Step(&flow, LS_WAITING, END_NONE, 0u, EV_NONE) == ACT_NONE);
 	CHECK(Step(&flow, LS_WAITING, END_NONE, 0u, EV_NONE) == ACT_RESTART_LOBBY);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
-	CHECK(Step(&flow, LS_WAITING, END_NONE, 0u, EV_NONE) == ACT_NONE);
+	CHECK(Step(&flow, LS_WAITING, END_NONE, 0u, EV_NONE) == ACT_CLOSE_LINK);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
 	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
 	return 0;
