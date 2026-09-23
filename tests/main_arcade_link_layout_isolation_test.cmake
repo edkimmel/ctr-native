@@ -7,6 +7,15 @@
 # header; the library links only ctr_native_arcade_flow; the target stays
 # portable C17 with extensions off; and its mirrored retail font, colour, and
 # justification values stay in step with include/namespace_Decal.h.
+#
+# Since MS-9 (the match-select screens, docs/MATCH_SELECT_MILESTONE.md
+# section 2.8) also: the four player-colour mirrors exist and every mirrored
+# colour equals its enum DecalFontStyle ordinal; the layout's select-order
+# lists equal the retail tables (tracks: game/230/D230.c .arcadeTracks rows
+# with unlock 0xFFFF; laps: .lapCountByRow; characters: the eight base
+# enum Characters entries); its font advances equal game/zGlobal_DATA.c
+# .font_charPixWidth; and every glyph of every layout string exists in the
+# retail font map (.font_characterIconID), with no PSX button glyph.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -136,4 +145,244 @@ foreach(mirror
         "MAIN_ARCADE_LINK_COLOR_GRAY 23u"
         "MAIN_ARCADE_LINK_JUSTIFY_CENTER 0x8000u")
     ctr_require_regex("${layout_header}" "${header}" "(^|\n)#define ${mirror}\r?\n")
+endforeach()
+
+# ---- Match-select screens (docs/MATCH_SELECT_MILESTONE.md section 2.8, MS-9) ----
+
+function(ctr_strip_comments source out_var)
+    string(REGEX REPLACE "/\\*([^*]|\\*+[^*/])*\\*+/" "" stripped "${source}")
+    string(REGEX REPLACE "//[^\r\n]*" "" stripped "${stripped}")
+    set(${out_var} "${stripped}" PARENT_SCOPE)
+endfunction()
+
+# Parses a comma-separated list of decimal (optional u suffix) or 0x hex
+# integers into a CMake list of decimal values.
+function(ctr_parse_numbers description text out_var)
+    string(REGEX REPLACE "[ \t\r\n]" "" text "${text}")
+    string(REPLACE "," ";" items "${text}")
+    set(values "")
+    foreach(item IN LISTS items)
+        if(item STREQUAL "")
+            continue()
+        endif()
+        if(item MATCHES "^0[xX]([0-9a-fA-F]+)[uU]?$")
+            math(EXPR value "0x${CMAKE_MATCH_1}")
+        elseif(item MATCHES "^([0-9]+)[uU]?$")
+            math(EXPR value "${CMAKE_MATCH_1}")
+        else()
+            message(FATAL_ERROR "arcade link layout isolation: ${description}: '${item}' is not an integer")
+        endif()
+        list(APPEND values "${value}")
+    endforeach()
+    set(${out_var} "${values}" PARENT_SCOPE)
+endfunction()
+
+# Reads a retail `.<field> = { ... }` one-level initializer (line comments
+# removed) from a window of source text; the field must be initialized
+# exactly once.
+function(ctr_retail_flat relative_path source field window out_var)
+    string(REGEX MATCHALL "\\.${field}[ \t]*=" occurrences "${source}")
+    list(LENGTH occurrences occurrence_count)
+    if(NOT occurrence_count EQUAL 1)
+        message(FATAL_ERROR "arcade link layout isolation: .${field} must be initialized exactly once in ${relative_path} (found ${occurrence_count})")
+    endif()
+    string(FIND "${source}" ".${field}" at)
+    string(SUBSTRING "${source}" "${at}" "${window}" block)
+    string(REGEX REPLACE "//[^\r\n]*" "" block "${block}")
+    string(REGEX MATCH "^\\.${field}[ \t]*=[ \t\r\n]*\\{([^{}]*)\\}" whole "${block}")
+    if(whole STREQUAL "")
+        message(FATAL_ERROR "arcade link layout isolation: could not parse .${field} in ${relative_path}")
+    endif()
+    ctr_parse_numbers("${relative_path} .${field}" "${CMAKE_MATCH_1}" values)
+    set(${out_var} "${values}" PARENT_SCOPE)
+endfunction()
+
+# Reads a retail `.<field> = { {..}, {..} }` initializer of brace rows (line
+# comments removed); row i is in <out_prefix>_<i>.
+function(ctr_retail_rows relative_path source field window out_prefix out_count)
+    string(REGEX MATCHALL "\\.${field}[ \t]*=" occurrences "${source}")
+    list(LENGTH occurrences occurrence_count)
+    if(NOT occurrence_count EQUAL 1)
+        message(FATAL_ERROR "arcade link layout isolation: .${field} must be initialized exactly once in ${relative_path} (found ${occurrence_count})")
+    endif()
+    string(FIND "${source}" ".${field}" at)
+    string(SUBSTRING "${source}" "${at}" "${window}" block)
+    string(REGEX REPLACE "//[^\r\n]*" "" block "${block}")
+    string(REGEX MATCH "^\\.${field}[ \t]*=[ \t\r\n]*\\{(([ \t\r\n,]*\\{[^{}]*\\})*)[ \t\r\n,]*\\}" whole "${block}")
+    if(whole STREQUAL "")
+        message(FATAL_ERROR "arcade link layout isolation: could not parse .${field} in ${relative_path}")
+    endif()
+    string(REGEX MATCHALL "\\{[^{}]*\\}" rows "${CMAKE_MATCH_1}")
+    set(row_index 0)
+    foreach(row IN LISTS rows)
+        string(REGEX REPLACE "[{}]" "" row "${row}")
+        ctr_parse_numbers("${relative_path} .${field} row ${row_index}" "${row}" values)
+        set(${out_prefix}_${row_index} "${values}" PARENT_SCOPE)
+        math(EXPR row_index "${row_index} + 1")
+    endforeach()
+    set(${out_count} "${row_index}" PARENT_SCOPE)
+endfunction()
+
+# Reads the layout's `static const uint8_t <name>[...] = { ... };` list,
+# declared exactly once.
+function(ctr_layout_table source name out_var)
+    string(REGEX MATCHALL "static const uint8_t ${name}[^a-zA-Z0-9_]" declarations "${source}")
+    list(LENGTH declarations declaration_count)
+    if(NOT declaration_count EQUAL 1)
+        message(FATAL_ERROR "arcade link layout isolation: ${name} must be declared exactly once in the layout (found ${declaration_count})")
+    endif()
+    string(REGEX MATCH "static const uint8_t ${name}\\[[A-Za-z0-9_ *]*\\][ \t]*=[ \t\r\n]*\\{([^{}]*)\\}" table "${source}")
+    if(table STREQUAL "")
+        message(FATAL_ERROR "arcade link layout isolation: ${name} is not a simple one-level initializer")
+    endif()
+    ctr_parse_numbers("layout ${name}" "${CMAKE_MATCH_1}" values)
+    set(${out_var} "${values}" PARENT_SCOPE)
+endfunction()
+
+function(ctr_require_equal description actual expected)
+    if(NOT "${actual}" STREQUAL "${expected}")
+        message(FATAL_ERROR "arcade link layout isolation: ${description}: layout '${actual}' != retail '${expected}'")
+    endif()
+endfunction()
+
+ctr_read_source("game/MAIN/MainArcadeLinkLayout.c" layout_source)
+ctr_strip_comments("${layout_source}" layout_code)
+
+# 5. The player-colour mirrors (the retail multiplayer colours P1..P4) are
+#    defined, and every mirrored colour equals its ordinal in
+#    include/namespace_Decal.h `enum DecalFontStyle`, counting the entries
+#    before the first explicit value.
+foreach(mirror
+        "MAIN_ARCADE_LINK_COLOR_PLAYER_BLUE 24u"
+        "MAIN_ARCADE_LINK_COLOR_PLAYER_RED 25u"
+        "MAIN_ARCADE_LINK_COLOR_PLAYER_GREEN 26u"
+        "MAIN_ARCADE_LINK_COLOR_PLAYER_YELLOW 27u")
+    ctr_require_regex("${layout_header}" "${header}" "(^|\n)#define ${mirror}\r?\n")
+endforeach()
+string(REGEX MATCH "enum[ \t\r\n]+DecalFontStyle[ \t\r\n]*\\{([^{}]*)\\}" found "${decal}")
+if(found STREQUAL "")
+    message(FATAL_ERROR "arcade link layout isolation: could not parse enum DecalFontStyle in ${decal_header}")
+endif()
+ctr_strip_comments("${CMAKE_MATCH_1}" style_body)
+string(REGEX REPLACE "[ \t\r\n]" "" style_body "${style_body}")
+string(REPLACE "," ";" style_entries "${style_body}")
+set(ordinal 0)
+foreach(entry IN LISTS style_entries)
+    if(entry STREQUAL "")
+        continue()
+    endif()
+    if(entry MATCHES "=")
+        break()
+    endif()
+    set(style_${entry} ${ordinal})
+    math(EXPR ordinal "${ordinal} + 1")
+endforeach()
+foreach(name ORANGE RED WHITE GRAY PLAYER_BLUE PLAYER_RED PLAYER_GREEN PLAYER_YELLOW)
+    if(NOT DEFINED style_${name})
+        message(FATAL_ERROR "arcade link layout isolation: ${name} has no implicit ordinal in enum DecalFontStyle")
+    endif()
+    string(REGEX MATCH "#define MAIN_ARCADE_LINK_COLOR_${name} ([0-9]+)u" found "${header}")
+    ctr_require_equal("MAIN_ARCADE_LINK_COLOR_${name} vs enum DecalFontStyle ${name}" "${CMAKE_MATCH_1}" "${style_${name}}")
+endforeach()
+
+# 6. The select-order lists equal the retail tables the selection rules
+#    mirror (tests/native_match_select_rules_isolation_test.cmake checks the
+#    rules' side): the tracks are the levelIDs of the game/230/D230.c
+#    .arcadeTracks rows whose unlock field (the 4th) is 0xFFFF, in order;
+#    the laps are the nonzero .lapCountByRow rows; the characters are the
+#    eight base characters, CRASH_BANDICOOT = 0 through PURA.
+ctr_layout_table("${layout_code}" MainArcadeLinkLayout_TrackOrder layout_tracks)
+ctr_layout_table("${layout_code}" MainArcadeLinkLayout_LapOrder layout_laps)
+ctr_layout_table("${layout_code}" MainArcadeLinkLayout_CharacterOrder layout_characters)
+ctr_read_source("game/230/D230.c" d230)
+ctr_retail_rows("game/230/D230.c" "${d230}" arcadeTracks 2500 track_row track_row_count)
+ctr_require_equal("arcadeTracks row count" "${track_row_count}" "18")
+set(retail_tracks "")
+math(EXPR last_row "${track_row_count} - 1")
+foreach(row RANGE 0 ${last_row})
+    list(LENGTH track_row_${row} fields)
+    ctr_require_equal("arcadeTracks row ${row} field count" "${fields}" "6")
+    list(GET track_row_${row} 0 level_id)
+    list(GET track_row_${row} 3 unlock)
+    if(unlock EQUAL 65535)
+        list(APPEND retail_tracks "${level_id}")
+    endif()
+endforeach()
+ctr_require_equal("track order vs arcadeTracks rows with unlock 0xFFFF" "${layout_tracks}" "${retail_tracks}")
+ctr_retail_rows("game/230/D230.c" "${d230}" lapCountByRow 200 lap_row lap_row_count)
+set(retail_laps "")
+math(EXPR last_row "${lap_row_count} - 1")
+foreach(row RANGE 0 ${last_row})
+    list(GET lap_row_${row} 0 lap_count)
+    if(NOT lap_count EQUAL 0)
+        list(APPEND retail_laps "${lap_count}")
+    endif()
+endforeach()
+ctr_require_equal("lap order vs lapCountByRow" "${layout_laps}" "${retail_laps}")
+ctr_read_source("include/namespace_Vehicle.h" vehicle_header)
+string(REGEX MATCH "enum[ \t\r\n]+Characters[ \t\r\n]*\\{([^{}]*)\\}" found "${vehicle_header}")
+if(found STREQUAL "")
+    message(FATAL_ERROR "arcade link layout isolation: could not parse enum Characters in include/namespace_Vehicle.h")
+endif()
+ctr_strip_comments("${CMAKE_MATCH_1}" character_body)
+string(REGEX REPLACE "[ \t\r\n]" "" character_body "${character_body}")
+string(REPLACE "," ";" character_entries "${character_body}")
+list(SUBLIST character_entries 0 8 base_character_entries)
+ctr_require_equal("enum Characters base entries"
+    "${base_character_entries}" "CRASH_BANDICOOT=0;NEO_CORTEX;TINY_TIGER;COCO_BANDICOOT;N_GIN;DINGODILE;POLAR;PURA")
+ctr_require_equal("character order" "${layout_characters}" "0;1;2;3;4;5;6;7")
+
+# 7. The layout's font advances equal the retail per-glyph widths
+#    (game/zGlobal_DATA.c .font_charPixWidth, indexed by FONT_BIG and
+#    FONT_SMALL), which the marker slots are packed with.
+ctr_read_source("game/zGlobal_DATA.c" zglobal)
+ctr_retail_flat("game/zGlobal_DATA.c" "${zglobal}" font_charPixWidth 400 char_widths)
+list(GET char_widths 1 big_width)
+list(GET char_widths 2 small_width)
+string(REGEX MATCH "#define MAIN_ARCADE_LINK_LAYOUT_BIG_ADVANCE ([0-9]+)\r?\n" found "${layout_source}")
+ctr_require_equal("MAIN_ARCADE_LINK_LAYOUT_BIG_ADVANCE vs font_charPixWidth[FONT_BIG]" "${CMAKE_MATCH_1}" "${big_width}")
+string(REGEX MATCH "#define MAIN_ARCADE_LINK_LAYOUT_SMALL_ADVANCE ([0-9]+)\r?\n" found "${layout_source}")
+ctr_require_equal("MAIN_ARCADE_LINK_LAYOUT_SMALL_ADVANCE vs font_charPixWidth[FONT_SMALL]" "${CMAKE_MATCH_1}" "${small_width}")
+
+# 8. Every glyph of every string the layout draws exists in the retail font:
+#    each character of each string literal in the layout's code (comments
+#    and #include lines removed) is a space or maps to an icon other than
+#    0xFF in game/zGlobal_DATA.c .font_characterIconID (indexed from ASCII
+#    0x21), and is none of the PSX button glyphs '@', '[', '^', '*'. No
+#    literal uses an escape sequence.
+ctr_retail_flat("game/zGlobal_DATA.c" "${zglobal}" font_characterIconID 12000 icon_ids)
+list(LENGTH icon_ids icon_count)
+if(icon_count LESS 90)
+    message(FATAL_ERROR "arcade link layout isolation: .font_characterIconID parsed only ${icon_count} entries")
+endif()
+string(REGEX REPLACE "#[ \t]*include[^\r\n]*" "" literal_code "${layout_code}")
+string(REGEX MATCHALL "\"[^\"\r\n]*\"" literals "${literal_code}")
+list(LENGTH literals literal_count)
+if(literal_count LESS 40)
+    message(FATAL_ERROR "arcade link layout isolation: found only ${literal_count} string literals in the layout; the glyph scan is broken")
+endif()
+foreach(literal IN LISTS literals)
+    string(LENGTH "${literal}" literal_length)
+    math(EXPR last_char "${literal_length} - 2")
+    if(last_char LESS 1)
+        continue()
+    endif()
+    foreach(position RANGE 1 ${last_char})
+        string(SUBSTRING "${literal}" ${position} 1 ch)
+        if(ch STREQUAL " ")
+            continue()
+        endif()
+        if(ch STREQUAL "\\" OR ch STREQUAL "@" OR ch STREQUAL "[" OR ch STREQUAL "^" OR ch STREQUAL "*")
+            message(FATAL_ERROR "arcade link layout isolation: layout string ${literal} uses '${ch}' (an escape or a PSX button glyph)")
+        endif()
+        string(HEX "${ch}" ch_hex)
+        math(EXPR icon_index "0x${ch_hex} - 0x21")
+        if(icon_index LESS 0 OR NOT icon_index LESS icon_count)
+            message(FATAL_ERROR "arcade link layout isolation: layout string ${literal} uses '${ch}', outside the retail font map")
+        endif()
+        list(GET icon_ids ${icon_index} icon_id)
+        if(icon_id EQUAL 255)
+            message(FATAL_ERROR "arcade link layout isolation: layout string ${literal} uses '${ch}', which the retail font lacks (font_characterIconID 0xFF)")
+        endif()
+    endforeach()
 endforeach()

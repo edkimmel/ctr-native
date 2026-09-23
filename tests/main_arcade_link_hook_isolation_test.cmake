@@ -6,7 +6,7 @@
 # host glue API (never the adapter, lobby, failure-handling, or link
 # modules), names no replay, canonical-state, or topology-lease token, logs
 # only through Platform_Log (no stdio), and includes only its allowed headers;
-# the seven retail-mirror static asserts are present; the
+# the eleven retail-mirror static asserts are present; the
 # MainFrame_RenderFrame.c call sits inside a CTR_NATIVE guard and the input
 # clear sits inside the retail menu-input collect block; the unity chain
 # includes the layout, the policy, and the hook after the 230 overlay; main.c
@@ -21,7 +21,10 @@
 # the abort, and main.c fills the host-local select entropy only inside the
 # link-enabled branch. Since MS-8b no MainArcadeLink* game file names a
 # match-config slot role, the match-config struct, or a match-select value:
-# they use the host's own names. The policy's own rules are in
+# they use the host's own names. Since MS-9 the drawer static-asserts the
+# four player-colour mirrors and the layout's select values against the host
+# names, and copies the host select view into the layout input. The policy's
+# own rules are in
 # main_arcade_link_policy_isolation_test.cmake.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
@@ -191,16 +194,37 @@ if(NOT "${header_includes}" STREQUAL "")
     message(FATAL_ERROR "arcade link hook isolation: ${hook_header_path} must include nothing (found '${header_includes}')")
 endif()
 
-# 4. The seven retail-mirror static asserts.
+# 4. The eleven retail-mirror static asserts (the four player colours since
+#    MS-9).
 foreach(pair
         "FONT_BIG FONT_BIG" "FONT_SMALL FONT_SMALL" "COLOR_ORANGE ORANGE" "COLOR_RED RED"
-        "COLOR_WHITE WHITE" "COLOR_GRAY GRAY" "JUSTIFY_CENTER JUSTIFY_CENTER")
+        "COLOR_WHITE WHITE" "COLOR_GRAY GRAY" "JUSTIFY_CENTER JUSTIFY_CENTER"
+        "COLOR_PLAYER_BLUE PLAYER_BLUE" "COLOR_PLAYER_RED PLAYER_RED" "COLOR_PLAYER_GREEN PLAYER_GREEN"
+        "COLOR_PLAYER_YELLOW PLAYER_YELLOW")
     string(REPLACE " " ";" pair_items "${pair}")
     list(GET pair_items 0 mirror)
     list(GET pair_items 1 retail)
     ctr_require_literal("${hook_source_path}" "${hook_source}"
         "_Static_assert((int)MAIN_ARCADE_LINK_${mirror} == ${retail},")
 endforeach()
+
+# 4b. The layout's select values and capacities are static-asserted against
+#     the host names they mirror (MS-9), and the drawer copies the host's
+#     select view into the layout input on every draw.
+foreach(pair
+        "LAYOUT_MAX_HUMANS HOST_VIEW_MAX_HUMANS" "LAYOUT_MAX_BOTS HOST_VIEW_MAX_BOTS"
+        "SELECT_ITEM_CHARACTER HOST_SELECT_ITEM_CHARACTER" "SELECT_ITEM_TRACK HOST_SELECT_ITEM_TRACK"
+        "SELECT_ITEM_LAPS HOST_SELECT_ITEM_LAPS" "SELECT_ITEM_DONE HOST_SELECT_ITEM_DONE"
+        "SELECT_LOCK_CHARACTER HOST_SELECT_LOCK_CHARACTER" "SELECT_LOCK_TRACK HOST_SELECT_LOCK_TRACK"
+        "SELECT_LOCK_LAPS HOST_SELECT_LOCK_LAPS" "SELECT_STATUS_FAILED HOST_SELECT_STATUS_FAILED")
+    string(REPLACE " " ";" pair_items "${pair}")
+    list(GET pair_items 0 mirror)
+    list(GET pair_items 1 host)
+    ctr_require_literal("${hook_source_path}" "${hook_source}"
+        "_Static_assert(MAIN_ARCADE_LINK_${mirror} == NATIVE_ARCADE_LINK_${host},")
+endforeach()
+ctr_require_literal("${hook_source_path}" "${hook_source}"
+    "MainArcadeLink_MapSelect(&view.select, &input.select);")
 
 # 5. Dormant by default: in MainArcadeLink_Frame nothing but plain
 #    declarations precede the host-mode OFF check, which returns 0.

@@ -33,6 +33,23 @@ _Static_assert((int)MAIN_ARCADE_LINK_COLOR_RED == RED, "MAIN_ARCADE_LINK_COLOR_R
 _Static_assert((int)MAIN_ARCADE_LINK_COLOR_WHITE == WHITE, "MAIN_ARCADE_LINK_COLOR_WHITE must match WHITE");
 _Static_assert((int)MAIN_ARCADE_LINK_COLOR_GRAY == GRAY, "MAIN_ARCADE_LINK_COLOR_GRAY must match GRAY");
 _Static_assert((int)MAIN_ARCADE_LINK_JUSTIFY_CENTER == JUSTIFY_CENTER, "MAIN_ARCADE_LINK_JUSTIFY_CENTER must match JUSTIFY_CENTER");
+_Static_assert((int)MAIN_ARCADE_LINK_COLOR_PLAYER_BLUE == PLAYER_BLUE, "MAIN_ARCADE_LINK_COLOR_PLAYER_BLUE must match PLAYER_BLUE");
+_Static_assert((int)MAIN_ARCADE_LINK_COLOR_PLAYER_RED == PLAYER_RED, "MAIN_ARCADE_LINK_COLOR_PLAYER_RED must match PLAYER_RED");
+_Static_assert((int)MAIN_ARCADE_LINK_COLOR_PLAYER_GREEN == PLAYER_GREEN, "MAIN_ARCADE_LINK_COLOR_PLAYER_GREEN must match PLAYER_GREEN");
+_Static_assert((int)MAIN_ARCADE_LINK_COLOR_PLAYER_YELLOW == PLAYER_YELLOW, "MAIN_ARCADE_LINK_COLOR_PLAYER_YELLOW must match PLAYER_YELLOW");
+
+/* The layout's select fields mirror the host's select view; keep the
+ * capacities and values in step so the field-for-field copy is exact. */
+_Static_assert(MAIN_ARCADE_LINK_LAYOUT_MAX_HUMANS == NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS, "MAIN_ARCADE_LINK_LAYOUT_MAX_HUMANS must match NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS");
+_Static_assert(MAIN_ARCADE_LINK_LAYOUT_MAX_BOTS == NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS, "MAIN_ARCADE_LINK_LAYOUT_MAX_BOTS must match NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_ITEM_CHARACTER == NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER, "MAIN_ARCADE_LINK_SELECT_ITEM_CHARACTER must match NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_ITEM_TRACK == NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_TRACK, "MAIN_ARCADE_LINK_SELECT_ITEM_TRACK must match NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_TRACK");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_ITEM_LAPS == NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_LAPS, "MAIN_ARCADE_LINK_SELECT_ITEM_LAPS must match NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_LAPS");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_ITEM_DONE == NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE, "MAIN_ARCADE_LINK_SELECT_ITEM_DONE must match NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_LOCK_CHARACTER == NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER, "MAIN_ARCADE_LINK_SELECT_LOCK_CHARACTER must match NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_LOCK_TRACK == NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_TRACK, "MAIN_ARCADE_LINK_SELECT_LOCK_TRACK must match NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_TRACK");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_LOCK_LAPS == NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_LAPS, "MAIN_ARCADE_LINK_SELECT_LOCK_LAPS must match NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_LAPS");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_STATUS_FAILED == NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_FAILED, "MAIN_ARCADE_LINK_SELECT_STATUS_FAILED must match NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_FAILED");
 
 /* The policy mirrors these retail and host values without including game or
  * host headers; keep the mirrors honest. */
@@ -140,6 +157,48 @@ static void MainArcadeLink_Draw(struct GameTracker *gGT, struct MainArcadeLinkLa
 	}
 }
 
+/* The host's select view into the layout's select fields, field for field. */
+static void MainArcadeLink_MapSelect(const struct NativeArcadeLinkHostSelectView *from, struct MainArcadeLinkLayoutSelect *to)
+{
+	uint32_t i;
+
+	to->active = from->active;
+	to->humanCount = from->humanCount;
+	to->localHuman = from->localHuman;
+	to->currentItem = from->currentItem;
+	to->ticksLeft = from->ticksLeft;
+	to->status = from->status;
+	to->resolved = from->resolved;
+	to->trackID = from->trackID;
+	to->lapCount = from->lapCount;
+	to->trackDrawn = from->trackDrawn;
+	to->lapsDrawn = from->lapsDrawn;
+	to->characterReassignedMask = from->characterReassignedMask;
+	to->botCount = from->botCount;
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS; i++)
+	{
+		to->humanCharacter[i] = from->humanCharacter[i];
+	}
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS; i++)
+	{
+		to->botCharacter[i] = from->botCharacter[i];
+	}
+	to->peerLockedCharacterMask = from->peerLockedCharacterMask;
+	to->reserved[0] = 0u;
+	to->reserved[1] = 0u;
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS; i++)
+	{
+		to->humans[i].present = from->humans[i].present;
+		to->humans[i].characterID = from->humans[i].characterID;
+		to->humans[i].trackID = from->humans[i].trackID;
+		to->humans[i].lapCount = from->humans[i].lapCount;
+		to->humans[i].lockMask = from->humans[i].lockMask;
+		to->humans[i].currentItem = from->humans[i].currentItem;
+		to->humans[i].reserved[0] = 0u;
+		to->humans[i].reserved[1] = 0u;
+	}
+}
+
 static void MainArcadeLink_BuildAndDraw(struct GameTracker *gGT)
 {
 	struct NativeArcadeLinkHostView view;
@@ -160,6 +219,7 @@ static void MainArcadeLink_BuildAndDraw(struct GameTracker *gGT)
 	input.rowsEnabled = view.rowsEnabled;
 	input.attract = view.attract;
 	input.reserved = 0u;
+	MainArcadeLink_MapSelect(&view.select, &input.select);
 
 	if (!MainArcadeLinkLayout_Build(&input, &layout))
 	{
