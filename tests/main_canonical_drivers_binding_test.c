@@ -209,6 +209,91 @@ static int SourcePreludeTest(void)
 	return 1;
 }
 
+/* Two roster candidates are equal: the prelude through its canonical encoder,
+ * the identity arrays bytewise (no padding is compared). */
+static int RosterCandidatesEqual(const struct NativeCanonicalDriversRosterCandidate *a,const struct NativeCanonicalDriversRosterCandidate *b)
+{
+	uint8_t encodedA[128],encodedB[128];
+	struct NativeCodecWriter writerA,writerB;
+	if(NativeCanonicalDriversPreludeV1_EncodedSize()>sizeof(encodedA))return 0;
+	NativeCodecWriter_Init(&writerA,encodedA,sizeof(encodedA),NULL);
+	NativeCodecWriter_Init(&writerB,encodedB,sizeof(encodedB),NULL);
+	if(!NativeCanonicalDriversPreludeV1_Encode(&writerA,&a->prelude)||!NativeCanonicalDriversPreludeV1_Encode(&writerB,&b->prelude)||
+		NativeCodecWriter_Size(&writerA)!=NativeCanonicalDriversPreludeV1_EncodedSize()||
+		NativeCodecWriter_Size(&writerB)!=NativeCodecWriter_Size(&writerA))return 0;
+	return memcmp(encodedA,encodedB,NativeCodecWriter_Size(&writerA))==0&&
+		memcmp(a->behaviorID,b->behaviorID,sizeof(a->behaviorID))==0&&
+		memcmp(a->threadBehaviorID,b->threadBehaviorID,sizeof(a->threadBehaviorID))==0&&
+		memcmp(a->kind,b->kind,sizeof(a->kind))==0;
+}
+/* ExtractRosterPrelude == Normalize(ExtractRosterInput) on success, and both
+ * fail with their outputs untouched on every source failure. */
+static int ExtractRosterInputCase(struct SourceFixture *f,struct sData *sd,int expectOk)
+{
+	struct NativeCanonicalDriversRosterCandidate prelude,normalized,preludeBefore;
+	struct NativeCanonicalDriversRosterInput input,inputBefore;
+	int preludeOk,inputOk;
+	memset(&prelude,0xa5,sizeof(prelude));memset(&input,0x5a,sizeof(input));
+	preludeBefore=prelude;inputBefore=input;
+	preludeOk=MainCanonicalDrivers_ExtractRosterPrelude(f?&f->tracker:NULL,sd,&prelude);
+	inputOk=MainCanonicalDrivers_ExtractRosterInput(f?&f->tracker:NULL,sd,&input);
+	if(preludeOk!=expectOk||inputOk!=expectOk)return 0;
+	if(!expectOk)return memcmp(&prelude,&preludeBefore,sizeof(prelude))==0&&memcmp(&input,&inputBefore,sizeof(input))==0;
+	if(!NativeCanonicalDriversRoster_Normalize(&input,&normalized)||!RosterCandidatesEqual(&prelude,&normalized))return 0;
+	/* The input carries the resolved identities of every present slot. */
+	for(uint8_t slot=0;slot<8;slot++)
+	{
+		if(input.slots[slot].present!=(uint8_t)((prelude.prelude.presenceMask>>slot)&1u))return 0;
+		if(input.slots[slot].present&&(input.slots[slot].behaviorID!=prelude.behaviorID[slot]||
+			input.slots[slot].threadBehaviorID!=prelude.threadBehaviorID[slot]||input.slots[slot].kind!=prelude.kind[slot]||
+			input.slots[slot].driverID!=slot))return 0;
+	}
+	return 1;
+}
+static int ExtractRosterInputTest(void)
+{
+	struct SourceFixture f,other;struct sData *sd=&sdata_static;struct Item foreign={0};
+	struct NativeCanonicalDriversRosterInput input;
+	/* Success: the base fixture, two humans with ranks, a two-node nav list, a rev-engine bot. */
+	SourceFixtureInit(&f);if(!ExtractRosterInputCase(&f,sd,1))return 0;
+	SourceFixtureInit(&f);SourceDriver(&f,3,0);f.tracker.humanPlayerPositions[0]=6;f.tracker.humanPlayerPositions[3]=1;f.tracker.driversInRaceOrder[3]=FD(&f,3);
+	if(!ExtractRosterInputCase(&f,sd,1))return 0;
+	SourceFixtureInit(&f);SourceNavTwo(&f);if(!ExtractRosterInputCase(&f,sd,1))return 0;
+	SourceFixtureInit(&f);FT(&f,5)->funcThTick=BOTS_ThTick_RevEngine;if(!ExtractRosterInputCase(&f,sd,1))return 0;
+	SourceFixtureInit(&f);if(!MainCanonicalDrivers_ExtractRosterInput(&f.tracker,sd,&input)||input.slots[2].behaviorID!=1||
+		input.slots[2].threadBehaviorID!=NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE||input.slots[0].threadBehaviorID!=NATIVE_CANONICAL_DRIVER_THREAD_NULL||
+		input.slots[1].present!=0||input.numLaps!=3)return 0;
+	/* Failure: NULL arguments and the source failures of SourcePreludeTest. */
+	SourceFixtureInit(&f);
+	if(!ExtractRosterInputCase(NULL,sd,0)||!ExtractRosterInputCase(&f,NULL,0))return 0;
+	if(MainCanonicalDrivers_ExtractRosterInput(&f.tracker,sd,NULL))return 0;
+	/* Initializing another fixture points sdata at its tracker. */
+	SourceFixtureInit(&f);SourceFixtureInit(&other);if(!ExtractRosterInputCase(&f,sd,0))return 0;
+	#define FAIL_INPUT(change) do { SourceFixtureInit(&f); change; if(!ExtractRosterInputCase(&f,sd,0))return 0; } while(0)
+	FAIL_INPUT(sd->gGT=NULL);
+	FAIL_INPUT(sd->gGT=&other.tracker);
+	FAIL_INPUT(f.tracker.drivers[1]=f.tracker.drivers[0]);
+	FAIL_INPUT(FD(&f,2)->driverID=1);
+	FAIL_INPUT(FI(&f,2)->thread=NULL);
+	FAIL_INPUT(FT(&f,2)->object=FD(&f,0));
+	FAIL_INPUT(FT(&f,2)->flags=THREAD_FLAG_DEAD);
+	FAIL_INPUT(FT(&f,2)->funcThTick=UnknownThread);
+	FAIL_INPUT(FD(&f,2)->funcPtrs[6]=UnknownDriver);
+	FAIL_INPUT(f.tracker.numLaps=-1);
+	FAIL_INPUT(f.tracker.driversInRaceOrder[1]=NULL);
+	FAIL_INPUT(f.tracker.numWinners=5);
+	FAIL_INPUT(f.tracker.winnerIndex[0]=1);
+	FAIL_INPUT(f.tracker.humanPlayerPositions[0]=8);
+	FAIL_INPUT(sd->navBotList[0].count=9);
+	FAIL_INPUT(sd->navBotList[0].first=&foreign;sd->navBotList[0].last=&foreign);
+	FAIL_INPUT(FD(&f,2)->botData.botPath=1);
+	FAIL_INPUT(sd->navBotList[0].count=0;sd->navBotList[0].first=NULL;sd->navBotList[0].last=NULL);
+	/* Accepted by the source gates, refused by Normalize: a bot as a VehBirth null thread. */
+	FAIL_INPUT(FT(&f,2)->funcThTick=VehBirth_NullThread);
+	#undef FAIL_INPUT
+	return 1;
+}
+
 static int PoolOwnershipTest(void)
 {
 	struct SourceFixture f;
@@ -1529,4 +1614,4 @@ static int RuntimeWorkspaceV4Test(void)
 	#undef RUNTIME_CHECK
 	return 1;
 }
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());C(PhysicsProjectionTest());C(DetailedAssemblyTest());C(RuntimeWorkspaceTest());C(RuntimeWorkspaceV4Test());puts("main_canonical_drivers_binding_test: passed");return 0;}
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(ExtractRosterInputTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());C(PhysicsProjectionTest());C(DetailedAssemblyTest());C(RuntimeWorkspaceTest());C(RuntimeWorkspaceV4Test());puts("main_canonical_drivers_binding_test: passed");return 0;}

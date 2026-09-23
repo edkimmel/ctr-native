@@ -88,7 +88,11 @@ int MainCanonicalDrivers_ValidateProductionBinding(void){int failure;if(!NativeC
 const struct NativeCanonicalDriverBehaviorRegistry *MainCanonicalDrivers_ProductionRegistry(void){return MainCanonicalDrivers_ValidateProductionBinding()==1?&productionRegistry:NULL;}
 int MainCanonicalDrivers_ResolveBehavior(const DriverFunc table[13],uint8_t*out){const struct NativeCanonicalDriverBehaviorRegistry*r;const void*tokens[13];uint8_t id;if(!table||!out||(r=MainCanonicalDrivers_ProductionRegistry())==NULL)return MAIN_CANONICAL_DRIVERS_FAILURE;for(uint8_t n=0;n<13;n++)if((tokens[n]=TokenFor(table[n]))==NULL)return MAIN_CANONICAL_DRIVERS_FAILURE;if(!NativeCanonicalDriverBehavior_Resolve(r,tokens,&id))return MAIN_CANONICAL_DRIVERS_FAILURE;*out=id;return MAIN_CANONICAL_DRIVERS_OK;}
 int MainCanonicalDrivers_ResolveThread(void (*thread)(struct Thread *),uint8_t*out){uint8_t id;if(!out)return 0;if(!thread)id=0;else if(thread==VehBirth_NullThread)id=1;else if(thread==BOTS_ThTick_Drive)id=2;else if(thread==BOTS_ThTick_RevEngine)id=3;else return 0;*out=id;return 1;}
-int MainCanonicalDrivers_ProjectPrelude(const struct NativeCanonicalDriversRosterInput*input,const DriverFunc tables[8][13],void (*const threads[8])(struct Thread *),struct NativeCanonicalDriversRosterCandidate*out){struct NativeCanonicalDriversRosterInput local;struct NativeCanonicalDriversRosterCandidate candidate;if(!input||!tables||!threads||!out)return 0;local=*input;for(uint8_t n=0;n<8;n++)if(local.slots[n].present==1){if(!MainCanonicalDrivers_ResolveBehavior(tables[n],&local.slots[n].behaviorID)||!MainCanonicalDrivers_ResolveThread(threads[n],&local.slots[n].threadBehaviorID))return 0;}if(!NativeCanonicalDriversRoster_Normalize(&local,&candidate))return 0;*out=candidate;return 1;}
+/* The one resolution rule shared by ProjectPrelude and ExtractRosterInput:
+ * every present slot's behavior and thread IDs, in slot order.  May leave
+ * *local partly resolved on failure; callers own it as staging. */
+static int MainCanonicalDrivers_ResolveRosterIdentities(struct NativeCanonicalDriversRosterInput*local,const DriverFunc tables[8][13],void (*const threads[8])(struct Thread *)){for(uint8_t n=0;n<8;n++)if(local->slots[n].present==1){if(!MainCanonicalDrivers_ResolveBehavior(tables[n],&local->slots[n].behaviorID)||!MainCanonicalDrivers_ResolveThread(threads[n],&local->slots[n].threadBehaviorID))return 0;}return 1;}
+int MainCanonicalDrivers_ProjectPrelude(const struct NativeCanonicalDriversRosterInput*input,const DriverFunc tables[8][13],void (*const threads[8])(struct Thread *),struct NativeCanonicalDriversRosterCandidate*out){struct NativeCanonicalDriversRosterInput local;struct NativeCanonicalDriversRosterCandidate candidate;if(!input||!tables||!threads||!out)return 0;local=*input;if(!MainCanonicalDrivers_ResolveRosterIdentities(&local,tables,threads))return 0;if(!NativeCanonicalDriversRoster_Normalize(&local,&candidate))return 0;*out=candidate;return 1;}
 
 static int DriverSlot(const struct Driver *const drivers[8],const struct Driver *driver,uint8_t *slot)
 {
@@ -335,9 +339,10 @@ int MainCanonicalDrivers_ResolveMetaFlags(const struct GameTracker *gGT,
 		wantsMask?driver->KartStates.MaskGrab.maskObj:NULL,wantsMask,out);
 }
 
-int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,const struct sData *sourceData,struct NativeCanonicalDriversRosterCandidate *out)
+int MainCanonicalDrivers_ExtractRosterInput(const struct GameTracker *gGT,const struct sData *sourceData,struct NativeCanonicalDriversRosterInput *out)
 {
 	struct NativeCanonicalDriversRosterInput input;
+	struct NativeCanonicalDriversRosterCandidate accepted;
 	DriverFunc tables[8][13]={{0}};
 	void(*threads[8])(struct Thread *)={0};
 	const struct Driver *drivers[8];
@@ -396,7 +401,22 @@ int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,cons
 		input.ranks[input.playerCount++]=gGT->humanPlayerPositions[slot];
 	}
 	if(!NavLists(drivers,sourceData,&input))return 0;
-	return MainCanonicalDrivers_ProjectPrelude(&input,tables,threads,out);
+	/* Exactly ProjectPrelude's resolution and acceptance; the input, not the
+	 * normalized candidate, is the output. */
+	if(!MainCanonicalDrivers_ResolveRosterIdentities(&input,tables,threads)||
+		!NativeCanonicalDriversRoster_Normalize(&input,&accepted))return 0;
+	*out=input;
+	return 1;
+}
+
+int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,const struct sData *sourceData,struct NativeCanonicalDriversRosterCandidate *out)
+{
+	struct NativeCanonicalDriversRosterInput input;
+	struct NativeCanonicalDriversRosterCandidate candidate;
+	if(!out||!MainCanonicalDrivers_ExtractRosterInput(gGT,sourceData,&input)||
+		!NativeCanonicalDriversRoster_Normalize(&input,&candidate))return 0;
+	*out=candidate;
+	return 1;
 }
 
 static void MainCanonicalDrivers_CopyRace(const struct Driver *driver, struct NativeCanonicalDriverRaceV1 *race)

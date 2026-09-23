@@ -105,9 +105,17 @@ int MainCanonicalDrivers_ResolveThread(void (*thread)(struct Thread *), uint8_t 
 int MainCanonicalDrivers_ProjectPrelude(const struct NativeCanonicalDriversRosterInput *input,
 	const DriverFunc tables[8][13], void (*const threads[8])(struct Thread *),
 	struct NativeCanonicalDriversRosterCandidate *out);
+/* The source-shaped roster input ExtractRosterPrelude normalizes: built from
+ * gGT/sdata with the same ownership gates, every present slot's behavior and
+ * thread IDs resolved exactly as ProjectPrelude resolves them, and returned
+ * only if NativeCanonicalDriversRoster_Normalize accepts it.  Output-atomic. */
+int MainCanonicalDrivers_ExtractRosterInput(const struct GameTracker *gGT,
+	const struct sData *sdata,
+	struct NativeCanonicalDriversRosterInput *out);
 /* Dormant live-source adapter. It validates only the 64-byte roster prelude
  * and behavior/thread identities into a local candidate; it does not publish
- * a DRIVERS state or inspect the 520-byte slot payloads. */
+ * a DRIVERS state or inspect the 520-byte slot payloads.  Equivalent to
+ * ExtractRosterInput followed by NativeCanonicalDriversRoster_Normalize. */
 int MainCanonicalDrivers_ExtractRosterPrelude(const struct GameTracker *gGT,
 	const struct sData *sdata,
 	struct NativeCanonicalDriversRosterCandidate *out);
