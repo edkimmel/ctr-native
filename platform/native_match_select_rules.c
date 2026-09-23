@@ -226,6 +226,19 @@ static int NativeMatchSelect_AiSetHolds(uint32_t setIndex, uint8_t characterID)
 	return 0;
 }
 
+/* The LOAD_Robots2P rule: the first set holding neither character, or AI_SET_COUNT if none does. */
+static uint32_t NativeMatchSelect_FirstAiSetWithout(uint8_t first, uint8_t second)
+{
+	uint32_t setIndex = 0;
+
+	while ((setIndex < NATIVE_MATCH_SELECT_AI_SET_COUNT) &&
+	       (NativeMatchSelect_AiSetHolds(setIndex, first) || NativeMatchSelect_AiSetHolds(setIndex, second)))
+	{
+		setIndex++;
+	}
+	return setIndex;
+}
+
 int NativeMatchSelect_Resolve(const struct NativeMatchConfigV1 *base, uint32_t humanCount,
 	const struct NativeMatchSelectChoice choices[], struct NativeMatchSelectOutcome *out)
 {
@@ -316,14 +329,8 @@ int NativeMatchSelect_Resolve(const struct NativeMatchConfigV1 *base, uint32_t h
 	if ((humanCount == 2u) && (botCount == NATIVE_MATCH_SELECT_AI_SET_RACERS))
 	{
 		/* The LOAD_Robots2P rule: the first set holding neither human. */
-		uint32_t setIndex = 0;
+		const uint32_t setIndex = NativeMatchSelect_FirstAiSetWithout(candidate.humanCharacter[0], candidate.humanCharacter[1]);
 
-		while ((setIndex < NATIVE_MATCH_SELECT_AI_SET_COUNT) &&
-		       (NativeMatchSelect_AiSetHolds(setIndex, candidate.humanCharacter[0]) ||
-		        NativeMatchSelect_AiSetHolds(setIndex, candidate.humanCharacter[1])))
-		{
-			setIndex++;
-		}
 		if (setIndex >= NATIVE_MATCH_SELECT_AI_SET_COUNT)
 		{
 			return 0;
@@ -432,7 +439,29 @@ static int NativeMatchSelect_OutcomeWellFormed(const struct NativeMatchConfigV1 
 	    !NativeMatchSelect_LapOptionIndex(outcome->lapCount, &index) || (outcome->masterSeed == 0) ||
 	    (outcome->masterSeed == base->masterSeed) || (outcome->trackDrawn > 1u) || (outcome->lapsDrawn > 1u) ||
 	    (((uint32_t)outcome->characterReassignedMask >> outcome->humanCount) != 0u) ||
-	    ((outcome->aiSetIndex != NATIVE_MATCH_SELECT_AI_SET_NONE) && (outcome->aiSetIndex >= NATIVE_MATCH_SELECT_AI_SET_COUNT)))
+	    ((outcome->characterReassignedMask & 0x1u) != 0u))
+	{
+		return 0;
+	}
+
+	if ((outcome->humanCount == 2u) && (outcome->botCount == NATIVE_MATCH_SELECT_AI_SET_RACERS))
+	{
+		/* Retail derives the 2P bots from the humans: exactly the first set holding neither, in set order. */
+		const uint32_t setIndex = NativeMatchSelect_FirstAiSetWithout(outcome->humanCharacter[0], outcome->humanCharacter[1]);
+
+		if ((setIndex >= NATIVE_MATCH_SELECT_AI_SET_COUNT) || (outcome->aiSetIndex != setIndex))
+		{
+			return 0;
+		}
+		for (uint32_t racer = 0; racer < NATIVE_MATCH_SELECT_AI_SET_RACERS; racer++)
+		{
+			if (outcome->botCharacter[racer] != k_matchSelectAiSets[(setIndex * NATIVE_MATCH_SELECT_AI_SET_RACERS) + racer])
+			{
+				return 0;
+			}
+		}
+	}
+	else if (outcome->aiSetIndex != NATIVE_MATCH_SELECT_AI_SET_NONE)
 	{
 		return 0;
 	}

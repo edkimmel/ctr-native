@@ -1091,19 +1091,96 @@ static int TestBuildRejectsMalformedOutcome(void)
 	CHECK(ExpectBuildFails(&base, &bad) == 0);
 	bad.characterReassignedMask = 0x80u;
 	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	/* Bit 0 is never set: human 0 (CAB1) is never reassigned. */
 	bad.characterReassignedMask = 0x3u;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad.characterReassignedMask = 0x1u;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad.characterReassignedMask = 0x2u;
 	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 1);
 
-	/* aiSetIndex is AI_SET_NONE or a retail set. */
+	/*
+	 * Two humans, four bots: aiSetIndex is exactly the first retail set
+	 * holding neither human (set 0 = 6, 4, 2, 3 for humans 0 and 1), never
+	 * AI_SET_NONE, out of range, or another set.
+	 */
 	bad = outcome;
 	bad.aiSetIndex = NATIVE_MATCH_SELECT_AI_SET_COUNT;
 	CHECK(ExpectBuildFails(&base, &bad) == 0);
 	bad.aiSetIndex = 0xfeu;
 	CHECK(ExpectBuildFails(&base, &bad) == 0);
 	bad.aiSetIndex = NATIVE_MATCH_SELECT_AI_SET_NONE;
-	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 1);
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
 	bad.aiSetIndex = NATIVE_MATCH_SELECT_AI_SET_COUNT - 1u;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/*
+	 * A valid retail set that is not the first qualifying one: set 5
+	 * (4, 7, 3, 5) holds neither human 0 nor 1, but set 0 comes first. Its
+	 * characters are distinct table characters, so only the first-set rule
+	 * rejects it: with its own index, with set 0's index, and set 0's bots
+	 * under set 5's index.
+	 */
+	CHECK(NativeMatchSelect_AiSetRacer(5, 0) == 4);
+	CHECK(NativeMatchSelect_AiSetRacer(5, 1) == 7);
+	CHECK(NativeMatchSelect_AiSetRacer(5, 2) == 3);
+	CHECK(NativeMatchSelect_AiSetRacer(5, 3) == 5);
+	bad = outcome;
+	bad.aiSetIndex = 5;
+	for (uint32_t racer = 0; racer < NATIVE_MATCH_SELECT_AI_SET_RACERS; racer++)
+	{
+		bad.botCharacter[racer] = NativeMatchSelect_AiSetRacer(5, racer);
+	}
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad.aiSetIndex = 0;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad = outcome;
+	bad.aiSetIndex = 5;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/* The first set's racers, but out of set order. */
+	bad = outcome;
+	bad.botCharacter[0] = outcome.botCharacter[1];
+	bad.botCharacter[1] = outcome.botCharacter[0];
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/* Other humans select another first set, which then builds: humans 4
+	 * and 7 skip set 0 (holds 4), so set 1 = 0, 6, 3, 5. */
+	bad = outcome;
+	bad.humanCharacter[0] = 4;
+	bad.humanCharacter[1] = 7;
+	bad.aiSetIndex = 1;
+	for (uint32_t racer = 0; racer < NATIVE_MATCH_SELECT_AI_SET_RACERS; racer++)
+	{
+		bad.botCharacter[racer] = NativeMatchSelect_AiSetRacer(1, racer);
+	}
 	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 1);
+	bad.aiSetIndex = 0;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/* Any other shape (one human, seven bots): aiSetIndex is AI_SET_NONE. */
+	{
+		struct NativeMatchConfigV1 oneCab;
+		struct NativeMatchSelectOutcome oneCabOutcome;
+
+		BuildOneCabBase(&oneCab);
+		SetChoice(&choices[0], 3, 1, 5, 7);
+		CHECK(NativeMatchSelect_Resolve(&oneCab, 1, choices, &oneCabOutcome) == 1);
+		CHECK(oneCabOutcome.aiSetIndex == NATIVE_MATCH_SELECT_AI_SET_NONE);
+		CHECK(NativeMatchSelect_BuildConfig(&oneCab, &oneCabOutcome, &built) == 1);
+		bad = oneCabOutcome;
+		for (uint32_t setIndex = 0; setIndex < NATIVE_MATCH_SELECT_AI_SET_COUNT; setIndex++)
+		{
+			bad.aiSetIndex = (uint8_t)setIndex;
+			CHECK(ExpectBuildFails(&oneCab, &bad) == 0);
+		}
+		bad.aiSetIndex = NATIVE_MATCH_SELECT_AI_SET_COUNT;
+		CHECK(ExpectBuildFails(&oneCab, &bad) == 0);
+		/* Bit 0 of the reassigned mask is refused here too. */
+		bad = oneCabOutcome;
+		bad.characterReassignedMask = 0x1u;
+		CHECK(ExpectBuildFails(&oneCab, &bad) == 0);
+	}
 	return 0;
 }
 

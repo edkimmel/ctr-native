@@ -12,9 +12,20 @@
  * Frozen wire format. These 64 bytes are written out by hand from the offset
  * table in native_match_select_message.h, not produced by the encoder. The
  * trailer is FNV-1a 64 (offset basis 0xcbf29ce484222325, prime
- * 0x100000001b3) over bytes 0..55, computed out of band with an independent
- * implementation: 0x3e8bef6a6091637f. A change to any byte here is a wire
- * format change.
+ * 0x100000001b3) over bytes 0..55: 0x3e8bef6a6091637f, stored little-endian
+ * at offset 56.
+ *
+ * How the trailer was computed: out of band, not with this repository's
+ * codec, by a standalone Windows PowerShell FNV-1a 64 script. It starts from
+ * h = 0xcbf29ce484222325 as a System.Numerics.BigInteger and, for each byte
+ * b, sets h = ((h -bxor b) * 0x100000001b3) -band (2^64 - 1); BigInteger
+ * avoids PowerShell's silent promotion of an overflowing uint64 product to
+ * double. The script first self-checks against the published FNV-1a 64
+ * vector for the ASCII string "a": 0xaf63dc4c8601ec8c. It then hashes the
+ * 56 body bytes below, typed in from the offset table (offsets 0..55), and
+ * prints 0x3e8bef6a6091637f.
+ *
+ * A change to any byte here is a wire format change.
  */
 static const uint8_t k_goldenBytes[MESSAGE_BYTES] = {
 	/* 0: magic 0x31534d4e "NMS1" */ 0x4Eu, 0x4Du, 0x53u, 0x31u,
@@ -391,6 +402,38 @@ static int TestWireFaults(void)
 		CHECK(reader.offset == 0);
 	}
 
+	/*
+	 * A hand-built reader with NULL data that is not marked failed, at offset
+	 * 8 of a claimed 72 bytes: exactly 64 remain, so the up-front size check
+	 * passes, and Decode must still never form or follow a pointer from it.
+	 * The field reads refuse it, so it is a size fault, with the reader and
+	 * message untouched.
+	 */
+	{
+		struct NativeCodecReader reader;
+		struct NativeCodecReader readerBefore;
+		struct NativeMatchSelectMessageV1 message;
+		struct NativeMatchSelectMessageV1 messageBefore;
+		uint32_t cause = NATIVE_MATCH_SELECT_MESSAGE_FAULT_NONE;
+
+		memset(&reader, 0, sizeof(reader));
+		reader.data = NULL;
+		reader.failed = 0;
+		reader.offset = 8u;
+		reader.size = 8u + MESSAGE_BYTES;
+		CHECK(NativeCodecReader_Ok(&reader));
+		CHECK(NativeCodecReader_Remaining(&reader) == MESSAGE_BYTES);
+		readerBefore = reader;
+		memset(&message, 0xCD, sizeof(message));
+		messageBefore = message;
+		CHECK(!NativeMatchSelectMessageV1_Decode(&reader, &message, &cause));
+		CHECK(cause == NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_SIZE);
+		CHECK(memcmp(&reader, &readerBefore, sizeof(reader)) == 0);
+		CHECK(memcmp(&message, &messageBefore, sizeof(message)) == 0);
+		CHECK(!NativeMatchSelectMessageV1_Decode(&reader, &message, NULL));
+		CHECK(memcmp(&reader, &readerBefore, sizeof(reader)) == 0);
+	}
+
 	/* Magic, version (either byte), encoded size (either byte), each resealed
 	 * so the check under test is the one that fires. */
 	memcpy(bytes, k_goldenBytes, MESSAGE_BYTES);
@@ -422,7 +465,7 @@ static int TestWireFaults(void)
 	bytes[24] ^= 0x01u; /* nonce: opaque, so only the digest can catch it */
 	CHECK(DecodeFails(bytes, sizeof(bytes), NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_DIGEST) == 0);
 
-	/* Wire order: magic is reported before a bad version, size, or digest. */
+	/* Fixed order: magic is reported before a bad version, size, or digest. */
 	memcpy(bytes, k_goldenBytes, MESSAGE_BYTES);
 	bytes[0] = 0u;
 	bytes[4] = 9u;
@@ -565,13 +608,20 @@ static int TestShapeFaults(void)
 		CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_LAPS) == 0);
 	}
 
-	/* BAD_ITEM: currentItem out of range, and every lockMask/currentItem
-	 * mismatch. */
-	MakeGolden(&message);
-	message.currentItem = 4;
-	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM) == 0);
-	message.currentItem = 0xFFu;
-	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM) == 0);
+	/* BAD_ITEM: currentItem out of range, whatever the lockMask. */
+	for (uint32_t item = NATIVE_MATCH_SELECT_ITEM_DONE + 1u; item <= 0xFFu; item++)
+	{
+		for (uint8_t mask = 0; mask <= 7u; mask++)
+		{
+			MakeGolden(&message);
+			message.currentItem = (uint8_t)item;
+			message.lockMask = mask;
+			CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM) == 0);
+		}
+	}
+
+	/* BAD_ITEM_LOCK_MISMATCH: every in-range currentItem with every other
+	 * lockMask, in both phases. */
 	for (uint8_t item = 0; item <= NATIVE_MATCH_SELECT_ITEM_DONE; item++)
 	{
 		for (uint8_t mask = 0; mask <= 7u; mask++)
@@ -583,12 +633,16 @@ static int TestShapeFaults(void)
 			MakePicking(&message);
 			message.currentItem = item;
 			message.lockMask = mask;
-			CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM) == 0);
+			CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM_LOCK_MISMATCH) == 0);
+			MakeGolden(&message);
+			message.currentItem = item;
+			message.lockMask = mask;
+			CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM_LOCK_MISMATCH) == 0);
 		}
 	}
 
-	/* BAD_RESOLVED_DIGEST: PICKING with any nonzero resolvedDigest byte, and
-	 * RESOLVED before DONE. */
+	/* BAD_RESOLVED_DIGEST: PICKING with any nonzero resolvedDigest byte, at
+	 * every item. */
 	for (uint32_t i = 0; i < NATIVE_MATCH_SELECT_RESOLVED_DIGEST_BYTES; i++)
 	{
 		MakePicking(&message);
@@ -601,11 +655,22 @@ static int TestShapeFaults(void)
 	for (uint8_t item = 0; item < NATIVE_MATCH_SELECT_ITEM_DONE; item++)
 	{
 		MakeGolden(&message);
+		message.phase = NATIVE_MATCH_SELECT_PHASE_PICKING;
 		message.currentItem = item;
 		message.lockMask = (uint8_t)((1u << item) - 1u);
 		CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESOLVED_DIGEST) == 0);
+	}
+
+	/* BAD_RESOLVED_ITEM: RESOLVED before DONE (with a consistent lockMask),
+	 * whether or not the resolvedDigest is zero. */
+	for (uint8_t item = 0; item < NATIVE_MATCH_SELECT_ITEM_DONE; item++)
+	{
+		MakeGolden(&message);
+		message.currentItem = item;
+		message.lockMask = (uint8_t)((1u << item) - 1u);
+		CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESOLVED_ITEM) == 0);
 		memset(message.resolvedDigest, 0, sizeof(message.resolvedDigest));
-		CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESOLVED_DIGEST) == 0);
+		CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESOLVED_ITEM) == 0);
 	}
 
 	CHECK(NativeMatchSelectMessageV1_ShapeCause(NULL) == NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_SIZE);
@@ -614,7 +679,11 @@ static int TestShapeFaults(void)
 
 /*
  * The documented check order: a message with every shape fault at once
- * reports them in cause order, 6 through 16, as each is repaired in turn.
+ * reports each of the thirteen shape causes (6 through 18) exactly once, in
+ * check order (not numeric order), as each is repaired in turn. Two causes
+ * depend on the phase and cannot coexist: BAD_RESOLVED_DIGEST (PICKING with
+ * a digest) is repaired by moving to RESOLVED, which exposes
+ * BAD_RESOLVED_ITEM (RESOLVED before DONE).
  */
 static int TestShapeFaultOrder(void)
 {
@@ -630,7 +699,7 @@ static int TestShapeFaultOrder(void)
 	message.characterID = 8;
 	message.trackID = 13;
 	message.lapCount = 4;
-	message.currentItem = 2;
+	message.currentItem = 4;
 
 	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESERVED) == 0);
 	message.reserved1[7] = 0;
@@ -641,7 +710,7 @@ static int TestShapeFaultOrder(void)
 	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_PHASE) == 0);
 	message.phase = NATIVE_MATCH_SELECT_PHASE_PICKING;
 	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_LOCK_MASK) == 0);
-	message.lockMask = 7;
+	message.lockMask = NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK;
 	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_SEQUENCE) == 0);
 	message.sequence = 1;
 	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_CHARACTER) == 0);
@@ -651,9 +720,14 @@ static int TestShapeFaultOrder(void)
 	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_LAPS) == 0);
 	message.lapCount = 3;
 	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM) == 0);
-	message.currentItem = NATIVE_MATCH_SELECT_ITEM_DONE;
+	message.currentItem = NATIVE_MATCH_SELECT_ITEM_TRACK; /* lockMask 0x3 needs LAPS */
+	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM_LOCK_MISMATCH) == 0);
+	message.currentItem = NATIVE_MATCH_SELECT_ITEM_LAPS;
 	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESOLVED_DIGEST) == 0);
-	memset(message.resolvedDigest, 0, sizeof(message.resolvedDigest));
+	message.phase = NATIVE_MATCH_SELECT_PHASE_RESOLVED;
+	CHECK(ShapeFault(&message, NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESOLVED_ITEM) == 0);
+	message.currentItem = NATIVE_MATCH_SELECT_ITEM_DONE;
+	message.lockMask = NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK | NATIVE_MATCH_SELECT_LOCK_LAPS;
 	CHECK(ShapeOk(&message) == 0);
 
 	/* The digest is checked before any shape check. */
@@ -737,6 +811,88 @@ static int TestTransactional(void)
 	return 0;
 }
 
+/*
+ * A caller's writer that carries a NativeCodecDigest64 (a record embedded in
+ * a larger digested stream) sees Encode update that digest exactly as if the
+ * 64 output bytes had been written directly, and sees it untouched on any
+ * failure.
+ */
+static int TestWriterDigest(void)
+{
+	struct NativeMatchSelectMessageV1 golden;
+	struct NativeMatchSelectMessageV1 message;
+	struct NativeCodecWriter writer;
+	struct NativeCodecDigest64 digest;
+	struct NativeCodecDigest64 expected;
+	uint8_t buffer[MESSAGE_BYTES + 8u];
+	static const uint8_t prefix[3] = { 0x01u, 0x02u, 0x03u };
+
+	MakeGolden(&golden);
+
+	/* From a fresh digest: equal to FNV-1a 64 over the 64 output bytes. */
+	memset(buffer, 0x5A, sizeof(buffer));
+	NativeCodecDigest64_Init(&digest);
+	NativeCodecWriter_Init(&writer, buffer, sizeof(buffer), &digest);
+	CHECK(NativeMatchSelectMessageV1_Encode(&writer, &golden));
+	CHECK(writer.digest == &digest);
+	CHECK(memcmp(buffer, k_goldenBytes, MESSAGE_BYTES) == 0);
+	NativeCodecDigest64_Init(&expected);
+	NativeCodecDigest64_Update(&expected, buffer, MESSAGE_BYTES);
+	CHECK(digest.value == expected.value);
+
+	/* Mid-stream: the digest already covers a prefix, and continues over the
+	 * record as a direct write of the same bytes would. */
+	memset(buffer, 0x5A, sizeof(buffer));
+	NativeCodecDigest64_Init(&digest);
+	NativeCodecWriter_Init(&writer, buffer, sizeof(buffer), &digest);
+	CHECK(NativeCodecWriter_WriteBytes(&writer, prefix, sizeof(prefix)));
+	MakePicking(&message);
+	CHECK(NativeMatchSelectMessageV1_Encode(&writer, &message));
+	CHECK(writer.offset == sizeof(prefix) + MESSAGE_BYTES);
+	{
+		struct NativeCodecDigest64 direct;
+		struct NativeCodecWriter directWriter;
+		uint8_t directBuffer[sizeof(prefix) + MESSAGE_BYTES];
+
+		NativeCodecDigest64_Init(&direct);
+		NativeCodecWriter_Init(&directWriter, directBuffer, sizeof(directBuffer), &direct);
+		CHECK(NativeCodecWriter_WriteBytes(&directWriter, prefix, sizeof(prefix)));
+		CHECK(NativeCodecWriter_WriteBytes(&directWriter, &buffer[sizeof(prefix)], MESSAGE_BYTES));
+		CHECK(digest.value == direct.value);
+		NativeCodecDigest64_Init(&expected);
+		NativeCodecDigest64_Update(&expected, buffer, sizeof(prefix) + MESSAGE_BYTES);
+		CHECK(digest.value == expected.value);
+	}
+
+	/* Failures leave the caller's digest untouched: a shape fault, a
+	 * too-small writer, and a failed writer. */
+	NativeCodecDigest64_Init(&digest);
+	NativeCodecDigest64_Update(&digest, prefix, sizeof(prefix));
+	expected = digest;
+
+	memset(buffer, 0x5A, sizeof(buffer));
+	NativeCodecWriter_Init(&writer, buffer, sizeof(buffer), &digest);
+	MakeGolden(&message);
+	message.sequence = 0;
+	CHECK(EncodeFails(&writer, &message) == 0);
+	CHECK(digest.value == expected.value);
+
+	NativeCodecWriter_Init(&writer, buffer, MESSAGE_BYTES - 1u, &digest);
+	CHECK(EncodeFails(&writer, &golden) == 0);
+	CHECK(digest.value == expected.value);
+
+	NativeCodecWriter_Init(&writer, buffer, sizeof(buffer), &digest);
+	writer.offset = sizeof(buffer) - MESSAGE_BYTES + 1u;
+	CHECK(EncodeFails(&writer, &golden) == 0);
+	CHECK(digest.value == expected.value);
+
+	NativeCodecWriter_Init(&writer, buffer, sizeof(buffer), &digest);
+	writer.failed = 1;
+	CHECK(EncodeFails(&writer, &golden) == 0);
+	CHECK(digest.value == expected.value);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestGolden() == 0);
@@ -746,5 +902,7 @@ int main(void)
 	CHECK(TestShapeFaults() == 0);
 	CHECK(TestShapeFaultOrder() == 0);
 	CHECK(TestTransactional() == 0);
+	CHECK(TestWriterDigest() == 0);
+	puts("native_match_select_message_test: ok");
 	return 0;
 }

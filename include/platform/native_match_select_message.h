@@ -97,7 +97,9 @@ enum NativeMatchSelectMessageFaultCause
 	NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_TRACK = 13,
 	NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_LAPS = 14,
 	NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM = 15,
-	NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESOLVED_DIGEST = 16
+	NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESOLVED_DIGEST = 16,
+	NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM_LOCK_MISMATCH = 17,
+	NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESOLVED_ITEM = 18
 };
 
 /*
@@ -128,8 +130,10 @@ size_t NativeMatchSelectMessageV1_EncodedSize(void);
 /*
  * Shape check shared by Encode and Decode (and usable by a caller composing a
  * message). Returns the first failing cause, or NONE. A NULL message is
- * BAD_SIZE. The checks run in this order, which is also the fault-cause
- * order:
+ * BAD_SIZE. The checks run in this fixed order, one distinct cause per
+ * check. The order is not the numeric order of the causes: the enum is
+ * append-only, so BAD_ITEM_LOCK_MISMATCH and BAD_RESOLVED_ITEM, added later,
+ * carry the highest values.
  *   1. reserved0 and reserved1 all zero (BAD_RESERVED);
  *   2. humanCount 1..NATIVE_MATCH_SELECT_MAX_HUMANS (BAD_HUMAN_COUNT);
  *   3. senderHuman < humanCount (BAD_SENDER);
@@ -138,9 +142,10 @@ size_t NativeMatchSelectMessageV1_EncodedSize(void);
  *   6. sequence >= 1 (BAD_SEQUENCE);
  *   7. characterID, trackID, lapCount in the rules tables (BAD_CHARACTER,
  *      BAD_TRACK, BAD_LAPS, in that order);
- *   8. currentItem <= DONE and lockMask == (1 << currentItem) - 1 (BAD_ITEM);
- *   9. PICKING requires resolvedDigest all zero, and RESOLVED requires
- *      currentItem DONE (BAD_RESOLVED_DIGEST for either).
+ *   8. currentItem <= DONE (BAD_ITEM);
+ *   9. lockMask == (1 << currentItem) - 1 (BAD_ITEM_LOCK_MISMATCH);
+ *  10. PICKING requires resolvedDigest all zero (BAD_RESOLVED_DIGEST);
+ *  11. RESOLVED requires currentItem DONE (BAD_RESOLVED_ITEM).
  * baseDigest and nonce are opaque and accept any value.
  */
 uint32_t NativeMatchSelectMessageV1_ShapeCause(const struct NativeMatchSelectMessageV1 *message);
@@ -161,10 +166,13 @@ int NativeMatchSelectMessageV1_Encode(struct NativeCodecWriter *writer, const st
  * when that pointer is non-NULL; success reports
  * NATIVE_MATCH_SELECT_MESSAGE_FAULT_NONE. NULL reader or message, a failed
  * reader, and any remaining length other than the encoded width report
- * BAD_SIZE. Checks run in wire order: magic (BAD_MAGIC), message version
- * (BAD_VERSION), encoded size (BAD_ENCODED_SIZE), trailer digest
+ * BAD_SIZE. Checks run in a fixed order: size (BAD_SIZE), magic (BAD_MAGIC),
+ * version (BAD_VERSION), encoded size (BAD_ENCODED_SIZE), trailer digest
  * (BAD_DIGEST), then the shape checks of
- * NativeMatchSelectMessageV1_ShapeCause in its documented order.
+ * NativeMatchSelectMessageV1_ShapeCause in its documented order. The
+ * reader's bytes are addressed only after the field reads have validated
+ * them, so a malformed hand-built reader (for example NULL data with a
+ * nonzero size) is a size fault and is never dereferenced.
  */
 int NativeMatchSelectMessageV1_Decode(struct NativeCodecReader *reader, struct NativeMatchSelectMessageV1 *message,
                                       uint32_t *faultCauseOut);

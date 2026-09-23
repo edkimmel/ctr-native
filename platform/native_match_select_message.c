@@ -69,15 +69,22 @@ uint32_t NativeMatchSelectMessageV1_ShapeCause(const struct NativeMatchSelectMes
 	{
 		return NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_LAPS;
 	}
-	if ((message->currentItem > NATIVE_MATCH_SELECT_ITEM_DONE) || (message->lockMask != (uint8_t)((1u << message->currentItem) - 1u)))
+	if (message->currentItem > NATIVE_MATCH_SELECT_ITEM_DONE)
 	{
 		return NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM;
 	}
-	if ((message->phase == NATIVE_MATCH_SELECT_PHASE_PICKING)
-	        ? !NativeMatchSelectMessage_IsAllZero(message->resolvedDigest, sizeof(message->resolvedDigest))
-	        : (message->currentItem != NATIVE_MATCH_SELECT_ITEM_DONE))
+	if (message->lockMask != (uint8_t)((1u << message->currentItem) - 1u))
+	{
+		return NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ITEM_LOCK_MISMATCH;
+	}
+	if ((message->phase == NATIVE_MATCH_SELECT_PHASE_PICKING) &&
+	    !NativeMatchSelectMessage_IsAllZero(message->resolvedDigest, sizeof(message->resolvedDigest)))
 	{
 		return NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESOLVED_DIGEST;
+	}
+	if ((message->phase == NATIVE_MATCH_SELECT_PHASE_RESOLVED) && (message->currentItem != NATIVE_MATCH_SELECT_ITEM_DONE))
+	{
+		return NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_RESOLVED_ITEM;
 	}
 	return NATIVE_MATCH_SELECT_MESSAGE_FAULT_NONE;
 }
@@ -145,12 +152,26 @@ int NativeMatchSelectMessageV1_Encode(struct NativeCodecWriter *writer, const st
 	return 1;
 }
 
+/*
+ * FNV-1a 64 over the record body (offsets 0..55) at the reader's current
+ * offset. Only called once a full read of the record through a copy of this
+ * reader has succeeded, which proves data is non-NULL and the record is in
+ * bounds.
+ */
+static uint64_t NativeMatchSelectMessage_BodyDigest(const struct NativeCodecReader *validated)
+{
+	struct NativeCodecDigest64 digest;
+
+	NativeCodecDigest64_Init(&digest);
+	NativeCodecDigest64_Update(&digest, &validated->data[validated->offset], NATIVE_MATCH_SELECT_MESSAGE_V1_DIGEST_OFFSET);
+	return digest.value;
+}
+
 int NativeMatchSelectMessageV1_Decode(struct NativeCodecReader *reader, struct NativeMatchSelectMessageV1 *message,
                                       uint32_t *faultCauseOut)
 {
 	struct NativeCodecReader encoded;
 	struct NativeMatchSelectMessageV1 decoded;
-	struct NativeCodecDigest64 digest;
 	uint32_t magic = 0;
 	uint16_t messageVersion = 0;
 	uint16_t encodedSize = 0;
@@ -169,9 +190,13 @@ int NativeMatchSelectMessageV1_Decode(struct NativeCodecReader *reader, struct N
 
 	memset(&decoded, 0, sizeof(decoded));
 	encoded = *reader;
-	NativeCodecDigest64_Init(&digest);
-	NativeCodecDigest64_Update(&digest, &encoded.data[encoded.offset], NATIVE_MATCH_SELECT_MESSAGE_V1_DIGEST_OFFSET);
 
+	/*
+	 * The field reads validate the reader (non-NULL data, offset and size in
+	 * bounds, exactly the record remaining) before any pointer into its bytes
+	 * is formed: the body digest is taken from the caller's reader only once
+	 * they have all succeeded.
+	 */
 	if (!NativeCodecReader_ReadU32(&encoded, &magic) || !NativeCodecReader_ReadU16(&encoded, &messageVersion) ||
 	    !NativeCodecReader_ReadU16(&encoded, &encodedSize) || !NativeCodecReader_ReadU8(&encoded, &decoded.senderHuman) ||
 	    !NativeCodecReader_ReadU8(&encoded, &decoded.humanCount) || !NativeCodecReader_ReadU8(&encoded, &decoded.phase) ||
@@ -199,7 +224,7 @@ int NativeMatchSelectMessageV1_Decode(struct NativeCodecReader *reader, struct N
 	{
 		cause = NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_ENCODED_SIZE;
 	}
-	else if (trailerDigest != digest.value)
+	else if (trailerDigest != NativeMatchSelectMessage_BodyDigest(reader))
 	{
 		cause = NATIVE_MATCH_SELECT_MESSAGE_FAULT_BAD_DIGEST;
 	}

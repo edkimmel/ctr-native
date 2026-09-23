@@ -166,8 +166,7 @@ int NativeMatchSelect_OutcomeDigest(const uint8_t baseDigest[NATIVE_SHA256_DIGES
  * Fails if base is invalid; outcome->humanCount differs from base's number of
  * human-role slots (so one human on a two-cab base, and humanCount 3 or 4 on
  * any base, never build, although Resolve accepts them); outcome->botCount
- * differs from base's bot slot count; or the outcome is not one Resolve could
- * produce for that shape:
+ * differs from base's bot slot count; or any of these outcome checks fails:
  * - trackID is not a table track, or lapCount is not a table lap option;
  * - a used human character (the first humanCount) or bot character (the
  *   first botCount) is not a table character, or any two of those
@@ -175,9 +174,18 @@ int NativeMatchSelect_OutcomeDigest(const uint8_t baseDigest[NATIVE_SHA256_DIGES
  * - an unused humanCharacter or botCharacter entry is nonzero;
  * - masterSeed is 0 or equals base->masterSeed;
  * - trackDrawn or lapsDrawn is not 0 or 1;
- * - characterReassignedMask has a bit at or above humanCount;
- * - aiSetIndex is neither AI_SET_NONE nor below AI_SET_COUNT.
- * It also fails if the result fails NativeMatchConfigV1_Validate.
+ * - characterReassignedMask has a bit at or above humanCount, or has bit 0
+ *   set (human 0 is never reassigned);
+ * - with humanCount 2 and botCount 4: aiSetIndex is not the first retail 2P
+ *   AI set holding neither humanCharacter[0] nor humanCharacter[1], or the
+ *   first four botCharacter entries are not that set's racers in set order
+ *   (retail derives the 2P bots from the humans);
+ * - with any other humanCount/botCount: aiSetIndex is not AI_SET_NONE.
+ * These are the only outcome checks. BuildConfig does not re-run Resolve:
+ * it does not check the votes, draws, or drawn flags against any choices,
+ * which humans a set characterReassignedMask bit names, or, outside the
+ * two-human four-bot shape, which unpicked characters the bots are. It also
+ * fails if the result fails NativeMatchConfigV1_Validate.
  */
 int NativeMatchSelect_BuildConfig(const struct NativeMatchConfigV1 *base, const struct NativeMatchSelectOutcome *outcome,
 	struct NativeMatchConfigV1 *config);
