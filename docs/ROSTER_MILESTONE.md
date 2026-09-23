@@ -6,6 +6,14 @@ AGENTS.md and docs/HANDOFF.md first. This document follows the same pattern
 as docs/MATCH_SELECT_MILESTONE.md: a prospective plan with a task list,
 updated to record status as tasks land.
 
+The owner decided RS-1 (section 4): the setup supports both match
+profiles, ARCADE_TWO_CAB (the retail 2P arcade race, two humans and four
+bots) and ARCADE_ONE_CAB (the retail 1P arcade race, one human and seven
+bots). The single-cabinet tasks OC-1..OC-4 (section 6) added ONE_CAB to
+the bot rules, the race setup plan, facts, and core, and the live roster
+proof; it gives one machine a path to launch a real race without a peer.
+The fixture, the arcade-link lobby, and match select remain TWO_CAB-only.
+
 It gates docs/GAME_LOOP_UI_MILESTONE.md Task 7 (networked race launch) and,
 through it, Task 8. Networked race launch itself (START_RACE loading the
 race, asymmetric relink handling) stays Task 7; this milestone leaves the
@@ -81,6 +89,17 @@ Race shape (2P arcade):
   sdata->driver_pathIndexIDs (include/regionsEXE.h:2402),
   sdata->accelerateOrder (include/regionsEXE.h:3092).
 
+Race shape (1P arcade, the ONE_CAB profile; the difficulty, field, and bot
+setup facts above hold for it unchanged):
+
+- MainInit_Drivers sets numDrivers = 8 when numPlyrCurrGame is 1 in arcade
+  (game/MAIN/MainInit.c:352-355) and spawns bots for drivers[1..7] (the
+  loop from numPlyrCurrGame, :363-366). ONE_CAB (slot 0 CAB1 human, slots
+  1-7 bots) also maps onto retail slots one to one.
+- LOAD_Robots1P (game/LOAD/LOAD_Assets.c:61-76, called at :150-153 on the
+  1P LOD path) writes data.characterIDs[1..7]: for a base human h, the IDs
+  0..7 without h, ascending. No RNG and no AI-set table.
+
 Retail RNG (the ownership problem):
 
 | State | Declared / seeded | Advanced by | Class |
@@ -108,9 +127,10 @@ config. Step 3 must own these states at a defined point.
 1. Bot rules are defined and versioned, and
    NativeMatchConfigV1.botRulesDigest is the SHA-256 of their canonical
    encoding (no placeholder).
-2. Given a validated TWO_CAB NativeMatchConfigV1, one seam configures the
-   retail race (track, laps, 2 humans, per-slot characters, the retail 2P
-   AI set, difficulty, mode and cheat bits) and requests its load.
+2. Given a validated TWO_CAB or ONE_CAB NativeMatchConfigV1, one seam
+   configures the retail race (track, laps, 2 humans or 1, per-slot
+   characters, the retail 2P AI set or the retail 1P bot rule, difficulty,
+   mode and cheat bits) and requests its load.
 3. RNG ownership is defined and enforced: at one fixed point in race init,
    every retail RNG state that survives across races is seeded from the
    match's masterSeed through the bank's MATCH_SETUP stream; the rest of
@@ -126,10 +146,15 @@ config. Step 3 must own these states at a defined point.
 6. Everything is dormant unless armed; normal retail boot is unchanged; no
    canonical-state schema or replay format changes.
 
-Status (R-7): functionally complete. R-2 through R-6e (section 6) meet
-items 1-6 on one machine, and the live roster proof (3.4) is the evidence
-for item 5. Networked launch (Task 7), the in-race lockstep drive (Task 8),
-and real two-cabinet evidence (steps 6-7) remain.
+Status (OC-4): functionally complete for both profiles. R-2 through R-6e
+(section 6) meet items 1-6 for TWO_CAB on one machine, and OC-1 through
+OC-3b (section 6) extend items 1-5 to ONE_CAB. The live roster proof
+(3.4) is the evidence for item 5: for TWO_CAB over 900 race ticks, for
+ONE_CAB only over the first 90 race ticks, which end before the green
+light (risk 13), so the ONE_CAB evidence covers the 1P setup and pre-green
+determinism, not bot driving or 1P race physics. Networked launch
+(Task 7), the in-race lockstep drive (Task 8), and real two-cabinet
+evidence (steps 6-7) remain.
 
 ## 3. Decided design
 
@@ -140,61 +165,116 @@ include/platform/native_arcade_bot_rules.h, library
 ctr_native_arcade_bot_rules. It links exactly ctr_native_match_config,
 ctr_native_sha256, ctr_native_canonical_codec,
 ctr_native_deterministic_rng, and ctr_native_match_select_rules (for the
-2P AI table); no game tokens, no I/O, no heap.
+2P AI table and the base-character check); no game tokens, no I/O, no heap.
 
-- NATIVE_ARCADE_BOT_RULES_V1 canonical encoding: ASCII tag "CTRN arcade bot
-  rules v1" (no NUL), then fixed little-endian fields: rulesVersion (u32 =
-  1); supported profile (TWO_CAB) and its 8 slot roles; retail race shape
-  (humans 2, drivers 6, first bot slot 2, bots 4); the difficulty table
-  {0x50, 0xA0, 0xF0}; the difficulty, bot-character, and mode policies; the
-  seven 2P AI sets (28 bytes, from NativeMatchSelect_AiSetRacer); the RNG
-  recipe (derivation version, MATCH_SETUP stream tag, the ordered
-  seed-target codes of 3.3, the 16-bit randomNumber mask, the advRng
-  all-zero fallback constants); the reserved-stream mask (ITEMS, HAZARDS,
-  BOT[0..7] undrawn in v1). The offset/size/field table in
-  include/platform/native_arcade_bot_rules.h is the authority for the
-  layout; the encoding is 111 bytes
+Each profile has its own rules, canonical encoding, and digest (RS-19): the
+TWO_CAB V1 rules below, unchanged byte for byte since R-2, and the ONE_CAB
+1P V1 rules (OC-1). A config's botRulesDigest must be its own profile's
+digest.
+
+- NATIVE_ARCADE_BOT_RULES_V1 canonical encoding (TWO_CAB): ASCII tag "CTRN
+  arcade bot rules v1" (no NUL), then fixed little-endian fields:
+  rulesVersion (u32 = 1); the profile (TWO_CAB) and its 8 slot roles;
+  retail race shape (humans 2, drivers 6, first bot slot 2, bots 4); the
+  difficulty table {0x50, 0xA0, 0xF0}; the difficulty, bot-character, and
+  mode policies; the seven 2P AI sets (28 bytes, from
+  NativeMatchSelect_AiSetRacer); the RNG recipe (derivation version,
+  MATCH_SETUP stream tag, the ordered seed-target codes of 3.3, the 16-bit
+  randomNumber mask, the advRng all-zero fallback constants); the
+  reserved-stream mask (ITEMS, HAZARDS, BOT[0..7] undrawn in v1). The
+  offset/size/field table in include/platform/native_arcade_bot_rules.h is
+  the authority for the layout; the encoding is 111 bytes
   (NATIVE_ARCADE_BOT_RULES_V1_ENCODED_BYTES).
-- NativeArcadeBotRules_DigestV1(digest[32]) = SHA-256 of that encoding. The
-  golden digest, frozen in tests/native_arcade_bot_rules_test.c, is
+- NativeArcadeBotRules_DigestV1(digest[32]) = SHA-256 of that encoding, the
+  botRulesDigest of every TWO_CAB config. The golden digest, frozen in
+  tests/native_arcade_bot_rules_test.c, is
   9022154eab793fb25d0a2d3b0c787d62fdaf9af490b7e3f1d48fbec8d4065eab.
+- The 1P V1 canonical encoding (ONE_CAB): ASCII tag "CTRN arcade bot rules
+  1P v1" (no NUL), then the same kinds of fields: rulesVersion 1; the
+  profile (ONE_CAB) and its 8 slot roles; retail race shape (humans 1,
+  drivers 8, first bot slot 1, bots 7); the difficulty table; the
+  difficulty policy, bot-character policy 2 (the retail 1P rule,
+  LOAD_Robots1P), and mode policy; the 8 candidate IDs 0..7 in
+  LOAD_Robots1P walk order (in place of the AI sets); and the same RNG
+  recipe and reserved-stream mask. The header's second offset table is the
+  authority; the encoding is 93 bytes
+  (NATIVE_ARCADE_BOT_RULES_1P_V1_ENCODED_BYTES).
+- NativeArcadeBotRules_Digest1PV1(digest[32]) = SHA-256 of the 1P
+  encoding, the botRulesDigest of every ONE_CAB config. The golden digest,
+  frozen in the same test, is
+  8d06649af8aa2594fbaca395aba3ebf1cce24689f8c193f5055f4441f1d8b0e3.
+  NativeArcadeBotRules_DigestForProfileV1 returns DigestV1 for TWO_CAB and
+  Digest1PV1 for ONE_CAB, and fails for any other profile
+  (platform/native_arcade_bot_rules.c:301-312).
 - Helpers: difficulty-table lookup/validation; expected 2P bots for two
-  human characters (the LOAD_Robots2P rule); the retail seed mapping and
-  derivation of 3.3 on a caller-owned bank; and
-  NativeArcadeBotRules_ValidateConfigV1, the config check behind RS-1..RS-4.
+  human characters (NativeArcadeBotRules_ExpectedBots2P, the LOAD_Robots2P
+  rule); expected 1P bots for one human character
+  (NativeArcadeBotRules_ExpectedBots1P, the LOAD_Robots1P loop mirrored
+  loop for loop); the retail seed mapping and derivation of 3.3 on a
+  caller-owned bank, shared by both profiles; and
+  NativeArcadeBotRules_ValidateConfigV1, the config check behind RS-1..RS-4
+  and RS-19..RS-20. It accepts a TWO_CAB or ONE_CAB config whose
+  botRulesDigest is its own profile's digest; TWO_CAB needs distinct base
+  human characters and exactly ExpectedBots2P's bots, ONE_CAB a base CAB1
+  character and exactly ExpectedBots1P's bots, both with the humans at
+  difficulty 0 and every bot at one table difficulty
+  (platform/native_arcade_bot_rules.c:443-529).
 - Isolation test: pure (bans game, lease, lockstep, replay tokens), the
-  link set is exact, the difficulty table mirrors game/230/D230.c, and the
-  advRng fallback constants mirror game/BOTS.c.
+  link set is exact, the difficulty table mirrors game/230/D230.c, the
+  advRng fallback constants mirror game/BOTS.c, and (OC-1) the 1P candidate
+  count equals LOAD_CHARACTER_ID_COUNT, the LOAD_Robots1P body (one
+  definition in game/) and its 1P call site in LOAD_Assets.c are
+  unchanged, and MainInit_Drivers still gives 1P arcade 8 drivers with the
+  first bot in slot 1.
 
 ### 3.2 Race setup: game/MAIN/MainArcadeRaceSetup
 
 As built: three pure standalone libraries (C17, extensions off, linked
-into ctr_native, never unity-included) behind one thin live adapter.
+into ctr_native, never unity-included) behind one thin live adapter. All
+four serve both profiles since OC-2 (the per-profile shape lives in the
+plan and the core; the adapter holds no profile logic).
 
-- Plan (R-4, game/MAIN/MainArcadeRaceSetupPlan.{c,h}):
+- Plan (R-4, OC-2, game/MAIN/MainArcadeRaceSetupPlan.{c,h}):
   MainArcadeRaceSetupPlan_Build(config, out) fails closed unless
-  NativeArcadeBotRules_ValidateConfigV1 accepts the config (RS-1..RS-4: a
-  TWO_CAB profile; gameMode1, gameMode2, and rules 0; botRulesDigest equal
-  to NativeArcadeBotRules_DigestV1; a match-select table track and lap
-  count; distinct human base characters at difficulty 0; bots that follow
-  the LOAD_Robots2P rule at one table difficulty), the tick rate is exactly
-  30/1 (RS-14), and CAB1 and CAB2 are slots 0 and 1. The plan holds
-  levelID, numLaps, numPlyrNextGame 2, the gameMode1 and gameMode2 clear
-  and set masks (RS-2: every non-transient bit pinned, ARCADE_MODE set, the
-  vibration bits 0, RS-15), arcadeDifficulty (the bots' shared value),
-  boolDemoMode 0 (RS-16), characterIDs[0..5] (6-7 untouched, since retail
-  never reads them for a 6-driver race), and the expected bots.
-  MainArcadeRaceSetupPlan_Apply applies it to a pointer-free mirror of the
-  retail fields; MainArcadeRaceSetupPlan_Digest is the SHA-256 of its
-  126-byte encoding. The header holds the gameMode1/gameMode2 bit audit and
-  the adapter contract.
-- Facts (R-5a, game/MAIN/MainArcadeRaceSetupFacts.{c,h}):
+  NativeArcadeBotRules_ValidateConfigV1 accepts the config (RS-1..RS-4 and
+  RS-19..RS-20: a TWO_CAB or ONE_CAB profile; gameMode1, gameMode2, and
+  rules 0; botRulesDigest equal to the profile's digest, DigestV1 or
+  Digest1PV1; a match-select table track and lap count; base human
+  characters at difficulty 0, distinct for TWO_CAB; bots that follow the
+  profile's retail rule, LOAD_Robots2P or LOAD_Robots1P, at one table
+  difficulty), the tick rate is exactly 30/1 (RS-14), and the humans are
+  retail players 0 and 1 (TWO_CAB: CAB1 slot 0, CAB2 slot 1) or 0 (ONE_CAB:
+  CAB1 slot 0, no CAB2). The plan holds the profile, levelID, numLaps,
+  numPlyrNextGame (2 or 1), the gameMode1 and gameMode2 clear and set masks
+  (RS-2: every non-transient bit pinned, ARCADE_MODE set, the vibration
+  bits 0, RS-15; the same masks for both profiles, since the retail 1P menu
+  path differs only in numPlyrNextGame), arcadeDifficulty (the bots' shared
+  value), boolDemoMode 0 (RS-16), the characterIDs of its
+  characterWriteMask (TWO_CAB 0x3F: slots 0..5, 6-7 untouched, since retail
+  never reads them for a 6-driver race; ONE_CAB 0xFF: all eight), the
+  firstBotSlot and botCount (2 and 4, or 1 and 7), the aiSetIndex (the
+  retail 2P AI set, or none, 0xFF, for ONE_CAB), and the expected bots
+  (RS-22). MainArcadeRaceSetupPlan_Apply applies it to a pointer-free
+  mirror of the retail fields and refuses a plan that is not well-formed,
+  including one whose profile fields are mixed or whose bots are not the
+  humans' bots; MainArcadeRaceSetupPlan_Digest is the SHA-256 of its v2
+  encoding, 135 bytes (RS-21). The goldens, frozen in
+  tests/main_arcade_race_setup_plan_test.c, are
+  927e7d2f3f62c1b56666ac3a56e3328221585ef71b9d54d412d9965ab0902bb2
+  (TWO_CAB) and
+  c7f0dabbf003eda2f4ce1968dac4de2285533a163f4957221a697072420bc40d
+  (ONE_CAB). The header holds the gameMode1/gameMode2 bit audit, the 1P
+  load-path audit, and the adapter contract.
+- Facts (R-5a, OC-2, game/MAIN/MainArcadeRaceSetupFacts.{c,h}):
   MainArcadeRaceSetupFacts_Build turns a pointer-free snapshot of the race
   after MainInit_Drivers and the pre-race roster input into
   MainArcadeRosterNativeFacts and MainArcadeBotSetupSourceFacts, observed
-  only, never copied from the config. The header holds the retail audit of
-  the spawn, nav path, and acceleration orders; no dormant validator rule
-  needed a correction.
+  only, never copied from the config: it reads only the config's profile,
+  to know which retail players may be human (TWO_CAB players 0 and 1,
+  ONE_CAB player 0; a human anywhere else fails), and its isolation test
+  enforces that. The header holds the retail audit of the spawn, nav path,
+  and acceleration orders for the 2P race and, since OC-2, the 1P race; no
+  dormant validator rule needed a correction for either.
 - Decision core (R-5c, game/MAIN/MainArcadeRaceSetupCore.{c,h}): every
   decision of the adapter as a pure step over a pointer-free view of the
   live values: the state checks, the Launch preconditions, the load-field
@@ -202,15 +282,19 @@ into ctr_native, never unity-included) behind one thin live adapter.
   the fact validation (MainArcadeRoster_BuildPlan and
   MainArcadeRoster_ValidateNativeFacts, then MainArcadeBotSetup_Plan on the
   post-seed bank), and the failure codes. The header holds the state
-  machine and the RS-17 counter audit.
+  machine and the RS-17 counter audit. Launch emits the same 15 ops for
+  both profiles: every characterIDs slot is written, the plan's
+  characterWriteMask slots with the plan's values and the others with
+  their observed values.
 - Adapter (R-5b, game/MAIN/MainArcadeRaceSetup.{c,h}, CTR_NATIVE only, in
   the unity chain): reads the view from the retail globals, calls the core,
   applies exactly the writes it returns, in order, and logs one line per
-  state change or failure ("arcade race setup:"). It uses MainArcadeRoster
-  and MainArcadeBotSetup_Plan directly, not MainArcadeSetupV4Context_Init:
-  ctr_native does not link ctr_native_arcade_setup_v4, and neither the
-  adapter nor the proof hook names the V4 setup, the V4 projector, or
-  MainCanonicalRuntime.
+  state change or failure ("arcade race setup:"); the "armed" line names
+  the profile (TWO_CAB or ONE_CAB) and all eight characterIDs of the plan.
+  It uses MainArcadeRoster and MainArcadeBotSetup_Plan directly, not
+  MainArcadeSetupV4Context_Init: ctr_native does not link
+  ctr_native_arcade_setup_v4, and neither the adapter nor the proof hook
+  names the V4 setup, the V4 projector, or MainCanonicalRuntime.
 
 The seam (Task 7's entry points; the proof uses the same ones):
 
@@ -236,7 +320,7 @@ The seam (Task 7's entry points; the proof uses the same ones):
   back), and _Bank (the post-setup bank when VALIDATED, else NULL).
 - MainArcadeRaceSetup_Disarm(): any state to IDLE. It touches the
   vibration bits only if Launch set fieldsWritten
-  (MainArcadeRaceSetupCore.c:214, checked at :421). After a Launch it
+  (MainArcadeRaceSetupCore.c:214, checked at :423). After a Launch it
   restores the saved bits only on the idle main-menu level; otherwise it
   leaves them as they are and logs that, since gameMode1 must not change
   under a running race. "As they are" means 0 from the pin unless the
@@ -247,10 +331,12 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
 
 - MainArcadeRaceSetup_OnFinalizeInitBegin, the very first statement block
   (:425), acts only in LAUNCHED: it verifies levelID (LEVEL_MISMATCH) and
-  numLaps, numPlyrCurrGame, and characterIDs[0..5] (LOAD_FIELDS_MISMATCH),
-  re-applies the mode words, arcadeDifficulty, and boolDemoMode, pins
-  gGT->timer and gGT->frameTimer_Confetti (RS-17), seeds the retail RNG
-  states (3.3), and reads the seeds and pins back. SEEDED.
+  numLaps, numPlyrCurrGame (2 or 1), and the characterIDs of the plan's
+  characterWriteMask (0..5 for TWO_CAB; 0..7 for ONE_CAB, where the load's
+  LOAD_Robots1P wrote 1..7) (LOAD_FIELDS_MISMATCH), re-applies the mode
+  words, arcadeDifficulty, and boolDemoMode, pins gGT->timer and
+  gGT->frameTimer_Confetti (RS-17), seeds the retail RNG states (3.3), and
+  reads the seeds and pins back. SEEDED.
 - MainArcadeRaceSetup_OnDriversInitialized, immediately after
   MainInit_Drivers (:486), acts only in SEEDED: it checks that the plan's
   mode bits still hold and no cheat bit is set (FACTS), reads the snapshot
@@ -271,7 +357,8 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   MainArcadeRaceSetup.{c,h} and MainArcadeRosterProof.c, that each core
   write target stores to its one retail field, that nothing writes
   levelID, and the token bans. The plan, facts, and core have their own
-  unit and isolation tests.
+  unit and isolation tests; each unit test covers both profiles, and the
+  core test runs a ONE_CAB race setup end to end.
 
 ### 3.3 RNG ownership
 
@@ -292,8 +379,10 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   between the hook and MainInit_Drivers draws a seeded state.
 - MainArcadeBotSetup's per-bot setupRandom draws follow on the same stream
   after the seeds, in ascending stable slot, so the post-setup bank
-  (MainArcadeRaceSetup_Bank) has drawn MATCH_SETUP nine times (five seeds,
-  four bots). That is the bank Task 8 must project.
+  (MainArcadeRaceSetup_Bank) has drawn MATCH_SETUP nine times for TWO_CAB
+  (five seeds, four bots) and twelve times for ONE_CAB (five seeds, seven
+  bots; RS-22). That is the bank Task 8 must project. The seed recipe and
+  its order are the same for both profiles.
 - ITEMS, HAZARDS, BOT[0..7] are reserved and undrawn in bot rules v1. Any
   migration of a retail call site to them is a new bot-rules version.
 - Presentation RNGs (psxRandSeed, audioRNG) are seeded for cabinet parity
@@ -303,13 +392,22 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
 
 - An internal-only option, `--arcade-roster-proof <log path>`, with
   `--arcade-roster-proof-seed <u64>` (default 1),
-  `--arcade-roster-proof-dwell <ticks>` (0..7200, default 0), and
-  `--arcade-roster-proof-ticks <N>` (1..3600, default 900). main.c builds
-  the fixture, resolves it through match select with two fixed choices (the
-  fixture characters, track, and laps; nonces seed and seed XOR
-  0x9E3779B97F4A7C15), and hands the resolved config to the CTR_NATIVE &&
-  CTR_INTERNAL game hook game/MAIN/MainArcadeRosterProof. Options, config
-  builder, report writer, and exit-code table live in
+  `--arcade-roster-proof-dwell <ticks>` (0..7200, default 0),
+  `--arcade-roster-proof-ticks <N>` (1..3600, default 900), and (OC-3)
+  `--arcade-roster-proof-profile two-cab|one-cab` (default two-cab). main.c
+  configures the proof (NativeArcadeRosterProof_Configure builds the
+  config of the chosen profile) and hands the config to the CTR_NATIVE &&
+  CTR_INTERNAL game hook game/MAIN/MainArcadeRosterProof; its usage text
+  and its startup line name the profile. The config, per profile:
+  - two-cab: the fixture, resolved through match select with two fixed
+    choices (the fixture characters, track, and laps; nonces seed and seed
+    XOR 0x9E3779B97F4A7C15);
+  - one-cab (RS-23): no match select; InitArcadeOneCab roles, the
+    fixture's identity, track, laps, tick rate, and CAB1 character, the
+    LOAD_Robots1P bots at the fixture's bot difficulty, masterSeed = the
+    seed, botRulesDigest Digest1PV1.
+
+  Options, config builder, report writer, and exit-code table live in
   platform/native_arcade_roster_proof.{c,h}. The proof is rejected with any
   arcade-link or replay option and with --exit-after-frame; quick states
   are disabled.
@@ -317,18 +415,23 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   (MainArcadeLinkPolicy_TitleMenuReady, the rule the arcade-link hook
   uses), then `dwell` ticks, then launches (MainArcadeRaceSetup_Arm and
   _Launch) from the first launch window it sees: the title, or the attract
-  demo race. It installs scripted pads for both humans for the whole run
-  (Platform_InputInstallPadSnapshots: neutral through race tick 0, then
-  both hold CROSS and CAB2 also holds RIGHT for ticks 60-89 of every 120).
+  demo race. It installs the profile's scripted pads for the whole run
+  (Platform_InputInstallPadSnapshots; RS-24): pads 0 and 1 connected in
+  both profiles, neutral through race tick 0; then for two-cab both
+  players hold CROSS and CAB2 also holds RIGHT for ticks 60-89 of every
+  120, and for one-cab player 0 (CAB1) holds CROSS and also RIGHT for ticks
+  60-89 of every 120 while player 1 stays neutral.
   Race tick 0 is the first frame after VALIDATED on which the
   topology-free DRIVERS extraction succeeds. From it the hook logs one line
   per tick: tick, the V1 control, rcontrol, RNG, and input domain digests,
   and the SHA-256 of the topology-free DRIVERS candidate
   (MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta
   through the canonical encoders with Physics zeroed, never raw struct
-  bytes). The report header carries the result, the launch window, the
-  config, race plan, bot setup plan, and bank digests, the "seeded" line
-  (the seeds and pins read back, "match 1"), and one line per slot.
+  bytes). The report header carries the result, the profile (format v8: a
+  "profile TWO_CAB" or "profile ONE_CAB" line right after the result, the
+  profile of the configured config), the launch window, the config, race
+  plan, bot setup plan, and bank digests, the "seeded" line (the seeds and
+  pins read back, "match 1"), and one line per slot.
 - The proof ends through Platform_RequestExit with its result as the exit
   code: 0 PASS; failures from 20 up (the table in
   include/platform/native_arcade_roster_proof.h); any other exit while the
@@ -342,26 +445,35 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
 - Each tick line also carries a race-relative control digest (rcontrol):
   the V1 control encoding and FNV-1a 64 digest with frameTimer,
   frameCounter, and timer zeroed, computed locally (no schema change). The
-  report header (format v7) logs those three counters and
+  report header (format v7 and later) logs those three counters and
   frameTimerConfetti at the launch tick and at race tick 0.
 - The checker, tools/arcade-roster-proof-check.ps1, run by the ctest
-  arcade_roster_determinism (Windows only, label "live", 900 race ticks per
-  run), starts five proofs:
+  arcade_roster_determinism (Windows only, label "live"), starts eight
+  proofs, five two-cab (A-E, 900 race ticks each, -Ticks) and three
+  one-cab (F-H, 90 race ticks each, -OneCabTicks; the cap is below):
   - A: seed 0x5EED, dwell 0 (launches from the title);
   - B: A again;
   - C: seed 0x5EED, dwell 5400 (launches from inside the attract demo
     race);
   - D: seed 0x5EEE, dwell 0;
-  - E: seed 0x5EED, dwell 37 (launches from the title 37 ticks late).
+  - E: seed 0x5EED, dwell 37 (launches from the title 37 ticks late);
+  - F: one-cab, seed 0x5EED, dwell 0 (launches from the title);
+  - G: F again;
+  - H: one-cab, seed 0x5EEE, dwell 0.
 
-  It runs them in parallel by default (-Sequential runs them one after
-  another) and fails unless:
-  - every run exits 0, and its report is format v7 with result PASS, the
-    launch window it expects, both counter lines, a seeded line ending
-    "match 1", eight slot lines, and exactly the requested tick lines,
-    numbered from 0, then "end ticks N" (the proof itself reports PASS
-    only when tickLineCount == ticksRequested);
-  - A and B are byte-identical;
+  A-E pass no profile option, so they run the default two-cab profile with
+  the command lines they had before OC-3. The checker runs all eight in
+  parallel by default (-Sequential runs them one after another) and fails
+  unless:
+  - every run exits 0, and its report is format v8 with result PASS, the
+    profile it expects on the line right after the result, the launch
+    window it expects, both counter lines, a seeded line ending "match 1",
+    eight slot lines with the profile's roles (TWO_CAB: CAB1_HUMAN,
+    CAB2_HUMAN, four BOTs, two INACTIVE; ONE_CAB: CAB1_HUMAN and seven
+    BOTs), and exactly the run's requested tick lines, numbered from 0,
+    then "end ticks N" (the proof itself reports PASS only when
+    tickLineCount == ticksRequested);
+  - A and B are byte-identical, and so are F and G;
   - C and E equal A in the config, race plan, bot setup plan, and bank
     digests, the seeded line, the slot lines, and at every tick the rng,
     input, drivers, and rcontrol digests;
@@ -370,7 +482,14 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   - C's and E's race tick 0 timer and frameTimerConfetti equal A's (the
     RS-17 pins held);
   - D differs from A in the config digest, the bank digest, and the tick 0
-    rng digest.
+    rng digest, and H differs from F in the same three;
+  - F differs from A in the config digest and the race plan digest
+    (another profile);
+  - the input digest (the raw pad state only) shows the one-cab pads reach
+    the game: F equals A at race tick 0 (neutral pads, the same pad
+    layout), differs from A at every later tick both logged (A's player 1
+    holds CROSS, F's is neutral), and equals H at every tick (the pads do
+    not depend on the seed).
 
   The full control digest is informational only: it still differs in the
   unpinned boot-relative counters frameCounter and frameTimer. The checker
@@ -378,11 +497,28 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   race tick 0, with their values mod 8. It skips (77) when
   assets/ctr-u.bin is absent, no display is available, or the build
   rejects the internal option.
+- The one-cab cap (risk 13). F-H log only 90 race ticks, which end before
+  the green light: race init sets trafficLightsTimer = 0xF00 (3840 ms)
+  together with the START_OF_RACE fly-in (game/MAIN/MainGameStart.c:17-20),
+  and the main loop counts it down only once START_OF_RACE has cleared
+  (game/MAIN/MainMain.c:341-356). So F-H prove the 1P race setup and its
+  pre-green determinism, not bot driving or 1P race physics. The reason is
+  a pre-existing MSVC Debug run-time check failure in the retail 1P
+  rank-icon HUD (game/UI/UI_Rank.c:173-199), which stops any 1P race a few
+  seconds after the green light; once it is resolved, F-H are meant to run
+  the full -Ticks (the checker header says so).
 
 ## 4. Defaults for owner review
 
-1. RS-1: Live scope is the TWO_CAB profile only (retail 2P arcade single
-   race, 6 drivers). ONE_CAB is rejected by the setup until needed.
+1. RS-1 (owner decision, which overrode the TWO_CAB-only default): the
+   live scope is both profiles. TWO_CAB is the retail 2P arcade single
+   race, two humans and four bots, 6 drivers; ONE_CAB is the retail 1P
+   arcade single race, one human and seven bots on the LOAD_Robots1P rule
+   (RS-20), 8 drivers. The reason is a one-machine path to launch a real
+   race without a peer. The fixture, the arcade-link lobby, and match
+   select remain TWO_CAB-only; only the internal roster proof (RS-23)
+   launches a race through the ONE_CAB setup today, and a ONE_CAB
+   lobby/UI flow is a follow-up (risk 14).
 2. RS-2: The config's gameMode1, gameMode2, and rules stay 0 and mean
    "retail arcade single race, no cheats, no cup". The plan pins every
    non-transient gameMode1 and gameMode2 bit, not only the cheat and cup
@@ -399,8 +535,9 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
 3. RS-3: Difficulty stays global, as in retail. Every bot slot carries the
    retail speed value (0x50 easy, 0xA0 medium, 0xF0 hard), all equal; human
    slots carry 0. The arcade-link fixture uses medium (0xA0).
-4. RS-4: Bot characters follow the LOAD_Robots2P rule (as SEL-4); retail
-   still writes them live, and the fact validation checks agreement.
+4. RS-4: TWO_CAB bot characters follow the LOAD_Robots2P rule (as SEL-4;
+   ONE_CAB bots follow LOAD_Robots1P, RS-20); retail still writes them
+   live, and the fact validation checks agreement.
 5. RS-5: Retail RNGs stay the in-race simulation RNG; nothing migrates to
    the bank in v1.
 6. RS-6: The bank's MATCH_SETUP stream owns the retail seeds, then the
@@ -431,7 +568,7 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
     stay with Task 8.
 14. RS-14 (R-4): The config's tick rate must be exactly 30/1, the retail
     30 Hz loop. MainArcadeRaceSetupPlan_Build enforces it
-    (game/MAIN/MainArcadeRaceSetupPlan.c:46-47, against
+    (game/MAIN/MainArcadeRaceSetupPlan.c:159-160, against
     MAIN_ARCADE_RACE_SETUP_TICK_RATE_NUMERATOR/_DENOMINATOR in
     MainArcadeRaceSetupPlan.h); NativeArcadeBotRules_ValidateConfigV1 does
     not check it, and tests/main_arcade_race_setup_plan_test.c rejects 60/1
@@ -443,13 +580,13 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
     and _CLEAR_MASK), so a cabinet's saved rumble preference does not apply.
     Arm saves the cabinet's bits (MainArcadeRaceSetupCore.c:148). Disarm
     touches them only if Launch set fieldsWritten
-    (MainArcadeRaceSetupCore.c:214, checked at :421); after a Launch it
+    (MainArcadeRaceSetupCore.c:214, checked at :423); after a Launch it
     restores them only on the idle main-menu level
-    (MainArcadeRaceSetupCore.c:421-434), otherwise it leaves them as they
+    (MainArcadeRaceSetupCore.c:423-436), otherwise it leaves them as they
     are and logs that: 0 from the pin, unless the pause-menu toggle
     (game/MAIN/MainFreeze.c:518) flipped one mid-race.
 16. RS-16 (R-4): boolDemoMode is pinned to 0
-    (MainArcadeRaceSetupPlan.c:66), written at Launch and re-applied by the
+    (MainArcadeRaceSetupPlan.c:197), written at Launch and re-applied by the
     pre-drivers hook. Demo mode would turn every human driver into a bot
     (game/MAIN/MainInit.c:568-573) and run the demo exit.
 17. RS-17 (R-6c): At race init, after the load-field verification and
@@ -471,6 +608,54 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
     for the roster proof, and every other run keeps the retail-faithful
     catch-up pacing. It is not the linked-race answer: Task 8 must adopt
     deterministic VBlanks per tick (risk 7).
+19. RS-19 (OC-1, eb5ef25ef): Each profile has its own bot-rules encoding
+    and digest, and a config's botRulesDigest must be its own profile's:
+    NativeArcadeBotRules_DigestV1 (TWO_CAB, 111 bytes, tag "CTRN arcade
+    bot rules v1", golden 9022154e..., unchanged byte for byte because the
+    fixture, match select, and the netplay config paths carry it) or
+    NativeArcadeBotRules_Digest1PV1 (ONE_CAB, 93 bytes, tag "CTRN arcade
+    bot rules 1P v1", golden 8d06649a...). DigestForProfileV1 picks it
+    (platform/native_arcade_bot_rules.c:301-312) and ValidateConfigV1
+    requires it (:462-467).
+20. RS-20 (OC-1, eb5ef25ef): A ONE_CAB human is a base character
+    (NativeMatchSelect_CharacterIndex), and the bots, in ascending slot
+    order, are exactly LOAD_Robots1P's result for that human:
+    NativeArcadeBotRules_ExpectedBots1P mirrors LOAD_Robots1P
+    (game/LOAD/LOAD_Assets.c:61-76, called at :150-153) loop for loop
+    (platform/native_arcade_bot_rules.c:353-386), and ValidateConfigV1
+    requires it (:492-500). The bot rules isolation test pins the
+    LOAD_Robots1P body, its 1P call site, and the MainInit_Drivers 1P
+    shape.
+21. RS-21 (OC-2, 30d5a1c71): The race setup plan encoding is v2 for both
+    profiles: tag "CTRN arcade race setup plan v2", 135 bytes, adding the
+    profile, firstBotSlot, botCount, and 7 expectedBots entries (the unused
+    tail 0). TWO_CAB field values are unchanged; its plan digest changes
+    only with the version. The size is static-asserted
+    (game/MAIN/MainArcadeRaceSetupPlan.c:16-24) and the goldens (3.2) are
+    frozen in tests/main_arcade_race_setup_plan_test.c. The plan digest is
+    proof evidence only: not canonical, not replayed, never sent.
+22. RS-22 (OC-2, 30d5a1c71): The per-profile plan shape
+    (game/MAIN/MainArcadeRaceSetupPlan.c:56-76, enforced by the
+    well-formedness check at :78-148): TWO_CAB numPlyrNextGame 2,
+    characterWriteMask 0x3F, firstBotSlot 2, botCount 4, aiSetIndex the
+    retail 2P AI set; ONE_CAB numPlyrNextGame 1, characterWriteMask 0xFF,
+    firstBotSlot 1, botCount 7, aiSetIndex none (0xFF). The ONE_CAB
+    post-setup bank has drawn MATCH_SETUP 12 times (5 seeds, 7 bots)
+    versus 9 for TWO_CAB (tests/main_arcade_race_setup_core_test.c:1210).
+23. RS-23 (OC-3, 5e0c71c36): The one-cab proof config: match select is
+    not used; NativeMatchConfigV1_InitArcadeOneCab gives the roles, the
+    arcade-link fixture gives the identity, track, laps, tick rate, CAB1
+    character, and bot difficulty, the bots are ExpectedBots1P of the CAB1
+    character, masterSeed is the seed option itself, and botRulesDigest is
+    Digest1PV1; the result must pass ValidateConfigV1
+    (platform/native_arcade_roster_proof.c:356-419).
+24. RS-24 (OC-3, 5e0c71c36): The proof's scripted pads per profile
+    (platform/native_arcade_roster_proof.c:515-576): pads 0 and 1 connected
+    digital pads in both profiles (the same pad layout), pads 2 and 3
+    disconnected, all neutral through race tick 0. From race tick 1,
+    TWO_CAB: both players hold CROSS and player 1 also holds RIGHT in the
+    steer window (ticks 60-89 of every 120); ONE_CAB: player 0 holds CROSS
+    and also RIGHT in the steer window, and player 1 stays neutral.
 
 ## 5. Constraints
 
@@ -618,6 +803,51 @@ docs/HANDOFF.md step 3, Deterministic simulation, build and test, and key
 files; the docs/GAME_LOOP_UI_MILESTONE.md fixture, UX-8, risk 6, and Task 7
 text. Review: none recorded.
 
+### OC -- single-cabinet race setup (owner override of RS-1)
+
+Status: done. ONE_CAB is supported by the bot rules, the race setup plan,
+facts, core, and adapter, and the live roster proof (RS-1, RS-19..RS-24).
+The full suite, both live tests included, was verified independently on
+eb5ef25ef, 30d5a1c71, and 164e34d2f: 133 of 133 passed each time. On
+164e34d2f the suite took about 367 s, arcade_roster_determinism about
+265 s with its eight runs in parallel (A-E about 80 s each except C, about
+264 s; F-H about 53 s each).
+
+- OC-1, eb5ef25ef: the retail 1P arcade bot rule. The 1P V1 encoding and
+  Digest1PV1, DigestForProfileV1, ExpectedBots1P, and ValidateConfigV1
+  accepting ONE_CAB with its own profile's digest (RS-19, RS-20); the
+  TWO_CAB V1 bytes and golden unchanged; the isolation test pins
+  LOAD_Robots1P, its 1P call site, and the MainInit_Drivers 1P shape.
+  Reviewed: no blockers; the should-fixes were closed in the same commit
+  before it landed. Re-review clean, with two optional isolation-test
+  hardening nits (risk 15).
+- OC-2, 30d5a1c71: ONE_CAB in the race setup plan, facts, and core. Plan
+  encoding v2 (RS-21) and the per-profile plan shape with the 12
+  MATCH_SETUP draws (RS-22); facts that accept a 1P roster (a human only in
+  slot 0) with a 1P retail audit; core comments for both profiles and a
+  ONE_CAB end-to-end core test; plan well-formedness that ties the bots to
+  the humans. TWO_CAB writes, seeds, and failures unchanged. Reviewed: no
+  blockers or should-fixes; the nits were closed in the same commit.
+  Re-review clean, with two optional nits (risk 15).
+- OC-3, 5e0c71c36: a single-cabinet race from the roster proof.
+  `--arcade-roster-proof-profile`, the one-cab config (RS-23) and pads
+  (RS-24), report format v8 with the profile line, the adapter's "armed"
+  line with the profile and all eight characters, and runs F-H in the
+  checker, capped at 90 race ticks (risk 13). Reviewed: no blockers; two
+  should-fixes and the nits were closed in OC-3b.
+- OC-3b, 164e34d2f: the checker's input-digest checks (F = A at race tick
+  0, F != A at every later shared tick, F = H at every tick), the cap
+  comment saying F-H stop before the green light, the report's profile
+  taken from the configured config, main.c's usage text and startup line
+  naming the profile, and the proof test finding the first bot slot the
+  way the builder does. Re-review clean, with three optional nits (risk
+  15).
+- OC-4 (this commit): this document (the intro, sections 1-3, RS-1,
+  RS-4, RS-19..RS-24, this subsection, and risks 13-15, plus the
+  MainArcadeRaceSetupPlan.c and MainArcadeRaceSetupCore.c line citations
+  OC-2 moved) and docs/HANDOFF.md step 3, Deterministic simulation, and
+  key files. Review: none recorded.
+
 ## 7. Risks and open questions
 
 1. Menu-history RNG (section 1) is the core cross-cabinet risk; RS-5/RS-7
@@ -645,10 +875,10 @@ text. Review: none recorded.
 3. The V4 runtime derives a fresh bank from the config
    (game/MAIN/MainCanonicalRuntime.c,
    NativeDeterministicRngBankV1_InitInPlace), while the live bank after
-   setup has drawn MATCH_SETUP nine times (five seeds, one setupRandom per
-   bot). Task 8 must project the post-setup bank,
-   MainArcadeRaceSetup_Bank() (non-NULL only when VALIDATED), not a fresh
-   one.
+   setup has drawn MATCH_SETUP nine times for TWO_CAB and twelve for
+   ONE_CAB (five seeds, one setupRandom per bot). Task 8 must project the
+   post-setup bank, MainArcadeRaceSetup_Bank() (non-NULL only when
+   VALIDATED), not a fresh one.
 4. Shared-RNG presentation consumers (particles, VS quips) draw from
    randomNumber; they are deterministic given the simulation, but any
    future per-cabinet presentation (one viewport per cabinet) that changes
@@ -704,3 +934,35 @@ text. Review: none recorded.
     the race tick 0 timer pin and frameTimerConfetti have no offline
     fixture-report test; only the live test runs them, and only on the pass
     path.
+13. The one-cab evidence is capped at 90 race ticks, and any 1P race in a
+    Debug build stops. game/UI/UI_Rank.c:173-199, the retail 1P rank-icon
+    HUD (UI_DrawRankedDrivers, whose 1P branch only a 1-human race takes),
+    declares `Point pos`, sets only pos.x while an icon is transitioning,
+    and then reads pos.y into iconPos (:199). The value is dead:
+    UI_Lerp2D_Angular (game/UI/UI_Lerp2D.c:14) overwrites both coordinates
+    before they are drawn. The MSVC Debug runtime still stops the process
+    with a modal "Run-Time Check Failure #3 - The variable 'pos' is being
+    used without being initialized" at the first rank change, a few
+    seconds after the green light. It is presentation only, was introduced
+    upstream by c6a2a67ff (the iconPos copy), and 2P races take a different
+    branch. So runs F-H stop at race tick 89, before the green light
+    (3.4), and prove the 1P setup and pre-green determinism only, not bot
+    driving or 1P race physics; and any 1P arcade race in a Debug build,
+    normal menus included, currently stops at that dialog. A one-line
+    `pos.y = 0;` (optionally under `#ifdef CTR_NATIVE`) would preserve
+    behaviour, but it edits an upstream-owned retail file, so it is an
+    owner decision. Until then F-H stay capped (-OneCabTicks 90).
+14. ONE_CAB has no lobby or UI flow. The fixture, the arcade-link lobby,
+    and match select remain TWO_CAB-only (RS-1); the only path that
+    launches a race through the ONE_CAB setup is the internal roster proof
+    (`--arcade-roster-proof-profile one-cab`, RS-23). A player-facing
+    single-cabinet flow is a follow-up.
+15. Open optional review nits. OC-1 re-review: the bot rules isolation
+    test does not pin numDrivers between the else-if chain and the spawn
+    loop of MainInit_Drivers, and does not count LOAD_Robots1P calls with
+    nested parentheses. OC-2 re-review: MainArcadeRaceSetupPlan.h still
+    cites game/MAIN/MainInit.c:431, :481, and :567, now :432 (the
+    WARPBALL_HELD clear), :482 (MainInit_Drivers), and :568 (the
+    boolDemoMode check); and the facts isolation test's rule 7 regex lacks
+    a left word boundary. OC-3b re-review: three optional nits in the
+    checker and the proof hook.

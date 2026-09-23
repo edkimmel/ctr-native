@@ -31,9 +31,13 @@ Integration order:
 2. Canonical state, input replay, and deterministic hashes — substantially
    complete.
 3. Stable two-human-plus-bot roster and RNG ownership — functionally
-   complete, proven by the live roster proof (`arcade_roster_determinism`)
-   on one machine; see `docs/ROSTER_MILESTONE.md`. Networked launch through
-   its seam is Task 7.
+   complete for both match profiles, the two-cabinet (two humans, four
+   bots) and the single-cabinet (one human, seven bots) retail arcade race,
+   proven by the live roster proof (`arcade_roster_determinism`) on one
+   machine; the single-cabinet runs are capped at 90 race ticks, before
+   the green light, by a Debug-only run-time check failure in the retail 1P
+   HUD. See `docs/ROSTER_MILESTONE.md`. Networked launch through its seam
+   is Task 7.
 4. Native lockstep protocol and virtual-network fault tests — protocol design
    and fault-tolerant session logic complete; a real socket transport,
    connect/handshake protocol, and a lobby data/state layer exist and are
@@ -88,27 +92,39 @@ Integration order:
   arcade race config is resolved per match by match select. The per-build
   fixture is the lobby base of a first match; a rematch's lobby base is
   derived from the proposal of the most recent lobby that reached READY
-  (lastReadyConfig). `botRulesDigest` is the real bot-rules digest,
-  `NativeArcadeBotRules_DigestV1`.
+  (lastReadyConfig). `botRulesDigest` is the real bot-rules digest of the
+  config's profile: `NativeArcadeBotRules_DigestV1` for two-cabinet
+  configs (the fixture and every match-select config) and
+  `NativeArcadeBotRules_Digest1PV1` for one-cabinet configs.
 - **Bot rules.** `native_arcade_bot_rules` defines and versions the native
-  rule choices of a two-cabinet arcade race (TWO_CAB only, two humans and
-  four bots, global difficulty from the retail table {0x50, 0xA0, 0xF0},
-  bots by the retail 2P AI set rule, the retail seed recipe) as a 111-byte
-  canonical encoding; its SHA-256 is the `botRulesDigest` of every config
-  built on these rules (golden `9022154eab793fb25d0a2d3b0c787d62fdaf9af490b7e3f1d48fbec8d4065eab`).
+  rule choices of an arcade single race, per profile, with global
+  difficulty from the retail table {0x50, 0xA0, 0xF0} and the retail seed
+  recipe in both. TWO_CAB (two humans and four bots by the retail 2P AI
+  set rule, `LOAD_Robots2P`) is a 111-byte canonical encoding whose
+  SHA-256, `NativeArcadeBotRules_DigestV1`, has the golden
+  `9022154eab793fb25d0a2d3b0c787d62fdaf9af490b7e3f1d48fbec8d4065eab`.
+  ONE_CAB (one human and seven bots by the retail 1P rule,
+  `LOAD_Robots1P`: every other base character, ascending) is a separate
+  93-byte encoding whose SHA-256, `NativeArcadeBotRules_Digest1PV1`, has
+  the golden
+  `8d06649af8aa2594fbaca395aba3ebf1cce24689f8c193f5055f4441f1d8b0e3`.
   `NativeArcadeBotRules_ValidateConfigV1` accepts only a race these rules
-  can build.
+  can build, and only with its own profile's digest.
 - **RNG ownership.** At race init an armed setup seeds every retail RNG
   state that survives across races from the bank's MATCH_SETUP stream, in a
   fixed order (RS-7): randomNumber, advRng state0 and state1, the PSX BIOS
   rand seed, and audioRNG (the last two presentation-only and not
   canonical). deadcoed keeps its retail per-race reset. The per-bot setup
-  draws follow on the same stream, and `MainArcadeRaceSetup_Bank()` is the
-  post-setup bank Task 8 must project.
+  draws follow on the same stream, so the post-setup bank has drawn
+  MATCH_SETUP 9 times in a two-cabinet race and 12 in a single-cabinet
+  race, and `MainArcadeRaceSetup_Bank()` is the post-setup bank Task 8 must
+  project.
 - **Live race setup.** `game/MAIN/MainArcadeRaceSetup` is the seam Task 7
   calls (`_Arm`, `_Launch`, `_Status`, `_Digests`, `_Bank`, `_Disarm`): it
-  turns a validated TWO_CAB config into a retail 2P arcade race through the
-  pure plan, facts, and decision-core libraries, with two hooks in
+  turns a validated TWO_CAB config into a retail 2P arcade race and a
+  validated ONE_CAB config into a retail 1P arcade race (one human, seven
+  bots, eight drivers) through the pure plan (encoding v2, the same for
+  both profiles), facts, and decision-core libraries, with two hooks in
   `MainInit_FinalizeInit` (at its very start, and right after
   `MainInit_Drivers`) that verify the loaded fields, re-apply the mode
   words, seed the RNGs, and validate the live roster and bot setup facts,
@@ -126,15 +142,31 @@ Integration order:
   the configured race from the title or the attract demo race with
   scripted pads and logs per-tick V1 control, race-relative control, RNG,
   input, and topology-free drivers digests.
-  `tools/arcade-roster-proof-check.ps1` (ctest `arcade_roster_determinism`)
-  runs five proofs: A and B (one seed, from the title) must be
-  byte-identical; C (from the attract demo race) and E (37 ticks late; its
-  launch timer offset from A must be odd) must equal A in the setup
-  digests, the seeded and slot lines, and at every tick the rng, input,
-  drivers, and rcontrol digests, and start race tick 0 with A's pinned
-  counters (the full control digest is informational only); D (another
-  seed) must differ from A in the config digest, the bank digest, and the
-  tick 0 rng digest.
+  `--arcade-roster-proof-profile two-cab|one-cab` (default `two-cab`)
+  picks the race: two-cab resolves the fixture through match select;
+  one-cab builds a single-cabinet config from the fixture's track, laps,
+  CAB1 character, and bot difficulty, with the retail 1P bots and the seed
+  as its masterSeed (match select is not used). The report (format v8)
+  names the profile. `tools/arcade-roster-proof-check.ps1` (ctest
+  `arcade_roster_determinism`) runs eight proofs. Two-cab, 900 race ticks
+  each: A and B (one seed, from the title) must be byte-identical; C (from
+  the attract demo race) and E (37 ticks late; its launch timer offset
+  from A must be odd) must equal A in the setup digests, the seeded and
+  slot lines, and at every tick the rng, input, drivers, and rcontrol
+  digests, and start race tick 0 with A's pinned counters (the full
+  control digest is informational only); D (another seed) must differ from
+  A in the config digest, the bank digest, and the tick 0 rng digest.
+  One-cab, 90 race ticks each: F and G (one seed) must be byte-identical;
+  H (another seed) must differ from F in the same three digests; F must
+  differ from A in the config and race plan digests, and its input digests
+  must equal A's at race tick 0, differ from A's at every later tick, and
+  equal H's at every tick. The one-cab runs stop before the green light,
+  so they prove the 1P setup and pre-green determinism only: any 1P race
+  in a Debug build stops a few seconds after the green light at a
+  run-time check failure in the retail 1P rank-icon HUD
+  (`game/UI/UI_Rank.c`, an uninitialized but dead `pos.y`). Fixing it
+  means editing that upstream-owned retail file, which is an owner
+  decision (`docs/ROSTER_MILESTONE.md` risk 13).
 - **Proof-only VBlank pacing (RS-18).** The proof runs with host-local
   fixed VBlank pacing (`Platform_SetFixedVBlankPacing`), so a late host
   frame emits no catch-up VBlanks. Every other run keeps the default
@@ -393,8 +425,9 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   codec); `platform/native_match_select_session.c`,
   `include/platform/native_match_select_session.h` (select state machine).
 - Roster and RNG ownership (step 3): `platform/native_arcade_bot_rules.c`,
-  `include/platform/native_arcade_bot_rules.h` (bot rules, v1 encoding and
-  digest, seed derivation, config validator);
+  `include/platform/native_arcade_bot_rules.h` (bot rules per profile, the
+  TWO_CAB v1 and ONE_CAB 1P v1 encodings and digests, seed derivation,
+  config validator);
   `game/MAIN/MainArcadeRaceSetupPlan.{c,h}` (pure plan and mode-bit
   audit), `game/MAIN/MainArcadeRaceSetupFacts.{c,h}` (pure facts builder),
   `game/MAIN/MainArcadeRaceSetupCore.{c,h}` (pure decision core, state
@@ -406,7 +439,8 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `game/MAIN/MainArcadeRosterProof.{c,h}` (game hook);
   `platform/native_vblank_pacing.c`, `include/platform/native_vblank_pacing.h`
   (the pure pacing decision behind proof-only fixed VBlank pacing);
-  `tools/arcade-roster-proof-check.ps1` (the five-run checker).
+  `tools/arcade-roster-proof-check.ps1` (the eight-run checker, five
+  two-cab and three one-cab runs).
 - Presentation options (host-local): `platform/native_display_config.c`,
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
