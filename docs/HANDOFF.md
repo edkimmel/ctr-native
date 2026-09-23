@@ -47,6 +47,13 @@ Integration order:
    (`docs/GAME_LOOP_UI_MILESTONE.md` Tasks 7-8).
 6. CAB1 G29/kiosk gate.
 7. Two-cabinet fleet acceptance.
+8. Stretch goal: automatic LAN discovery for up to 4 cabinets (Mario Kart
+   Arcade GP DX style). Not started. The lobby's caller-supplied candidate
+   list (`docs/LOBBY_MILESTONE.md` section 2.4) is the seam it plugs into:
+   cabinets find each other on the subnet (a broadcast beacon is the
+   preferred design), and the handshake still validates build and content
+   identity. It needs a pairing rule (for example a configured cabinet group)
+   and 3-4 human slots in the roster and match config. It follows step 7.
 
 ## Deterministic simulation
 
@@ -320,10 +327,22 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
 ## Next work
 
 The game-loop/UI milestone is tracked in `docs/GAME_LOOP_UI_MILESTONE.md`.
+The operator has reviewed the 12 arcade-link preview screens and accepted
+them. The input and flow defaults UX-1 to UX-11 (section 3 of that document)
+still await an explicit operator decision; UX-8, the fixed fixture, is being
+replaced by match select.
 
-1. Operator review of the built flow and the UX defaults UX-1 to UX-11,
-   using the "How to review the flow" subsection (section 3) of that
-   document.
+1. Active: the match-select milestone (`docs/MATCH_SELECT_MILESTONE.md`, to be
+   written as its first task). It adds a pre-race phase between MATCH FOUND
+   and START_RACE:
+   - each player picks their own character;
+   - the players vote on the track and on the lap count;
+   - a disagreement resolves to a random pick drawn from the shared match
+     seed.
+   Opponent cursors are display-only; only the final choices must agree. The
+   result becomes the agreed `NativeMatchConfigV1` that Task 7 launches,
+   replacing the fixed per-build fixture (UX-8). The design stays general
+   enough for up to 4 players (step 8).
 2. Task 7, networked race launch, gated on step 3 live roster/bot setup.
 3. Task 8, in-race lockstep drive and failure handling, gated on Task 7 and
    live V4 projection.
