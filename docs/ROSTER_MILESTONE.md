@@ -59,7 +59,7 @@ seam Task 7 calls. Real two-cabinet hardware stays the step 6/7 gate.
 
 Race shape (2P arcade):
 
-- MainInit_Drivers (game/MAIN/MainInit.c:284-402) spawns the humans in
+- MainInit_Drivers (game/MAIN/MainInit.c:288-406) spawns the humans in
   drivers[0..numPlyrCurrGame-1], then, in arcade with 2 humans, bots via
   BOTS_Driver_Init for drivers[2..5] (6 drivers). The TWO_CAB profile
   therefore maps onto retail slots one to one; no compaction.
@@ -87,7 +87,7 @@ Retail RNG (the ownership problem):
 |---|---|---|---|
 | sdata->randomNumber (16-bit LCG, MixRNG_Scramble, game/MixRNG/MixRNG.c:3-8) | include/regionsEXE.h:2806; 100 at boot (game/zGlobal_SDATA.c:308); never reseeded | items (game/Vehicle/VehPhysGeneral.c:1767,1807,1864), bot item cooldown and attacks (game/PickupBots.c:88,110,117), stuck/warp (game/Vehicle/VehStuckProc.c:1478,1559-1577), particles (game/Particle.c:76-86), VS quips (game/UI/UI_VsQuip.c:52,71) | simulation (shared with presentation consumers) |
 | sdata->advRng (RngDeadCoed pair) | include/regionsEXE.h:3074; constants only when both words are 0 (game/BOTS.c:310-313) | menus every frame (game/RECTMENU.c:737); bot nav-path and acceleration setup (game/BOTS.c:369-400); bot behaviour (game/BOTS.c:1039) and the per-bot start-line weapon cooldown (BOTS_GotoStartingLine, game/BOTS.c:3054) | simulation |
-| gGT->deadcoed_struct | include/namespace_Main.h:1301; reset to constants every race (game/MAIN/MainInit.c:441-442) before MainInit_Drivers (:466) | particles (MixRNG_Particles, game/Particle.c:1334-1356) | simulation-canonical, reset per race |
+| gGT->deadcoed_struct | include/namespace_Main.h:1301; reset to constants every race (game/MAIN/MainInit.c:457-458) before MainInit_Drivers(gGT) (:482) and the post-drivers hook (:486) | particles (MixRNG_Particles, game/Particle.c:1334-1356) | simulation-canonical, reset per race |
 | psxRandSeed (PSX BIOS rand) | game/MixRNG/PSX_BIOS_Rand.c:3; 1 at boot | roulette display (game/UI/UI_Weapon.c:109), crate spin (game/231/RB_Crate.c:143,440) | presentation |
 | sdata->audioRNG | include/regionsEXE.h:2495; boot constant (game/zGlobal_SDATA.c:94) | voice lines (game/HOWL/HOWL_Voiceline.c:126-127), level random FX (game/HOWL/HOWL_LevelAudio.c:140-141), garage FX (game/HOWL/HOWL_Garage.c:110-111) | presentation |
 
@@ -234,10 +234,14 @@ The seam (Task 7's entry points; the proof uses the same ones):
   (VALIDATED only: the validated per-slot facts), _SeedReadback and
   _PinReadback (SEEDED or VALIDATED: what the setup wrote and what it read
   back), and _Bank (the post-setup bank when VALIDATED, else NULL).
-- MainArcadeRaceSetup_Disarm(): any state to IDLE. It restores the saved
-  vibration bits only on the idle main-menu level; otherwise they stay 0
-  and the drop is logged, since gameMode1 must not change under a running
-  race.
+- MainArcadeRaceSetup_Disarm(): any state to IDLE. It touches the
+  vibration bits only if Launch set fieldsWritten
+  (MainArcadeRaceSetupCore.c:214, checked at :421). After a Launch it
+  restores the saved bits only on the idle main-menu level; otherwise it
+  leaves them as they are and logs that, since gameMode1 must not change
+  under a running race. "As they are" means 0 from the pin unless the
+  pause-menu toggle (game/MAIN/MainFreeze.c:518, risk 8) flipped one
+  mid-race.
 
 Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
 
@@ -437,9 +441,13 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
     memory card): they are in the plan's gameMode1 clear mask
     (MainArcadeRaceSetupPlan.h, MAIN_ARCADE_RACE_SETUP_GM1_HOST_LOCAL_MASK
     and _CLEAR_MASK), so a cabinet's saved rumble preference does not apply.
-    Arm saves the cabinet's bits (MainArcadeRaceSetupCore.c:148) and Disarm
+    Arm saves the cabinet's bits (MainArcadeRaceSetupCore.c:148). Disarm
+    touches them only if Launch set fieldsWritten
+    (MainArcadeRaceSetupCore.c:214, checked at :421); after a Launch it
     restores them only on the idle main-menu level
-    (MainArcadeRaceSetupCore.c:421-434); otherwise they stay 0.
+    (MainArcadeRaceSetupCore.c:421-434), otherwise it leaves them as they
+    are and logs that: 0 from the pin, unless the pause-menu toggle
+    (game/MAIN/MainFreeze.c:518) flipped one mid-race.
 16. RS-16 (R-4): boolDemoMode is pinned to 0
     (MainArcadeRaceSetupPlan.c:66), written at Launch and re-applied by the
     pre-drivers hook. Demo mode would turn every human driver into a bot
@@ -659,10 +667,14 @@ text. Review: none recorded.
    platform/native_platform.c) and then waits for its own, so
    gGT->elapsedTimeMS becomes 48 or 64 instead of 32 for that tick. That
    feeds msInThisLEV, elapsedEventTime, trafficLightsTimer, and physics,
-   and the extra VBlanks also move gGT->frameTimer_VsyncCallback. Only the
-   proof pins pacing (RS-18) and only V2 playback cancels it (the recorded
-   VSync packets and frame elapsed time), so Task 8 must adopt
-   deterministic VBlanks per tick for linked races.
+   and the extra VBlanks also move gGT->frameTimer_VsyncCallback. Every
+   emitted VBlank while not paused also increments gGT->frameTimer_Confetti
+   (game/MAIN/MainDrawCb.c:25), which feeds the particle oscillators and
+   through them MixRNG draws; RS-17 pins it only at race start, so a
+   mid-race host hitch still moves a simulation input. Only the proof pins
+   pacing (RS-18) and only V2 playback cancels it (the recorded VSync
+   packets and frame elapsed time), so Task 8 must adopt deterministic
+   VBlanks per tick for linked races.
 8. The pause-menu vibration toggle flips a P*_VIBRATE bit in gameMode1
    mid-race (game/MAIN/MainFreeze.c:518), and gameMode1 is canonical
    control state, so one cabinet toggling rumble would diverge the control

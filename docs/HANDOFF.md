@@ -127,14 +127,24 @@ Integration order:
   scripted pads and logs per-tick V1 control, race-relative control, RNG,
   input, and topology-free drivers digests.
   `tools/arcade-roster-proof-check.ps1` (ctest `arcade_roster_determinism`)
-  runs five proofs and requires identical setup and per-tick digests for
-  one seed across runs, launch windows, and boot offsets, and different
-  ones for another seed.
+  runs five proofs: A and B (one seed, from the title) must be
+  byte-identical; C (from the attract demo race) and E (37 ticks late; its
+  launch timer offset from A must be odd) must equal A in the setup
+  digests, the seeded and slot lines, and at every tick the rng, input,
+  drivers, and rcontrol digests, and start race tick 0 with A's pinned
+  counters (the full control digest is informational only); D (another
+  seed) must differ from A in the config digest, the bank digest, and the
+  tick 0 rng digest.
 - **Proof-only VBlank pacing (RS-18).** The proof runs with host-local
   fixed VBlank pacing (`Platform_SetFixedVBlankPacing`), so a late host
   frame emits no catch-up VBlanks. Every other run keeps the default
   catch-up pacing, in which a late frame raises `elapsedTimeMS` and so
-  changes the race; Task 8 must make VBlanks per tick deterministic.
+  changes the race. Each extra VBlank also increments
+  `gGT->frameTimer_Confetti` (`game/MAIN/MainDrawCb.c:25`, while not
+  paused), which feeds the particle oscillators and through them MixRNG
+  draws; RS-17 pins it only at race start, so a mid-race host hitch still
+  moves a simulation input. Task 8 must make VBlanks per tick
+  deterministic.
 - **Input replay.** Replay schedulers with record and playback, per-domain
   canonical verification, and first-divergence masks for observation, VBlank
   parity, pad, canonical domain, and combined digest. Invalid submissions

@@ -899,7 +899,13 @@ agreed config, then MainArcadeRaceSetup_Launch (which writes the race
 fields and requests the load); poll MainArcadeRaceSetup_Status until
 VALIDATED (or FAILED, whose player-facing response Task 7 decides, RS-10);
 read MainArcadeRaceSetup_Digests and hand MainArcadeRaceSetup_Bank to
-Task 8; and call MainArcadeRaceSetup_Disarm when the race is left. The
+Task 8; and call MainArcadeRaceSetup_Disarm when the race is left. Task 7
+extends the caller allow-list in
+tests/main_arcade_race_setup_isolation_test.cmake:257-263: today only the
+adapter (game/MAIN/MainArcadeRaceSetup.c and .h) and the roster proof
+(game/MAIN/MainArcadeRosterProof.c) may name MainArcadeRaceSetup_Arm,
+_Launch, and _Disarm, so Task 7 adds its caller file there (the adapter
+itself still must never call _Disarm, :268-271). The
 agreed config is the one match select resolved and the relink handshake
 validated (docs/MATCH_SELECT_MILESTONE.md sections 2.6 and 7): track,
 laps, per-slot characters, the retail 2P AI set, and the derived seed.

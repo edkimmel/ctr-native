@@ -59,9 +59,9 @@ param(
 # the default pacing, a host hitch would emit late VBlanks
 # (Native_CatchUpDueVBlanks), raise gGT->elapsedTimeMS to 48 or 64 for that
 # tick, and so change the race itself (elapsed and event time, the traffic
-# lights, physics), not just the boot-relative VBlank count.  With the pacing fixed, the runs no longer
-# depend on each other's timing and run in parallel by default; -Sequential
-# runs them one after another.
+# lights, physics), not just the boot-relative VBlank count.  With the pacing
+# fixed, the runs no longer depend on each other's timing and run in parallel
+# by default; -Sequential runs them one after another.
 #
 # Every ctr_native the check started is stopped when the check exits or is
 # interrupted.
