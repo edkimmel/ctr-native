@@ -506,6 +506,16 @@ add_executable(ctr_native_topology_asset_census_tool tools/topology_asset_census
 set_target_properties(ctr_native_topology_asset_census_tool PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_link_libraries(ctr_native_topology_asset_census_tool PRIVATE ctr_native_topology_asset_census)
 
+# Offline-only RGB check of arcade-link preview captures (BMP).  Pure analysis
+# over a caller-owned buffer; never linked by ctr_native.
+add_library(ctr_native_capture_check STATIC platform/native_capture_check.c)
+set_target_properties(ctr_native_capture_check PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(ctr_native_capture_check PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
+add_executable(ctr_native_arcade_link_capture_check tools/arcade_link_capture_check.c)
+set_target_properties(ctr_native_arcade_link_capture_check PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_link_libraries(ctr_native_arcade_link_capture_check PRIVATE ctr_native_capture_check)
+
 add_library(ctr_native_canonical_driver_behavior STATIC platform/native_canonical_driver_behavior.c)
 set_target_properties(ctr_native_canonical_driver_behavior PROPERTIES
     C_STANDARD 17
@@ -1318,6 +1328,13 @@ if(BUILD_TESTING)
     add_test(NAME native_topology_asset_census_unit COMMAND $<TARGET_FILE:native_topology_asset_census_test>)
     add_test(NAME native_topology_asset_census_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_topology_asset_census_isolation_test.cmake")
+
+    add_executable(native_capture_check_test tests/native_capture_check_test.c)
+    set_target_properties(native_capture_check_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_link_libraries(native_capture_check_test PRIVATE ctr_native_capture_check)
+    add_test(NAME native_capture_check_unit COMMAND $<TARGET_FILE:native_capture_check_test>)
+    add_test(NAME native_capture_check_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_capture_check_isolation_test.cmake")
 
     add_executable(native_canonical_world_mine_registry_v1_test tests/native_canonical_world_mine_registry_v1_test.c)
     set_target_properties(native_canonical_world_mine_registry_v1_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
