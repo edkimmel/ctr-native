@@ -6,7 +6,7 @@
 # change, no other seam picks up a lockstep identifier, and the three targets
 # stay portable C17 with extensions off. It also freezes the peer link's
 # generic aux-route widths and keeps any select-layer token out of the peer
-# link (section 9).
+# link and holds it to the lease and allocation scans (section 9).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -182,7 +182,10 @@ endforeach()
 #    aux datagram width and inbox capacity are frozen: a changed literal must
 #    fail this test, not silently change what the peer link routes. The peer
 #    link carries aux datagrams generically and must not know the layer that
-#    uses them, so no match-select token may appear in its sources.
+#    uses them, so no match-select or arcade-flow token (including the select
+#    message magic "NMS1", 0x31534d4e) may appear in its sources. The same
+#    topology-lease and dynamic-allocation scans as sections 2 and 3 apply to
+#    it too.
 ctr_read_source("include/platform/native_lockstep_peer_link.h" peer_link_header)
 ctr_require_regex("include/platform/native_lockstep_peer_link.h (AUX_BYTES must stay 64u)" "${peer_link_header}"
     "#define NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES 64u[^0-9a-zA-Z_]")
@@ -191,7 +194,13 @@ ctr_require_regex("include/platform/native_lockstep_peer_link.h (AUX_CAPACITY mu
 
 foreach(relative_path IN ITEMS "include/platform/native_lockstep_peer_link.h" "platform/native_lockstep_peer_link.c")
     ctr_read_source("${relative_path}" source)
-    foreach(term IN ITEMS MatchSelect match_select MATCH_SELECT)
+    foreach(term IN ITEMS MatchSelect match_select MATCH_SELECT NativeArcade native_arcade NMS1 0x31534d4e 0x31534D4E)
+        ctr_forbid("${relative_path}" "${source}" "${term}")
+    endforeach()
+    foreach(term IN LISTS lease_tokens)
+        ctr_forbid("${relative_path}" "${source}" "${term}")
+    endforeach()
+    foreach(term IN LISTS alloc_tokens)
         ctr_forbid("${relative_path}" "${source}" "${term}")
     endforeach()
 endforeach()

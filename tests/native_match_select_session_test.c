@@ -857,6 +857,7 @@ static int TestSingleHumanConfirms(void)
 	CHECK(NativeMatchSelectSession_Status(&solo) == NATIVE_MATCH_SELECT_STATUS_CONFIRMED);
 
 	SetChoice(&choice, 5, 6, 3, NONCE_A);
+	memset(&expected, 0, sizeof(expected)); /* the outcome has trailing padding; whole-struct memcmp below */
 	CHECK(ExpectedDigest(&base, 1, &choice, &expected, resolved));
 	CHECK(NativeMatchSelectSession_Outcome(&solo) != NULL);
 	CHECK(memcmp(NativeMatchSelectSession_Outcome(&solo), &expected, sizeof(expected)) == 0);
@@ -921,6 +922,7 @@ static int TestTwoHumanAgreement(void)
 
 	SetChoice(&choices[0], 0, 3, 3, NONCE_A);
 	SetChoice(&choices[1], 1, 6, 3, NONCE_B);
+	memset(&expected, 0, sizeof(expected)); /* the outcome has trailing padding; whole-struct memcmp below */
 	CHECK(ExpectedDigest(&base, 2, choices, &expected, resolved));
 	CHECK(memcmp(NativeMatchSelectSession_Outcome(&b), &expected, sizeof(expected)) == 0);
 	CHECK(memcmp(NativeMatchSelectSession_ResolvedDigest(&b), resolved, sizeof(resolved)) == 0);
@@ -948,6 +950,7 @@ static int TestPeerResolvedComparedOnResolve(void)
 	BuildTwoCabBase(&base);
 	SetChoice(&choices[0], 0, 3, 3, NONCE_A);
 	SetChoice(&choices[1], 4, 9, 7, NONCE_B);
+	memset(&expected, 0, sizeof(expected)); /* the outcome has trailing padding; whole-struct memcmp below */
 	CHECK(ExpectedDigest(&base, 2, choices, &expected, resolved));
 
 	/* The peer's RESOLVED arrives while we still pick: stored, compared when we resolve. Equal: CONFIRMED. */

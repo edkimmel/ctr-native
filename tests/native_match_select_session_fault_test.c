@@ -75,6 +75,7 @@ struct Net
 	struct Script scripts[MAX_HUMANS];
 	uint32_t linger[MAX_HUMANS];
 	uint32_t lingerSent[MAX_HUMANS];
+	uint32_t resolvedTick[MAX_HUMANS]; /* first tick the status was seen RESOLVED */
 	uint32_t confirmedTick[MAX_HUMANS];
 	uint32_t failedTick[MAX_HUMANS];
 	uint32_t lastOkTick[MAX_HUMANS][MAX_HUMANS]; /* [receiver][sender] */
@@ -86,6 +87,17 @@ struct Net
 	uint32_t duplicated;
 	uint32_t delayed;
 	uint32_t corruptedSent;
+	/*
+	 * Reorder evidence, kept apart from duplicates: per pair and destination
+	 * endpoint, the serial of the last first-copy delivery (deliveryOrdinal 0;
+	 * a duplicate's second copy is ordinal 1 and is only counted in
+	 * duplicateDeliveries). A first copy whose serial is below the previous
+	 * one arrived after a record sent later: a reorder.
+	 */
+	uint64_t lastFirstSerial[PAIR_COUNT][2];
+	int haveFirstSerial[PAIR_COUNT][2];
+	uint32_t reordered;
+	uint32_t duplicateDeliveries;
 	int haveFirst[MAX_HUMANS];
 	uint8_t firstComposed[MAX_HUMANS][RECORD_BYTES];
 	uint8_t lastComposed[MAX_HUMANS][RECORD_BYTES];
@@ -162,6 +174,7 @@ static int NetInit(struct Net *net, uint32_t humanCount, const uint64_t nonces[]
 		CHECK(NativeMatchSelectSession_Init(&net->sessions[h], &net->base, humanCount, h, nonces[h], characters[h], tracks[h],
 			laps[h], &timings));
 		net->linger[h] = RESULT_HOLD_TICKS;
+		net->resolvedTick[h] = NO_TICK;
 		net->confirmedTick[h] = NO_TICK;
 		net->failedTick[h] = NO_TICK;
 		for (uint32_t p = 0; p < MAX_HUMANS; p++)
@@ -220,6 +233,10 @@ static void NoteStatus(struct Net *net, uint32_t h)
 {
 	const uint32_t status = NativeMatchSelectSession_Status(&net->sessions[h]);
 
+	if ((status == NATIVE_MATCH_SELECT_STATUS_RESOLVED) && (net->resolvedTick[h] == NO_TICK))
+	{
+		net->resolvedTick[h] = net->tick;
+	}
 	if ((status == NATIVE_MATCH_SELECT_STATUS_CONFIRMED) && (net->confirmedTick[h] == NO_TICK))
 	{
 		net->confirmedTick[h] = net->tick;
@@ -333,6 +350,21 @@ static int ReceiveAll(struct Net *net, uint32_t self)
 				break;
 			}
 			CHECK(received == NATIVE_VIRTUAL_DATAGRAM_RECEIVE_OK);
+			if (metadata.deliveryOrdinal == 0u)
+			{
+				const uint32_t destination = Endpoint(self, peer);
+
+				if (net->haveFirstSerial[pairIndex][destination] && (metadata.serial < net->lastFirstSerial[pairIndex][destination]))
+				{
+					net->reordered++;
+				}
+				net->lastFirstSerial[pairIndex][destination] = metadata.serial;
+				net->haveFirstSerial[pairIndex][destination] = 1;
+			}
+			else
+			{
+				net->duplicateDeliveries++;
+			}
 			result = NativeMatchSelectSession_Accept(&net->sessions[self], bytes, size);
 			CHECK((uint32_t)result < 8u);
 			net->results[self][result]++;
@@ -494,6 +526,7 @@ static int CheckAllConfirmedIdentical(const struct Net *net, struct NativeMatchS
 	struct NativeMatchConfigV1 firstConfig;
 
 	memset(&firstConfig, 0, sizeof(firstConfig));
+	memset(&expected, 0, sizeof(expected)); /* the outcome has trailing padding; whole-struct memcmp below */
 
 	memset(choices, 0, sizeof(choices));
 	for (uint32_t h = 0; h < net->humanCount; h++)
@@ -526,7 +559,7 @@ static int CheckAllConfirmedIdentical(const struct Net *net, struct NativeMatchS
 			CHECK(NativeMatchConfigV1_Validate(&config));
 			if (h == 0)
 			{
-				firstConfig = config;
+				memcpy(&firstConfig, &config, sizeof(firstConfig));
 			}
 			else
 			{
@@ -608,9 +641,13 @@ static int ScenarioLossyDisagreement(void)
 		stale += NativeMatchSelectSession_DroppedStale(&net->sessions[h]);
 	}
 	CHECK(net->dropped > 0 && net->duplicated > 0 && net->delayed > 0 && stale > 0);
-	printf("scenario 2 lossy disagreement: CONFIRMED at %u/%u, drawn track %u laps %u (dropped %u, duplicated %u, delayed %u, stale %u)\n",
+	/* Reordering proven directly (first copies only), separately from duplicate deliveries. */
+	CHECK(net->reordered > 0);
+	CHECK(net->duplicateDeliveries > 0);
+	printf("scenario 2 lossy disagreement: CONFIRMED at %u/%u, drawn track %u laps %u (dropped %u, duplicated %u, delayed %u, "
+		"reordered %u, duplicate deliveries %u, stale %u)\n",
 		net->confirmedTick[0], net->confirmedTick[1], outcome.trackID, outcome.lapCount, net->dropped, net->duplicated, net->delayed,
-		stale);
+		net->reordered, net->duplicateDeliveries, stale);
 	return 0;
 }
 
@@ -755,11 +792,14 @@ static int ScenarioLinger(void)
 	CHECK(NativeMatchSelectSession_Status(&net->sessions[0]) == NATIVE_MATCH_SELECT_STATUS_CONFIRMED);
 	CHECK(net->lingerSent[0] == 0);
 	CHECK(NativeMatchSelectSession_Human(&net->sessions[1], 0)->phase == NATIVE_MATCH_SELECT_PHASE_PICKING);
+	/* B really resolved (status RESOLVED seen before it failed): the linger path, not a WAITING-state silence. */
+	CHECK(net->sessions[1].resolved == 1u);
+	CHECK(net->resolvedTick[1] != NO_TICK && net->resolvedTick[1] < net->failedTick[1]);
 	CHECK(NativeMatchSelectSession_Status(&net->sessions[1]) == NATIVE_MATCH_SELECT_STATUS_FAILED);
 	CHECK(NativeMatchSelectSession_Fault(&net->sessions[1]) == NATIVE_MATCH_SELECT_SESSION_FAULT_PEER_SILENT);
 	CHECK(net->failedTick[1] == net->lastOkTick[1][0] + NATIVE_MATCH_SELECT_SESSION_DEFAULT_PEER_SILENCE_TICKS - 1u);
-	printf("scenario 7a no linger: A CONFIRMED at %u, B (RESOLVED, never saw A RESOLVED) FAILED/PEER_SILENT at %u\n",
-		net->confirmedTick[0], net->failedTick[1]);
+	printf("scenario 7a no linger: A CONFIRMED at %u, B RESOLVED at %u (never saw A RESOLVED), FAILED/PEER_SILENT at %u\n",
+		net->confirmedTick[0], net->resolvedTick[1], net->failedTick[1]);
 
 	/* (b) A keeps sending for 60 ticks under 50% loss: B confirms. */
 	CHECK(NetInit(net, 2, k_nonces, characters, tracks, laps, 20u, 9u) == 0);
@@ -782,7 +822,18 @@ static int ScenarioLinger(void)
  *     its fresh sequence 2 FAILS B with NONCE_CHANGED.
  * (b) before any fresh record, the old RESOLVED record (sequence S), B idle:
  *     B accepts it; A's fresh sequences 1..S are DROPPED_STALE, and S + 1
- *     FAILS B with NONCE_CHANGED.
+ *     FAILS B with NONCE_CHANGED. That holds only because S is small here
+ *     (the earlier select in this test ends below sequence 80), so A passes
+ *     S within peerSilenceTicks. A real select can end near sequence 1860
+ *     (30 Hz, 60 s of picking); a stale record whose S is above anything the
+ *     fresh A sends in that window makes B drop every fresh record as stale,
+ *     and B FAILS with PEER_SILENT peerSilenceTicks after the stale accept,
+ *     never confirming a wrong outcome: see (f). (If B locked all three items
+ *     before then, it would resolve against the stale choice and FAIL with
+ *     DIGEST_MISMATCH instead, as in (c).) Production keeps such records from
+ *     arriving at all: the peer link resets its aux inbox on Open and Close
+ *     and drops aux datagrams while not RUNNING, and the netplay adapter
+ *     discards the aux inbox at BEGIN_SELECT.
  * (c) as (b), but B finishes before A's sequence passes S: B resolves with
  *     the stale choice and nonce, and the stale resolvedDigest (another
  *     select's outcome) differs from B's, so B FAILS with DIGEST_MISMATCH.
@@ -790,6 +841,11 @@ static int ScenarioLinger(void)
  *     stale; the select confirms normally.
  * (e) after fresh records, an old record re-sent with a higher sequence: B
  *     FAILS with NONCE_CHANGED.
+ * (f) as (b), but the stale RESOLVED record carries sequence 5000, above
+ *     anything A sends during the select, and B's items outlast the silence
+ *     limit: every fresh record from A is DROPPED_STALE (none is accepted),
+ *     and B FAILS with PEER_SILENT exactly peerSilenceTicks after the stale
+ *     accept. Neither session ever reaches CONFIRMED.
  * In no case does any session confirm a wrong outcome: a failed B stops
  * composing, so A never sees a RESOLVED from B and fails by silence.
  */
@@ -902,6 +958,35 @@ static int ScenarioStaleSelect(void)
 	CHECK(CheckStaleFailure(net, NATIVE_MATCH_SELECT_SESSION_FAULT_NONCE_CHANGED) == 0);
 	printf("scenario 8e stale higher sequence after fresh: B FAILED/NONCE_CHANGED at %u, A FAILED/PEER_SILENT at %u\n",
 		net->failedTick[1], net->failedTick[0]);
+
+	/* (f) Item countdowns far above the silence limit, so B cannot finish picking first. */
+	CHECK(NetInit(net, 2, freshNonces, characters, tracks, laps, NATIVE_MATCH_SELECT_SESSION_DEFAULT_ITEM_TICKS, 18u) == 0);
+	SetScript(net, 0, k_quickA, 3);
+	{
+		struct NativeMatchSelectMessageV1 stale = oldResolved;
+		struct NativeCodecWriter writer;
+		uint8_t bytes[RECORD_BYTES];
+
+		stale.sequence = 5000u;
+		NativeCodecWriter_Init(&writer, bytes, sizeof(bytes), NULL);
+		CHECK(NativeMatchSelectMessageV1_Encode(&writer, &stale));
+		CHECK(NativeMatchSelectSession_Accept(&net->sessions[1], bytes, sizeof(bytes)) == NATIVE_MATCH_SELECT_ACCEPT_OK);
+	}
+	CHECK(RunUntilSettled(net) == 0);
+	CHECK(CheckStaleFailure(net, NATIVE_MATCH_SELECT_SESSION_FAULT_PEER_SILENT) == 0);
+	CHECK(net->confirmedTick[0] == NO_TICK && net->confirmedTick[1] == NO_TICK);
+	CHECK(net->resolvedTick[1] == NO_TICK);
+	/* Accepted before tick 0's Tick (silence 0): the 90th Tick is at tick 89. */
+	CHECK(net->failedTick[1] == NATIVE_MATCH_SELECT_SESSION_DEFAULT_PEER_SILENCE_TICKS - 1u);
+	/* Every fresh record A sent was dropped as stale; none was accepted. */
+	CHECK(net->results[1][NATIVE_MATCH_SELECT_ACCEPT_OK] == 0);
+	CHECK(net->results[1][NATIVE_MATCH_SELECT_ACCEPT_FAILED] == 0);
+	CHECK(net->results[1][NATIVE_MATCH_SELECT_ACCEPT_DROPPED_STALE] > 0);
+	CHECK(NativeMatchSelectSession_DroppedStale(&net->sessions[1]) == net->results[1][NATIVE_MATCH_SELECT_ACCEPT_DROPPED_STALE]);
+	CHECK(NativeMatchSelectSession_Human(&net->sessions[0], 0)->sequence < 5000u);
+	printf("scenario 8f stale RESOLVED at sequence 5000 first: %u fresh records dropped stale, B FAILED/PEER_SILENT at %u, "
+		"A FAILED/PEER_SILENT at %u, nobody CONFIRMED\n",
+		net->results[1][NATIVE_MATCH_SELECT_ACCEPT_DROPPED_STALE], net->failedTick[1], net->failedTick[0]);
 	return 0;
 }
 

@@ -16,8 +16,8 @@
  * It owns one of each in a single caller-owned struct, drives the handshake
  * to completion over a real socket, opens the session on the agreed config
  * once the handshake completes, and from then on composes/sends and
- * receives/accepts lockstep bundles over that same real socket. No dynamic
- * allocation and no wall clock: poll cadence and retransmission cadence are
+ * receives/accepts lockstep bundles over that same real socket. No heap
+ * memory and no wall clock: poll cadence and retransmission cadence are
  * entirely caller-driven, the same posture the rest of this stack takes.
  *
  * A zero-initialized struct (e.g. "struct NativeLockstepPeerLink link = {0};")
@@ -71,7 +71,7 @@ enum NativeLockstepPeerLinkMode
 };
 
 /*
- * Caller-owned, no dynamic allocation, fixed-size members only. "opened" is
+ * Caller-owned, no heap memory, fixed-size members only. "opened" is
  * private bookkeeping (not part of the brief's field list) so
  * NativeLockstepPeerLink_Close can pair NativeUdpTransport_GlobalShutdown
  * with exactly the NativeUdpTransport_GlobalInit this link's own
@@ -146,11 +146,12 @@ struct NativeLockstepPeerLink
  * with proposedConfig/localRole, stores inputDelay, empties the aux inbox
  * and zeroes droppedAuxCount (so no aux datagram or count from a previous
  * link survives), sets mode HANDSHAKING, and immediately composes and sends
- * the first HELLO over the real socket to the peer address. Returns 0 and cleans up anything partially opened
- * (transport, global init) on any failure -- a NULL argument, a bad
- * transport open, a handshake Begin rejection (bad role, invalid config, a
- * role not present in the config), or a failure composing/sending the first
- * HELLO -- leaving *link otherwise untouched, the same "unchanged on
+ * the first HELLO over the real socket to the peer address. Returns 0 and
+ * cleans up anything partially opened (transport, global init) on any
+ * failure -- a NULL argument, a bad transport open, a handshake Begin
+ * rejection (bad role, invalid config, a role not present in the config), or
+ * a failure composing/sending the first HELLO -- leaving *link otherwise
+ * untouched (in particular the aux inbox and droppedAuxCount), the same "unchanged on
  * rejection" convention NativeLockstepHandshake_Begin and
  * NativeLockstepSession_Open both use.
  */
@@ -195,8 +196,11 @@ void NativeLockstepPeerLink_Retransmit(struct NativeLockstepPeerLink *link);
  * forever) via a Receive loop, stopping early once the transport reports no
  * more are waiting. A NULL link, or a link whose mode is already terminal
  * (REJECTED, FAULTED, or DIVERGED) or still IDLE (Open never succeeded), is
- * a no-op that drains and drops every waiting datagram without inspecting
- * it further.
+ * a no-op: it returns at once without receiving anything, so every waiting
+ * datagram stays queued on the transport, unread. Once the link is terminal
+ * the aux inbox therefore keeps exactly what it held at the terminal
+ * transition (still readable through NativeLockstepPeerLink_TakeAux), and
+ * nothing is ever added to it again.
  *
  * While mode is HANDSHAKING, see the NativeLockstepPeerLink_Retransmit doc
  * comment above: the caller must call Retransmit before calling this
@@ -262,8 +266,9 @@ void NativeLockstepPeerLink_Retransmit(struct NativeLockstepPeerLink *link);
  * If handling a datagram makes link mode become terminal (REJECTED,
  * FAULTED, or DIVERGED) partway through the drain budget, this call stops
  * draining immediately rather than inspecting further already-waiting
- * datagrams; anything still queued is simply drained and dropped by the
- * terminal-mode no-op fast path the next time this function is called.
+ * datagrams; anything still queued stays queued on the transport, since
+ * every later call takes the terminal-mode no-op path above and never
+ * receives it (NativeLockstepPeerLink_Close releases it with the socket).
  */
 void NativeLockstepPeerLink_Poll(struct NativeLockstepPeerLink *link);
 

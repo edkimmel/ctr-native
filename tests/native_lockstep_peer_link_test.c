@@ -39,7 +39,7 @@
  * NATIVE_UDP_TRANSPORT_PROCESS_TEST_PORT (48037,
  * tests/native_udp_transport_process_test.c) and from PARENT_PORT/
  * HELPER_PORT (48110/48111, tests/native_lockstep_peer_link_process_test.c):
- * this file uses 48200-48210.
+ * this file uses 48200-48232.
  */
 #define TEST1_PORT_A 48200u
 #define TEST1_PORT_B 48201u
@@ -52,7 +52,7 @@
 #define TEST4_PORT_A 48208u
 #define TEST4_PORT_B 48209u
 #define TEST4_PORT_BYSTANDER 48210u
-/* Aux-route tests (MS-5) continue the same band at 48211-48227. */
+/* Aux-route tests (MS-5, MS-5b) continue the same band at 48211-48232. */
 #define AUX_ROUNDTRIP_PORT_A 48211u
 #define AUX_ROUNDTRIP_PORT_B 48212u
 #define AUX_HANDSHAKING_PORT_A 48213u
@@ -70,6 +70,11 @@
 #define AUX_FOREIGN_PORT_A 48225u
 #define AUX_FOREIGN_PORT_B 48226u
 #define AUX_FOREIGN_PORT_BYSTANDER 48227u
+#define AUX_OPEN_RESET_PORT 48228u
+#define AUX_OPEN_RESET_PEER_PORT 48229u
+#define AUX_OPEN_FAIL_PORT 48230u
+#define AUX_TERMINAL_PORT_A 48231u
+#define AUX_TERMINAL_PORT_B 48232u
 
 /* Real loopback delivery is asynchronous relative to sendto returning
  * (tests/native_udp_transport_test.c's own PollReceive helper documents the
@@ -1164,6 +1169,150 @@ static int TestAuxForeignSenderDiscarded(void)
 	return 0;
 }
 
+/* Fills a link's aux inbox fields with a recognizable junk pattern. */
+static void FillAuxJunk(struct NativeLockstepPeerLink *link)
+{
+	memset(link->auxBytes, 0xEE, sizeof(link->auxBytes));
+	link->auxHead = 5u;
+	link->auxCount = 7u;
+	link->droppedAuxCount = 9u;
+}
+
+/* The aux inbox fields still hold exactly FillAuxJunk's pattern. */
+static int ExpectAuxJunk(const struct NativeLockstepPeerLink *link)
+{
+	uint8_t junk[NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY][NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+
+	memset(junk, 0xEE, sizeof(junk));
+	CHECK(memcmp(link->auxBytes, junk, sizeof(junk)) == 0);
+	CHECK(link->auxHead == 5u);
+	CHECK(link->auxCount == 7u);
+	CHECK(link->droppedAuxCount == 9u);
+	return 0;
+}
+
+/*
+ * A successful Open resets the aux inbox (whatever the struct held before,
+ * even on a closed struct), and a failed Open leaves the aux fields exactly
+ * as they were: NULL peer (before anything opens), a local port already in
+ * use (the transport open fails), and a bad role (the handshake Begin fails
+ * after the transport opened).
+ */
+static int TestAuxOpenResetsInbox(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeLockstepPeerLink link = {0};
+	struct NativeLockstepPeerLink holder = {0};
+	struct NativeUdpTransportAddress peer;
+	uint8_t out[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	size_t size = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+	/* Nothing listens on the peer port; the Open()-time HELLO is simply lost. */
+	CHECK(NativeUdpTransport_MakeAddress(&peer, "127.0.0.1", (uint16_t)AUX_OPEN_RESET_PEER_PORT));
+
+	/* (a) Junk on a closed struct, then a successful Open: empty inbox, 0 dropped. */
+	NativeLockstepPeerLink_Close(&link);
+	FillAuxJunk(&link);
+	CHECK(NativeLockstepPeerLink_AuxCount(&link) == 7u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&link) == 9u);
+	CHECK(NativeLockstepPeerLink_Open(&link, (uint16_t)AUX_OPEN_RESET_PORT, &peer, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_Mode(&link) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+	CHECK(NativeLockstepPeerLink_AuxCount(&link) == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&link) == 0u);
+	CHECK(NativeLockstepPeerLink_TakeAux(&link, out, sizeof(out), &size) == 0);
+	NativeLockstepPeerLink_Close(&link);
+
+	/* (b) Failed Opens leave the junk untouched. */
+	memset(&link, 0, sizeof(link));
+	FillAuxJunk(&link);
+	CHECK(!NativeLockstepPeerLink_Open(&link, (uint16_t)AUX_OPEN_FAIL_PORT, NULL, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_Mode(&link) == NATIVE_LOCKSTEP_PEER_LINK_IDLE);
+	CHECK(ExpectAuxJunk(&link) == 0);
+
+	CHECK(NativeLockstepPeerLink_Open(&holder, (uint16_t)AUX_OPEN_FAIL_PORT, &peer, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(!NativeLockstepPeerLink_Open(&link, (uint16_t)AUX_OPEN_FAIL_PORT, &peer, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_Mode(&link) == NATIVE_LOCKSTEP_PEER_LINK_IDLE);
+	CHECK(ExpectAuxJunk(&link) == 0);
+	NativeLockstepPeerLink_Close(&holder);
+
+	CHECK(!NativeLockstepPeerLink_Open(&link, (uint16_t)AUX_OPEN_FAIL_PORT, &peer, &config, 0xFFu,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_Mode(&link) == NATIVE_LOCKSTEP_PEER_LINK_IDLE);
+	CHECK(ExpectAuxJunk(&link) == 0);
+	return 0;
+}
+
+/*
+ * Aux entries stored while RUNNING survive a terminal transition: B stores
+ * three aux datagrams, then a corrupted bundle from A (A's real frame-0
+ * bundle with its first byte flipped, which fails decode) latches B FAULTED.
+ * A fourth aux datagram queued behind that bundle is never stored (a
+ * terminal link no longer receives). TakeAux still returns the three stored
+ * entries in order, and SendAux on the terminal link returns 0.
+ */
+static int TestAuxKeptAfterTerminal(void)
+{
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t payload[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	uint8_t bundle[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	uint8_t out[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	size_t bundleSize = 0;
+	size_t size = 0;
+	uint32_t attempt;
+	uint32_t i;
+
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)AUX_TERMINAL_PORT_A, (uint16_t)AUX_TERMINAL_PORT_B, &addrA, &addrB) == 0);
+
+	for (i = 0; i < 3u; i++)
+	{
+		MakeAuxPayload(payload, 0xAu, i);
+		CHECK(NativeLockstepPeerLink_SendAux(&linkA, payload, sizeof(payload)) == 1);
+	}
+	PumpPollUntilAuxTotal(&linkB, 3u);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 3u);
+
+	CHECK(NativeLockstepSession_ComposeBundle(&linkA.session, 0u, bundle, sizeof(bundle), &bundleSize));
+	CHECK(bundleSize == NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES);
+	bundle[0] ^= 0xFFu;
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, bundle, bundleSize));
+	MakeAuxPayload(payload, 0xAu, 3u);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkA, payload, sizeof(payload)) == 1);
+
+	CHECK(PumpPollUntilMode(&linkB, NATIVE_LOCKSTEP_PEER_LINK_FAULTED) == NATIVE_LOCKSTEP_PEER_LINK_FAULTED);
+	CHECK(NativeLockstepSession_FirstFault(NativeLockstepPeerLink_Session(&linkB)) != NULL);
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Poll(&linkB);
+	}
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_FAULTED);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 3u);
+	CHECK(NativeLockstepPeerLink_DroppedAuxCount(&linkB) == 0u);
+
+	MakeAuxPayload(payload, 0xBu, 0u);
+	CHECK(NativeLockstepPeerLink_SendAux(&linkB, payload, sizeof(payload)) == 0);
+
+	for (i = 0; i < 3u; i++)
+	{
+		CHECK(ExpectTakeAux(&linkB, 0xAu, i) == 0);
+	}
+	CHECK(NativeLockstepPeerLink_TakeAux(&linkB, out, sizeof(out), &size) == 0);
+	CHECK(NativeLockstepPeerLink_AuxCount(&linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_FAULTED);
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestEarlyBundleArrival() == 0);
@@ -1178,6 +1327,8 @@ int main(void)
 	CHECK(TestAuxResetOnCloseAndReopen() == 0);
 	CHECK(TestAuxOddSizesDropped() == 0);
 	CHECK(TestAuxForeignSenderDiscarded() == 0);
+	CHECK(TestAuxOpenResetsInbox() == 0);
+	CHECK(TestAuxKeptAfterTerminal() == 0);
 	puts("native_lockstep_peer_link_test: passed");
 	return 0;
 }
