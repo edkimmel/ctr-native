@@ -403,6 +403,18 @@ set_target_properties(ctr_native_match_select_rules PROPERTIES
 target_include_directories(ctr_native_match_select_rules PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_match_select_rules PUBLIC ctr_native_match_config ctr_native_sha256)
 
+# Match-select wire message (docs/MATCH_SELECT_MILESTONE.md section 2.2,
+# MS-3): the pure, transactional 64-byte select record codec with an FNV-1a
+# 64 trailer; table membership from the rules. Not linked into ctr_native yet.
+add_library(ctr_native_match_select_message STATIC platform/native_match_select_message.c)
+set_target_properties(ctr_native_match_select_message PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_match_select_message PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_match_select_message PUBLIC ctr_native_match_select_rules ctr_native_canonical_codec)
+
 # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6, Task
 # 6b-1): a process-wide singleton owning one arcade-link host adapter (link
 # mode) or a scripted screen preview (preview mode), behind a small
@@ -1270,6 +1282,21 @@ if(BUILD_TESTING)
 
     add_test(NAME native_match_select_rules_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_match_select_rules_isolation_test.cmake")
+
+    # Match-select wire message (docs/MATCH_SELECT_MILESTONE.md section 2.2,
+    # MS-3): frozen golden bytes, every fault cause in check order, and the
+    # isolation test freezes the wire constants.
+    add_executable(native_match_select_message_test tests/native_match_select_message_test.c)
+    set_target_properties(native_match_select_message_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_match_select_message_test PRIVATE ctr_native_match_select_message)
+    add_test(NAME native_match_select_message_unit COMMAND $<TARGET_FILE:native_match_select_message_test>)
+
+    add_test(NAME native_match_select_message_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_match_select_message_isolation_test.cmake")
 
     # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6,
     # Task 6b-1): the singleton in every mode, one loopback socket on a dead
