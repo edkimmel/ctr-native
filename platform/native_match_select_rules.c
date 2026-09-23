@@ -392,26 +392,85 @@ int NativeMatchSelect_OutcomeDigest(const uint8_t baseDigest[NATIVE_SHA256_DIGES
 	return 1;
 }
 
+/*
+ * One character list (humans or bots): the first usedCount entries are
+ * distinct table characters not yet in taken (and are marked there); the
+ * rest are 0.
+ */
+static int NativeMatchSelect_CharactersWellFormed(const uint8_t *characters, uint32_t entryCount, uint32_t usedCount,
+	uint8_t taken[NATIVE_MATCH_SELECT_CHARACTER_COUNT])
+{
+	for (uint32_t i = 0; i < entryCount; i++)
+	{
+		uint32_t characterIndex = 0;
+
+		if (i >= usedCount)
+		{
+			if (characters[i] != 0)
+			{
+				return 0;
+			}
+			continue;
+		}
+		if (!NativeMatchSelect_CharacterIndex(characters[i], &characterIndex) || (taken[characterIndex] != 0))
+		{
+			return 0;
+		}
+		taken[characterIndex] = 1;
+	}
+	return 1;
+}
+
+/* The outcome fields Resolve guarantees, checked against base. Counts are checked by the caller. */
+static int NativeMatchSelect_OutcomeWellFormed(const struct NativeMatchConfigV1 *base,
+	const struct NativeMatchSelectOutcome *outcome)
+{
+	uint8_t taken[NATIVE_MATCH_SELECT_CHARACTER_COUNT];
+	uint32_t index = 0;
+
+	if (!NativeMatchSelect_TrackIndex(outcome->trackID, &index) ||
+	    !NativeMatchSelect_LapOptionIndex(outcome->lapCount, &index) || (outcome->masterSeed == 0) ||
+	    (outcome->masterSeed == base->masterSeed) || (outcome->trackDrawn > 1u) || (outcome->lapsDrawn > 1u) ||
+	    (((uint32_t)outcome->characterReassignedMask >> outcome->humanCount) != 0u) ||
+	    ((outcome->aiSetIndex != NATIVE_MATCH_SELECT_AI_SET_NONE) && (outcome->aiSetIndex >= NATIVE_MATCH_SELECT_AI_SET_COUNT)))
+	{
+		return 0;
+	}
+
+	memset(taken, 0, sizeof(taken));
+	return NativeMatchSelect_CharactersWellFormed(outcome->humanCharacter, NATIVE_MATCH_SELECT_MAX_HUMANS,
+	           outcome->humanCount, taken) &&
+	       NativeMatchSelect_CharactersWellFormed(outcome->botCharacter, NATIVE_MATCH_CONFIG_V1_SLOT_COUNT,
+	           outcome->botCount, taken);
+}
+
 int NativeMatchSelect_BuildConfig(const struct NativeMatchConfigV1 *base, const struct NativeMatchSelectOutcome *outcome,
 	struct NativeMatchConfigV1 *config)
 {
 	struct NativeMatchConfigV1 built;
+	uint32_t humanSlotCount = 0;
 	uint32_t botCount = 0;
 	uint32_t bot = 0;
 
-	if ((base == NULL) || (outcome == NULL) || (config == NULL) || !NativeMatchConfigV1_Validate(base) ||
-	    (outcome->humanCount == 0) || (outcome->humanCount > NATIVE_MATCH_SELECT_MAX_HUMANS))
+	if ((base == NULL) || (outcome == NULL) || (config == NULL) || !NativeMatchConfigV1_Validate(base))
 	{
 		return 0;
 	}
 	for (uint32_t i = 0; i < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; i++)
 	{
-		if (base->slots[i].role == NATIVE_MATCH_SLOT_ROLE_BOT)
+		if ((base->slots[i].role == NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN) ||
+		    (base->slots[i].role == NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN))
+		{
+			humanSlotCount++;
+		}
+		else if (base->slots[i].role == NATIVE_MATCH_SLOT_ROLE_BOT)
 		{
 			botCount++;
 		}
 	}
-	if (outcome->botCount != botCount)
+	/* Every human slot gets a human: a partial outcome would leave a base character behind. */
+	if ((outcome->humanCount == 0) || (outcome->humanCount != humanSlotCount) || (outcome->botCount != botCount) ||
+	    !NativeMatchSelect_OutcomeWellFormed(base, outcome))
 	{
 		return 0;
 	}

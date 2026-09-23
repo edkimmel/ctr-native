@@ -840,6 +840,17 @@ static int TestOutcomeDigest(void)
 	return 0;
 }
 
+/* BuildConfig must fail and leave *config byte-for-byte untouched. */
+static int ExpectBuildFails(const struct NativeMatchConfigV1 *base, const struct NativeMatchSelectOutcome *outcome)
+{
+	struct NativeMatchConfigV1 built;
+
+	memset(&built, SENTINEL_BYTE, sizeof(built));
+	CHECK(NativeMatchSelect_BuildConfig(base, outcome, &built) == 0);
+	CHECK(IsAllByte(&built, sizeof(built), SENTINEL_BYTE));
+	return 0;
+}
+
 static int TestBuildConfig(void)
 {
 	struct NativeMatchConfigV1 base;
@@ -851,6 +862,7 @@ static int TestBuildConfig(void)
 	struct NativeMatchSelectOutcome bad;
 	uint8_t builtDigest[NATIVE_SHA256_DIGEST_BYTES];
 	uint8_t expectedDigest[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t slotIndex = 0;
 
 	BuildTwoCabBase(&base);
 	/* Give the slots distinct difficulties so a stray write would show. */
@@ -924,13 +936,15 @@ static int TestBuildConfig(void)
 	CHECK(NativeMatchConfigV1_Digest(&expected, expectedDigest) == 1);
 	CHECK(memcmp(builtDigest, expectedDigest, sizeof(builtDigest)) == 0);
 
-	/* Human slots are found by role, not by index: human 1 is CAB2. */
+	/* Human h lands in the CAB1_HUMAN + h slot (human 0 is CAB1, human 1 is CAB2), never swapped. */
 	bad = outcome;
-	bad.humanCharacter[0] = 2;
+	bad.humanCharacter[0] = 1;
 	bad.humanCharacter[1] = 5;
 	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 1);
-	CHECK(built.slots[0].characterID == 2);
-	CHECK(built.slots[1].characterID == 5);
+	CHECK(NativeMatchConfigV1_FindRoleSlot(&built, NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &slotIndex) == 1);
+	CHECK(built.slots[slotIndex].characterID == 1);
+	CHECK(NativeMatchConfigV1_FindRoleSlot(&built, NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &slotIndex) == 1);
+	CHECK(built.slots[slotIndex].characterID == 5);
 
 	/* One human on the one-cab base: CAB1 and seven bots. */
 	BuildOneCabBase(&oneCab);
@@ -948,36 +962,206 @@ static int TestBuildConfig(void)
 	SetChoice(&choices[1], 1, 3, 3, 2);
 	SetChoice(&choices[2], 2, 3, 3, 3);
 	SetChoice(&choices[3], 3, 3, 3, 4);
-	memset(&built, SENTINEL_BYTE, sizeof(built));
 
 	/* humanCount 3 and 4 have no role slot on the two-cab base. */
 	CHECK(NativeMatchSelect_Resolve(&base, 3, choices, &outcome) == 1);
-	CHECK(NativeMatchSelect_BuildConfig(&base, &outcome, &built) == 0);
+	CHECK(ExpectBuildFails(&base, &outcome) == 0);
 	CHECK(NativeMatchSelect_Resolve(&base, 4, choices, &outcome) == 1);
-	CHECK(NativeMatchSelect_BuildConfig(&base, &outcome, &built) == 0);
+	CHECK(ExpectBuildFails(&base, &outcome) == 0);
+
+	/*
+	 * One human on the two-cab base resolves (bots 0, 2, 3, 4, matching the
+	 * base's four bot slots) but must not build: CAB2's slot would keep its
+	 * base character, 1, which the human also holds.
+	 */
+	SetChoice(&choices[0], 1, 3, 3, 1);
+	CHECK(NativeMatchSelect_Resolve(&base, 1, choices, &outcome) == 1);
+	CHECK(outcome.humanCount == 1);
+	CHECK(outcome.botCount == 4);
+	CHECK(ExpectBuildFails(&base, &outcome) == 0);
+	SetChoice(&choices[0], 0, 3, 3, 1);
 
 	CHECK(NativeMatchSelect_Resolve(&base, 2, choices, &outcome) == 1);
 	bad = outcome;
 	bad.botCount = 3;
-	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 0);
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
 	bad.botCount = 5;
-	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 0);
-	CHECK(NativeMatchSelect_BuildConfig(&oneCab, &outcome, &built) == 0); /* 4 bots vs 7 */
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	CHECK(ExpectBuildFails(&oneCab, &outcome) == 0); /* 2 humans vs 1 slot, 4 bots vs 7 */
 	bad = outcome;
 	bad.humanCount = 0;
-	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 0);
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad.humanCount = 1;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
 	bad.humanCount = 5;
-	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 0);
-	bad = outcome;
-	bad.lapCount = 0; /* the result would fail NativeMatchConfigV1_Validate */
-	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 0);
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
 	expected = base;
 	expected.lapCount = 0;
-	CHECK(NativeMatchSelect_BuildConfig(&expected, &outcome, &built) == 0);
+	CHECK(ExpectBuildFails(&expected, &outcome) == 0);
 	CHECK(NativeMatchSelect_BuildConfig(NULL, &outcome, &built) == 0);
 	CHECK(NativeMatchSelect_BuildConfig(&base, NULL, &built) == 0);
-	CHECK(IsAllByte(&built, sizeof(built), SENTINEL_BYTE));
 	CHECK(NativeMatchSelect_BuildConfig(&base, &outcome, NULL) == 0);
+	return 0;
+}
+
+/* BuildConfig validates the outcome itself, not only the resulting config. */
+static int TestBuildRejectsMalformedOutcome(void)
+{
+	struct NativeMatchConfigV1 base;
+	struct NativeMatchConfigV1 built;
+	struct NativeMatchSelectChoice choices[2];
+	struct NativeMatchSelectOutcome outcome;
+	struct NativeMatchSelectOutcome bad;
+
+	BuildTwoCabBase(&base);
+	SetChoice(&choices[0], 0, 3, 3, 1);
+	SetChoice(&choices[1], 1, 3, 3, 2);
+	CHECK(NativeMatchSelect_Resolve(&base, 2, choices, &outcome) == 1);
+	/* Humans 0, 1; bots set 0 = 6, 4, 2, 3. */
+	CHECK(outcome.aiSetIndex == 0);
+	CHECK(NativeMatchSelect_BuildConfig(&base, &outcome, &built) == 1);
+
+	/* Track outside the table. */
+	bad = outcome;
+	bad.trackID = 13; /* OXIDE_STATION */
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad.trackID = 17; /* TURBO_TRACK */
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/* Laps outside the table (NativeMatchConfigV1_Validate accepts any nonzero count). */
+	bad = outcome;
+	bad.lapCount = 4;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad.lapCount = 0;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/* Characters outside the table, human and bot. */
+	bad = outcome;
+	bad.humanCharacter[1] = 8;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad = outcome;
+	bad.botCharacter[3] = 8;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad = outcome;
+	bad.humanCharacter[0] = 15; /* NITROS_OXIDE */
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/* Human/bot duplicate: CAB1 = 2 while the bot set 6, 4, 2, 3 also holds 2. */
+	bad = outcome;
+	bad.humanCharacter[0] = 2;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/* Human/human and bot/bot duplicates. */
+	bad = outcome;
+	bad.humanCharacter[1] = 0;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad = outcome;
+	bad.botCharacter[1] = 6;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/* Unused entries must be 0. */
+	bad = outcome;
+	bad.humanCharacter[2] = 5;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad = outcome;
+	bad.botCharacter[4] = 5;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad = outcome;
+	bad.botCharacter[NATIVE_MATCH_CONFIG_V1_SLOT_COUNT - 1u] = 7;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/* masterSeed 0 or the base's seed. */
+	bad = outcome;
+	bad.masterSeed = 0;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad.masterSeed = base.masterSeed;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/* Drawn flags are 0 or 1. */
+	bad = outcome;
+	bad.trackDrawn = 2;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad = outcome;
+	bad.lapsDrawn = 0xff;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+
+	/* characterReassignedMask has no bit at or above humanCount. */
+	bad = outcome;
+	bad.characterReassignedMask = 0x4u;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad.characterReassignedMask = 0x80u;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad.characterReassignedMask = 0x3u;
+	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 1);
+
+	/* aiSetIndex is AI_SET_NONE or a retail set. */
+	bad = outcome;
+	bad.aiSetIndex = NATIVE_MATCH_SELECT_AI_SET_COUNT;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad.aiSetIndex = 0xfeu;
+	CHECK(ExpectBuildFails(&base, &bad) == 0);
+	bad.aiSetIndex = NATIVE_MATCH_SELECT_AI_SET_NONE;
+	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 1);
+	bad.aiSetIndex = NATIVE_MATCH_SELECT_AI_SET_COUNT - 1u;
+	CHECK(NativeMatchSelect_BuildConfig(&base, &bad, &built) == 1);
+	return 0;
+}
+
+/*
+ * End to end: fixed two-cab base, fixed choices (both humans on TINY_TIGER,
+ * so CAB2 is reassigned; different track votes, so the track is drawn; the
+ * same lap vote), fixed nonces. Computed independently with a Perl
+ * Digest::SHA reference written from the header spec and the V1 config
+ * encoding. Frozen: changing any of these changes every agreed match.
+ */
+static const uint64_t k_frozenNonces[2] = { UINT64_C(0x0123456789abcdef), UINT64_C(0xfedcba9876543210) };
+static const uint64_t k_frozenSeed = UINT64_C(0x56ec93a7ef7aa836);
+static const uint8_t k_frozenOutcomeDigestPrefix[NATIVE_MATCH_SELECT_RESOLVED_DIGEST_BYTES] = {
+	0xe5, 0xfc, 0x38, 0x5f, 0x94, 0x23, 0x00, 0xb3,
+};
+static const uint8_t k_frozenBuiltDigest[NATIVE_SHA256_DIGEST_BYTES] = {
+	0x44, 0x51, 0x07, 0x30, 0x7c, 0x12, 0xde, 0xf4, 0x22, 0x76, 0x86, 0x33, 0xae, 0xb3, 0x53, 0x39,
+	0x5b, 0xf9, 0xc7, 0xb6, 0xc5, 0xc3, 0x78, 0x0b, 0xbb, 0x78, 0x53, 0xaa, 0x85, 0x4d, 0x31, 0x92,
+};
+
+static int TestFrozenEndToEnd(void)
+{
+	static const uint8_t frozenBots[NATIVE_MATCH_CONFIG_V1_SLOT_COUNT] = { 4, 7, 3, 5, 0, 0, 0, 0 };
+	struct NativeMatchConfigV1 base;
+	struct NativeMatchConfigV1 built;
+	struct NativeMatchSelectChoice choices[2];
+	struct NativeMatchSelectOutcome outcome;
+	uint8_t baseDigest[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t outcomeDigest[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t builtDigest[NATIVE_SHA256_DIGEST_BYTES];
+
+	BuildTwoCabBase(&base);
+	SetChoice(&choices[0], 2, 6, 5, k_frozenNonces[0]);  /* CAB1: TINY_TIGER, ROO_TUBES, 5 laps */
+	SetChoice(&choices[1], 2, 14, 5, k_frozenNonces[1]); /* CAB2: TINY_TIGER, MYSTERY_CAVES, 5 laps */
+	CHECK(NativeMatchSelect_Resolve(&base, 2, choices, &outcome) == 1);
+
+	CHECK(outcome.masterSeed == k_frozenSeed);
+	CHECK(outcome.trackID == 6);
+	CHECK(outcome.lapCount == 5);
+	CHECK(outcome.humanCount == 2);
+	CHECK(outcome.botCount == 4);
+	CHECK(outcome.trackDrawn == 1);
+	CHECK(outcome.lapsDrawn == 0);
+	CHECK(outcome.characterReassignedMask == 0x2u);
+	CHECK(outcome.aiSetIndex == 5);
+	CHECK(outcome.humanCharacter[0] == 2);
+	CHECK(outcome.humanCharacter[1] == 0);
+	CHECK(outcome.humanCharacter[2] == 0);
+	CHECK(outcome.humanCharacter[3] == 0);
+	CHECK(memcmp(outcome.botCharacter, frozenBots, sizeof(frozenBots)) == 0);
+
+	CHECK(NativeMatchConfigV1_Digest(&base, baseDigest) == 1);
+	CHECK(NativeMatchSelect_OutcomeDigest(baseDigest, &outcome, outcomeDigest) == 1);
+	CHECK(memcmp(outcomeDigest, k_frozenOutcomeDigestPrefix, sizeof(k_frozenOutcomeDigestPrefix)) == 0);
+
+	CHECK(NativeMatchSelect_BuildConfig(&base, &outcome, &built) == 1);
+	CHECK(NativeMatchConfigV1_Digest(&built, builtDigest) == 1);
+	CHECK(memcmp(builtDigest, k_frozenBuiltDigest, sizeof(builtDigest)) == 0);
 	return 0;
 }
 
@@ -993,6 +1177,8 @@ int main(void)
 	CHECK(TestResolveRejects() == 0);
 	CHECK(TestOutcomeDigest() == 0);
 	CHECK(TestBuildConfig() == 0);
+	CHECK(TestBuildRejectsMalformedOutcome() == 0);
+	CHECK(TestFrozenEndToEnd() == 0);
 	puts("native_match_select_rules_test: ok");
 	return 0;
 }

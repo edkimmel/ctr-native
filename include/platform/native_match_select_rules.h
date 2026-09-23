@@ -13,9 +13,12 @@
  * every cabinet computes identically, and builds the resolved config from it.
  *
  * Human index h is the cabinet role minus 1 (CAB1 -> 0, CAB2 -> 1; indices 2
- * and 3 are reserved for step 8). humanCount is 1..4 here, but
- * NativeMatchConfigV1 has only two human roles, so BuildConfig supports at
- * most humanCount 2 until step 8.
+ * and 3 are reserved for step 8). Resolve accepts humanCount 1..4 on any
+ * valid base, but BuildConfig builds only an outcome whose humanCount equals
+ * the base's number of human-role slots (CAB1_HUMAN and CAB2_HUMAN): exactly
+ * 2 on ARCADE_TWO_CAB and exactly 1 on ARCADE_ONE_CAB. NativeMatchConfigV1
+ * has only two human roles, so humanCount 3 and 4 cannot be built until
+ * step 8.
  *
  * The tables mirror retail (docs/MATCH_SELECT_MILESTONE.md section 1, and
  * tests/native_match_select_rules_isolation_test.cmake checks the mirror):
@@ -34,8 +37,10 @@
  * little-endian fields, so the results are identical on every host.
  *
  * Pure: caller-owned state, no heap use, no I/O, no hidden state, fully
- * deterministic. Every function returns 1 on success, or 0 with every output
- * untouched on NULL arguments or invalid input.
+ * deterministic. The table accessors (CharacterAt, TrackAt, LapOptionAt,
+ * AiSetRacer) return the table value, or 0xff out of range. Every other
+ * function returns 1 on success, or 0 with every output untouched on NULL
+ * arguments or invalid input.
  */
 
 #define NATIVE_MATCH_SELECT_MAX_HUMANS 4u
@@ -158,10 +163,21 @@ int NativeMatchSelect_OutcomeDigest(const uint8_t baseDigest[NATIVE_SHA256_DIGES
  * ascending slot order taken from *outcome. Everything else (profile, tick
  * rate, identity, difficulty, bot rules, gameMode and rules) is unchanged.
  *
- * Fails if base is invalid, outcome->humanCount is not 1..4, a human has no
- * role slot (so humanCount 3 or 4 always fails today), outcome->botCount
- * differs from base's bot slot count, or the result fails
- * NativeMatchConfigV1_Validate.
+ * Fails if base is invalid; outcome->humanCount differs from base's number of
+ * human-role slots (so one human on a two-cab base, and humanCount 3 or 4 on
+ * any base, never build, although Resolve accepts them); outcome->botCount
+ * differs from base's bot slot count; or the outcome is not one Resolve could
+ * produce for that shape:
+ * - trackID is not a table track, or lapCount is not a table lap option;
+ * - a used human character (the first humanCount) or bot character (the
+ *   first botCount) is not a table character, or any two of those
+ *   humanCount + botCount characters are equal;
+ * - an unused humanCharacter or botCharacter entry is nonzero;
+ * - masterSeed is 0 or equals base->masterSeed;
+ * - trackDrawn or lapsDrawn is not 0 or 1;
+ * - characterReassignedMask has a bit at or above humanCount;
+ * - aiSetIndex is neither AI_SET_NONE nor below AI_SET_COUNT.
+ * It also fails if the result fails NativeMatchConfigV1_Validate.
  */
 int NativeMatchSelect_BuildConfig(const struct NativeMatchConfigV1 *base, const struct NativeMatchSelectOutcome *outcome,
 	struct NativeMatchConfigV1 *config);

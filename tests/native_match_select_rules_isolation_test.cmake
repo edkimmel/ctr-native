@@ -12,9 +12,19 @@
 # sets must equal game/zGlobal_DATA.c `.characterIDs_2P_AIs` in order; the
 # lap options must equal the nonzero game/230/D230.c `.lapCountByRow` rows;
 # the tracks must equal the levelIDs of the game/230/D230.c `.arcadeTracks`
-# rows whose unlock field is 0xFFFF, in order; and the characters are the
-# base characters 0..7. Both sides are parsed here, so a change to either
-# fails this test.
+# rows whose unlock field is 0xFFFF, in order; and the characters must equal
+# the retail default-character table that MM_Characters_PreventOverlap scans
+# (game/230/R230.c `.packedDefaultCharacterIDWords`, unpacked as
+# little-endian bytes), whose length is game/230/MM_Characters.c
+# MM_CHARACTER_SELECT_DEFAULT_DRIVER_COUNT, and whose IDs must name, in
+# order, the first entries of include/namespace_Vehicle.h `enum Characters`:
+# CRASH_BANDICOOT = 0, then NEO_CORTEX, TINY_TIGER, COCO_BANDICOOT, N_GIN,
+# DINGODILE, POLAR, PURA with implicit values. Both sides are parsed here,
+# so a change to either fails this test.
+#
+# The milestone rule (docs/MATCH_SELECT_MILESTONE.md section 5.3): no
+# `NativeMatchSelect` or `native_match_select` token in any game/*.c or
+# game/*.h file; game code talks only to the host API.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "match select rules isolation")
@@ -207,10 +217,78 @@ ctr_header_count(NATIVE_MATCH_SELECT_LAP_OPTION_COUNT header_lap_count)
 ctr_header_count(NATIVE_MATCH_SELECT_AI_SET_COUNT header_ai_set_count)
 ctr_header_count(NATIVE_MATCH_SELECT_AI_SET_RACERS header_ai_set_racers)
 
-# Characters: the base characters 0..7 (include/namespace_Vehicle.h:37-55).
-ctr_require_equal("base characters" "${module_characters}" "0;1;2;3;4;5;6;7")
+# Characters. (a) The default-driver count, defined exactly once in
+# game/230/MM_Characters.c.
+ctr_read_source("game/230/MM_Characters.c" mm_characters)
+string(REGEX MATCHALL "MM_CHARACTER_SELECT_DEFAULT_DRIVER_COUNT[ \t]*=[ \t]*[0-9a-fA-FxX]+" definitions "${mm_characters}")
+list(LENGTH definitions definition_count)
+if(NOT definition_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: MM_CHARACTER_SELECT_DEFAULT_DRIVER_COUNT must be defined exactly once in game/230/MM_Characters.c (found ${definition_count})")
+endif()
+string(REGEX MATCH "=[ \t]*([0-9a-fA-FxX]+)" found "${definitions}")
+ctr_parse_numbers("MM_CHARACTER_SELECT_DEFAULT_DRIVER_COUNT" "${CMAKE_MATCH_1}" retail_default_count)
+ctr_require_equal("NATIVE_MATCH_SELECT_CHARACTER_COUNT vs MM_CHARACTER_SELECT_DEFAULT_DRIVER_COUNT"
+    "${header_character_count}" "${retail_default_count}")
+ctr_require_equal("MM_CHARACTER_SELECT_DEFAULT_DRIVER_COUNT" "8" "${retail_default_count}")
+
+# (b) The default-character table MM_Characters_PreventOverlap copies
+#     (MM_DEFAULT_CHARACTER_ID_WORDS, game/230.c), initialized exactly once in
+#     game/230/R230.c as little-endian packed u32 words.
+ctr_read_source("game/230/R230.c" r230)
+string(REGEX MATCHALL "\\.packedDefaultCharacterIDWords[ \t]*=" occurrences "${r230}")
+list(LENGTH occurrences occurrence_count)
+if(NOT occurrence_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: .packedDefaultCharacterIDWords must be initialized exactly once in game/230/R230.c (found ${occurrence_count})")
+endif()
+string(REGEX MATCH "\\.packedDefaultCharacterIDWords[ \t]*=[ \t\r\n]*\\{([^{}]*)\\}" found "${r230}")
+if(found STREQUAL "")
+    message(FATAL_ERROR "${prefix}: could not parse .packedDefaultCharacterIDWords in game/230/R230.c")
+endif()
+ctr_parse_numbers("game/230/R230.c .packedDefaultCharacterIDWords" "${CMAKE_MATCH_1}" packed_words)
+set(retail_characters "")
+foreach(word IN LISTS packed_words)
+    foreach(shift IN ITEMS 0 8 16 24)
+        math(EXPR byte "(${word} >> ${shift}) & 0xff")
+        list(APPEND retail_characters "${byte}")
+    endforeach()
+endforeach()
+list(LENGTH retail_characters retail_character_count)
+ctr_require_equal("packedDefaultCharacterIDWords byte count vs MM_CHARACTER_SELECT_DEFAULT_DRIVER_COUNT"
+    "${retail_character_count}" "${retail_default_count}")
+ctr_require_equal("characters vs packedDefaultCharacterIDWords" "${module_characters}" "${retail_characters}")
 list(LENGTH module_characters length)
 ctr_require_equal("NATIVE_MATCH_SELECT_CHARACTER_COUNT" "${header_character_count}" "${length}")
+
+# (c) Those IDs are the first entries of `enum Characters`
+#     (include/namespace_Vehicle.h), declared exactly once: CRASH_BANDICOOT = 0
+#     and then the next seven base characters with implicit values, so entry i
+#     has value i.
+ctr_read_source("include/namespace_Vehicle.h" vehicle_header)
+string(REGEX MATCHALL "enum[ \t\r\n]+Characters[^a-zA-Z0-9_]" occurrences "${vehicle_header}")
+list(LENGTH occurrences occurrence_count)
+if(NOT occurrence_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: enum Characters must be declared exactly once in include/namespace_Vehicle.h (found ${occurrence_count})")
+endif()
+string(REGEX MATCH "enum[ \t\r\n]+Characters[ \t\r\n]*\\{([^{}]*)\\}" found "${vehicle_header}")
+if(found STREQUAL "")
+    message(FATAL_ERROR "${prefix}: could not parse enum Characters in include/namespace_Vehicle.h")
+endif()
+set(enum_body "${CMAKE_MATCH_1}")
+string(REGEX REPLACE "//[^\r\n]*" "" enum_body "${enum_body}")
+string(REGEX REPLACE "[ \t\r\n]" "" enum_body "${enum_body}")
+string(REPLACE "," ";" enum_entries "${enum_body}")
+list(LENGTH enum_entries enum_entry_count)
+if(enum_entry_count LESS retail_default_count)
+    message(FATAL_ERROR "${prefix}: enum Characters has ${enum_entry_count} entries, fewer than ${retail_default_count}")
+endif()
+math(EXPR last_character "${retail_default_count} - 1")
+list(SUBLIST enum_entries 0 ${retail_default_count} base_character_entries)
+ctr_require_equal("enum Characters base entries"
+    "CRASH_BANDICOOT=0;NEO_CORTEX;TINY_TIGER;COCO_BANDICOOT;N_GIN;DINGODILE;POLAR;PURA" "${base_character_entries}")
+foreach(index RANGE 0 ${last_character})
+    list(GET retail_characters ${index} character)
+    ctr_require_equal("default character ${index} vs its enum Characters value" "${index}" "${character}")
+endforeach()
 
 # 2P AI sets: game/zGlobal_DATA.c .characterIDs_2P_AIs, with the retail
 # set and racer counts from include/namespace_Load.h.
@@ -270,3 +348,17 @@ endforeach()
 ctr_require_equal("tracks" "${module_tracks}" "${retail_tracks}")
 list(LENGTH module_tracks length)
 ctr_require_equal("NATIVE_MATCH_SELECT_TRACK_COUNT" "${header_track_count}" "${length}")
+
+# 11. No match-select token under game/ (docs/MATCH_SELECT_MILESTONE.md
+#     section 5.3): game code talks only to the host API.
+file(GLOB_RECURSE game_sources RELATIVE "${repo}" "${repo}/game/*.c" "${repo}/game/*.h")
+list(LENGTH game_sources game_source_count)
+if(game_source_count EQUAL 0)
+    message(FATAL_ERROR "${prefix}: game/ source glob is empty; the match-select token scan cannot run")
+endif()
+foreach(relative_path IN LISTS game_sources)
+    ctr_read_source("${relative_path}" source)
+    foreach(term IN ITEMS NativeMatchSelect native_match_select)
+        ctr_forbid("${relative_path}" "${source}" "${term}")
+    endforeach()
+endforeach()
