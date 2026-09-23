@@ -415,6 +415,19 @@ set_target_properties(ctr_native_match_select_message PROPERTIES
 target_include_directories(ctr_native_match_select_message PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_match_select_message PUBLIC ctr_native_match_select_rules ctr_native_canonical_codec)
 
+# Match-select session (docs/MATCH_SELECT_MILESTONE.md section 2.3, MS-4):
+# the pure, caller-owned select agreement state machine over the rules and
+# the select message codec. Transport-free; only its fault test links the
+# virtual datagram harness. Not linked into ctr_native yet.
+add_library(ctr_native_match_select_session STATIC platform/native_match_select_session.c)
+set_target_properties(ctr_native_match_select_session PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_match_select_session PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_match_select_session PUBLIC ctr_native_match_select_rules ctr_native_match_select_message)
+
 # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6, Task
 # 6b-1): a process-wide singleton owning one arcade-link host adapter (link
 # mode) or a scripted screen preview (preview mode), behind a small
@@ -1297,6 +1310,31 @@ if(BUILD_TESTING)
 
     add_test(NAME native_match_select_message_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_match_select_message_isolation_test.cmake")
+
+    # Match-select session (docs/MATCH_SELECT_MILESTONE.md section 2.3,
+    # MS-4): every rule driven directly, then fault injection (loss, delay,
+    # reorder, duplication, corruption, silence, stale selects, 4 humans)
+    # over the virtual datagram harness, which only the fault test links.
+    add_executable(native_match_select_session_test tests/native_match_select_session_test.c)
+    set_target_properties(native_match_select_session_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_match_select_session_test PRIVATE ctr_native_match_select_session)
+    add_test(NAME native_match_select_session_unit COMMAND $<TARGET_FILE:native_match_select_session_test>)
+
+    add_executable(native_match_select_session_fault_test tests/native_match_select_session_fault_test.c)
+    set_target_properties(native_match_select_session_fault_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_match_select_session_fault_test PRIVATE ctr_native_match_select_session ctr_native_virtual_datagram)
+    add_test(NAME native_match_select_session_fault COMMAND $<TARGET_FILE:native_match_select_session_fault_test>)
+
+    add_test(NAME native_match_select_session_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_match_select_session_isolation_test.cmake")
 
     # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6,
     # Task 6b-1): the singleton in every mode, one loopback socket on a dead
