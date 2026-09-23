@@ -450,35 +450,33 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
 
 ## Next work
 
-Step 3 (two-human-plus-bot roster and RNG ownership) is functionally
-complete and tracked in `docs/ROSTER_MILESTONE.md`: real bot rules and
-digest, the race setup plan, and the live adapter
-`game/MAIN/MainArcadeRaceSetup.{c,h}` (the seam Task 7 calls:
-`_Arm/_Launch/_Status/_Digests/_Bank/_Disarm`), proven by the `live`-labelled
-ctest `arcade_roster_determinism`. The suite is 133 tests; `ctest -LE live`
-skips the two slow live tests.
+Step 3 (two-human-plus-bot roster and RNG ownership) is complete for the
+two-cabinet profile and tracked in `docs/ROSTER_MILESTONE.md`. The live
+adapter `game/MAIN/MainArcadeRaceSetup.{c,h}` is the seam Task 7 calls, and
+the `live`-labelled ctest `arcade_roster_determinism` proves it. The suite
+is 133 tests; `ctest -LE live` skips the two slow live tests.
 
-1. Review R-6c (`ab83ea92f`) and R-6b (`1bafa6005`), which are unreviewed:
-   the race-counter pin, proof-only fixed VBlank pacing (default, link, and
-   replay pacing must be unchanged), the run-E offset rule, and report
-   format v6. Close any findings.
-2. R-7 docs close-out: `docs/ROSTER_MILESTONE.md` statuses and RS-14..RS-18,
-   the step-3 and simulation sections of this file, and the fixture/UX-8/
-   risk 6/Task 7 text in `docs/GAME_LOOP_UI_MILESTONE.md`. Notes in
-   `.cache/briefs/roster-r7-notes.md`.
-3. Operator decisions: RS-1..RS-18 (`docs/ROSTER_MILESTONE.md`), SEL-1..SEL-17
+1. Single-cabinet race setup (owner override of RS-1: support both
+   ARCADE_ONE_CAB and ARCADE_TWO_CAB). The ONE_CAB profile is a retail
+   1P arcade race: one human and seven bots on the retail 1P AI set. The
+   setup plan, facts, adapter, and roster proof must accept it, and a
+   ONE_CAB run must be added to `arcade_roster_determinism`. This gives a
+   one-machine path to launch a real race without a peer.
+2. Operator decisions: RS-1..RS-18 (`docs/ROSTER_MILESTONE.md`), SEL-1..SEL-17
    (`docs/MATCH_SELECT_MILESTONE.md` section 4), UX-1..UX-11
    (`docs/GAME_LOOP_UI_MILESTONE.md` section 3; UX-8 superseded), and review
    of the five select preview screens.
-4. Task 7, networked race launch through `MainArcadeRaceSetup`, including
-   asymmetric relink completion (`docs/MATCH_SELECT_MILESTONE.md` section 7)
-   and disabling the pause-menu vibration toggle in linked races.
-5. Task 8, in-race lockstep drive and failure handling, gated on Task 7 and
+3. Task 7, networked race launch through `MainArcadeRaceSetup`, including
+   asymmetric relink completion (`docs/MATCH_SELECT_MILESTONE.md` section 7),
+   extending the setup isolation test's caller allow-list, and disabling the
+   pause-menu vibration toggle in linked races.
+4. Task 8, in-race lockstep drive and failure handling, gated on Task 7 and
    live V4 projection. It must make VBlanks per tick deterministic (host
-   timing currently feeds `elapsedTimeMS`), compare race-relative control
-   (frameCounter and frameTimer_VsyncCallback are boot-relative), and
-   project the post-setup RNG bank from `MainArcadeRaceSetup_Bank()`.
-6. Real two-cabinet and G29 validation (actual wire, LAN switch,
+   timing feeds `elapsedTimeMS` and `frameTimer_Confetti`), compare
+   race-relative control (frameCounter and frameTimer_VsyncCallback are
+   boot-relative), and project the post-setup RNG bank from
+   `MainArcadeRaceSetup_Bank()`.
+5. Real two-cabinet and G29 validation (actual wire, LAN switch,
    latency/loss, wheel input) needs cabinet access and is the separately
    gated requirement for step 6 (CAB1 G29/kiosk gate) and step 7
    (two-cabinet fleet acceptance).
