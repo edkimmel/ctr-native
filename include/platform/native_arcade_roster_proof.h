@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "platform/native_arcade_bot_rules.h"
 #include "platform/native_identity.h"
 #include "platform/native_match_config.h"
 #include "platform/native_sha256.h"
@@ -71,6 +72,13 @@
  *                            after the dwell
  *   25  MENU_READY_TIMEOUT   no menu-ready frame within MENU_READY_TIMEOUT_TICKS
  *   26  VALIDATE_TIMEOUT     not VALIDATED within VALIDATE_TIMEOUT_TICKS of launch
+ *   27  SEED_MISMATCH        VALIDATED, but a retail seed field read back
+ *                            right after the SEEDED writes differs from the
+ *                            seed the setup produced (the adapter's field
+ *                            mapping is wrong)
+ *   28  EVIDENCE_MISSING     VALIDATED, but the digests, the slot facts, or
+ *                            the seed readback could not be read; PASS needs
+ *                            all three
  *
  * The failure codes start at 20 so that none collides with 1 or with the C
  * runtime's abort() code 3.
@@ -129,7 +137,9 @@ enum NativeArcadeRosterProofResult
 	NATIVE_ARCADE_ROSTER_PROOF_ARM_FAILED = 23,           /* MainArcadeRaceSetup_Arm refused the config */
 	NATIVE_ARCADE_ROSTER_PROOF_LAUNCH_FAILED = 24,        /* no launch window within LAUNCH_WAIT_TIMEOUT_TICKS after the dwell */
 	NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT = 25,   /* no menu-ready frame within MENU_READY_TIMEOUT_TICKS ticks */
-	NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT = 26      /* not VALIDATED within VALIDATE_TIMEOUT_TICKS ticks of launch */
+	NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT = 26,     /* not VALIDATED within VALIDATE_TIMEOUT_TICKS ticks of launch */
+	NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH = 27,        /* a seeded retail field read back differs from the produced seed */
+	NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING = 28      /* VALIDATED without readable digests, slot facts, or seed readback */
 };
 
 /* Where the proof launched from (the report's "launch window" line). */
@@ -158,7 +168,9 @@ struct NativeArcadeRosterProofSlotLine
  * own codes and names (the platform module does not include game headers).
  * Ticks are proof ticks, TICK_NONE when never reached. digestsValid and
  * slotsValid say whether the digests and slot lines are filled (only once
- * VALIDATED).
+ * VALIDATED). seedValid says whether seedStored holds the retail seed fields
+ * read back right after the SEEDED writes, and seedMatch whether they equal
+ * the seeds the setup produced (NativeArcadeRosterProof_SeedsMatch).
  */
 struct NativeArcadeRosterProofReport
 {
@@ -176,7 +188,9 @@ struct NativeArcadeRosterProofReport
 	uint32_t validatedTick;
 	uint8_t digestsValid;
 	uint8_t slotsValid;
-	uint8_t reserved[2];
+	uint8_t seedValid;
+	uint8_t seedMatch;
+	struct NativeArcadeRetailRngSeedsV1 seedStored;
 	uint8_t configDigest[NATIVE_SHA256_DIGEST_BYTES];
 	uint8_t racePlanDigest[NATIVE_SHA256_DIGEST_BYTES];
 	uint8_t botSetupPlanDigest[NATIVE_SHA256_DIGEST_BYTES];
@@ -245,14 +259,28 @@ const char *NativeArcadeRosterProof_LogPath(void);
 /*
  * Formats the report as text into buffer (NUL-terminated) and stores its
  * length without the NUL. Returns 0 on NULL arguments or a buffer too small.
- * The format is line based: a header line ("arcade roster proof v2"), then
+ * The format is line based: a header line ("arcade roster proof v3"), then
  * "result", "setup status", "setup failure", "seed", "dwell", "menu ready
  * tick", "demo race tick", "launch tick", "launch window" (title, demo race,
  * or none), "validated tick", the four digests as lowercase hex (or "none"),
- * and one "slot" line per slot.
+ * the "seeded" line (the five retail seed fields as read back, and "match 1"
+ * or "match 0"; "seeded none" without a readback), and one "slot" line per
+ * slot.
  */
 int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofReport *report, char *buffer,
 	size_t bufferSize, size_t *length);
+
+/* 1 when every one of the five seeds equals its readback; 0 otherwise (also
+ * for NULL). */
+int NativeArcadeRosterProof_SeedsMatch(const struct NativeArcadeRetailRngSeedsV1 *produced,
+	const struct NativeArcadeRetailRngSeedsV1 *stored);
+
+/*
+ * The result a finished proof reports: requested unless it is PASS, and PASS
+ * only when the digests, the slot facts, and the seed readback are all valid
+ * (else EVIDENCE_MISSING) and the readback matches (else SEED_MISMATCH).
+ */
+uint32_t NativeArcadeRosterProof_FinalResult(uint32_t requested, const struct NativeArcadeRosterProofReport *report);
 
 /* Formats the report and writes it to the configured log path. 0 when
  * inactive or on any I/O failure. */

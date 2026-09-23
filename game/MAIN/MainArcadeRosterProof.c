@@ -68,19 +68,34 @@ static void MainArcadeRosterProof_CopyName(char out[NATIVE_ARCADE_ROSTER_PROOF_N
 	}
 }
 
-/* Writes the report for `result`, logs it, records the exit code, and
+/* The seed readback of the setup: 1 with *stored filled and *match set when
+ * the setup can report it, else 0. */
+static int MainArcadeRosterProof_ReadSeeds(struct NativeArcadeRetailRngSeedsV1 *stored, uint8_t *match)
+{
+	struct NativeArcadeRetailRngSeedsV1 produced;
+
+	if (!MainArcadeRaceSetup_SeedReadback(&produced, stored))
+	{
+		return 0;
+	}
+	*match = NativeArcadeRosterProof_SeedsMatch(&produced, stored) ? 1u : 0u;
+	return 1;
+}
+
+/* Writes the report for `requested` (PASS only with valid evidence,
+ * NativeArcadeRosterProof_FinalResult), logs it, records the exit code, and
  * requests the exit. */
-static void MainArcadeRosterProof_Finish(uint32_t result)
+static void MainArcadeRosterProof_Finish(uint32_t requested)
 {
 	struct MainArcadeRosterProofState *state = &s_mainArcadeRosterProof;
 	struct NativeArcadeRosterProofReport report;
 	struct MainArcadeBotSetupSourceFacts facts;
 	const enum MainArcadeRaceSetupStatus status = MainArcadeRaceSetup_Status();
 	const enum MainArcadeRaceSetupFailure failure = MainArcadeRaceSetup_Failure();
-	int exitCode = (int)result;
+	uint32_t result;
+	int exitCode;
 
 	memset(&report, 0, sizeof(report));
-	report.result = result;
 	report.setupStatus = (uint32_t)status;
 	report.setupFailure = (uint32_t)failure;
 	MainArcadeRosterProof_CopyName(report.setupStatusName, MainArcadeRaceSetup_StatusName(status));
@@ -116,6 +131,10 @@ static void MainArcadeRosterProof_Finish(uint32_t result)
 		}
 		report.slotsValid = 1u;
 	}
+	report.seedValid = MainArcadeRosterProof_ReadSeeds(&report.seedStored, &report.seedMatch) ? 1u : 0u;
+	result = NativeArcadeRosterProof_FinalResult(requested, &report);
+	report.result = result;
+	exitCode = (int)result;
 
 	if (!NativeArcadeRosterProof_WriteReport(&report))
 	{
@@ -297,6 +316,21 @@ void MainArcadeRosterProof_Frame(struct GameTracker *gGT, struct GamepadSystem *
 		}
 		if (status == MAIN_ARCADE_RACE_SETUP_VALIDATED)
 		{
+			struct NativeArcadeRetailRngSeedsV1 stored;
+			uint8_t match = 0u;
+
+			/* Pin the adapter's field mapping: the seeds as stored must be
+			 * the seeds the setup produced. */
+			if (!MainArcadeRosterProof_ReadSeeds(&stored, &match))
+			{
+				MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+				return;
+			}
+			if (match == 0u)
+			{
+				MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH);
+				return;
+			}
 			state->validatedTick = state->tick;
 			state->phase = MAIN_ARCADE_ROSTER_PROOF_VALIDATED;
 			Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "validated at tick %u\n", (unsigned)state->tick);

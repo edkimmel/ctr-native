@@ -57,7 +57,42 @@
  *   BOOL_DEMO_MODE (the re-apply), then RANDOM_NUMBER, ADV_RNG0, ADV_RNG1,
  *   PSX_RAND_SEED, AUDIO_RNG (the seeds, RS-7, in this order).
  * - Disarm: GAME_MODE1 only when the vibration bits are restored.
- * Every other step writes nothing.
+ * Every other step writes nothing. LAUNCH_OP_COUNT and BEGIN_OP_COUNT below
+ * are those exact counts; a static assert proves each fits MAX_OPS, and a step
+ * whose list would still overflow fails closed (OPS) with no op at all, never
+ * a truncated list.
+ *
+ * Launch from inside the attract demo race. Launch may run while the attract
+ * demo race still ticks: MainRaceTrack_RequestLoad only queues the load, and
+ * the demo race keeps simulating for a few frames until the checkered flag
+ * covers the screen and the load starts (MainMain.c, the Loading.stage -4
+ * branch). The Launch writes (the mode words, arcadeDifficulty,
+ * boolDemoMode 0, numLaps, numPlyrNextGame, and characterIDs) therefore apply
+ * to that demo race for those frames. This is safe:
+ * - boolDemoMode 0 disables the demo exit: the countdown and the "any button"
+ *   exit that would request MAIN_MENU_LEVEL run only while boolDemoMode is set
+ *   (MainMain.c:422-460), so the demo cannot queue a competing load;
+ * - every other competing load is caught: a later MainRaceTrack_RequestLoad
+ *   replaces the queued level, and the pre-drivers hook then fails closed
+ *   with LEVEL_MISMATCH;
+ * - nothing written at Launch is trusted at race init: the pre-drivers hook
+ *   re-verifies every field the load consumed (levelID, numLaps,
+ *   numPlyrCurrGame, characterIDs[0..5]; LOAD_FIELDS_MISMATCH) and re-applies
+ *   the mode words, arcadeDifficulty, and boolDemoMode after the demo race
+ *   ended, so nothing the demo race did in those frames reaches the race;
+ * - the demo race's drivers were spawned from its own characterIDs at its own
+ *   init, so the new values reach it only through presentation readers
+ *   (voice lines, HUD) for those frames;
+ * - it has a precedent: the arcade-link return-to-title
+ *   (MainArcadeLink.c:239-245) writes boolDemoMode and numPlyrNextGame and
+ *   requests a load under the running demo race in the same way.
+ * This does not contradict the Disarm rule that gameMode1 must not change
+ * under a running race. That rule protects the race this setup launched,
+ * whose control state is canonical from its first tick. The attract demo
+ * race is not that race: nothing records or compares it, its level is being
+ * replaced by the setup's own, and its last frames run before the setup's
+ * race exists. The Launch mode write is the one the retail menu itself makes
+ * (MM_MenuFlow.c:152, :224) on the way out of the attract loop.
  */
 
 /* Mirrors of retail values the steps compare against; the adapter
@@ -66,6 +101,12 @@
 #define MAIN_ARCADE_RACE_SETUP_CORE_MAIN_MENU_LEVEL 39      /* enum LevelID main-menu level (namespace_Level.h) */
 
 #define MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS 16u
+/* The exact op count of each writing step (see "Writes" above). */
+#define MAIN_ARCADE_RACE_SETUP_CORE_MODE_OP_COUNT 4u /* GAME_MODE1, GAME_MODE2, ARCADE_DIFFICULTY, BOOL_DEMO_MODE */
+#define MAIN_ARCADE_RACE_SETUP_CORE_LAUNCH_OP_COUNT \
+	(MAIN_ARCADE_RACE_SETUP_CORE_MODE_OP_COUNT + 2u + MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT + 1u)
+#define MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT \
+	(MAIN_ARCADE_RACE_SETUP_CORE_MODE_OP_COUNT + NATIVE_ARCADE_BOT_RULES_SEED_TARGET_COUNT)
 #define MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES 32u
 
 enum MainArcadeRaceSetupStatus
@@ -92,7 +133,8 @@ enum MainArcadeRaceSetupFailure
 	MAIN_ARCADE_RACE_SETUP_FAILURE_ROSTER,               /* the roster plan or its validation failed */
 	MAIN_ARCADE_RACE_SETUP_FAILURE_BOT_SETUP,            /* MainArcadeBotSetup_Plan refused the facts */
 	MAIN_ARCADE_RACE_SETUP_FAILURE_STATE,                /* a hook or call in the wrong state */
-	MAIN_ARCADE_RACE_SETUP_FAILURE_NO_TRACKER            /* a hook that should act had no game tracker */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_NO_TRACKER,           /* a hook that should act had no game tracker */
+	MAIN_ARCADE_RACE_SETUP_FAILURE_OPS                   /* a write list would overflow MAX_OPS (never a partial list) */
 };
 
 /* The retail write targets. The adapter maps each to exactly one retail
@@ -148,7 +190,7 @@ struct MainArcadeRaceSetupCoreOutcome
 	uint8_t result;         /* the step's return value */
 	uint8_t log;            /* MainArcadeRaceSetupCoreLog */
 	uint8_t vibration;      /* MainArcadeRaceSetupCoreVibration */
-	uint8_t reserved;
+	uint8_t overflowed;     /* 1 once a push found the list full; the step then fails closed (OPS) */
 	uint32_t status;        /* MainArcadeRaceSetupStatus after the step */
 	uint32_t failure;       /* MainArcadeRaceSetupFailure after the step */
 	const char *detail;     /* fixed text for the log; never NULL */
@@ -209,7 +251,9 @@ enum MainArcadeRaceSetupCoreHook
  * The whole setup state, owned by the caller (the adapter keeps one
  * file-scope static instance, outside every saved-state region, never
  * recorded or canonical, RS-11). bank is the post-Arm bank, then the
- * post-seed bank from SEEDED, then the post-setup bank from VALIDATED.
+ * post-seed bank from SEEDED, then the post-setup bank from VALIDATED. seeds
+ * are the retail seeds the SEEDED step produced, and seedReadback what the
+ * adapter read back from the retail fields right after it applied them.
  */
 struct MainArcadeRaceSetupCore
 {
@@ -217,7 +261,10 @@ struct MainArcadeRaceSetupCore
 	uint32_t failure;        /* MainArcadeRaceSetupFailure */
 	uint32_t savedVibration; /* gameMode1 & HOST_LOCAL_MASK at Arm */
 	uint8_t fieldsWritten;   /* 1 once Launch wrote the live fields */
-	uint8_t reserved[3];
+	uint8_t seedReadbackRecorded; /* 1 once RecordSeedReadback stored seedReadback */
+	uint8_t reserved[2];
+	struct NativeArcadeRetailRngSeedsV1 seeds;
+	struct NativeArcadeRetailRngSeedsV1 seedReadback;
 	struct NativeMatchConfigV1 config;
 	struct MainArcadeRaceSetupPlan plan;
 	struct NativeDeterministicRngBankV1 bank;
@@ -306,6 +353,22 @@ int MainArcadeRaceSetupCore_OnDriversInitialized(struct MainArcadeRaceSetupCore 
  */
 int MainArcadeRaceSetupCore_Disarm(struct MainArcadeRaceSetupCore *core,
 	const struct MainArcadeRaceSetupCoreDisarmView *view, struct MainArcadeRaceSetupCoreOutcome *outcome);
+
+/*
+ * The adapter's readback of the retail seed fields, taken right after it
+ * applied the SEEDED ops and before anything else runs: randomNumber, advRng
+ * state0 and state1, the PSX BIOS rand seed, and audioRNG, each at 32 bits.
+ * Accepted once, only in SEEDED (returns 1); otherwise 0 and nothing changes.
+ * It decides nothing: the proof compares it with the produced seeds.
+ */
+int MainArcadeRaceSetupCore_RecordSeedReadback(struct MainArcadeRaceSetupCore *core,
+	const struct NativeArcadeRetailRngSeedsV1 *readback);
+
+/* In SEEDED or VALIDATED, once the readback was recorded: the seeds the
+ * SEEDED step produced and the values read back. 0 with both outputs
+ * untouched otherwise. */
+int MainArcadeRaceSetupCore_SeedReadback(const struct MainArcadeRaceSetupCore *core,
+	struct NativeArcadeRetailRngSeedsV1 *produced, struct NativeArcadeRetailRngSeedsV1 *readback);
 
 /* IDLE for NULL. */
 enum MainArcadeRaceSetupStatus MainArcadeRaceSetupCore_Status(const struct MainArcadeRaceSetupCore *core);

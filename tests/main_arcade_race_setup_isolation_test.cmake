@@ -43,7 +43,14 @@
 #     NativeArcadeRosterProof_ExitCode(CTR_Main()), and both host exit paths
 #     (SDL quit and window close) exit through NativeArcadeRosterProof_ExitCode
 #     in internal builds; the proof hook records its code before it requests
-#     the exit.
+#     the exit;
+# 11. the adapter's retail stores are pinned: MainArcadeRaceSetup_Apply maps
+#     every core write target (each one of the core header's enum) to
+#     exactly its one retail field or call, with the exact width casts, and
+#     holds no other store; outside MainArcadeRaceSetup_Apply the adapter
+#     stores to no retail field (gGT, sdata, data in any member spelling,
+#     compound assignment, increment, address taken, or mem* destination) and
+#     never calls PSX_BIOS_SetRandSeed or MainRaceTrack_RequestLoad.
 # The roster input caller rules live in
 # main_canonical_drivers_roster_input_isolation_test.cmake, and the decision
 # core's purity in main_arcade_race_setup_core_isolation_test.cmake.
@@ -582,3 +589,121 @@ foreach(term IN ITEMS NativeArcadeRosterProof_RecordExitCode Platform_RequestExi
         message(FATAL_ERROR "${prefix}: ${proof_source} must call ${term} exactly once, in MainArcadeRosterProof_Finish (found ${term_hits})")
     endif()
 endforeach()
+
+# 11. The adapter's retail stores.
+# Sets out_var to the retail stores in code: a member chain rooted at gGT,
+# sdata, or data (not a member of something else) that is assigned, compound
+# assigned, or incremented; an increment before it; its address taken; or a
+# mem* call writing through it.
+function(ctr_retail_stores code out_var)
+    string(REPLACE ";" "@SEMI@" masked "${code}")
+    set(chain "(gGT|sdata|data)([ \t]*(->|\\.)[ \t]*[A-Za-z_][A-Za-z0-9_]*([ \t]*\\[[^]]*\\])*)+")
+    string(REGEX MATCHALL "(^|[^A-Za-z0-9_>.])${chain}[ \t\r\n]*(=[^=]|[-+*/%&|^]=|<<=|>>=|\\+\\+|--)" assignments "${masked}")
+    string(REGEX MATCHALL "(\\+\\+|--)[ \t]*[(]?[ \t]*${chain}" increments "${masked}")
+    string(REGEX MATCHALL "(^|[^&])&[ \t]*[(]?[ \t]*(gGT|sdata|data)[ \t]*(->|\\.)" addresses "${masked}")
+    string(REGEX MATCHALL "mem(set|cpy|move)[ \t]*\\([ \t]*[(]?[ \t]*&?[ \t]*[(]?[ \t]*(gGT|sdata|data)([^A-Za-z0-9_]|$)" mem_writes "${masked}")
+    set(${out_var} ${assignments} ${increments} ${addresses} ${mem_writes} PARENT_SCOPE)
+endfunction()
+# The retail store scan must itself work.
+foreach(probe IN ITEMS "gGT->gameMode1 = 1;" "sdata->advRng.state0 = 2;" "data.characterIDs[3] = 4;" "gGT->numLaps++;"
+        "++sdata->randomNumber;" "memset(&sdata->advRng, 0, 8);" "sdata->gGT->boolDemoMode |= 1;"
+        "p = &gGT->numLaps;" "memcpy(gGT, &x, 4);" "data.characterIDs[op->index]=5;" "x = 1; sdata->audioRNG -= 3;")
+    ctr_retail_stores("${probe}" probe_stores)
+    list(LENGTH probe_stores probe_store_count)
+    if(probe_store_count LESS 1)
+        message(FATAL_ERROR "${prefix}: the retail store scan missed the store in '${probe}'")
+    endif()
+endforeach()
+foreach(probe IN ITEMS "x = gGT->gameMode1;" "if (gGT->levelID == 3)" "view->gameMode1 = (uint32_t)gGT->gameMode1;"
+        "fields->levelID = (int32_t)gGT->levelID;" "if ((gGT != NULL) && f(gGT))" "y = (sdata->advRng.state0 >= 2);"
+        "snapshot->characterIDs[slot] = (int16_t)data.characterIDs[slot];" "z = sdata->kartSpawnOrderArray[slot] != 1;"
+        "stored->audioRNG = (uint32_t)sdata->audioRNG;" "memset(view, 0, sizeof(*view));" "f(gGT, sdata, &x);")
+    ctr_retail_stores("${probe}" probe_stores)
+    list(LENGTH probe_stores probe_store_count)
+    if(NOT probe_store_count EQUAL 0)
+        message(FATAL_ERROR "${prefix}: the retail store scan flags a read in '${probe}' (${probe_stores})")
+    endif()
+endforeach()
+
+ctr_find_block("${adapter_source}" "${adapter_code}"
+    "static void MainArcadeRaceSetup_Apply(struct GameTracker *gGT, const struct MainArcadeRaceSetupCoreOutcome *outcome)"
+    apply_begin apply_end)
+math(EXPR apply_length "${apply_end} - ${apply_begin} + 1")
+string(SUBSTRING "${adapter_code}" ${apply_begin} ${apply_length} apply_body)
+string(SUBSTRING "${adapter_code}" 0 ${apply_begin} before_apply)
+math(EXPR after_apply_at "${apply_end} + 1")
+string(SUBSTRING "${adapter_code}" ${after_apply_at} -1 after_apply)
+
+# Every write target the core declares, NONE excluded.
+set(core_header_path "game/MAIN/MainArcadeRaceSetupCore.h")
+ctr_read_source("${core_header_path}" core_header)
+ctr_strip_comments("${core_header}" core_header_code)
+string(REGEX MATCHALL "MAIN_ARCADE_RACE_SETUP_CORE_TARGET_[A-Z0-9_]+" declared_targets "${core_header_code}")
+list(REMOVE_DUPLICATES declared_targets)
+list(REMOVE_ITEM declared_targets MAIN_ARCADE_RACE_SETUP_CORE_TARGET_NONE)
+set(expected_GAME_MODE1 "gGT->gameMode1 = (int)(uint32_t)op->value;")
+set(expected_GAME_MODE2 "gGT->gameMode2 = (int)(uint32_t)op->value;")
+set(expected_ARCADE_DIFFICULTY "gGT->arcadeDifficulty = (int)(int32_t)op->value;")
+set(expected_BOOL_DEMO_MODE "gGT->boolDemoMode = (char)(uint8_t)op->value;")
+set(expected_NUM_LAPS "gGT->numLaps = (s8)(int8_t)op->value;")
+set(expected_NUM_PLYR_NEXT_GAME "gGT->numPlyrNextGame = (u8)(uint8_t)op->value;")
+set(expected_CHARACTER_ID "if (op->index < MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT) { data.characterIDs[op->index] = (s16)(int16_t)op->value; }")
+set(expected_REQUEST_LOAD "MainRaceTrack_RequestLoad((s16)(int32_t)op->value);")
+set(expected_RANDOM_NUMBER "sdata->randomNumber = (int)(uint32_t)op->value;")
+set(expected_ADV_RNG0 "sdata->advRng.state0 = (uint32_t)op->value;")
+set(expected_ADV_RNG1 "sdata->advRng.state1 = (uint32_t)op->value;")
+set(expected_PSX_RAND_SEED "PSX_BIOS_SetRandSeed((uint32_t)op->value);")
+set(expected_AUDIO_RNG "sdata->audioRNG = (uint32_t)op->value;")
+list(LENGTH declared_targets declared_target_count)
+if(NOT declared_target_count EQUAL 13)
+    message(FATAL_ERROR "${prefix}: ${core_header_path} declares ${declared_target_count} write targets besides NONE, expected 13; map every new target here and in MainArcadeRaceSetup_Apply")
+endif()
+set(apply_remaining "${apply_body}")
+foreach(target IN LISTS declared_targets)
+    string(REPLACE "MAIN_ARCADE_RACE_SETUP_CORE_TARGET_" "" short "${target}")
+    if(NOT DEFINED expected_${short})
+        message(FATAL_ERROR "${prefix}: no pinned retail field for ${target}; add it to this test")
+    endif()
+    set(label "case ${target}:")
+    string(FIND "${apply_body}" "${label}" label_at)
+    string(FIND "${apply_body}" "${label}" label_last REVERSE)
+    if(label_at EQUAL -1 OR NOT label_at EQUAL label_last)
+        message(FATAL_ERROR "${prefix}: MainArcadeRaceSetup_Apply must handle ${target} in exactly one case")
+    endif()
+    string(SUBSTRING "${apply_body}" ${label_at} -1 case_tail)
+    string(FIND "${case_tail}" "break;" break_at)
+    if(break_at EQUAL -1)
+        message(FATAL_ERROR "${prefix}: the ${target} case of MainArcadeRaceSetup_Apply has no break")
+    endif()
+    math(EXPR case_length "${break_at} + 6")
+    string(SUBSTRING "${case_tail}" 0 ${case_length} case_text)
+    string(REGEX REPLACE "[ \t\r\n]+" " " case_normalized "${case_text}")
+    set(case_expected "${label} ${expected_${short}} break;")
+    if(NOT case_normalized STREQUAL case_expected)
+        message(FATAL_ERROR "${prefix}: MainArcadeRaceSetup_Apply must map ${target} to exactly '${expected_${short}}' (found '${case_normalized}')")
+    endif()
+    string(REPLACE "${case_text}" "" apply_remaining "${apply_remaining}")
+endforeach()
+string(REGEX MATCHALL "case[ \t]" apply_cases "${apply_body}")
+list(LENGTH apply_cases apply_case_count)
+if(NOT apply_case_count EQUAL declared_target_count)
+    message(FATAL_ERROR "${prefix}: MainArcadeRaceSetup_Apply has ${apply_case_count} cases, expected one per target (${declared_target_count})")
+endif()
+string(REGEX REPLACE "[ \t\r\n]+" " " apply_remaining_normalized "${apply_remaining}")
+ctr_require("${adapter_source} (MainArcadeRaceSetup_Apply)" "${apply_remaining_normalized}" "default: break; }")
+ctr_retail_stores("${apply_remaining}" apply_stray_stores)
+if(NOT "${apply_stray_stores}" STREQUAL "")
+    message(FATAL_ERROR "${prefix}: MainArcadeRaceSetup_Apply stores outside its target cases (${apply_stray_stores})")
+endif()
+foreach(term IN ITEMS PSX_BIOS_SetRandSeed MainRaceTrack_RequestLoad)
+    ctr_count_identifier("${adapter_code}" "${term}" term_hits)
+    if(NOT term_hits EQUAL 1)
+        message(FATAL_ERROR "${prefix}: ${adapter_source} must call ${term} exactly once, in its MainArcadeRaceSetup_Apply case (found ${term_hits})")
+    endif()
+endforeach()
+
+# Outside MainArcadeRaceSetup_Apply the adapter stores to no retail field.
+ctr_retail_stores("${before_apply}${after_apply}" outside_stores)
+if(NOT "${outside_stores}" STREQUAL "")
+    message(FATAL_ERROR "${prefix}: ${adapter_source} stores to retail state outside MainArcadeRaceSetup_Apply (${outside_stores})")
+endif()

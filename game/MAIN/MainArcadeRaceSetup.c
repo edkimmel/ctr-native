@@ -118,7 +118,9 @@ static void MainArcadeRaceSetup_ReadSnapshot(const struct GameTracker *gGT, stru
 }
 
 /* Performs exactly the core's writes, in order. The core has no levelID
- * target: the level reaches the retail state only through the load request. */
+ * target: the level reaches the retail state only through the load request.
+ * This is the adapter's only retail store (tests/main_arcade_race_setup_isolation_test.cmake
+ * pins each target to its one field). */
 static void MainArcadeRaceSetup_Apply(struct GameTracker *gGT, const struct MainArcadeRaceSetupCoreOutcome *outcome)
 {
 	for (uint32_t i = 0; (i < outcome->opCount) && (i < MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS); i++)
@@ -173,6 +175,18 @@ static void MainArcadeRaceSetup_Apply(struct GameTracker *gGT, const struct Main
 			break;
 		}
 	}
+}
+
+/* The retail seed fields as they are now stored, each at 32 bits, read
+ * right after MainArcadeRaceSetup_Apply wrote them. */
+static void MainArcadeRaceSetup_ReadSeeds(struct NativeArcadeRetailRngSeedsV1 *stored)
+{
+	memset(stored, 0, sizeof(*stored));
+	stored->randomNumber = (uint32_t)sdata->randomNumber;
+	stored->advRng0 = (uint32_t)sdata->advRng.state0;
+	stored->advRng1 = (uint32_t)sdata->advRng.state1;
+	stored->psxRandSeed = (uint32_t)PSX_BIOS_GetRandSeed();
+	stored->audioRNG = (uint32_t)sdata->audioRNG;
 }
 
 /* One log line per state change or failure, as the core reports it. */
@@ -275,10 +289,19 @@ void MainArcadeRaceSetup_OnFinalizeInitBegin(struct GameTracker *gGT)
 	MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_mainArcadeRaceSetup, view, &scratch->core, &scratch->outcome);
 	if (outcome->opCount != 0u)
 	{
+		struct NativeArcadeRetailRngSeedsV1 stored;
+
 		MainArcadeRaceSetup_Apply(gGT, outcome);
+		/* Nothing runs between the writes and this readback; the proof
+		 * compares it with the seeds the core produced. */
+		MainArcadeRaceSetup_ReadSeeds(&stored);
+		(void)MainArcadeRaceSetupCore_RecordSeedReadback(&s_mainArcadeRaceSetup, &stored);
 		Platform_Log(MAIN_ARCADE_RACE_SETUP_LOG "seeded randomNumber 0x%04X advRng 0x%08X 0x%08X psxRand 0x%08X audioRNG 0x%08X\n",
 			(unsigned)outcome->seeds.randomNumber, (unsigned)outcome->seeds.advRng0, (unsigned)outcome->seeds.advRng1,
 			(unsigned)outcome->seeds.psxRandSeed, (unsigned)outcome->seeds.audioRNG);
+		Platform_Log(MAIN_ARCADE_RACE_SETUP_LOG "read back randomNumber 0x%04X advRng 0x%08X 0x%08X psxRand 0x%08X audioRNG 0x%08X\n",
+			(unsigned)stored.randomNumber, (unsigned)stored.advRng0, (unsigned)stored.advRng1, (unsigned)stored.psxRandSeed,
+			(unsigned)stored.audioRNG);
 	}
 	MainArcadeRaceSetup_Log(outcome);
 }
@@ -331,6 +354,11 @@ int MainArcadeRaceSetup_Digests(uint8_t configDigest[MAIN_ARCADE_RACE_SETUP_DIGE
 int MainArcadeRaceSetup_SlotFacts(struct MainArcadeBotSetupSourceFacts *out)
 {
 	return MainArcadeRaceSetupCore_SlotFacts(&s_mainArcadeRaceSetup, out);
+}
+
+int MainArcadeRaceSetup_SeedReadback(struct NativeArcadeRetailRngSeedsV1 *produced, struct NativeArcadeRetailRngSeedsV1 *stored)
+{
+	return MainArcadeRaceSetupCore_SeedReadback(&s_mainArcadeRaceSetup, produced, stored);
 }
 
 const struct NativeDeterministicRngBankV1 *MainArcadeRaceSetup_Bank(void)

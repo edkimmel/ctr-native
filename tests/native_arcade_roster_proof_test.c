@@ -262,7 +262,8 @@ static int TestExitCodes(void)
 {
 	static const uint32_t failures[] = {NATIVE_ARCADE_ROSTER_PROOF_INCOMPLETE, NATIVE_ARCADE_ROSTER_PROOF_REPORT_WRITE_FAILED,
 		NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED, NATIVE_ARCADE_ROSTER_PROOF_ARM_FAILED, NATIVE_ARCADE_ROSTER_PROOF_LAUNCH_FAILED,
-		NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT, NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT};
+		NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT, NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT,
+		NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH, NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING};
 	struct NativeIdentityV1 identity;
 	struct NativeArcadeRosterProofOptions options;
 
@@ -273,6 +274,8 @@ static int TestExitCodes(void)
 		CHECK(strcmp(NativeArcadeRosterProof_ResultName(failures[i]), "UNKNOWN") != 0);
 	}
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_INCOMPLETE), "INCOMPLETE") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH), "SEED_MISMATCH") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING), "EVIDENCE_MISSING") == 0);
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(1u), "UNKNOWN") == 0);
 
 	/* Inactive: every exit path keeps its own code (a default run is unchanged). */
@@ -395,6 +398,78 @@ static int TestConfigBuilder(void)
 	return 0;
 }
 
+/* The seed readback comparison and the PASS gate. */
+static int TestSeedsAndFinalResult(void)
+{
+	struct NativeArcadeRetailRngSeedsV1 produced;
+	struct NativeArcadeRetailRngSeedsV1 stored;
+	struct NativeArcadeRosterProofReport report;
+
+	produced.randomNumber = 0x7D2Eu;
+	produced.advRng0 = 0x60C79386u;
+	produced.advRng1 = 0x78DFDBA8u;
+	produced.psxRandSeed = 0x1472E10Bu;
+	produced.audioRNG = 0x75599A57u;
+	stored = produced;
+	CHECK(NativeArcadeRosterProof_SeedsMatch(&produced, &stored) == 1);
+	/* Any one field differing is a mismatch, a swapped pair included. */
+	for (uint32_t field = 0; field < 5u; field++)
+	{
+		stored = produced;
+		if (field == 0u)
+		{
+			stored.randomNumber ^= 1u;
+		}
+		else if (field == 1u)
+		{
+			stored.advRng0 ^= 0x80000000u;
+		}
+		else if (field == 2u)
+		{
+			stored.advRng1 += 1u;
+		}
+		else if (field == 3u)
+		{
+			stored.psxRandSeed = 0u;
+		}
+		else
+		{
+			stored.audioRNG = produced.psxRandSeed;
+		}
+		CHECK(NativeArcadeRosterProof_SeedsMatch(&produced, &stored) == 0);
+	}
+	stored = produced;
+	stored.advRng0 = produced.advRng1;
+	stored.advRng1 = produced.advRng0;
+	CHECK(NativeArcadeRosterProof_SeedsMatch(&produced, &stored) == 0);
+	CHECK(NativeArcadeRosterProof_SeedsMatch(NULL, &stored) == 0);
+	CHECK(NativeArcadeRosterProof_SeedsMatch(&produced, NULL) == 0);
+
+	/* PASS needs the digests, the slot facts, and a matching readback. */
+	memset(&report, 0, sizeof(report));
+	report.digestsValid = 1u;
+	report.slotsValid = 1u;
+	report.seedValid = 1u;
+	report.seedMatch = 1u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_PASS);
+	report.digestsValid = 0u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.digestsValid = 1u;
+	report.slotsValid = 0u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.slotsValid = 1u;
+	report.seedValid = 0u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.seedValid = 1u;
+	report.seedMatch = 0u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH);
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, NULL) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	/* A failure is reported as requested, whatever the evidence. */
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED, &report) == NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED);
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_LAUNCH_FAILED, NULL) == NATIVE_ARCADE_ROSTER_PROOF_LAUNCH_FAILED);
+	return 0;
+}
+
 static int TestSingletonAndReport(void)
 {
 	struct NativeIdentityV1 identity;
@@ -460,10 +535,17 @@ static int TestSingletonAndReport(void)
 	report.slots[2].spawnOrder = 2u;
 	report.slots[2].navPathIndex = 1u;
 	report.slots[2].accelerationOrder = 3u;
+	report.seedValid = 1u;
+	report.seedMatch = 1u;
+	report.seedStored.randomNumber = 0x7D2Eu;
+	report.seedStored.advRng0 = 0x60C79386u;
+	report.seedStored.advRng1 = 0x78DFDBA8u;
+	report.seedStored.psxRandSeed = 0x1472E10Bu;
+	report.seedStored.audioRNG = 0x75599A57u;
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(length == strlen(text));
 	{
-		static const char head[] = "arcade roster proof v2\nresult PASS (0)\nsetup status VALIDATED (4)\nsetup failure NONE (0)\n";
+		static const char head[] = "arcade roster proof v3\nresult PASS (0)\nsetup status VALIDATED (4)\nsetup failure NONE (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
 	}
@@ -473,6 +555,15 @@ static int TestSingletonAndReport(void)
 	CHECK(strstr(text, "slot 0 role CAB1_HUMAN character 0 difficulty 0x00 spawn 0 nav 0 accel 0\n") != NULL);
 	CHECK(strstr(text, "slot 2 role BOT character 6 difficulty 0xA0 spawn 2 nav 1 accel 3\n") != NULL);
 	CHECK(strstr(text, "slot 7 role INACTIVE\n") != NULL);
+	CHECK(strstr(text, "bank digest 0000000000000000000000000000000000000000000000000000000000000000\n"
+	                   "seeded randomNumber 0x7D2E advRng0 0x60C79386 advRng1 0x78DFDBA8 psxRand 0x1472E10B audioRNG 0x75599A57 match 1\n"
+	                   "slot 0 ") != NULL);
+	report.seedMatch = 0u;
+	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, "audioRNG 0x75599A57 match 0\n") != NULL);
+	report.seedValid = 0u;
+	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, "\nseeded none\n") != NULL);
 	report.digestsValid = 0u;
 	report.slotsValid = 0u;
 	report.result = NATIVE_ARCADE_ROSTER_PROOF_SETUP_FAILED;
@@ -507,6 +598,7 @@ int main(void)
 	CHECK(TestExitOptionNames() == 0);
 	CHECK(TestExitCodes() == 0);
 	CHECK(TestConfigBuilder() == 0);
+	CHECK(TestSeedsAndFinalResult() == 0);
 	CHECK(TestSingletonAndReport() == 0);
 	puts("native_arcade_roster_proof_test: ok");
 	return 0;

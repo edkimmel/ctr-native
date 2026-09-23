@@ -258,6 +258,12 @@ static int ArmLaunchSeed(struct MainArcadeRaceSetupCore *core)
 	return ArmAndLaunch(core) && MainArcadeRaceSetupCore_OnFinalizeInitBegin(core, &begin, &s_scratch, &s_outcome);
 }
 
+static int ArmLaunchSeedValidate(struct MainArcadeRaceSetupCore *core)
+{
+	DriversView(&s_config, &s_drivers);
+	return ArmLaunchSeed(core) && MainArcadeRaceSetupCore_OnDriversInitialized(core, &s_drivers, &s_scratch, &s_outcome);
+}
+
 static int TestArm(void)
 {
 	struct NativeMatchConfigV1 bad;
@@ -300,6 +306,16 @@ static int TestArm(void)
 	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &bad, 0u, &s_outcome) == 0);
 	CHECK(MainArcadeRaceSetupCore_Status(&s_other) == MAIN_ARCADE_RACE_SETUP_IDLE);
 	CHECK(MainArcadeRaceSetupCore_Failure(&s_other) == MAIN_ARCADE_RACE_SETUP_FAILURE_PLAN);
+	/* BANK is unreachable through a config: the plan refuses a wrong
+	 * derivation version first (PLAN), and every version the plan accepts
+	 * derives (the core static-asserts the two versions equal). */
+	bad = s_config;
+	bad.rngDerivationVersion = NATIVE_DETERMINISTIC_RNG_DERIVATION_VERSION + 1u;
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &bad, 0u, &s_outcome) == 0);
+	CHECK(MainArcadeRaceSetupCore_Failure(&s_other) == MAIN_ARCADE_RACE_SETUP_FAILURE_PLAN);
+	CHECK(NativeDeterministicRngBankV1_Init(&s_other.bank, bad.masterSeed, bad.rngDerivationVersion) == 0);
+	CHECK(strcmp(MainArcadeRaceSetupCore_FailureName(MAIN_ARCADE_RACE_SETUP_FAILURE_BANK), "BANK") == 0);
+	MainArcadeRaceSetupCore_Reset(&s_other);
 	/* A refused Arm leaves a usable IDLE. */
 	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, &s_outcome) == 1);
 	CHECK(MainArcadeRaceSetupCore_Failure(&s_other) == MAIN_ARCADE_RACE_SETUP_FAILURE_NONE);
@@ -327,7 +343,8 @@ static int TestWrongState(void)
 	CHECK(memcmp(&s_core, &before, sizeof(before)) == 0);
 
 	/* While in flight a wrong call latches STATE: Arm in ARMED, LAUNCHED,
-	 * SEEDED, VALIDATED, and Launch in LAUNCHED, SEEDED, VALIDATED. */
+	 * SEEDED, and VALIDATED, and Launch in LAUNCHED, SEEDED, and VALIDATED
+	 * (each state below; Launch in ARMED is the success case). */
 	CHECK(Arm(&s_core, 0u) == 1);
 	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, &s_outcome) == 0);
 	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
@@ -355,6 +372,15 @@ static int TestWrongState(void)
 	CHECK(ArmLaunchSeed(&s_core) == 1);
 	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, &s_outcome) == 0);
 	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
+	CHECK(ArmLaunchSeedValidate(&s_core) == 1);
+	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_VALIDATED);
+	CHECK(MainArcadeRaceSetupCore_Launch(&s_core, &launch, &s_outcome) == 0);
+	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
+	CHECK(strcmp(s_outcome.detail, "Launch") == 0);
+	CHECK(ArmLaunchSeedValidate(&s_core) == 1);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, &s_outcome) == 0);
+	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
+	CHECK(strcmp(s_outcome.detail, "Arm") == 0);
 
 	/* Hooks out of order latch STATE: drivers before seeding, and a second
 	 * race init over SEEDED. */
@@ -430,6 +456,14 @@ static int TestLaunch(void)
 		CHECK(strcmp(s_outcome.detail, "the game is paused") == 0);
 	}
 
+	/* A plan that no longer applies (tampered after Arm): FAILED/PLAN, nothing written. */
+	CHECK(Arm(&s_core, launch.fields.gameMode1) == 1);
+	s_core.plan.locked = 0u;
+	CHECK(MainArcadeRaceSetupCore_Launch(&s_core, &launch, &s_outcome) == 0);
+	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_PLAN) == 0);
+	CHECK(strcmp(s_outcome.detail, "the plan could not be applied") == 0);
+	CHECK(s_core.fieldsWritten == 0u);
+
 	/* Success: exactly the owned fields except levelID, then the load request. */
 	CHECK(Arm(&s_core, launch.fields.gameMode1) == 1);
 	CHECK(MainArcadeRaceSetupCore_Launch(&s_core, &launch, &s_outcome) == 1);
@@ -437,6 +471,7 @@ static int TestLaunch(void)
 	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_LAUNCHED);
 	CHECK(s_core.fieldsWritten == 1u);
 	CHECK(s_outcome.opCount == expectedCount);
+	CHECK(expectedCount == MAIN_ARCADE_RACE_SETUP_CORE_LAUNCH_OP_COUNT && s_outcome.overflowed == 0u);
 	for (uint32_t i = 0; i < expectedCount; i++)
 	{
 		CHECK(s_outcome.ops[i].target == expectedTargets[i]);
@@ -499,6 +534,9 @@ static int TestFinalizeInitBegin(void)
 	struct MainArcadeRaceSetupCoreBeginView begin;
 	struct MainArcadeRaceSetupCoreBeginView broken;
 	struct NativeDeterministicRngBankV1 bank;
+	struct NativeArcadeRetailRngSeedsV1 produced;
+	struct NativeArcadeRetailRngSeedsV1 readback;
+	struct NativeArcadeRetailRngSeedsV1 stored;
 	uint32_t draws[NATIVE_ARCADE_BOT_RULES_SEED_TARGET_COUNT];
 	static const uint8_t expectedTargets[] = {
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_GAME_MODE1, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_GAME_MODE2,
@@ -529,6 +567,25 @@ static int TestFinalizeInitBegin(void)
 		CHECK(strcmp(s_outcome.detail, "characterIDs") == 0);
 	}
 
+	/* A plan that no longer applies at race init (tampered after Launch, the
+	 * verified fields intact): FAILED/PLAN, nothing written. */
+	CHECK(ArmAndLaunch(&s_core) == 1);
+	s_core.plan.reserved[0] = 1u;
+	CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_core, &begin, &s_scratch, &s_outcome) == 0);
+	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_PLAN) == 0);
+	CHECK(strcmp(s_outcome.detail, "the plan could not be re-applied") == 0);
+
+	/* A bank that no longer validates: FAILED/SEED, nothing written, the bank
+	 * as it was. */
+	CHECK(ArmAndLaunch(&s_core) == 1);
+	s_core.bank.bankVersion = 0u;
+	bank = s_core.bank;
+	CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_core, &begin, &s_scratch, &s_outcome) == 0);
+	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_SEED) == 0);
+	CHECK(strcmp(s_outcome.detail, "the retail seeds could not be derived") == 0);
+	CHECK(memcmp(&s_core.bank, &bank, sizeof(bank)) == 0);
+	CHECK(MainArcadeRaceSetupCore_SeedReadback(&s_core, &produced, &readback) == 0);
+
 	/* The golden seeds, independently: five MATCH_SETUP draws mapped by the rules. */
 	CHECK(NativeDeterministicRngBankV1_Init(&bank, GOLDEN_MASTER_SEED, s_config.rngDerivationVersion) == 1);
 	for (uint32_t i = 0; i < NATIVE_ARCADE_BOT_RULES_SEED_TARGET_COUNT; i++)
@@ -547,6 +604,7 @@ static int TestFinalizeInitBegin(void)
 	CHECK(s_outcome.result == 1u && s_outcome.log == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_LOG_ENTERED);
 	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_SEEDED);
 	CHECK(s_outcome.opCount == (uint32_t)sizeof(expectedTargets));
+	CHECK(s_outcome.opCount == MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT && s_outcome.overflowed == 0u);
 	for (uint32_t i = 0; i < s_outcome.opCount; i++)
 	{
 		CHECK(s_outcome.ops[i].target == expectedTargets[i] && s_outcome.ops[i].index == 0u);
@@ -563,6 +621,37 @@ static int TestFinalizeInitBegin(void)
 	CHECK((int64_t)s_outcome.seeds.randomNumber == goldenSeeds[0] && (int64_t)s_outcome.seeds.audioRNG == goldenSeeds[4]);
 	/* The core keeps the post-seed bank: five draws in. */
 	CHECK(memcmp(&s_core.bank, &bank, sizeof(bank)) == 0);
+
+	/* The seed readback: recorded once, only in SEEDED, and returned with the
+	 * produced seeds; the core only stores it (a mismatch is the proof's call). */
+	CHECK(MainArcadeRaceSetupCore_SeedReadback(&s_core, &produced, &readback) == 0);
+	stored = s_outcome.seeds;
+	stored.advRng0 ^= 1u;
+	CHECK(MainArcadeRaceSetupCore_RecordSeedReadback(&s_core, NULL) == 0);
+	CHECK(MainArcadeRaceSetupCore_RecordSeedReadback(NULL, &stored) == 0);
+	CHECK(MainArcadeRaceSetupCore_RecordSeedReadback(&s_core, &stored) == 1);
+	CHECK(MainArcadeRaceSetupCore_RecordSeedReadback(&s_core, &s_outcome.seeds) == 0);
+	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_SEEDED);
+	CHECK(MainArcadeRaceSetupCore_SeedReadback(&s_core, &produced, &readback) == 1);
+	CHECK(memcmp(&produced, &s_outcome.seeds, sizeof(produced)) == 0);
+	CHECK(memcmp(&readback, &stored, sizeof(readback)) == 0);
+	CHECK((int64_t)produced.advRng0 == goldenSeeds[1] && (int64_t)produced.psxRandSeed == goldenSeeds[3]);
+	CHECK(MainArcadeRaceSetupCore_SeedReadback(&s_core, NULL, &readback) == 0);
+	CHECK(MainArcadeRaceSetupCore_SeedReadback(&s_core, &produced, NULL) == 0);
+	CHECK(MainArcadeRaceSetupCore_SeedReadback(NULL, &produced, &readback) == 0);
+	CHECK(ArmAndLaunch(&s_other) == 1);
+	CHECK(MainArcadeRaceSetupCore_RecordSeedReadback(&s_other, &stored) == 0);
+	CHECK(MainArcadeRaceSetupCore_SeedReadback(&s_other, &produced, &readback) == 0);
+	/* VALIDATED keeps it; a readback arriving only now is refused. */
+	CHECK(ArmLaunchSeed(&s_other) == 1);
+	CHECK(MainArcadeRaceSetupCore_RecordSeedReadback(&s_other, &s_outcome.seeds) == 1);
+	DriversView(&s_config, &s_drivers);
+	CHECK(MainArcadeRaceSetupCore_OnDriversInitialized(&s_other, &s_drivers, &s_scratch, &s_outcome) == 1);
+	CHECK(MainArcadeRaceSetupCore_SeedReadback(&s_other, &produced, &readback) == 1);
+	CHECK(memcmp(&produced, &readback, sizeof(produced)) == 0);
+	CHECK(ArmLaunchSeedValidate(&s_other) == 1);
+	CHECK(MainArcadeRaceSetupCore_RecordSeedReadback(&s_other, &stored) == 0);
+	CHECK(MainArcadeRaceSetupCore_SeedReadback(&s_other, &produced, &readback) == 0);
 
 	/* SEEDED: the drivers hook reads its view; without a tracker it latches NO_TRACKER. */
 	CHECK(MainArcadeRaceSetupCore_HookReadsView(&s_core, MAIN_ARCADE_RACE_SETUP_CORE_HOOK_DRIVERS_INITIALIZED) == 1);
@@ -765,8 +854,10 @@ static int TestNames(void)
 	CHECK(strcmp(MainArcadeRaceSetupCore_FailureName(MAIN_ARCADE_RACE_SETUP_FAILURE_STATE), "STATE") == 0);
 	CHECK(strcmp(MainArcadeRaceSetupCore_FailureName(MAIN_ARCADE_RACE_SETUP_FAILURE_NO_TRACKER), "NO_TRACKER") == 0);
 	CHECK(strcmp(MainArcadeRaceSetupCore_FailureName((enum MainArcadeRaceSetupFailure)99), "UNKNOWN") == 0);
+	CHECK(strcmp(MainArcadeRaceSetupCore_FailureName(MAIN_ARCADE_RACE_SETUP_FAILURE_OPS), "OPS") == 0);
 	/* The failure codes are append-only. */
 	CHECK((int)MAIN_ARCADE_RACE_SETUP_FAILURE_STATE == 10 && (int)MAIN_ARCADE_RACE_SETUP_FAILURE_NO_TRACKER == 11);
+	CHECK((int)MAIN_ARCADE_RACE_SETUP_FAILURE_OPS == 12);
 	CHECK(MainArcadeRaceSetupCore_Status(NULL) == MAIN_ARCADE_RACE_SETUP_IDLE);
 	CHECK(MainArcadeRaceSetupCore_Failure(NULL) == MAIN_ARCADE_RACE_SETUP_FAILURE_NONE);
 	CHECK(MainArcadeRaceSetupCore_Bank(NULL) == NULL);

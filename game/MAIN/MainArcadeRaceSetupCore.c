@@ -10,6 +10,17 @@
  * for the R-5 contract they implement.
  */
 
+_Static_assert(MAIN_ARCADE_RACE_SETUP_CORE_LAUNCH_OP_COUNT <= MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS,
+	"every Launch op must fit the outcome's write list");
+_Static_assert(MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT <= MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS,
+	"every pre-drivers op must fit the outcome's write list");
+_Static_assert(MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS >= 1u, "the Disarm op must fit the outcome's write list");
+/* Arm's BANK failure is defence in depth: the plan accepts only configs with
+ * the match config's derivation version, and the bank derives exactly that
+ * version, so a config the plan accepts always derives. */
+_Static_assert(NATIVE_MATCH_CONFIG_V1_RNG_DERIVATION_VERSION == NATIVE_DETERMINISTIC_RNG_DERIVATION_VERSION,
+	"every config the plan accepts must derive a bank");
+
 void MainArcadeRaceSetupCore_Reset(struct MainArcadeRaceSetupCore *core)
 {
 	if (core != NULL)
@@ -64,13 +75,19 @@ static void MainArcadeRaceSetupCore_WrongState(struct MainArcadeRaceSetupCore *c
 	MainArcadeRaceSetupCore_Fail(core, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE, call, outcome);
 }
 
+/* Fails closed: a push that finds the list full drops the whole list and
+ * marks the outcome overflowed, so the step latches OPS and nothing, not a
+ * truncated list, is ever applied. The static asserts above prove it cannot
+ * happen with the current steps. */
 static void MainArcadeRaceSetupCore_Push(struct MainArcadeRaceSetupCoreOutcome *outcome,
 	enum MainArcadeRaceSetupCoreTarget target, uint8_t index, int64_t value)
 {
 	struct MainArcadeRaceSetupCoreOp *op;
 
-	if (outcome->opCount >= MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS)
+	if ((outcome->overflowed != 0u) || (outcome->opCount >= MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS))
 	{
+		outcome->overflowed = 1u;
+		outcome->opCount = 0u;
 		return;
 	}
 	op = &outcome->ops[outcome->opCount++];
@@ -189,6 +206,11 @@ int MainArcadeRaceSetupCore_Launch(struct MainArcadeRaceSetupCore *core,
 			(int64_t)fields.characterIDs[slot]);
 	}
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_REQUEST_LOAD, 0u, (int64_t)core->plan.levelID);
+	if (outcome->overflowed != 0u)
+	{
+		MainArcadeRaceSetupCore_Fail(core, MAIN_ARCADE_RACE_SETUP_FAILURE_OPS, "the Launch write list overflowed", outcome);
+		return 0;
+	}
 	core->fieldsWritten = 1u;
 	MainArcadeRaceSetupCore_Enter(core, MAIN_ARCADE_RACE_SETUP_LAUNCHED, outcome);
 	outcome->result = 1u;
@@ -285,7 +307,13 @@ int MainArcadeRaceSetupCore_OnFinalizeInitBegin(struct MainArcadeRaceSetupCore *
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG1, 0u, (int64_t)seeds.advRng1);
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_PSX_RAND_SEED, 0u, (int64_t)seeds.psxRandSeed);
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_AUDIO_RNG, 0u, (int64_t)seeds.audioRNG);
+	if (outcome->overflowed != 0u)
+	{
+		MainArcadeRaceSetupCore_Fail(core, MAIN_ARCADE_RACE_SETUP_FAILURE_OPS, "the seeding write list overflowed", outcome);
+		return 0;
+	}
 	core->bank = scratch->seedBank;
+	core->seeds = seeds;
 	outcome->seeds = seeds;
 	MainArcadeRaceSetupCore_Enter(core, MAIN_ARCADE_RACE_SETUP_SEEDED, outcome);
 	outcome->result = 1u;
@@ -401,6 +429,32 @@ int MainArcadeRaceSetupCore_Disarm(struct MainArcadeRaceSetupCore *core,
 	return 1;
 }
 
+int MainArcadeRaceSetupCore_RecordSeedReadback(struct MainArcadeRaceSetupCore *core,
+	const struct NativeArcadeRetailRngSeedsV1 *readback)
+{
+	if ((core == NULL) || (readback == NULL) || (core->status != (uint32_t)MAIN_ARCADE_RACE_SETUP_SEEDED) ||
+	    (core->seedReadbackRecorded != 0u))
+	{
+		return 0;
+	}
+	core->seedReadback = *readback;
+	core->seedReadbackRecorded = 1u;
+	return 1;
+}
+
+int MainArcadeRaceSetupCore_SeedReadback(const struct MainArcadeRaceSetupCore *core,
+	struct NativeArcadeRetailRngSeedsV1 *produced, struct NativeArcadeRetailRngSeedsV1 *readback)
+{
+	if ((core == NULL) || (produced == NULL) || (readback == NULL) || (core->seedReadbackRecorded == 0u) ||
+	    ((core->status != (uint32_t)MAIN_ARCADE_RACE_SETUP_SEEDED) && (core->status != (uint32_t)MAIN_ARCADE_RACE_SETUP_VALIDATED)))
+	{
+		return 0;
+	}
+	*produced = core->seeds;
+	*readback = core->seedReadback;
+	return 1;
+}
+
 enum MainArcadeRaceSetupStatus MainArcadeRaceSetupCore_Status(const struct MainArcadeRaceSetupCore *core)
 {
 	return (core != NULL) ? (enum MainArcadeRaceSetupStatus)core->status : MAIN_ARCADE_RACE_SETUP_IDLE;
@@ -495,6 +549,8 @@ const char *MainArcadeRaceSetupCore_FailureName(enum MainArcadeRaceSetupFailure 
 		return "STATE";
 	case MAIN_ARCADE_RACE_SETUP_FAILURE_NO_TRACKER:
 		return "NO_TRACKER";
+	case MAIN_ARCADE_RACE_SETUP_FAILURE_OPS:
+		return "OPS";
 	default:
 		return "UNKNOWN";
 	}

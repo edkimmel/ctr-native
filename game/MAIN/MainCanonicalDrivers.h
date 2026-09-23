@@ -119,6 +119,12 @@ int MainCanonicalDrivers_ExtractRosterInput(const struct GameTracker *gGT,
  * as not yet observed (raceOrderCount 0 and winnerCount 0, both lists at their
  * empty encodings), and driversInRaceOrder, numWinners, and winnerIndex are
  * never read, so a stale order left by the previous race cannot refuse it.
+ * humanPlayerPositions (the input's ranks) are stale before the first race
+ * tick as well: PlayLevel_UpdateLapStats writes them only at PlayLevel.c:371
+ * and :413, so they still hold the previous race's (or the demo race's)
+ * positions. This variant still reads them and range-checks them (0..7 per
+ * human, as ExtractRosterInput does); nothing downstream in the race setup
+ * (facts, roster, bot setup) depends on their values.
  * Output-atomic. */
 int MainCanonicalDrivers_ExtractRosterInputPreRace(const struct GameTracker *gGT,
 	const struct sData *sdata,

@@ -37,11 +37,16 @@
  * - Launch (ARMED only) checks the preconditions (no load in progress, no
  *   pending OnBegin mode bits, options loaded, no pause bit), applies the
  *   plan to the live fields except levelID, and requests the load of the
- *   plan's level.
+ *   plan's level. It may run from inside the attract demo race, which then
+ *   ticks on for a few frames with the written fields until the load starts;
+ *   MAIN/MainArcadeRaceSetupCore.h ("Launch from inside the attract demo
+ *   race") says why that is safe and how it squares with the Disarm rule
+ *   below.
  * - OnFinalizeInitBegin (the very start of MainInit_FinalizeInit) acts only
  *   in LAUNCHED: it verifies the fields the load consumed, re-applies the
  *   mode words, arcadeDifficulty, and boolDemoMode, and seeds the retail RNG
- *   states from the bank's MATCH_SETUP stream.
+ *   states from the bank's MATCH_SETUP stream, then reads the five seeded
+ *   fields back for MainArcadeRaceSetup_SeedReadback.
  * - OnDriversInitialized (right after MainInit_Drivers) acts only in SEEDED:
  *   it builds the facts from the live race, reading the roster input with
  *   MainCanonicalDrivers_ExtractRosterInputPreRace (the race order is not
@@ -101,6 +106,12 @@ int MainArcadeRaceSetup_Digests(uint8_t configDigest[MAIN_ARCADE_RACE_SETUP_DIGE
  * difficulty, spawn, nav path, acceleration). Returns 0 with *out untouched
  * otherwise. */
 int MainArcadeRaceSetup_SlotFacts(struct MainArcadeBotSetupSourceFacts *out);
+
+/* In SEEDED or VALIDATED: the retail seeds the setup produced and the values
+ * read back from randomNumber, advRng state0/state1, the PSX BIOS rand seed,
+ * and audioRNG right after they were written (MainArcadeRaceSetupCore_SeedReadback).
+ * Returns 0 with both outputs untouched otherwise. */
+int MainArcadeRaceSetup_SeedReadback(struct NativeArcadeRetailRngSeedsV1 *produced, struct NativeArcadeRetailRngSeedsV1 *stored);
 
 /* The post-setup bank when VALIDATED, else NULL (Task 8 projects it). */
 const struct NativeDeterministicRngBankV1 *MainArcadeRaceSetup_Bank(void);

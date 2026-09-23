@@ -29,7 +29,9 @@ endfunction()
 
 # The number of whole-identifier occurrences of symbol in code.
 function(ctr_count_symbol code symbol out_var)
-    string(REGEX MATCHALL "(^|[^A-Za-z0-9_])${symbol}([^A-Za-z0-9_]|$)" hits "${code}")
+    # ';' is masked first: a match holding it would count as two list items.
+    string(REPLACE ";" "@SEMI@" masked "${code}")
+    string(REGEX MATCHALL "(^|[^A-Za-z0-9_])${symbol}([^A-Za-z0-9_]|$)" hits "${masked}")
     list(LENGTH hits count)
     set(${out_var} ${count} PARENT_SCOPE)
 endfunction()
@@ -49,6 +51,13 @@ endforeach()
 ctr_count_symbol("x = MainCanonicalDrivers_ExtractRosterInputPreRace(a, b, c);" "MainCanonicalDrivers_ExtractRosterInput" probe_cross)
 if(NOT probe_cross EQUAL 0)
     message(FATAL_ERROR "${prefix}: the pre-race variant is counted as ExtractRosterInput; the scan is broken")
+endif()
+# A match that holds ';' (a symbol between two statements) counts once, and
+# two occurrences separated by ';' count twice.
+ctr_count_symbol("a;MainCanonicalDrivers_ExtractRosterInputPreRace;b" "MainCanonicalDrivers_ExtractRosterInputPreRace" probe_semicolon)
+ctr_count_symbol("f(MainCanonicalDrivers_ExtractRosterInput);g(MainCanonicalDrivers_ExtractRosterInput);" "MainCanonicalDrivers_ExtractRosterInput" probe_two)
+if(NOT probe_semicolon EQUAL 1 OR NOT probe_two EQUAL 2)
+    message(FATAL_ERROR "${prefix}: the symbol scan miscounts around ';' (${probe_semicolon} of 1, ${probe_two} of 2)")
 endif()
 
 # The allowed files exist, and the module both declares and defines both.
