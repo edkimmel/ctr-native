@@ -112,6 +112,17 @@ struct MainArcadeLinkPolicyOutput
 uint32_t MainArcadeLinkPolicy_MapHeld(uint32_t rawHeld);
 
 /*
+ * The menu-ready condition: 1 when the frame is in the title window described
+ * above (the idle main-menu level, the retail main-menu box is the menu the
+ * retail menu system processes, and the title is not in its intro before the
+ * menu-ready frame), else 0 (also for NULL). Only the title fields of *input
+ * are read; the host mode, pad words, and box flags play no part. Decide
+ * uses exactly this rule for the title window, and the internal roster proof
+ * (game/MAIN/MainArcadeRosterProof.c) waits for it.
+ */
+int MainArcadeLinkPolicy_TitleMenuReady(const struct MainArcadeLinkPolicyInput *input);
+
+/*
  * Fills *output (always zeroed first) and returns 1; returns 0, touching
  * nothing, when either pointer is NULL. With host mode OFF, or any unknown
  * mode, every output is 0.

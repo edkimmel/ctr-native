@@ -274,6 +274,18 @@ static void MainArcadeLink_Gather(const struct GameTracker *gGT, const struct Ga
 	input->reserved[1] = 0u;
 }
 
+int MainArcadeLink_TitleMenuReady(const struct GameTracker *gGT, const struct GamepadSystem *gGS)
+{
+	struct MainArcadeLinkPolicyInput input;
+
+	if ((gGT == NULL) || (gGS == NULL))
+	{
+		return 0;
+	}
+	MainArcadeLink_Gather(gGT, gGS, &input);
+	return MainArcadeLinkPolicy_TitleMenuReady(&input);
+}
+
 int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 {
 	struct MainArcadeLinkPolicyInput input;

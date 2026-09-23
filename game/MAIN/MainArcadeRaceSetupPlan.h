@@ -12,10 +12,11 @@
  * Race setup pure core (docs/ROSTER_MILESTONE.md section 3.2, task R-4).
  * Turns a validated TWO_CAB NativeMatchConfigV1 into the values of the retail
  * race-defining fields and applies them to a pointer-free mirror of those
- * fields. Dormant: no live callsite, not in game/game_unity.h; the R-5 live
- * adapter copies the mirror to and from the retail globals and requests the
- * load (levelID goes through MainRaceTrack_RequestLoad, which is what writes
- * the retail levelID in LOAD_LevelFile, game/LOAD/LOAD_Level.c:42-43).
+ * fields. Not in game/game_unity.h; its one live caller is the R-5b adapter
+ * (game/MAIN/MainArcadeRaceSetup.c), which copies the mirror to and from the
+ * retail globals and requests the load (levelID goes through
+ * MainRaceTrack_RequestLoad, which is what writes the retail levelID in
+ * LOAD_LevelFile, game/LOAD/LOAD_Level.c:42-43).
  *
  * Pure: reads no game global, does no I/O, uses no heap, keeps no hidden
  * state. Every int function returns 1 on success, or 0 with every output

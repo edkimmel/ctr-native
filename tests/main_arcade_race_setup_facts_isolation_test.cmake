@@ -14,10 +14,11 @@
 #  5. the retail field widths the snapshot assumes still hold
 #     (include/namespace_Main.h GameTracker, include/regionsEXE.h,
 #     include/namespace_Vehicle.h Driver);
-#  6. it is dormant: no game/, platform/, include/platform/, or main.c file
-#     other than the module names MainArcadeRaceSetupFacts (R-5b relaxes this
-#     for the live adapter), it is not in game/game_unity.h, and only its
-#     unit test links it.
+#  6. it is confined: no game/, platform/, include/platform/, or main.c
+#     file other than the module and the live adapter
+#     (game/MAIN/MainArcadeRaceSetup.{c,h}, R-5b) names
+#     MainArcadeRaceSetupFacts, it is not in game/game_unity.h, and only its
+#     unit test and ctr_native (for the adapter) link it.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "race setup facts isolation")
@@ -257,7 +258,9 @@ if(slot_count_at EQUAL -1)
     message(FATAL_ERROR "${prefix}: ${module_header} must define MAIN_ARCADE_RACE_SETUP_FACTS_SLOT_COUNT 8u")
 endif()
 
-# 6. Dormant.
+# 6. Confined: only the module and the R-5b live adapter name it, and only its
+# unit test and ctr_native link it.
+set(facts_adapter_paths "game/MAIN/MainArcadeRaceSetup.c" "game/MAIN/MainArcadeRaceSetup.h")
 file(GLOB_RECURSE scan_files "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/game/*.inc"
     "${repo}/platform/*.c" "${repo}/platform/*.h" "${repo}/platform/*.inc"
     "${repo}/include/platform/*.h" "${repo}/main.c")
@@ -266,6 +269,10 @@ set(scanned_platform 0)
 foreach(path IN LISTS scan_files)
     file(RELATIVE_PATH relative_path "${repo}" "${path}")
     if(relative_path STREQUAL module_header OR relative_path STREQUAL module_source)
+        continue()
+    endif()
+    list(FIND facts_adapter_paths "${relative_path}" adapter_at)
+    if(NOT adapter_at EQUAL -1)
         continue()
     endif()
     file(READ "${path}" scanned_source)
@@ -286,10 +293,11 @@ foreach(link_call IN LISTS all_link_calls)
     string(REGEX REPLACE "^target_link_libraries\\([ \t\r\n]*([A-Za-z0-9_]+).*$" "\\1" linking_target "${link_call}")
     string(REGEX MATCH "[ \t\r\n]${target}[ \t\r\n)]" names_module "${link_call}")
     if(names_module)
-        if(NOT linking_target STREQUAL "main_arcade_race_setup_facts_test")
-            message(FATAL_ERROR "${prefix}: ${linking_target} links ${target}; only main_arcade_race_setup_facts_test may until R-5b")
+        if(linking_target STREQUAL "main_arcade_race_setup_facts_test")
+            set(linked_by_test 1)
+        elseif(NOT linking_target STREQUAL "ctr_native")
+            message(FATAL_ERROR "${prefix}: ${linking_target} links ${target}; only main_arcade_race_setup_facts_test and ctr_native may")
         endif()
-        set(linked_by_test 1)
     endif()
 endforeach()
 if(NOT linked_by_test)

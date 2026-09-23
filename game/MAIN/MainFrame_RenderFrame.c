@@ -5,6 +5,7 @@
 #endif
 
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+#include "MAIN/MainArcadeRosterProof.h"
 #include <platform/native_perf.h>
 #define MAINFRAME_PERF_BEGIN(bucket) NativePerf_BeginScope(bucket)
 #define MAINFRAME_PERF_END(bucket)   NativePerf_EndScope(bucket)
@@ -77,6 +78,17 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	 *   frame, so the demo never fires.
 	 */
 	const int arcadeLinkOwnsMenu = MainArcadeLink_Frame(gGT, gGamepads);
+#endif
+#if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
+	/*
+	 * Internal roster proof seam (docs/ROSTER_MILESTONE.md section 3.4),
+	 * called once per frame the same way as the arcade-link hook above; the
+	 * two are never active together. Dormant unless --arcade-roster-proof was
+	 * given: MainArcadeRosterProof_Frame then returns before touching
+	 * anything. When it launches the race it closes the retail main-menu box
+	 * itself, so the menu code below sees no active menu.
+	 */
+	MainArcadeRosterProof_Frame(gGT, gGamepads);
 #endif
 
 	if ((sdata->ptrActiveMenu != 0) || ((gGT->gameMode1 & END_OF_RACE) != 0))

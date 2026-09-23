@@ -37,6 +37,12 @@ int Platform_PollInput(void);
  */
 struct NativeFrameCaptureConfig;
 void Platform_SetFrameCaptureConfig(const struct NativeFrameCaptureConfig *config);
+
+/*
+ * Queues the host's normal quit (the --exit-after-frame path) and makes it
+ * exit the process with exitCode. For unattended internal runs only.
+ */
+void Platform_RequestExit(int exitCode);
 #endif
 
 #if defined(CTR_NATIVE)

@@ -1,16 +1,18 @@
 # Structural isolation for MainCanonicalDrivers_ExtractRosterInput
 # (game/MAIN/MainCanonicalDrivers.{c,h}, docs/ROSTER_MILESTONE.md R-5a/R-5a2):
 # the source-shaped roster input extractor is named, in code (comments
-# removed), only by its own module and the files on the allowlist below.
-# tests/ may name it freely and is not scanned. Scanned: every .c, .h, and
-# .inc under game/ and platform/, every .h under include/, and main.c.
+# removed), only by its own module and the live race setup adapter
+# (game/MAIN/MainArcadeRaceSetup.c, R-5b), which must use it. tests/ may name
+# it freely and is not scanned. Scanned: every .c, .h, and .inc under game/
+# and platform/, every .h under include/, and main.c.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "canonical drivers roster input isolation")
 set(symbol "MainCanonicalDrivers_ExtractRosterInput")
 set(allowed_paths
     "game/MAIN/MainCanonicalDrivers.c"
-    "game/MAIN/MainCanonicalDrivers.h")
+    "game/MAIN/MainCanonicalDrivers.h"
+    "game/MAIN/MainArcadeRaceSetup.c")
 
 # Removes /* */ and // comments.
 function(ctr_strip_comments source out_var)
@@ -53,6 +55,12 @@ ctr_strip_comments("${module_source}" module_source_code)
 ctr_names_symbol("${module_source_code}" source_hit)
 if(NOT header_hit EQUAL 1 OR NOT source_hit EQUAL 1)
     message(FATAL_ERROR "${prefix}: game/MAIN/MainCanonicalDrivers.{c,h} must declare and define ${symbol}")
+endif()
+file(READ "${repo}/game/MAIN/MainArcadeRaceSetup.c" adapter_source)
+ctr_strip_comments("${adapter_source}" adapter_code)
+ctr_names_symbol("${adapter_code}" adapter_hit)
+if(NOT adapter_hit EQUAL 1)
+    message(FATAL_ERROR "${prefix}: game/MAIN/MainArcadeRaceSetup.c is allowed only as the live adapter that calls ${symbol}")
 endif()
 
 file(GLOB_RECURSE scan_files

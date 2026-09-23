@@ -3,6 +3,7 @@
 #include <macros.h>
 
 #include "platform/native_arcade_link_host.h"
+#include "platform/native_arcade_roster_proof.h"
 #include "platform/native_audio.h"
 #include "platform/native_frame_capture.h"
 #include "platform/native_glad.h"
@@ -47,6 +48,8 @@ global_variable int s_pinnedVramDisplayH = 0;
 global_variable struct NativeFrameCaptureConfig s_frameCaptureConfig;
 global_variable int s_frameCaptureActive = 0;
 global_variable int s_frameCaptureFrameIndex = 0;
+/* The code SDL_EVENT_QUIT exits with: 0 unless Platform_RequestExit set it. */
+global_variable int s_requestedExitCode = 0;
 #endif
 #define NATIVE_FPS_REPORT_FRAME_WINDOW 2000
 global_variable int s_fpsFrameCount = 0;
@@ -319,6 +322,27 @@ internal void Platform_ServiceFrameCapture(void)
 		}
 	}
 }
+
+/*
+ * Leaves through the same shutdown path as --exit-after-frame: it queues
+ * SDL_EVENT_QUIT, which Platform_PollHostEvents turns into exit(), and makes
+ * that exit use exitCode. Internal unattended runs (the roster proof) use it
+ * to report their result as the process exit code.
+ */
+void Platform_RequestExit(int exitCode)
+{
+	SDL_Event quitEvent;
+
+	s_requestedExitCode = exitCode;
+	Platform_LogWarn("[CTR Native] exit requested with code %d\n", exitCode);
+	SDL_zero(quitEvent);
+	quitEvent.type = SDL_EVENT_QUIT;
+	if (!SDL_PushEvent(&quitEvent))
+	{
+		Platform_LogWarn("[CTR Native] failed to queue quit with code %d: %s; exiting now\n", exitCode, SDL_GetError());
+		exit(exitCode);
+	}
+}
 #endif
 
 internal void Platform_HandleKey(int key, char down)
@@ -377,12 +401,19 @@ internal void Platform_HandleKey(int key, char down)
 		/* Quick states are disabled in arcade-link link and preview mode: a
 		 * checkpoint captures the retail main-menu box the layer hides, so a
 		 * state saved there would leave that box invisible in a later normal
-		 * run (docs/GAME_LOOP_UI_MILESTONE.md section 2.5). With the host
-		 * mode OFF both hotkeys behave as before. */
+		 * run (docs/GAME_LOOP_UI_MILESTONE.md section 2.5). They are disabled
+		 * the same way in the internal roster proof (docs/ROSTER_MILESTONE.md
+		 * section 3.4), whose race setup state is never checkpointed. With the
+		 * host mode OFF and no proof both hotkeys behave as before. */
 		case SDL_SCANCODE_F5:
 			if (NativeArcadeLinkHost_Mode() != (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF)
 			{
 				Platform_LogWarn("[CTR Native] quick states are disabled in arcade-link mode\n");
+				break;
+			}
+			if (NativeArcadeRosterProof_Active())
+			{
+				Platform_LogWarn("[CTR Native] quick states are disabled in arcade roster proof mode\n");
 				break;
 			}
 			NativeSaveState_RequestSave();
@@ -391,6 +422,11 @@ internal void Platform_HandleKey(int key, char down)
 			if (NativeArcadeLinkHost_Mode() != (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF)
 			{
 				Platform_LogWarn("[CTR Native] quick states are disabled in arcade-link mode\n");
+				break;
+			}
+			if (NativeArcadeRosterProof_Active())
+			{
+				Platform_LogWarn("[CTR Native] quick states are disabled in arcade roster proof mode\n");
 				break;
 			}
 			NativeSaveState_RequestLoad();
@@ -651,7 +687,11 @@ void Platform_PollHostEvents(void)
 			Platform_InputControllerRemoved(event.jdevice.which);
 			break;
 		case SDL_EVENT_QUIT:
+#if defined(CTR_INTERNAL)
+			exit(s_requestedExitCode);
+#else
 			exit(0);
+#endif
 			break;
 		case SDL_EVENT_WINDOW_RESIZED:
 		case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:

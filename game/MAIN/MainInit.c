@@ -1,5 +1,9 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeRaceSetup.h"
+#endif
+
 #ifdef CTR_NATIVE
 static void MainInit_InitVisMemBspListNodes(struct VisMem *visMem, struct mesh_info *mesh)
 {
@@ -409,6 +413,17 @@ void MainInit_FinalizeInit(struct GameTracker *gGT)
 	struct Level *lev1;
 	struct Instance *inst;
 
+#if defined(CTR_NATIVE)
+	/*
+	 * Arcade race setup, pre-drivers hook (docs/ROSTER_MILESTONE.md section
+	 * 3.2): a no-op unless a setup was launched. It verifies the fields the
+	 * load consumed, re-applies the mode words, arcadeDifficulty, and
+	 * boolDemoMode, and seeds the retail RNG states, before anything below
+	 * reads them. deadcoed_struct stays retail: it is reset further down.
+	 */
+	MainArcadeRaceSetup_OnFinalizeInitBegin(gGT);
+#endif
+
 	// === Naughty Dog Bug ===
 	// Quitting a race while heldItem is warpball,
 	// never resets this flag, and then the game
@@ -464,6 +479,11 @@ void MainInit_FinalizeInit(struct GameTracker *gGT)
 	}
 
 	MainInit_Drivers(gGT);
+#if defined(CTR_NATIVE)
+	/* Arcade race setup, post-drivers hook: validates the live roster and
+	 * bot setup facts; a no-op unless the pre-drivers hook seeded. */
+	MainArcadeRaceSetup_OnDriversInitialized(gGT);
+#endif
 
 	// assume 1P fov
 	numPlyr = 1;

@@ -197,6 +197,47 @@ static int TestTitleStates(void)
 	return 0;
 }
 
+/* The public menu-ready condition is exactly the title window Decide owns in
+ * PREVIEW mode, and ignores the host mode, pads, and box flags. */
+static int TestTitleMenuReady(void)
+{
+	static const uint32_t modes[] = {MODE_OFF, MODE_LINK, MODE_PREVIEW, 7u};
+	static const uint32_t states[] = {T_INTRO, T_IN_MENU, T_EXITING, T_RETURNING, 4u};
+	static const int32_t frames[] = {-1, 0, READY - 1, READY, READY + 1, SKIP_FRAME};
+
+	CHECK(MainArcadeLinkPolicy_TitleMenuReady(NULL) == 0);
+	for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++)
+	{
+		for (size_t s = 0; s < sizeof(states) / sizeof(states[0]); s++)
+		{
+			for (size_t f = 0; f < sizeof(frames) / sizeof(frames[0]); f++)
+			{
+				for (uint32_t flags = 0; flags < 8u; flags++)
+				{
+					struct MainArcadeLinkPolicyInput input = TitleInput(MODE_PREVIEW);
+					struct MainArcadeLinkPolicyOutput output;
+					int ready;
+
+					input.titleState = states[s];
+					input.introFrame = frames[f];
+					input.levelIsMainMenu = (uint8_t)((flags & 1u) == 0u);
+					input.loading = (uint8_t)((flags & 2u) != 0u);
+					input.mainMenuBoxActive = (uint8_t)((flags & 4u) == 0u);
+					output = Decide(&input);
+					input.hostMode = modes[m];
+					input.rawHeld = RAW_START;
+					input.submenuOpen = 1u;
+					input.boxHidden = 1u;
+					ready = MainArcadeLinkPolicy_TitleMenuReady(&input);
+					CHECK(ready == (int)output.owns);
+					CHECK(ready == ((flags == 0u) && ((states[s] != T_INTRO) || (frames[f] >= READY))));
+				}
+			}
+		}
+	}
+	return 0;
+}
+
 /* The retail title code turns INTRO into IN_MENU (and RETURNING into
  * IN_MENU) inside the box's funcPtr, after the hook has decided. Every frame
  * of both transitions must be owned, so no frame is left in between. */
@@ -499,6 +540,7 @@ int main(void)
 	if (TestMapHeld() != 0) return 1;
 	if (TestOffInert() != 0) return 1;
 	if (TestTitleStates() != 0) return 1;
+	if (TestTitleMenuReady() != 0) return 1;
 	if (TestNoGapFrame() != 0) return 1;
 	if (TestSubmenuOpen() != 0) return 1;
 	if (TestOutsideTitleWindow() != 0) return 1;

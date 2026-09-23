@@ -12,9 +12,10 @@
  * Race setup facts builder (docs/ROSTER_MILESTONE.md section 3.2, task R-5a).
  * Turns a pointer-free snapshot of the retail race, taken after
  * MainInit_Drivers, into the observed facts MainArcadeRoster_ValidateNativeFacts
- * and MainArcadeBotSetup_Plan validate against the plan. Dormant: no live
- * callsite, not in game/game_unity.h; the R-5b live adapter fills the
- * snapshot from the retail globals and the roster input from
+ * and MainArcadeBotSetup_Plan validate against the plan. Not in
+ * game/game_unity.h; its one live caller is the R-5b adapter
+ * (game/MAIN/MainArcadeRaceSetup.c), which fills the snapshot from the
+ * retail globals and the roster input from
  * MainCanonicalDrivers_ExtractRosterInput.
  *
  * Pure: reads no game global, does no I/O, uses no heap, keeps no hidden
@@ -87,7 +88,7 @@
  * plan; the other callers (PlayLevel.c:226, GhostReplay.c:88,
  * MainGameEnd.c:157) run after the snapshot point.
  *
- * Consequence for the dormant validators: the MainArcadeBotSetup range rules
+ * Consequence for the validators: the MainArcadeBotSetup range rules
  * that every present slot, humans included, has spawnOrder < 8,
  * navPathIndex < 3, accelerationOrder < 8, and unique spawn and acceleration
  * orders all hold for retail values; no validator rule is corrected.

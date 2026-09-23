@@ -486,7 +486,8 @@ target_link_libraries(ctr_native_arcade_bot_setup PUBLIC ctr_native_arcade_roste
 
 # Race setup pure core (docs/ROSTER_MILESTONE.md section 3.2, R-4): match
 # config -> the retail race-defining field values, applied to a pointer-free
-# mirror. Dormant: not in game/game_unity.h, no live callsite until R-5.
+# mirror. Linked into ctr_native for the live adapter
+# (game/MAIN/MainArcadeRaceSetup, R-5b), its only game caller.
 add_library(ctr_native_arcade_race_setup_plan STATIC game/MAIN/MainArcadeRaceSetupPlan.c)
 set_target_properties(ctr_native_arcade_race_setup_plan PROPERTIES
     C_STANDARD 17
@@ -498,8 +499,8 @@ target_link_libraries(ctr_native_arcade_race_setup_plan PUBLIC ctr_native_arcade
 
 # Race setup facts builder (docs/ROSTER_MILESTONE.md section 3.2, R-5a): a
 # pointer-free snapshot of the retail race after MainInit_Drivers -> the
-# observed roster and bot setup facts. Dormant: not in game/game_unity.h, no
-# live callsite until R-5b.
+# observed roster and bot setup facts. Linked into ctr_native for the live
+# adapter (game/MAIN/MainArcadeRaceSetup, R-5b), its only game caller.
 add_library(ctr_native_arcade_race_setup_facts STATIC game/MAIN/MainArcadeRaceSetupFacts.c)
 set_target_properties(ctr_native_arcade_race_setup_facts PROPERTIES
     C_STANDARD 17
@@ -508,6 +509,19 @@ set_target_properties(ctr_native_arcade_race_setup_facts PROPERTIES
 )
 target_include_directories(ctr_native_arcade_race_setup_facts PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 target_link_libraries(ctr_native_arcade_race_setup_facts PUBLIC ctr_native_arcade_bot_setup)
+
+# Internal live roster proof host glue (docs/ROSTER_MILESTONE.md section 3.4,
+# R-5b): the --arcade-roster-proof options, the proof config (the fixture
+# resolved through match select), a singleton, and the report writer.
+# Dormant unless main.c configures it; linked into ctr_native.
+add_library(ctr_native_arcade_roster_proof STATIC platform/native_arcade_roster_proof.c)
+set_target_properties(ctr_native_arcade_roster_proof PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_roster_proof PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_arcade_roster_proof PUBLIC ctr_native_arcade_link_options ctr_native_match_select_rules ctr_native_arcade_bot_rules)
 
 add_library(ctr_native_canonical_state STATIC platform/native_canonical_state.c)
 set_target_properties(ctr_native_canonical_state PROPERTIES
@@ -923,7 +937,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_roster_proof)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -1494,9 +1508,26 @@ if(BUILD_TESTING)
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_setup_facts_isolation_test.cmake")
 
     # R-5a2: MainCanonicalDrivers_ExtractRosterInput is named only by its own
-    # module (and tests/).
+    # module, the live race setup adapter (R-5b), and tests/.
     add_test(NAME main_canonical_drivers_roster_input_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_canonical_drivers_roster_input_isolation_test.cmake")
+
+    # Live race setup adapter and internal roster proof launcher (R-5b): the
+    # proof options, config builder, singleton, and report formatter; the
+    # isolation test fixes the hook placement, the arming callers, the unity
+    # position, and the token bans.
+    add_executable(native_arcade_roster_proof_test tests/native_arcade_roster_proof_test.c)
+    set_target_properties(native_arcade_roster_proof_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_roster_proof_test PRIVATE ctr_native_arcade_roster_proof
+        ctr_native_arcade_race_setup_plan)
+    add_test(NAME native_arcade_roster_proof_unit COMMAND $<TARGET_FILE:native_arcade_roster_proof_test>)
+
+    add_test(NAME main_arcade_race_setup_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_setup_isolation_test.cmake")
 
     add_executable(native_canonical_state_test tests/native_canonical_state_test.c)
     set_target_properties(native_canonical_state_test PROPERTIES

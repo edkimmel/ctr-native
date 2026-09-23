@@ -306,19 +306,33 @@ ctr_require_order("main.c" "${main_source}"
     "NativeArcadeLinkHost_Shutdown()"
     "Platform_Shutdown()")
 
-# 8b. main.c reads the identity only inside the link-enabled branch: exactly
-#     one NativeIdentity_Get call, inside the block of the first
-#     `if (arcadeLinkOptions.enabled != 0u)`.
+# 8b. main.c reads the identity only inside the link-enabled branch: the
+#     first NativeIdentity_Get call is inside the block of the first
+#     `if (arcadeLinkOptions.enabled != 0u)`. Since R-5b the internal roster
+#     proof (which main.c rejects together with link or preview mode) makes
+#     exactly one more, inside the block of the first
+#     `if (rosterProofOptions.enabled != 0u)` after the host is configured;
+#     there is no other.
 ctr_strip_comments("${main_source}" main_code)
 string(REGEX MATCHALL "NativeIdentity_Get\\(" identity_calls "${main_code}")
 list(LENGTH identity_calls identity_call_count)
-if(NOT identity_call_count EQUAL 1)
-    message(FATAL_ERROR "arcade link hook isolation: main.c must call NativeIdentity_Get exactly once (found ${identity_call_count})")
+if(NOT identity_call_count EQUAL 2)
+    message(FATAL_ERROR "arcade link hook isolation: main.c must call NativeIdentity_Get exactly twice, once for the link host and once for the roster proof (found ${identity_call_count})")
 endif()
 string(FIND "${main_code}" "NativeIdentity_Get(" identity_at)
 ctr_find_block("main.c" "${main_code}" "if (arcadeLinkOptions.enabled != 0u)" enabled_begin enabled_end)
 if(NOT (identity_at GREATER enabled_begin AND identity_at LESS enabled_end))
     message(FATAL_ERROR "arcade link hook isolation: main.c must call NativeIdentity_Get only inside its if (arcadeLinkOptions.enabled != 0u) block")
+endif()
+string(FIND "${main_code}" "NativeIdentity_Get(" identity_last_at REVERSE)
+string(FIND "${main_code}" "NativeArcadeLinkHost_Configure(" host_configure_at)
+string(SUBSTRING "${main_code}" ${host_configure_at} -1 after_host_configure)
+ctr_find_block("main.c (after the host configure)" "${after_host_configure}"
+    "if (rosterProofOptions.enabled != 0u)" proof_begin proof_end)
+math(EXPR proof_begin "${proof_begin} + ${host_configure_at}")
+math(EXPR proof_end "${proof_end} + ${host_configure_at}")
+if(NOT (identity_last_at GREATER proof_begin AND identity_last_at LESS proof_end))
+    message(FATAL_ERROR "arcade link hook isolation: main.c may call NativeIdentity_Get a second time only inside its if (rosterProofOptions.enabled != 0u) block after NativeArcadeLinkHost_Configure")
 endif()
 
 # 8c. main.c rejects link or preview mode combined with any replay record,

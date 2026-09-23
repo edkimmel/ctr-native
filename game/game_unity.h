@@ -121,6 +121,11 @@
 #include "MAIN/MainCanonicalRuntime.c"
 #include "MAIN/MainCanonicalTopologyLeaseAuthority.c"
 #include "MAIN/MainCanonicalTopologyLeaseRuntime.c"
+// Arcade race setup live adapter (docs/ROSTER_MILESTONE.md R-5b), CTR_NATIVE
+// only: after the MainCanonical* sources, whose roster input extractor it
+// calls, and before the arcade-link sources and every native launcher.
+// MainInit.c above calls its two hooks through MAIN/MainArcadeRaceSetup.h.
+#include "MAIN/MainArcadeRaceSetup.c"
 #include "MAIN/MainMain.c"
 #include "MAIN/MainDB.c"
 #include "MAIN/MainDrawCb.c"
@@ -262,6 +267,11 @@
 #include "MAIN/MainArcadeLinkLayout.c"
 #include "MAIN/MainArcadeLinkPolicy.c"
 #include "MAIN/MainArcadeLink.c"
+// Internal roster proof launcher (docs/ROSTER_MILESTONE.md section 3.4),
+// CTR_NATIVE and CTR_INTERNAL only: after the arcade-link hook, whose
+// menu-ready condition it reuses, and the 230 title it closes; after
+// MainArcadeRaceSetup above, which it arms and launches.
+#include "MAIN/MainArcadeRosterProof.c"
 
 #include "231/R231.c"
 #include "231/D231.c"

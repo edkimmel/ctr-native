@@ -24,4 +24,13 @@ struct GamepadSystem;
  */
 int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS);
 
+/*
+ * The arcade-link menu-ready condition for this frame, whatever the host
+ * mode: 1 when the frame is in the title window the layer would own
+ * (MainArcadeLinkPolicy_TitleMenuReady on the facts MainArcadeLink_Frame
+ * gathers), else 0. Reads only; changes nothing. The internal roster proof
+ * waits for it before it launches.
+ */
+int MainArcadeLink_TitleMenuReady(const struct GameTracker *gGT, const struct GamepadSystem *gGS);
+
 #endif

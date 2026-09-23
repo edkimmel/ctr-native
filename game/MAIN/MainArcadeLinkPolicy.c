@@ -42,8 +42,12 @@ uint32_t MainArcadeLinkPolicy_MapHeld(uint32_t rawHeld)
 /* The retail main-menu box could be visible or take input on the idle
  * main-menu level: every title state except the intro before the menu-ready
  * frame. submenuOpen deliberately plays no part. */
-static int MainArcadeLinkPolicy_TitleWindow(const struct MainArcadeLinkPolicyInput *input)
+int MainArcadeLinkPolicy_TitleMenuReady(const struct MainArcadeLinkPolicyInput *input)
 {
+	if (input == NULL)
+	{
+		return 0;
+	}
 	if ((input->levelIsMainMenu == 0u) || (input->loading != 0u) || (input->mainMenuBoxActive == 0u))
 	{
 		return 0;
@@ -81,7 +85,7 @@ int MainArcadeLinkPolicy_Decide(const struct MainArcadeLinkPolicyInput *input, s
 	pressed = held & ~MainArcadeLinkPolicy_MapHeld(input->prevRawHeld);
 	output->heldButtons = held;
 
-	owns = MainArcadeLinkPolicy_TitleWindow(input);
+	owns = MainArcadeLinkPolicy_TitleMenuReady(input);
 	if ((link != 0) && (screenActive != 0))
 	{
 		owns = 1;

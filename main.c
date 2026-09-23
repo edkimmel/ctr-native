@@ -22,6 +22,7 @@
 
 #include "platform/native_arcade_link_host.h"
 #include "platform/native_arcade_link_options.h"
+#include "platform/native_arcade_roster_proof.h"
 #include "platform/native_assets.h"
 #include "platform/native_display_config.h"
 #include "platform/native_frame_capture.h"
@@ -220,6 +221,34 @@ int main(int argc, char *argv[])
 		return NativeConsole_Return(1);
 	}
 
+	/* Internal live roster proof (docs/ROSTER_MILESTONE.md section 3.4):
+	 * evidence plumbing, never match identity. A malformed request is fatal,
+	 * like the arcade-link options. It launches a race from the title and
+	 * owns its setup, so it is exclusive with link and preview mode, and a
+	 * recording would capture a race the replay could not set up, so it is
+	 * rejected with every replay option, before any replay parser runs. */
+	struct NativeArcadeRosterProofOptions rosterProofOptions;
+
+	NativeArcadeRosterProofOptions_SetDefaults(&rosterProofOptions);
+	if (!NativeArcadeRosterProofOptions_ApplyArgs(argc, argv, &rosterProofOptions))
+	{
+		fprintf(stderr, "[CTR Native] invalid arcade roster proof option; expected --arcade-roster-proof <log path> [--arcade-roster-proof-seed <u64, decimal or 0x hex>] [--arcade-roster-proof-dwell <0-600>].\n");
+		return NativeConsole_Return(1);
+	}
+#if !defined(CTR_INTERNAL)
+	if (rosterProofOptions.enabled != 0u)
+	{
+		fprintf(stderr, "[CTR Native] --arcade-roster-proof is available in internal builds only.\n");
+		return NativeConsole_Return(1);
+	}
+#endif
+	if ((rosterProofOptions.enabled != 0u) &&
+	    ((arcadeLinkOptions.enabled != 0u) || (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE) || NativeArg_NamesReplayOption(argc, argv)))
+	{
+		fprintf(stderr, "[CTR Native] --arcade-roster-proof cannot be combined with --arcade-link, --arcade-link-preview, or replay record or playback options.\n");
+		return NativeConsole_Return(1);
+	}
+
 	printf("[CTR Native] Starting...\n");
 	printf("[CTR Native] Local render scale: %dx\n", displayConfig.renderScale);
 	printf("[CTR Native] Local window mode: %s\n", displayConfig.fullscreen ? "fullscreen" : "windowed");
@@ -377,6 +406,41 @@ int main(int argc, char *argv[])
 		 * Handlers run in reverse order, so registering here closes the link
 		 * before Platform_Shutdown on those paths too. */
 		(void)atexit(NativeArcadeLinkHost_Shutdown);
+	}
+
+	/* The proof config carries the build and content identity, read once
+	 * here like the link fixture's. The proof is single-machine: a dirty tree
+	 * has no build identity, so it then uses the fixed, logged proof build
+	 * identity, but always the real content identity of the open disc. */
+	if (rosterProofOptions.enabled != 0u)
+	{
+		struct NativeIdentityV1 rosterProofIdentity;
+
+		if (!NativeIdentity_Get(&rosterProofIdentity))
+		{
+			if (!NativeDiscImage_GetContentIdentity(rosterProofIdentity.content) ||
+			    !NativeArcadeRosterProof_ProofBuildIdentity(rosterProofIdentity.build))
+			{
+				fprintf(stderr, "[CTR Native] arcade roster proof requires the disc content identity.\n");
+				NativeArcadeLinkHost_Shutdown();
+				Platform_LogFlush();
+				Platform_Shutdown();
+				return NativeConsole_Return(1);
+			}
+			printf("[CTR Native] arcade roster proof: build identity unknown (dirty tree); using the fixed proof build identity SHA-256(\"%s\")\n",
+			       NATIVE_ARCADE_ROSTER_PROOF_BUILD_TAG);
+		}
+		if (!NativeArcadeRosterProof_Configure(&rosterProofOptions, &rosterProofIdentity))
+		{
+			fprintf(stderr, "[CTR Native] failed to configure the arcade roster proof.\n");
+			NativeArcadeLinkHost_Shutdown();
+			Platform_LogFlush();
+			Platform_Shutdown();
+			return NativeConsole_Return(1);
+		}
+		printf("[CTR Native] arcade roster proof: seed 0x%08X%08X dwell %u report %s\n", (unsigned)(uint32_t)(rosterProofOptions.seed >> 32),
+		       (unsigned)(uint32_t)(rosterProofOptions.seed & 0xFFFFFFFFu), (unsigned)rosterProofOptions.dwellTicks, rosterProofOptions.logPath);
+		fflush(stdout);
 	}
 
 	const int result = CTR_Main();

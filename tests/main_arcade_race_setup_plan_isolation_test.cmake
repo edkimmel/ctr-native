@@ -14,9 +14,11 @@
 #     mirror names a retail value;
 #  6. the retail field widths the mirror struct assumes still hold
 #     (include/namespace_Main.h GameTracker, include/regionsEXE.h);
-#  7. it is dormant: no game/ or platform/ file other than the module names
-#     MainArcadeRaceSetupPlan (R-5 relaxes this for the live adapter), it is
-#     not in game/game_unity.h, and only its unit test links it.
+#  7. it is confined: no game/ or platform/ file other than the module
+#     and the live adapter (game/MAIN/MainArcadeRaceSetup.{c,h},
+#     R-5b) names MainArcadeRaceSetupPlan, it is not in game/game_unity.h,
+#     and only its unit test, the roster proof unit test, and ctr_native (for
+#     the adapter) link it.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(module_header "game/MAIN/MainArcadeRaceSetupPlan.h")
@@ -319,7 +321,10 @@ foreach(field IN ITEMS "int32_t levelID" "uint32_t gameMode1" "uint32_t gameMode
 endforeach()
 ctr_require("${module_header}" "${header}" "#define MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT 8u")
 
-# 7. Dormant.
+# 7. Confined: only the module and the R-5b live adapter name
+# it, and only its unit test, the roster proof unit test, and ctr_native link
+# it.
+set(plan_adapter_paths "game/MAIN/MainArcadeRaceSetup.c" "game/MAIN/MainArcadeRaceSetup.h")
 file(GLOB_RECURSE game_files "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/game/*.inc"
     "${repo}/platform/*.c" "${repo}/platform/*.h" "${repo}/platform/*.inc"
     "${repo}/include/platform/*.h" "${repo}/main.c")
@@ -328,6 +333,10 @@ set(scanned_platform 0)
 foreach(path IN LISTS game_files)
     file(RELATIVE_PATH relative_path "${repo}" "${path}")
     if(relative_path STREQUAL module_header OR relative_path STREQUAL module_source)
+        continue()
+    endif()
+    list(FIND plan_adapter_paths "${relative_path}" adapter_at)
+    if(NOT adapter_at EQUAL -1)
         continue()
     endif()
     file(READ "${path}" game_source)
@@ -346,7 +355,9 @@ string(REGEX MATCHALL "target_link_libraries\\([ \t\r\n]*[A-Za-z0-9_]+[^)]*\\)" 
 foreach(link_call IN LISTS all_link_calls)
     string(REGEX REPLACE "^target_link_libraries\\([ \t\r\n]*([A-Za-z0-9_]+).*$" "\\1" linking_target "${link_call}")
     string(REGEX MATCH "[ \t\r\n]${target}[ \t\r\n)]" names_module "${link_call}")
-    if(names_module AND NOT linking_target STREQUAL "main_arcade_race_setup_plan_test")
-        message(FATAL_ERROR "race setup plan isolation: ${linking_target} links ${target}; only main_arcade_race_setup_plan_test may until R-5")
+    if(names_module AND NOT linking_target STREQUAL "main_arcade_race_setup_plan_test"
+       AND NOT linking_target STREQUAL "native_arcade_roster_proof_test"
+       AND NOT linking_target STREQUAL "ctr_native")
+        message(FATAL_ERROR "race setup plan isolation: ${linking_target} links ${target}; only main_arcade_race_setup_plan_test, native_arcade_roster_proof_test, and ctr_native may")
     endif()
 endforeach()
