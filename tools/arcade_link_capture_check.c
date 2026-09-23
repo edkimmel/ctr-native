@@ -89,6 +89,9 @@ int main(int argc, char **argv)
 		const char *verdict = check->passed ? "PASS" : "FAIL";
 		const char *op = "";
 
+		/* Checks the screen's layout has no region for are not printed. */
+		if (check->expect == NATIVE_CAPTURE_EXPECT_NONE)
+			continue;
 		if (check->expect == NATIVE_CAPTURE_EXPECT_AT_LEAST)
 			op = ">=";
 		else if (check->expect == NATIVE_CAPTURE_EXPECT_AT_MOST)

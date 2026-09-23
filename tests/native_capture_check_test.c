@@ -102,15 +102,36 @@ static void PaintPanel(void)
 	FillRetail(453u, 28u, 456u, 204u, 0xdeu, 0xffu, 0xffu);
 }
 
-/* Additive REMATCH highlight at x=136 y=117 w=240 h=21. */
-static void PaintHighlight(void)
+/* The select panel: the same fill and frame, widened to x=4 w=504. */
+static void PaintSelectPanel(void)
 {
 	uint32_t x;
 	uint32_t y;
 
-	for (y = Sy(117u); y < Sy(138u); y++)
+	for (y = Sy(28u); y < Sy(204u); y++)
 	{
-		for (x = Sx(136u); x < Sx(376u); x++)
+		for (x = Sx(4u); x < Sx(508u); x++)
+		{
+			g_canvas[y][x][0] = (uint8_t)(g_canvas[y][x][0] / 2u);
+			g_canvas[y][x][1] = (uint8_t)(g_canvas[y][x][1] / 2u);
+			g_canvas[y][x][2] = (uint8_t)(g_canvas[y][x][2] / 2u);
+		}
+	}
+	FillRetail(4u, 28u, 508u, 30u, 0xdeu, 0xffu, 0xffu);
+	FillRetail(4u, 202u, 508u, 204u, 0xdeu, 0xffu, 0xffu);
+	FillRetail(4u, 28u, 7u, 204u, 0xdeu, 0xffu, 0xffu);
+	FillRetail(505u, 28u, 508u, 204u, 0xdeu, 0xffu, 0xffu);
+}
+
+/* Additive row highlight over a retail rectangle. */
+static void PaintHighlightRect(uint32_t rx0, uint32_t ry0, uint32_t rx1, uint32_t ry1)
+{
+	uint32_t x;
+	uint32_t y;
+
+	for (y = Sy(ry0); y < Sy(ry1); y++)
+	{
+		for (x = Sx(rx0); x < Sx(rx1); x++)
 		{
 			const uint32_t r = g_canvas[y][x][0] + 0x7cu;
 			const uint32_t g = g_canvas[y][x][1] + 0x5bu;
@@ -120,12 +141,19 @@ static void PaintHighlight(void)
 	}
 }
 
-/* A centred text line of `chars` glyph cells: black outline, coloured fill. */
-static void PaintLine(uint32_t y, uint32_t chars, int big, uint8_t r, uint8_t g, uint8_t b)
+/* Additive REMATCH highlight at x=136 y=117 w=240 h=21. */
+static void PaintHighlight(void)
+{
+	PaintHighlightRect(136u, 117u, 376u, 138u);
+}
+
+/* A text line of `chars` glyph cells centred on retail x=cx: black
+ * outline, coloured fill. */
+static void PaintLineAt(uint32_t cx, uint32_t y, uint32_t chars, int big, uint8_t r, uint8_t g, uint8_t b)
 {
 	const uint32_t cw = big ? 17u : 13u;
 	const uint32_t ch = big ? 17u : 8u;
-	const uint32_t x0 = 256u - (chars * cw) / 2u;
+	const uint32_t x0 = cx - (chars * cw) / 2u;
 	uint32_t i;
 
 	for (i = 0u; i < chars; i++)
@@ -136,9 +164,16 @@ static void PaintLine(uint32_t y, uint32_t chars, int big, uint8_t r, uint8_t g,
 	}
 }
 
+/* A text line centred on the screen. */
+static void PaintLine(uint32_t y, uint32_t chars, int big, uint8_t r, uint8_t g, uint8_t b)
+{
+	PaintLineAt(256u, y, chars, big, r, g, b);
+}
+
 #define ORANGE 0xffu, 0x73u, 0x00u
 #define RED    0xc6u, 0x00u, 0x00u
 #define WHITE  0xffu, 0xffu, 0xffu
+#define BLUE   0x10u, 0x40u, 0xffu
 
 enum Frame
 {
@@ -185,6 +220,134 @@ static void PaintFrame(enum Frame frame)
 	case FRAME_WHITE_PANEL:
 	{
 		FillRetail(56u, 28u, 456u, 204u, 0xffu, 0xffu, 0xffu);
+		break;
+	}
+	default:
+	{
+		break;
+	}
+	}
+}
+
+/* A select screen as MainArcadeLinkLayout.c draws its preview (local cursor
+ * on list entry 0), optionally with one flaw. */
+enum SelectFlaw
+{
+	SEL_OK = 0,
+	SEL_NO_PANEL,       /* text over the undimmed scene */
+	SEL_WHITE_PANEL,    /* opaque white select panel, no text */
+	SEL_NO_HIGHLIGHT,   /* picking screens: the cursor highlight is missing */
+	SEL_HIGHLIGHT,      /* wait, result: a stray highlight on the character cursor */
+	SEL_DROP_REQUIRED,  /* one grid row or body line is missing */
+	SEL_DROP_TIME,      /* picking screens: the countdown is missing */
+	SEL_TEXT_IN_EMPTY,  /* a short line where the layout draws nothing */
+	SEL_FOOTER_ON_WAIT, /* wait: a footer line the wait screen never draws */
+	SEL_FLAW_COUNT
+};
+
+static void PaintSelect(enum NativeCaptureScreen screen, enum SelectFlaw flaw)
+{
+	uint32_t r;
+
+	PaintScene();
+	if (flaw != SEL_NO_PANEL)
+		PaintSelectPanel();
+	if (flaw == SEL_WHITE_PANEL)
+	{
+		FillRetail(4u, 28u, 508u, 204u, 0xffu, 0xffu, 0xffu);
+		return;
+	}
+	switch (screen)
+	{
+	case NATIVE_CAPTURE_SCREEN_SELECT_CHARACTER:
+	{
+		if (flaw != SEL_NO_HIGHLIGHT)
+			PaintHighlightRect(8u, 75u, 252u, 96u);
+		PaintLine(40u, 16u, 1, ORANGE); /* SELECT CHARACTER */
+		if (flaw != SEL_DROP_TIME)
+			PaintLine(60u, 7u, 0, WHITE); /* TIME 18 */
+		for (r = 0u; r < 4u; r++)
+		{
+			PaintLineAt(130u, 78u + 24u * r, 5u, 1, ORANGE);
+			if ((flaw != SEL_DROP_REQUIRED) || (r != 3u))
+				PaintLineAt(382u, 78u + 24u * r, 6u, 1, ORANGE);
+		}
+		PaintLineAt(25u, 78u, 2u, 1, BLUE);  /* P1 on CRASH */
+		PaintLineAt(235u, 126u, 2u, 1, RED); /* P2 on TINY */
+		PaintLine(186u, 22u, 0, RED);        /* P2: CHOOSING CHARACTER */
+		if (flaw == SEL_TEXT_IN_EMPTY)
+			PaintLine(172u, 3u, 0, WHITE);
+		break;
+	}
+	case NATIVE_CAPTURE_SCREEN_SELECT_TRACK:
+	{
+		if (flaw != SEL_NO_HIGHLIGHT)
+			PaintHighlightRect(8u, 74u, 252u, 86u);
+		PaintLine(40u, 10u, 1, ORANGE); /* VOTE TRACK */
+		if (flaw != SEL_DROP_TIME)
+			PaintLine(60u, 7u, 0, WHITE);
+		for (r = 0u; r < 8u; r++)
+		{
+			if ((flaw != SEL_DROP_REQUIRED) || (r != 5u))
+				PaintLineAt(130u, 76u + 13u * r, 11u, 0, ORANGE);
+			PaintLineAt(382u, 76u + 13u * r, 12u, 0, ORANGE);
+		}
+		PaintLineAt(25u, 76u, 2u, 0, BLUE);  /* P1 on CRASH COVE */
+		PaintLineAt(239u, 102u, 2u, 0, RED); /* P2 on TIGER TEMPLE */
+		PaintLine(186u, 16u, 0, RED);        /* P2: VOTING TRACK */
+		if (flaw == SEL_TEXT_IN_EMPTY)
+			PaintLine(177u, 3u, 0, WHITE);
+		break;
+	}
+	case NATIVE_CAPTURE_SCREEN_SELECT_LAPS:
+	{
+		if (flaw != SEL_NO_HIGHLIGHT)
+			PaintHighlightRect(134u, 83u, 378u, 104u);
+		PaintLine(40u, 9u, 1, ORANGE); /* VOTE LAPS */
+		if (flaw != SEL_DROP_TIME)
+			PaintLine(60u, 7u, 0, WHITE);
+		for (r = 0u; r < 3u; r++)
+		{
+			if ((flaw != SEL_DROP_REQUIRED) || (r != 2u))
+				PaintLine(86u + 25u * r, 6u, 1, ORANGE); /* 3 LAPS */
+		}
+		PaintLineAt(151u, 86u, 2u, 1, BLUE); /* P1 on 3 LAPS */
+		PaintLineAt(361u, 136u, 2u, 1, RED); /* P2 on 7 LAPS */
+		PaintLine(186u, 15u, 0, RED);        /* P2: VOTING LAPS */
+		if (flaw == SEL_TEXT_IN_EMPTY)
+			PaintLineAt(60u, 90u, 3u, 0, WHITE); /* beside the laps column */
+		break;
+	}
+	case NATIVE_CAPTURE_SCREEN_SELECT_WAIT:
+	{
+		if (flaw == SEL_HIGHLIGHT)
+			PaintHighlightRect(8u, 75u, 252u, 96u);
+		PaintLine(40u, 14u, 1, ORANGE); /* WAITING FOR P2 */
+		PaintLine(68u, 21u, 0, WHITE);  /* YOUR CHARACTER: CRASH */
+		PaintLine(80u, 29u, 0, WHITE);  /* YOUR TRACK VOTE: CRASH COVE */
+		if (flaw != SEL_DROP_REQUIRED)
+			PaintLine(92u, 22u, 0, WHITE); /* YOUR LAP VOTE: 3 LAPS */
+		PaintLine(116u, 23u, 0, RED);      /* P2: VOTING LAPS  7 LAPS */
+		if (flaw == SEL_TEXT_IN_EMPTY)
+			PaintLine(150u, 3u, 0, WHITE);
+		if (flaw == SEL_FOOTER_ON_WAIT)
+			PaintLine(186u, 9u, 0, ORANGE);
+		break;
+	}
+	case NATIVE_CAPTURE_SCREEN_SELECT_RESULT:
+	{
+		if (flaw == SEL_HIGHLIGHT)
+			PaintHighlightRect(8u, 75u, 252u, 96u);
+		PaintLine(40u, 9u, 1, ORANGE); /* MATCH SET */
+		PaintLine(66u, 27u, 0, WHITE); /* TRACK TIGER TEMPLE - RANDOM */
+		if (flaw != SEL_DROP_REQUIRED)
+			PaintLine(80u, 6u, 0, WHITE); /* LAPS 3 */
+		PaintLine(100u, 8u, 0, BLUE);     /* P1 CRASH */
+		PaintLine(112u, 9u, 0, RED);      /* P2 CORTEX */
+		PaintLine(130u, 30u, 0, WHITE);   /* CPU POLAR, N. GIN, TINY, COCO */
+		PaintLine(186u, 9u, 0, ORANGE);   /* GET READY */
+		if (flaw == SEL_TEXT_IN_EMPTY)
+			PaintLine(160u, 3u, 0, WHITE);
 		break;
 	}
 	default:
@@ -295,8 +458,9 @@ static int RunOn(const uint8_t *bmp, size_t size, enum NativeCaptureScreen scree
 
 static int TestScreenNames(void)
 {
-	static const char *const names[] = {"title",           "lobby",          "lobby-connecting",   "lobby-rejected", "match-found", "results",
-	                                    "results-timeout", "results-desync", "results-link-error", "rematch",        "exit",        "exit-opponent-left"};
+	static const char *const names[] = {
+	    "title",   "lobby", "lobby-connecting",   "lobby-rejected",   "match-found",  "results",     "results-timeout", "results-desync", "results-link-error",
+	    "rematch", "exit",  "exit-opponent-left", "select-character", "select-track", "select-laps", "select-wait",     "select-result"};
 	enum NativeCaptureScreen screen;
 	unsigned i;
 
@@ -309,6 +473,8 @@ static int TestScreenNames(void)
 	}
 	CHECK(!NativeCaptureCheck_ScreenFromName("Lobby", &screen));
 	CHECK(!NativeCaptureCheck_ScreenFromName("results-", &screen));
+	CHECK(!NativeCaptureCheck_ScreenFromName("select", &screen));
+	CHECK(!NativeCaptureCheck_ScreenFromName("select-characters", &screen));
 	CHECK(!NativeCaptureCheck_ScreenFromName("", &screen));
 	CHECK(!NativeCaptureCheck_ScreenFromName(NULL, &screen));
 	CHECK(!NativeCaptureCheck_ScreenFromName("lobby", NULL));
@@ -606,6 +772,175 @@ static int TestVerdicts(void)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Select screens                                                           */
+/* ------------------------------------------------------------------------ */
+
+#define SELECT_SCREEN_COUNT 5u
+
+static const enum NativeCaptureScreen g_selectScreens[SELECT_SCREEN_COUNT] = {NATIVE_CAPTURE_SCREEN_SELECT_CHARACTER, NATIVE_CAPTURE_SCREEN_SELECT_TRACK,
+                                                                              NATIVE_CAPTURE_SCREEN_SELECT_LAPS, NATIVE_CAPTURE_SCREEN_SELECT_WAIT,
+                                                                              NATIVE_CAPTURE_SCREEN_SELECT_RESULT};
+
+static int IsPickingScreen(enum NativeCaptureScreen screen)
+{
+	return (screen == NATIVE_CAPTURE_SCREEN_SELECT_CHARACTER) || (screen == NATIVE_CAPTURE_SCREEN_SELECT_TRACK) ||
+	       (screen == NATIVE_CAPTURE_SCREEN_SELECT_LAPS);
+}
+
+static int SelectReport(enum NativeCaptureScreen painted, enum SelectFlaw flaw, enum NativeCaptureScreen screen, struct NativeCaptureReport *out)
+{
+	size_t size;
+
+	PaintSelect(painted, flaw);
+	size = Encode(g_bmp, W, H, ENC_RGB32, 0, 0u);
+	CHECK(RunOn(g_bmp, size, screen, out));
+	return 0;
+}
+
+/* Every check a screen judges, and only those, is present in its report. */
+static uint32_t JudgedMask(const struct NativeCaptureReport *report)
+{
+	uint32_t mask = 0u;
+	unsigned i;
+
+	for (i = 0u; i < (unsigned)NATIVE_CAPTURE_CHECK_COUNT; i++)
+	{
+		if (report->checks[i].expect != NATIVE_CAPTURE_EXPECT_NONE)
+			mask |= 1u << i;
+	}
+	return mask;
+}
+
+#define BIT(id) (1u << (id))
+
+static int TestSelectVerdicts(void)
+{
+	static const enum Encoding encodings[] = {ENC_RGB32, ENC_RGB24, ENC_BITFIELDS40, ENC_BITFIELDS124};
+	const uint32_t panel = BIT(NATIVE_CAPTURE_CHECK_PANEL_FRAME) | BIT(NATIVE_CAPTURE_CHECK_PANEL_DIM) | BIT(NATIVE_CAPTURE_CHECK_PANEL_DETAIL);
+	const uint32_t picking = panel | BIT(NATIVE_CAPTURE_CHECK_TEXT_TITLE) | BIT(NATIVE_CAPTURE_CHECK_TEXT_TIME) | BIT(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL1) |
+	                         BIT(NATIVE_CAPTURE_CHECK_TEXT_FOOTER) | BIT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY) | BIT(NATIVE_CAPTURE_CHECK_HIGHLIGHT_CURSOR);
+	const uint32_t expectJudged[SELECT_SCREEN_COUNT] = {
+	    picking | BIT(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL2),
+	    picking | BIT(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL2),
+	    picking,
+	    panel | BIT(NATIVE_CAPTURE_CHECK_TEXT_TITLE) | BIT(NATIVE_CAPTURE_CHECK_TEXT_LINES) | BIT(NATIVE_CAPTURE_CHECK_TEXT_FOOTER) |
+	        BIT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY) | BIT(NATIVE_CAPTURE_CHECK_HIGHLIGHT_CURSOR),
+	    panel | BIT(NATIVE_CAPTURE_CHECK_TEXT_TITLE) | BIT(NATIVE_CAPTURE_CHECK_TEXT_LINES) | BIT(NATIVE_CAPTURE_CHECK_TEXT_FOOTER) |
+	        BIT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY) | BIT(NATIVE_CAPTURE_CHECK_HIGHLIGHT_CURSOR),
+	};
+	/* The check a dropped grid row or body line fails. */
+	const uint32_t dropFails[SELECT_SCREEN_COUNT] = {BIT(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL2), BIT(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL1),
+	                                                 BIT(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL1), BIT(NATIVE_CAPTURE_CHECK_TEXT_LINES),
+	                                                 BIT(NATIVE_CAPTURE_CHECK_TEXT_LINES)};
+	struct NativeCaptureReport reference;
+	struct NativeCaptureReport report;
+	unsigned s;
+	unsigned t;
+	unsigned e;
+	int topDown;
+	unsigned alpha;
+	size_t size;
+
+	for (s = 0u; s < SELECT_SCREEN_COUNT; s++)
+	{
+		const enum NativeCaptureScreen screen = g_selectScreens[s];
+
+		/* The preview frame passes, identically in every encoding. */
+		CHECK(SelectReport(screen, SEL_OK, screen, &reference) == 0);
+		CHECK(reference.passed && reference.failedMask == 0u && reference.firstFailed == NATIVE_CAPTURE_CHECK_COUNT);
+		CHECK(reference.screen == (uint32_t)screen);
+		CHECK(JudgedMask(&reference) == expectJudged[s]);
+		CHECK(reference.checks[NATIVE_CAPTURE_CHECK_HIGHLIGHT_CURSOR].expect ==
+		      (IsPickingScreen(screen) ? NATIVE_CAPTURE_EXPECT_AT_LEAST : NATIVE_CAPTURE_EXPECT_AT_MOST));
+		for (e = 0u; e < sizeof(encodings) / sizeof(encodings[0]); e++)
+		{
+			for (topDown = 0; topDown <= 1; topDown++)
+			{
+				for (alpha = 0u; alpha <= 0xffu; alpha += 0xffu)
+				{
+					size = Encode(g_bmp, W, H, encodings[e], topDown, (uint8_t)alpha);
+					CHECK(RunOn(g_bmp, size, screen, &report));
+					CHECK(memcmp(&report, &reference, sizeof(report)) == 0);
+				}
+			}
+		}
+
+		/* Missing panel: the text sits on the undimmed scene. */
+		CHECK(SelectReport(screen, SEL_NO_PANEL, screen, &report) == 0);
+		CHECK(!report.passed && report.firstFailed == NATIVE_CAPTURE_CHECK_PANEL_FRAME);
+		CHECK(!report.checks[NATIVE_CAPTURE_CHECK_PANEL_DIM].passed);
+
+		/* An opaque white select panel fails the panel and title checks. */
+		CHECK(SelectReport(screen, SEL_WHITE_PANEL, screen, &report) == 0);
+		CHECK(!report.passed);
+		CHECK(!report.checks[NATIVE_CAPTURE_CHECK_PANEL_FRAME].passed);
+		CHECK(!report.checks[NATIVE_CAPTURE_CHECK_PANEL_DIM].passed);
+		CHECK(!report.checks[NATIVE_CAPTURE_CHECK_PANEL_DETAIL].passed);
+		CHECK(!report.checks[NATIVE_CAPTURE_CHECK_TEXT_TITLE].passed);
+
+		/* The local cursor highlight: required on the picking screens, and
+		 * must be absent on wait and result.  Each fails on exactly that. */
+		if (IsPickingScreen(screen))
+		{
+			CHECK(SelectReport(screen, SEL_NO_HIGHLIGHT, screen, &report) == 0);
+			CHECK(!report.passed && report.failedMask == BIT(NATIVE_CAPTURE_CHECK_HIGHLIGHT_CURSOR));
+
+			CHECK(SelectReport(screen, SEL_DROP_TIME, screen, &report) == 0);
+			CHECK(!report.passed && report.failedMask == BIT(NATIVE_CAPTURE_CHECK_TEXT_TIME));
+		}
+		else
+		{
+			CHECK(SelectReport(screen, SEL_HIGHLIGHT, screen, &report) == 0);
+			CHECK(!report.passed && report.failedMask == BIT(NATIVE_CAPTURE_CHECK_HIGHLIGHT_CURSOR));
+		}
+
+		/* A missing grid row or body line fails that region's check alone,
+		 * though every other row or line is present. */
+		CHECK(SelectReport(screen, SEL_DROP_REQUIRED, screen, &report) == 0);
+		CHECK(!report.passed && report.failedMask == dropFails[s]);
+
+		/* A short line where the layout draws nothing fails text-empty. */
+		CHECK(SelectReport(screen, SEL_TEXT_IN_EMPTY, screen, &report) == 0);
+		CHECK(!report.passed && report.failedMask == BIT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY));
+
+		/* Cross negatives: each select frame fails as every other select
+		 * screen, and as every shared-panel screen (the frame is elsewhere). */
+		for (t = 0u; t < SELECT_SCREEN_COUNT; t++)
+		{
+			if (t == s)
+				continue;
+			CHECK(SelectReport(screen, SEL_OK, g_selectScreens[t], &report) == 0);
+			CHECK(!report.passed);
+		}
+		for (t = 0u; t < (unsigned)NATIVE_CAPTURE_SCREEN_SELECT_CHARACTER; t++)
+		{
+			CHECK(SelectReport(screen, SEL_OK, (enum NativeCaptureScreen)t, &report) == 0);
+			CHECK(!report.passed && !report.checks[NATIVE_CAPTURE_CHECK_PANEL_FRAME].passed);
+		}
+	}
+
+	/* The wait screen draws no footer. */
+	CHECK(SelectReport(NATIVE_CAPTURE_SCREEN_SELECT_WAIT, SEL_FOOTER_ON_WAIT, NATIVE_CAPTURE_SCREEN_SELECT_WAIT, &report) == 0);
+	CHECK(!report.passed && report.failedMask == BIT(NATIVE_CAPTURE_CHECK_TEXT_FOOTER));
+
+	/* Shared-panel frames fail as every select screen on the panel frame,
+	 * and their reports judge none of the select-only checks. */
+	for (s = 0u; s < SELECT_SCREEN_COUNT; s++)
+	{
+		CHECK(FrameReport(FRAME_LOBBY, g_selectScreens[s], &report) == 0);
+		CHECK(!report.passed && !report.checks[NATIVE_CAPTURE_CHECK_PANEL_FRAME].passed);
+		CHECK(FrameReport(FRAME_RESULTS, g_selectScreens[s], &report) == 0);
+		CHECK(!report.passed && !report.checks[NATIVE_CAPTURE_CHECK_PANEL_FRAME].passed);
+	}
+	CHECK(FrameReport(FRAME_RESULTS, NATIVE_CAPTURE_SCREEN_RESULTS, &report) == 0 && report.passed);
+	CHECK((JudgedMask(&report) & (BIT(NATIVE_CAPTURE_CHECK_TEXT_TIME) | BIT(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL1) | BIT(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL2) |
+	                              BIT(NATIVE_CAPTURE_CHECK_TEXT_LINES) | BIT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY) | BIT(NATIVE_CAPTURE_CHECK_HIGHLIGHT_CURSOR))) ==
+	      0u);
+	CHECK(report.checks[NATIVE_CAPTURE_CHECK_TEXT_GRID_COL1].passed && report.checks[NATIVE_CAPTURE_CHECK_TEXT_GRID_COL1].measured == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestScreenNames() == 0);
@@ -613,6 +948,7 @@ int main(void)
 	CHECK(TestMalformed() == 0);
 	CHECK(TestRunArguments() == 0);
 	CHECK(TestVerdicts() == 0);
+	CHECK(TestSelectVerdicts() == 0);
 	printf("native_capture_check_unit: ok\n");
 	return 0;
 }

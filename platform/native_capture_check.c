@@ -227,9 +227,14 @@ struct NativeCaptureRgb NativeCaptureCheck_GetRgb(const struct NativeCaptureImag
 /* ------------------------------------------------------------------------ */
 
 static const char *const CaptureCheck_ScreenNames[NATIVE_CAPTURE_SCREEN_COUNT] = {
-    "title",           "lobby",          "lobby-connecting",   "lobby-rejected", "match-found", "results",
-    "results-timeout", "results-desync", "results-link-error", "rematch",        "exit",        "exit-opponent-left",
+    "title",   "lobby", "lobby-connecting",   "lobby-rejected",   "match-found",  "results",     "results-timeout", "results-desync", "results-link-error",
+    "rematch", "exit",  "exit-opponent-left", "select-character", "select-track", "select-laps", "select-wait",     "select-result",
 };
+
+/* The screens before this one use the fixed 400-wide panel and the six
+ * shared text bands; the select screens from here on have their own
+ * layout (CaptureCheck_SelectSpecs). */
+#define CAPTURE_FIRST_SELECT_SCREEN NATIVE_CAPTURE_SCREEN_SELECT_CHARACTER
 
 const char *NativeCaptureCheck_ScreenName(enum NativeCaptureScreen screen)
 {
@@ -271,8 +276,9 @@ struct CaptureCheckScreenSpec
 	uint8_t highlight;                     /* 1: REMATCH highlight required, 0: absent */
 };
 
-/* Expected lines per screen, from MAIN/MainArcadeLinkLayout.c:113-283. */
-static const struct CaptureCheckScreenSpec CaptureCheck_Specs[NATIVE_CAPTURE_SCREEN_COUNT] = {
+/* Expected lines per screen, from MAIN/MainArcadeLinkLayout.c (the attract,
+ * lobby, results and exit builders). */
+static const struct CaptureCheckScreenSpec CaptureCheck_Specs[CAPTURE_FIRST_SELECT_SCREEN] = {
     /* title: body1 "PRESS START" blinks */
     {{CAPTURE_BAND_REQUIRED, CAPTURE_BAND_OPTIONAL, CAPTURE_BAND_REQUIRED, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT}, 0u},
     /* lobby */
@@ -332,10 +338,177 @@ static const uint16_t CaptureCheck_GapY[][2] = {
 };
 
 /* Row highlight on REMATCH: x=136 y=117 w=240 h=21. */
-#define CAPTURE_HIGHLIGHT_X0         136u
-#define CAPTURE_HIGHLIGHT_Y0         117u
-#define CAPTURE_HIGHLIGHT_X1         376u
-#define CAPTURE_HIGHLIGHT_Y1         138u
+#define CAPTURE_HIGHLIGHT_X0 136u
+#define CAPTURE_HIGHLIGHT_Y0 117u
+#define CAPTURE_HIGHLIGHT_X1 376u
+#define CAPTURE_HIGHLIGHT_Y1 138u
+
+/* A retail rectangle, [x0, x1) x [y0, y1). */
+struct CaptureCheckRect
+{
+	uint16_t x0;
+	uint16_t y0;
+	uint16_t x1;
+	uint16_t y1;
+};
+
+/* Select screens (MainArcadeLinkLayout.c, MATCH_SELECT_MILESTONE 2.8): the
+ * panel widens to x=4 w=504 at the same y=28 h=176.  The dim check covers
+ * the whole widened interior; the detail check keeps the central span every
+ * panel shares, so a flat fill there fails on every screen alike.  Each
+ * screen's gap rows avoid its text and every highlight rectangle it
+ * probes, as the shared gap rows do. */
+#define CAPTURE_SELECT_PANEL_X0 4u
+#define CAPTURE_SELECT_PANEL_X1 508u
+#define CAPTURE_SELECT_INNER_X0 10u
+#define CAPTURE_SELECT_INNER_X1 502u
+
+/* Text regions [y0, y1) hold a line plus one retail row of slack, as the
+ * shared bands do: FONT_BIG at y is [y-1, y+18), FONT_SMALL [y-1, y+9).
+ * Grid columns are 252 wide from x=4; the column spans below cover the
+ * centred names (at least 4 FONT_BIG or 9 FONT_SMALL glyphs wide) and
+ * stay clear of the P1/P2 markers packed against the cell edges.  Short
+ * centred lines (TIME, wait and result lines) use the span 176..336.
+ * Blank areas are split into strips at most 24 rows high, so one stray
+ * short line is judged against about a line's area, as the shared bands
+ * are, rather than diluted below CAPTURE_TEXT_ABSENT_MAX. */
+static const struct CaptureCheckRect CaptureCheck_SelTitle[] = {{62u, 39u, 450u, 58u}};    /* FONT_BIG y=40 */
+static const struct CaptureCheckRect CaptureCheck_SelTime[] = {{176u, 59u, 336u, 69u}};    /* FONT_SMALL y=60 */
+static const struct CaptureCheckRect CaptureCheck_SelFooter[] = {{62u, 185u, 450u, 195u}}; /* FONT_SMALL y=186 */
+
+/* Character: 2 columns x 4 FONT_BIG rows at y = 78 + 24r, centred x=130/382. */
+static const struct CaptureCheckRect CaptureCheck_CharCol1[] = {
+    {70u, 77u, 190u, 96u}, {70u, 101u, 190u, 120u}, {70u, 125u, 190u, 144u}, {70u, 149u, 190u, 168u}};
+static const struct CaptureCheckRect CaptureCheck_CharCol2[] = {
+    {322u, 77u, 442u, 96u}, {322u, 101u, 442u, 120u}, {322u, 125u, 442u, 144u}, {322u, 149u, 442u, 168u}};
+static const struct CaptureCheckRect CaptureCheck_CharEmpty[] = {{10u, 169u, 502u, 184u}};
+static const uint16_t CaptureCheck_CharGapY[][2] = {
+    {33u, 38u}, {70u, 74u}, {97u, 101u}, {121u, 125u}, {145u, 149u}, {169u, 184u}, {196u, 199u},
+};
+
+/* Track: 2 columns x 8 FONT_SMALL rows at y = 76 + 13r, centred x=130/382. */
+static const struct CaptureCheckRect CaptureCheck_TrackCol1[] = {{70u, 75u, 190u, 85u},   {70u, 88u, 190u, 98u},   {70u, 101u, 190u, 111u},
+                                                                 {70u, 114u, 190u, 124u}, {70u, 127u, 190u, 137u}, {70u, 140u, 190u, 150u},
+                                                                 {70u, 153u, 190u, 163u}, {70u, 166u, 190u, 176u}};
+static const struct CaptureCheckRect CaptureCheck_TrackCol2[] = {{322u, 75u, 442u, 85u},   {322u, 88u, 442u, 98u},   {322u, 101u, 442u, 111u},
+                                                                 {322u, 114u, 442u, 124u}, {322u, 127u, 442u, 137u}, {322u, 140u, 442u, 150u},
+                                                                 {322u, 153u, 442u, 163u}, {322u, 166u, 442u, 176u}};
+static const struct CaptureCheckRect CaptureCheck_TrackEmpty[] = {{10u, 177u, 502u, 184u}};
+static const uint16_t CaptureCheck_TrackGapY[][2] = {
+    {33u, 38u},
+    {70u, 73u},
+    {177u, 184u},
+    {196u, 199u},
+};
+
+/* Laps: one column of 3 FONT_BIG rows at y = 86 + 25r, centred x=256 (cell
+ * 130..382); nothing is drawn beside the cell. */
+static const struct CaptureCheckRect CaptureCheck_LapsCol1[] = {{196u, 85u, 316u, 104u}, {196u, 110u, 316u, 129u}, {196u, 135u, 316u, 154u}};
+static const struct CaptureCheckRect CaptureCheck_LapsEmpty[] = {{10u, 83u, 126u, 107u},  {10u, 107u, 126u, 131u},  {10u, 131u, 126u, 155u},
+                                                                 {386u, 83u, 502u, 107u}, {386u, 107u, 502u, 131u}, {386u, 131u, 502u, 155u},
+                                                                 {10u, 156u, 502u, 170u}, {10u, 170u, 502u, 184u}};
+static const uint16_t CaptureCheck_LapsGapY[][2] = {
+    {33u, 38u}, {70u, 82u}, {106u, 109u}, {131u, 134u}, {156u, 184u}, {196u, 199u},
+};
+
+/* Wait: FONT_SMALL own picks at y = 68, 80, 92 and the opponent at y=116;
+ * no countdown and no footer. */
+static const struct CaptureCheckRect CaptureCheck_WaitLines[] = {
+    {176u, 67u, 336u, 77u}, {176u, 79u, 336u, 89u}, {176u, 91u, 336u, 101u}, {176u, 115u, 336u, 125u}};
+static const struct CaptureCheckRect CaptureCheck_WaitEmpty[] = {
+    {10u, 127u, 502u, 141u}, {10u, 141u, 502u, 155u}, {10u, 155u, 502u, 169u}, {10u, 169u, 502u, 184u}};
+static const uint16_t CaptureCheck_WaitGapY[][2] = {
+    {33u, 38u},
+    {102u, 114u},
+    {126u, 199u},
+};
+
+/* Result: FONT_SMALL track y=66, laps y=80, P1 y=100, P2 y=112, bots y=130,
+ * and the GET READY footer. */
+static const struct CaptureCheckRect CaptureCheck_ResultLines[] = {
+    {176u, 65u, 336u, 75u}, {176u, 79u, 336u, 89u}, {176u, 99u, 336u, 109u}, {176u, 111u, 336u, 121u}, {176u, 129u, 336u, 139u}};
+static const struct CaptureCheckRect CaptureCheck_ResultEmpty[] = {{10u, 140u, 502u, 155u}, {10u, 155u, 502u, 170u}, {10u, 170u, 502u, 184u}};
+static const uint16_t CaptureCheck_ResultGapY[][2] = {
+    {33u, 38u},
+    {59u, 64u},
+    {140u, 184u},
+    {196u, 199u},
+};
+
+/* The local cursor's row highlight, inset 4 from its 252-wide cell: every
+ * preview puts the local cursor on list entry 0.  Character and laps rows
+ * use the 21-high highlight 3 above the row, track rows a 12-high one 2
+ * above.  On wait and result the character rectangle must stay dark. */
+#define CAPTURE_SELECT_CHAR_HIGHLIGHT    {8u, 75u, 252u, 96u}
+#define CAPTURE_SELECT_TRACK_HIGHLIGHT   {8u, 74u, 252u, 86u}
+#define CAPTURE_SELECT_LAPS_HIGHLIGHT    {134u, 83u, 378u, 104u}
+
+#define CAPTURE_SELECT_MAX_REGION_CHECKS 7u
+
+struct CaptureCheckRegionCheck
+{
+	uint8_t id;     /* enum NativeCaptureCheckId */
+	uint8_t expect; /* AT_LEAST: every region holds text; AT_MOST: none does */
+	uint8_t count;
+	const struct CaptureCheckRect *rects;
+};
+
+struct CaptureCheckSelectSpec
+{
+	const uint16_t (*gapY)[2];
+	uint32_t gapCount;
+	struct CaptureCheckRect highlight;
+	uint8_t highlightExpect;
+	struct CaptureCheckRegionCheck checks[CAPTURE_SELECT_MAX_REGION_CHECKS];
+};
+
+#define CAPTURE_COUNT_OF(a)         ((uint8_t)(sizeof(a) / sizeof((a)[0])))
+#define CAPTURE_REQUIRED(id, rects) {(uint8_t)(id), (uint8_t)NATIVE_CAPTURE_EXPECT_AT_LEAST, CAPTURE_COUNT_OF(rects), rects}
+#define CAPTURE_ABSENT(id, rects)   {(uint8_t)(id), (uint8_t)NATIVE_CAPTURE_EXPECT_AT_MOST, CAPTURE_COUNT_OF(rects), rects}
+
+/* Indexed by screen - CAPTURE_FIRST_SELECT_SCREEN. */
+static const struct CaptureCheckSelectSpec CaptureCheck_SelectSpecs[NATIVE_CAPTURE_SCREEN_COUNT - CAPTURE_FIRST_SELECT_SCREEN] = {
+    /* select-character */
+    {CaptureCheck_CharGapY,
+	 CAPTURE_COUNT_OF(CaptureCheck_CharGapY),
+	 CAPTURE_SELECT_CHAR_HIGHLIGHT,
+	 (uint8_t)NATIVE_CAPTURE_EXPECT_AT_LEAST,
+	 {CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_TITLE, CaptureCheck_SelTitle), CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_TIME, CaptureCheck_SelTime),
+	  CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL1, CaptureCheck_CharCol1),
+	  CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL2, CaptureCheck_CharCol2), CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_FOOTER, CaptureCheck_SelFooter),
+	  CAPTURE_ABSENT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY, CaptureCheck_CharEmpty)}},
+    /* select-track */
+    {CaptureCheck_TrackGapY,
+	 CAPTURE_COUNT_OF(CaptureCheck_TrackGapY),
+	 CAPTURE_SELECT_TRACK_HIGHLIGHT,
+	 (uint8_t)NATIVE_CAPTURE_EXPECT_AT_LEAST,
+	 {CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_TITLE, CaptureCheck_SelTitle), CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_TIME, CaptureCheck_SelTime),
+	  CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL1, CaptureCheck_TrackCol1),
+	  CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL2, CaptureCheck_TrackCol2), CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_FOOTER, CaptureCheck_SelFooter),
+	  CAPTURE_ABSENT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY, CaptureCheck_TrackEmpty)}},
+    /* select-laps */
+    {CaptureCheck_LapsGapY,
+	 CAPTURE_COUNT_OF(CaptureCheck_LapsGapY),
+	 CAPTURE_SELECT_LAPS_HIGHLIGHT,
+	 (uint8_t)NATIVE_CAPTURE_EXPECT_AT_LEAST,
+	 {CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_TITLE, CaptureCheck_SelTitle), CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_TIME, CaptureCheck_SelTime),
+	  CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL1, CaptureCheck_LapsCol1), CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_FOOTER, CaptureCheck_SelFooter),
+	  CAPTURE_ABSENT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY, CaptureCheck_LapsEmpty)}},
+    /* select-wait */
+    {CaptureCheck_WaitGapY,
+	 CAPTURE_COUNT_OF(CaptureCheck_WaitGapY),
+	 CAPTURE_SELECT_CHAR_HIGHLIGHT,
+	 (uint8_t)NATIVE_CAPTURE_EXPECT_AT_MOST,
+	 {CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_TITLE, CaptureCheck_SelTitle), CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_LINES, CaptureCheck_WaitLines),
+	  CAPTURE_ABSENT(NATIVE_CAPTURE_CHECK_TEXT_FOOTER, CaptureCheck_SelFooter), CAPTURE_ABSENT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY, CaptureCheck_WaitEmpty)}},
+    /* select-result */
+    {CaptureCheck_ResultGapY,
+	 CAPTURE_COUNT_OF(CaptureCheck_ResultGapY),
+	 CAPTURE_SELECT_CHAR_HIGHLIGHT,
+	 (uint8_t)NATIVE_CAPTURE_EXPECT_AT_MOST,
+	 {CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_TITLE, CaptureCheck_SelTitle), CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_LINES, CaptureCheck_ResultLines),
+	  CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_FOOTER, CaptureCheck_SelFooter), CAPTURE_ABSENT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY, CaptureCheck_ResultEmpty)}},
+};
 
 /* ------------------------------------------------------------------------ */
 /* Thresholds                                                               */
@@ -350,7 +523,23 @@ static const uint16_t CaptureCheck_GapY[][2] = {
  * The panel halves the scene underneath (observed max channel <= 0x84), while
  * the dimmest glyph fill, RED, peaks at 0xbd-0xce.  Without the panel the
  * scene itself produces glyph-like pixels, so text results are meaningful
- * only together with the panel checks; every check must pass. */
+ * only together with the panel checks; every check must pass.
+ *
+ * The select screens reuse every threshold below unchanged.  They were
+ * calibrated on 800x600 v0 captures of the five select previews (frame 1320)
+ * rendered two ways: all 17 previews plus the default path in parallel (the
+ * preview script's default) and each select preview alone.  The title scene
+ * behind the translucent panel differs between the two (183k-261k of 480k
+ * RGB pixels, 116k-178k of them inside the select panel), while runs under
+ * the same condition are byte-identical; no measurement moved by more than
+ * 9 between the two, and all of them pass under both:
+ *   frame 987-997, dim 0, detail 34-35;
+ *   required text (emptiest row or line where there are several): title
+ *   61-114, TIME 94, grid columns 90-163, lines 77-132, footer 57-132;
+ *   blank strips and the absent wait footer 0;
+ *   cursor highlight 924-966 on the picking screens, 190-195 at the
+ *   character cursor on wait and result (at most 350).
+ * The default path, checked as each select screen: frame 41, dim 310-370. */
 #define CAPTURE_GLYPH_BRIGHT         0xb0u
 #define CAPTURE_GLYPH_DARK           0x30u
 
@@ -444,12 +633,13 @@ static int CaptureCheck_IsGlyph(const struct NativeCaptureImage *image, uint32_t
 	return 0;
 }
 
-static int32_t CaptureCheck_TextDensity(const struct NativeCaptureImage *image, uint32_t band)
+/* Glyph pixels per mille of a retail rectangle. */
+static int32_t CaptureCheck_RectDensity(const struct NativeCaptureImage *image, const struct CaptureCheckRect *rect)
 {
-	const uint32_t x0 = CaptureCheck_Sx(image, 2u * CAPTURE_INNER_X0);
-	const uint32_t x1 = CaptureCheck_Sx(image, 2u * CAPTURE_INNER_X1);
-	const uint32_t y0 = CaptureCheck_Sy(image, 2u * CaptureCheck_BandY[band][0]);
-	const uint32_t y1 = CaptureCheck_Sy(image, 2u * CaptureCheck_BandY[band][1]);
+	const uint32_t x0 = CaptureCheck_Sx(image, 2u * rect->x0);
+	const uint32_t x1 = CaptureCheck_Sx(image, 2u * rect->x1);
+	const uint32_t y0 = CaptureCheck_Sy(image, 2u * rect->y0);
+	const uint32_t y1 = CaptureCheck_Sy(image, 2u * rect->y1);
 	/* Two retail pixels of outline search, at least one image pixel. */
 	const uint32_t rx = CaptureCheck_Sx(image, 4u) + 1u;
 	const uint32_t ry = CaptureCheck_Sy(image, 4u) + 1u;
@@ -477,20 +667,21 @@ static void CaptureCheck_FrameSample(const struct NativeCaptureImage *image, uin
 		*hits += 1u;
 }
 
-static int32_t CaptureCheck_Frame(const struct NativeCaptureImage *image)
+static int32_t CaptureCheck_Frame(const struct NativeCaptureImage *image, uint32_t panelX0, uint32_t panelX1)
 {
-	/* Frame centre lines: rows 28..30 and 202..204, columns 56..59 and
-	 * 453..456.  The inside reference sits three retail pixels further in. */
+	/* Frame centre lines: rows 28..30 and 202..204, columns panelX0..+3 and
+	 * panelX1-3..panelX1 (56..59 and 453..456 on the shared panel).  The
+	 * inside reference sits three retail pixels further in. */
 	const uint32_t topY = CaptureCheck_Sy(image, 2u * (CAPTURE_PANEL_Y0 + 1u));
 	const uint32_t topInY = CaptureCheck_Sy(image, 2u * (CAPTURE_PANEL_Y0 + 5u));
 	const uint32_t botY = CaptureCheck_Sy(image, 2u * (CAPTURE_PANEL_Y1 - 1u));
 	const uint32_t botInY = CaptureCheck_Sy(image, 2u * (CAPTURE_PANEL_Y1 - 5u));
-	const uint32_t leftX = CaptureCheck_Sx(image, 2u * CAPTURE_PANEL_X0 + 3u);
-	const uint32_t leftInX = CaptureCheck_Sx(image, 2u * (CAPTURE_PANEL_X0 + 6u));
-	const uint32_t rightX = CaptureCheck_Sx(image, 2u * CAPTURE_PANEL_X1 - 3u);
-	const uint32_t rightInX = CaptureCheck_Sx(image, 2u * (CAPTURE_PANEL_X1 - 6u));
-	const uint32_t x0 = CaptureCheck_Sx(image, 2u * (CAPTURE_PANEL_X0 + 8u));
-	const uint32_t x1 = CaptureCheck_Sx(image, 2u * (CAPTURE_PANEL_X1 - 8u));
+	const uint32_t leftX = CaptureCheck_Sx(image, 2u * panelX0 + 3u);
+	const uint32_t leftInX = CaptureCheck_Sx(image, 2u * (panelX0 + 6u));
+	const uint32_t rightX = CaptureCheck_Sx(image, 2u * panelX1 - 3u);
+	const uint32_t rightInX = CaptureCheck_Sx(image, 2u * (panelX1 - 6u));
+	const uint32_t x0 = CaptureCheck_Sx(image, 2u * (panelX0 + 8u));
+	const uint32_t x1 = CaptureCheck_Sx(image, 2u * (panelX1 - 8u));
 	const uint32_t y0 = CaptureCheck_Sy(image, 2u * (CAPTURE_PANEL_Y0 + 6u));
 	const uint32_t y1 = CaptureCheck_Sy(image, 2u * (CAPTURE_PANEL_Y1 - 6u));
 	uint64_t hits = 0u;
@@ -510,24 +701,34 @@ static int32_t CaptureCheck_Frame(const struct NativeCaptureImage *image)
 	return CaptureCheck_Permil(hits, total);
 }
 
+/* The gap rows of one screen, measured across [spanX0, spanX1). */
+struct CaptureCheckGaps
+{
+	const uint16_t (*gapY)[2];
+	uint32_t gapCount;
+	uint32_t spanX0;
+	uint32_t spanX1;
+};
+
 /* Accumulates over the gap rows.  With mean16 == UINT32_MAX it counts pixels,
  * bright pixels and the luma sum; otherwise it sums (16 * luma - mean16)^2,
  * which stays far below 2^64 for capped dimensions. */
-static void CaptureCheck_GapPass(const struct NativeCaptureImage *image, uint32_t mean16, uint64_t *n, uint64_t *bright, uint64_t *acc)
+static void CaptureCheck_GapPass(const struct NativeCaptureImage *image, const struct CaptureCheckGaps *gaps, uint32_t mean16, uint64_t *n, uint64_t *bright,
+                                 uint64_t *acc)
 {
-	const uint32_t x0 = CaptureCheck_Sx(image, 2u * CAPTURE_INNER_X0);
-	const uint32_t x1 = CaptureCheck_Sx(image, 2u * CAPTURE_INNER_X1);
-	size_t g;
+	const uint32_t x0 = CaptureCheck_Sx(image, 2u * gaps->spanX0);
+	const uint32_t x1 = CaptureCheck_Sx(image, 2u * gaps->spanX1);
+	uint32_t g;
 	uint32_t x;
 	uint32_t y;
 
 	*n = 0u;
 	*bright = 0u;
 	*acc = 0u;
-	for (g = 0u; g < sizeof(CaptureCheck_GapY) / sizeof(CaptureCheck_GapY[0]); g++)
+	for (g = 0u; g < gaps->gapCount; g++)
 	{
-		const uint32_t y0 = CaptureCheck_Sy(image, 2u * CaptureCheck_GapY[g][0]);
-		const uint32_t y1 = CaptureCheck_Sy(image, 2u * CaptureCheck_GapY[g][1]);
+		const uint32_t y0 = CaptureCheck_Sy(image, 2u * gaps->gapY[g][0]);
+		const uint32_t y1 = CaptureCheck_Sy(image, 2u * gaps->gapY[g][1]);
 
 		for (y = y0; y < y1; y++)
 		{
@@ -553,7 +754,10 @@ static void CaptureCheck_GapPass(const struct NativeCaptureImage *image, uint32_
 	}
 }
 
-static void CaptureCheck_Gaps(const struct NativeCaptureImage *image, int32_t *brightPermil, int32_t *stddev)
+/* The bright share over the `dim` span and the luma deviation over the
+ * `detail` span of the same gap rows (the same span on the shared panel). */
+static void CaptureCheck_Gaps(const struct NativeCaptureImage *image, const struct CaptureCheckGaps *dim, const struct CaptureCheckGaps *detail,
+                              int32_t *brightPermil, int32_t *stddev)
 {
 	uint64_t n;
 	uint64_t bright;
@@ -562,12 +766,13 @@ static void CaptureCheck_Gaps(const struct NativeCaptureImage *image, int32_t *b
 	uint64_t variance;
 	uint64_t root = 0u;
 
-	CaptureCheck_GapPass(image, UINT32_MAX, &n, &bright, &sum16);
+	CaptureCheck_GapPass(image, dim, UINT32_MAX, &n, &bright, &sum16);
 	*brightPermil = CaptureCheck_Permil(bright, n);
 	*stddev = 0;
+	CaptureCheck_GapPass(image, detail, UINT32_MAX, &n, &bright, &sum16);
 	if (n == 0u)
 		return;
-	CaptureCheck_GapPass(image, (uint32_t)(sum16 / n), &n, &bright, &sq);
+	CaptureCheck_GapPass(image, detail, (uint32_t)(sum16 / n), &n, &bright, &sq);
 	/* Variance in luma^2 units: the samples were scaled by 16. */
 	variance = (sq / n) / 256u;
 	while ((root + 1u) * (root + 1u) <= variance)
@@ -589,22 +794,22 @@ static void CaptureCheck_HighlightSample(const struct NativeCaptureImage *image,
 		*hits += 1u;
 }
 
-static int32_t CaptureCheck_Highlight(const struct NativeCaptureImage *image)
+static int32_t CaptureCheck_Highlight(const struct NativeCaptureImage *image, const struct CaptureCheckRect *rect)
 {
 	/* Additive fill: each edge brightens R and G from outside to inside.
 	 * Samples sit two retail pixels either side of the edge. */
-	const uint32_t leftIn = CaptureCheck_Sx(image, 2u * (CAPTURE_HIGHLIGHT_X0 + 2u));
-	const uint32_t leftOut = CaptureCheck_Sx(image, 2u * (CAPTURE_HIGHLIGHT_X0 - 2u));
-	const uint32_t rightIn = CaptureCheck_Sx(image, 2u * (CAPTURE_HIGHLIGHT_X1 - 2u));
-	const uint32_t rightOut = CaptureCheck_Sx(image, 2u * (CAPTURE_HIGHLIGHT_X1 + 2u));
-	const uint32_t topIn = CaptureCheck_Sy(image, 2u * (CAPTURE_HIGHLIGHT_Y0 + 1u));
-	const uint32_t topOut = CaptureCheck_Sy(image, 2u * (CAPTURE_HIGHLIGHT_Y0 - 2u));
-	const uint32_t botIn = CaptureCheck_Sy(image, 2u * (CAPTURE_HIGHLIGHT_Y1 - 1u));
-	const uint32_t botOut = CaptureCheck_Sy(image, 2u * (CAPTURE_HIGHLIGHT_Y1 + 2u));
-	const uint32_t x0 = CaptureCheck_Sx(image, 2u * (CAPTURE_HIGHLIGHT_X0 + 4u));
-	const uint32_t x1 = CaptureCheck_Sx(image, 2u * (CAPTURE_HIGHLIGHT_X1 - 4u));
-	const uint32_t y0 = CaptureCheck_Sy(image, 2u * (CAPTURE_HIGHLIGHT_Y0 + 2u));
-	const uint32_t y1 = CaptureCheck_Sy(image, 2u * (CAPTURE_HIGHLIGHT_Y1 - 2u));
+	const uint32_t leftIn = CaptureCheck_Sx(image, 2u * (rect->x0 + 2u));
+	const uint32_t leftOut = CaptureCheck_Sx(image, 2u * (rect->x0 - 2u));
+	const uint32_t rightIn = CaptureCheck_Sx(image, 2u * (rect->x1 - 2u));
+	const uint32_t rightOut = CaptureCheck_Sx(image, 2u * (rect->x1 + 2u));
+	const uint32_t topIn = CaptureCheck_Sy(image, 2u * (rect->y0 + 1u));
+	const uint32_t topOut = CaptureCheck_Sy(image, 2u * (rect->y0 - 2u));
+	const uint32_t botIn = CaptureCheck_Sy(image, 2u * (rect->y1 - 1u));
+	const uint32_t botOut = CaptureCheck_Sy(image, 2u * (rect->y1 + 2u));
+	const uint32_t x0 = CaptureCheck_Sx(image, 2u * (rect->x0 + 4u));
+	const uint32_t x1 = CaptureCheck_Sx(image, 2u * (rect->x1 - 4u));
+	const uint32_t y0 = CaptureCheck_Sy(image, 2u * (rect->y0 + 2u));
+	const uint32_t y1 = CaptureCheck_Sy(image, 2u * (rect->y1 - 2u));
 	uint64_t hits = 0u;
 	uint64_t total = 0u;
 	uint32_t i;
@@ -622,13 +827,14 @@ static int32_t CaptureCheck_Highlight(const struct NativeCaptureImage *image)
 	return CaptureCheck_Permil(hits, total);
 }
 
+
 /* ------------------------------------------------------------------------ */
 /* Report                                                                   */
 /* ------------------------------------------------------------------------ */
 
 static const char *const CaptureCheck_CheckNames[NATIVE_CAPTURE_CHECK_COUNT] = {
-    "panel-frame", "panel-dim",        "panel-detail",  "text-title",  "text-body1",
-    "text-body2",  "text-row-rematch", "text-row-exit", "text-footer", "highlight-rematch",
+    "panel-frame", "panel-dim",         "panel-detail", "text-title",     "text-body1",     "text-body2", "text-row-rematch", "text-row-exit",
+    "text-footer", "highlight-rematch", "text-time",    "text-grid-col1", "text-grid-col2", "text-lines", "text-empty",       "highlight-cursor",
 };
 
 static const char *const CaptureCheck_CheckUnits[NATIVE_CAPTURE_CHECK_COUNT] = {
@@ -641,6 +847,12 @@ static const char *const CaptureCheck_CheckUnits[NATIVE_CAPTURE_CHECK_COUNT] = {
     "permil glyph pixels",
     "permil glyph pixels",
     "permil glyph pixels",
+    "permil edge samples with additive step",
+    "permil glyph pixels",
+    "permil glyph pixels, emptiest row",
+    "permil glyph pixels, emptiest row",
+    "permil glyph pixels, emptiest line",
+    "permil glyph pixels, fullest region",
     "permil edge samples with additive step",
 };
 
@@ -671,36 +883,28 @@ static void CaptureCheck_Set(struct NativeCaptureSubCheck *check, uint32_t expec
 		check->passed = 1u;
 }
 
-int NativeCaptureCheck_Run(const struct NativeCaptureImage *image, enum NativeCaptureScreen screen, struct NativeCaptureReport *out)
+/* The shared-panel screens: six fixed bands and the REMATCH highlight. */
+static void CaptureCheck_RunShared(const struct NativeCaptureImage *image, enum NativeCaptureScreen screen, struct NativeCaptureReport *report)
 {
-	struct NativeCaptureReport report;
-	const struct CaptureCheckScreenSpec *spec;
+	const struct CaptureCheckScreenSpec *spec = &CaptureCheck_Specs[screen];
+	const struct CaptureCheckGaps gaps = {CaptureCheck_GapY, (uint32_t)(sizeof(CaptureCheck_GapY) / sizeof(CaptureCheck_GapY[0])), CAPTURE_INNER_X0,
+	                                      CAPTURE_INNER_X1};
+	const struct CaptureCheckRect highlight = {CAPTURE_HIGHLIGHT_X0, CAPTURE_HIGHLIGHT_Y0, CAPTURE_HIGHLIGHT_X1, CAPTURE_HIGHLIGHT_Y1};
 	int32_t brightPermil;
 	int32_t stddev;
 	uint32_t band;
-	uint32_t i;
 
-	if ((image == NULL) || (image->pixels == NULL) || (out == NULL))
-		return 0;
-	if ((unsigned)screen >= (unsigned)NATIVE_CAPTURE_SCREEN_COUNT)
-		return 0;
-	/* Every region must span at least one pixel per retail pixel. */
-	if ((image->width < CAPTURE_RETAIL_W) || (image->height < CAPTURE_RETAIL_H))
-		return 0;
-
-	spec = &CaptureCheck_Specs[screen];
-	memset(&report, 0, sizeof(report));
-	report.screen = (uint32_t)screen;
-
-	CaptureCheck_Set(&report.checks[NATIVE_CAPTURE_CHECK_PANEL_FRAME], NATIVE_CAPTURE_EXPECT_AT_LEAST, CaptureCheck_Frame(image), CAPTURE_FRAME_MIN_PERMIL);
-	CaptureCheck_Gaps(image, &brightPermil, &stddev);
-	CaptureCheck_Set(&report.checks[NATIVE_CAPTURE_CHECK_PANEL_DIM], NATIVE_CAPTURE_EXPECT_AT_MOST, brightPermil, CAPTURE_DIM_MAX_PERMIL);
-	CaptureCheck_Set(&report.checks[NATIVE_CAPTURE_CHECK_PANEL_DETAIL], NATIVE_CAPTURE_EXPECT_AT_LEAST, stddev, CAPTURE_DETAIL_MIN_STDDEV);
+	CaptureCheck_Set(&report->checks[NATIVE_CAPTURE_CHECK_PANEL_FRAME], NATIVE_CAPTURE_EXPECT_AT_LEAST,
+	                 CaptureCheck_Frame(image, CAPTURE_PANEL_X0, CAPTURE_PANEL_X1), CAPTURE_FRAME_MIN_PERMIL);
+	CaptureCheck_Gaps(image, &gaps, &gaps, &brightPermil, &stddev);
+	CaptureCheck_Set(&report->checks[NATIVE_CAPTURE_CHECK_PANEL_DIM], NATIVE_CAPTURE_EXPECT_AT_MOST, brightPermil, CAPTURE_DIM_MAX_PERMIL);
+	CaptureCheck_Set(&report->checks[NATIVE_CAPTURE_CHECK_PANEL_DETAIL], NATIVE_CAPTURE_EXPECT_AT_LEAST, stddev, CAPTURE_DETAIL_MIN_STDDEV);
 
 	for (band = 0u; band < CAPTURE_TEXT_BAND_COUNT; band++)
 	{
-		const int32_t density = CaptureCheck_TextDensity(image, band);
-		struct NativeCaptureSubCheck *check = &report.checks[NATIVE_CAPTURE_CHECK_TEXT_TITLE + band];
+		const struct CaptureCheckRect rect = {CAPTURE_INNER_X0, CaptureCheck_BandY[band][0], CAPTURE_INNER_X1, CaptureCheck_BandY[band][1]};
+		const int32_t density = CaptureCheck_RectDensity(image, &rect);
+		struct NativeCaptureSubCheck *check = &report->checks[NATIVE_CAPTURE_CHECK_TEXT_TITLE + band];
 
 		if (spec->band[band] == CAPTURE_BAND_REQUIRED)
 			CaptureCheck_Set(check, NATIVE_CAPTURE_EXPECT_AT_LEAST, density, CAPTURE_TEXT_REQUIRED_MIN);
@@ -711,11 +915,79 @@ int NativeCaptureCheck_Run(const struct NativeCaptureImage *image, enum NativeCa
 	}
 
 	if (spec->highlight != 0u)
-		CaptureCheck_Set(&report.checks[NATIVE_CAPTURE_CHECK_HIGHLIGHT], NATIVE_CAPTURE_EXPECT_AT_LEAST, CaptureCheck_Highlight(image),
+		CaptureCheck_Set(&report->checks[NATIVE_CAPTURE_CHECK_HIGHLIGHT], NATIVE_CAPTURE_EXPECT_AT_LEAST, CaptureCheck_Highlight(image, &highlight),
 		                 CAPTURE_HIGHLIGHT_MIN_PERMIL);
 	else
-		CaptureCheck_Set(&report.checks[NATIVE_CAPTURE_CHECK_HIGHLIGHT], NATIVE_CAPTURE_EXPECT_AT_MOST, CaptureCheck_Highlight(image),
+		CaptureCheck_Set(&report->checks[NATIVE_CAPTURE_CHECK_HIGHLIGHT], NATIVE_CAPTURE_EXPECT_AT_MOST, CaptureCheck_Highlight(image, &highlight),
 		                 CAPTURE_HIGHLIGHT_MAX_PERMIL);
+}
+
+/* The select screens: the widened panel, per-screen regions and the local
+ * cursor highlight.  A required check reports its emptiest region, an
+ * absent check its fullest, so every region is judged. */
+static void CaptureCheck_RunSelect(const struct NativeCaptureImage *image, enum NativeCaptureScreen screen, struct NativeCaptureReport *report)
+{
+	const struct CaptureCheckSelectSpec *spec = &CaptureCheck_SelectSpecs[screen - CAPTURE_FIRST_SELECT_SCREEN];
+	const struct CaptureCheckGaps dim = {spec->gapY, spec->gapCount, CAPTURE_SELECT_INNER_X0, CAPTURE_SELECT_INNER_X1};
+	const struct CaptureCheckGaps detail = {spec->gapY, spec->gapCount, CAPTURE_INNER_X0, CAPTURE_INNER_X1};
+	int32_t brightPermil;
+	int32_t stddev;
+	uint32_t c;
+	uint32_t r;
+
+	CaptureCheck_Set(&report->checks[NATIVE_CAPTURE_CHECK_PANEL_FRAME], NATIVE_CAPTURE_EXPECT_AT_LEAST,
+	                 CaptureCheck_Frame(image, CAPTURE_SELECT_PANEL_X0, CAPTURE_SELECT_PANEL_X1), CAPTURE_FRAME_MIN_PERMIL);
+	CaptureCheck_Gaps(image, &dim, &detail, &brightPermil, &stddev);
+	CaptureCheck_Set(&report->checks[NATIVE_CAPTURE_CHECK_PANEL_DIM], NATIVE_CAPTURE_EXPECT_AT_MOST, brightPermil, CAPTURE_DIM_MAX_PERMIL);
+	CaptureCheck_Set(&report->checks[NATIVE_CAPTURE_CHECK_PANEL_DETAIL], NATIVE_CAPTURE_EXPECT_AT_LEAST, stddev, CAPTURE_DETAIL_MIN_STDDEV);
+
+	for (c = 0u; c < CAPTURE_SELECT_MAX_REGION_CHECKS; c++)
+	{
+		const struct CaptureCheckRegionCheck *region = &spec->checks[c];
+		const int required = region->expect == (uint8_t)NATIVE_CAPTURE_EXPECT_AT_LEAST;
+		int32_t measured;
+
+		if (region->count == 0u)
+			continue;
+		measured = CaptureCheck_RectDensity(image, &region->rects[0]);
+		for (r = 1u; r < region->count; r++)
+		{
+			const int32_t density = CaptureCheck_RectDensity(image, &region->rects[r]);
+
+			if (required ? (density < measured) : (density > measured))
+				measured = density;
+		}
+		CaptureCheck_Set(&report->checks[region->id], region->expect, measured, required ? CAPTURE_TEXT_REQUIRED_MIN : CAPTURE_TEXT_ABSENT_MAX);
+	}
+
+	CaptureCheck_Set(&report->checks[NATIVE_CAPTURE_CHECK_HIGHLIGHT_CURSOR], spec->highlightExpect, CaptureCheck_Highlight(image, &spec->highlight),
+	                 (spec->highlightExpect == (uint8_t)NATIVE_CAPTURE_EXPECT_AT_LEAST) ? CAPTURE_HIGHLIGHT_MIN_PERMIL : CAPTURE_HIGHLIGHT_MAX_PERMIL);
+}
+
+int NativeCaptureCheck_Run(const struct NativeCaptureImage *image, enum NativeCaptureScreen screen, struct NativeCaptureReport *out)
+{
+	struct NativeCaptureReport report;
+	uint32_t i;
+
+	if ((image == NULL) || (image->pixels == NULL) || (out == NULL))
+		return 0;
+	if ((unsigned)screen >= (unsigned)NATIVE_CAPTURE_SCREEN_COUNT)
+		return 0;
+	/* Every region must span at least one pixel per retail pixel. */
+	if ((image->width < CAPTURE_RETAIL_W) || (image->height < CAPTURE_RETAIL_H))
+		return 0;
+
+	memset(&report, 0, sizeof(report));
+	report.screen = (uint32_t)screen;
+	/* A check the screen's layout has no region for stays NONE. */
+	for (i = 0u; i < NATIVE_CAPTURE_CHECK_COUNT; i++)
+	{
+		CaptureCheck_Set(&report.checks[i], NATIVE_CAPTURE_EXPECT_NONE, 0, 0);
+	}
+	if ((unsigned)screen < (unsigned)CAPTURE_FIRST_SELECT_SCREEN)
+		CaptureCheck_RunShared(image, screen, &report);
+	else
+		CaptureCheck_RunSelect(image, screen, &report);
 
 	report.passed = 1u;
 	report.firstFailed = NATIVE_CAPTURE_CHECK_COUNT;

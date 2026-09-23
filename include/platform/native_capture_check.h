@@ -12,7 +12,16 @@
  * (docs/TEXTURE_FILTER_MILESTONE.md section 5) and is always ignored.
  *
  * Geometry mirrors MAIN/MainArcadeLinkLayout.c in the 512x216 retail
- * space; every region is scaled by W/512 horizontally and H/216 vertically. */
+ * space; every region is scaled by W/512 horizontally and H/216 vertically.
+ *
+ * Limits: the check tells screens apart only by where they draw text, the
+ * panel and the row highlight.  It cannot tell apart screens that share a
+ * band layout (the four results screens; exit and exit-opponent-left; lobby
+ * and lobby-connecting), and it does not read wording, colour, the player
+ * markers, or which list entry is locked.  The select checks expect the
+ * preview layout: two humans and the local cursor on list entry 0, so a
+ * cursor elsewhere fails the highlight check.  Thresholds were calibrated on
+ * 800x600 nearest-filter captures only (platform/native_capture_check.c). */
 
 enum NativeCaptureBmpStatus
 {
@@ -72,6 +81,12 @@ enum NativeCaptureScreen
 	NATIVE_CAPTURE_SCREEN_REMATCH,
 	NATIVE_CAPTURE_SCREEN_EXIT,
 	NATIVE_CAPTURE_SCREEN_EXIT_OPPONENT_LEFT,
+	/* Match select: the widened select panel (x 4..508). */
+	NATIVE_CAPTURE_SCREEN_SELECT_CHARACTER,
+	NATIVE_CAPTURE_SCREEN_SELECT_TRACK,
+	NATIVE_CAPTURE_SCREEN_SELECT_LAPS,
+	NATIVE_CAPTURE_SCREEN_SELECT_WAIT,
+	NATIVE_CAPTURE_SCREEN_SELECT_RESULT,
 	NATIVE_CAPTURE_SCREEN_COUNT
 };
 
@@ -91,6 +106,14 @@ enum NativeCaptureCheckId
 	NATIVE_CAPTURE_CHECK_TEXT_ROW_EXIT,
 	NATIVE_CAPTURE_CHECK_TEXT_FOOTER,
 	NATIVE_CAPTURE_CHECK_HIGHLIGHT, /* additive row highlight on REMATCH */
+	/* Select screens only; NATIVE_CAPTURE_EXPECT_NONE on the others, as the
+	 * checks above that a select screen's layout has no band for. */
+	NATIVE_CAPTURE_CHECK_TEXT_TIME,        /* "TIME s" countdown line */
+	NATIVE_CAPTURE_CHECK_TEXT_GRID_COL1,   /* every row of the first list column */
+	NATIVE_CAPTURE_CHECK_TEXT_GRID_COL2,   /* every row of the second list column */
+	NATIVE_CAPTURE_CHECK_TEXT_LINES,       /* every body line (wait, result) */
+	NATIVE_CAPTURE_CHECK_TEXT_EMPTY,       /* every region the layout leaves blank */
+	NATIVE_CAPTURE_CHECK_HIGHLIGHT_CURSOR, /* additive row highlight on the local cursor */
 	NATIVE_CAPTURE_CHECK_COUNT
 };
 
@@ -98,7 +121,8 @@ enum NativeCaptureExpect
 {
 	NATIVE_CAPTURE_EXPECT_AT_LEAST = 0, /* measured >= threshold */
 	NATIVE_CAPTURE_EXPECT_AT_MOST,      /* measured <= threshold */
-	NATIVE_CAPTURE_EXPECT_INFO          /* reported only, never fails */
+	NATIVE_CAPTURE_EXPECT_INFO,         /* reported only, never fails */
+	NATIVE_CAPTURE_EXPECT_NONE          /* not part of this screen: not measured, never fails */
 };
 
 struct NativeCaptureSubCheck

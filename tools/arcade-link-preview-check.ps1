@@ -22,7 +22,8 @@ param(
 
     [string[]]$Screens = @(
         'title', 'lobby', 'lobby-connecting', 'lobby-rejected', 'match-found', 'results',
-        'results-timeout', 'results-desync', 'results-link-error', 'rematch', 'exit', 'exit-opponent-left'),
+        'results-timeout', 'results-desync', 'results-link-error', 'rematch', 'exit', 'exit-opponent-left',
+        'select-character', 'select-track', 'select-laps', 'select-wait', 'select-result'),
 
     [int]$Frame = 1320,
 
@@ -31,7 +32,8 @@ param(
     [int]$TimeoutSeconds = 300,
 
     # Also capture the default path (no arcade-link option) and require the
-    # checker to reject it as 'title': the default path has no link panel.
+    # checker to reject it as 'title' and as every selected screen: the
+    # default path has no link panel.
     [switch]$IncludeDefault,
 
     # Write <name>-review.png next to each capture, alpha forced opaque.
@@ -42,7 +44,8 @@ param(
 $skipExitCode = 77
 $allScreens = @(
     'title', 'lobby', 'lobby-connecting', 'lobby-rejected', 'match-found', 'results',
-    'results-timeout', 'results-desync', 'results-link-error', 'rematch', 'exit', 'exit-opponent-left')
+    'results-timeout', 'results-desync', 'results-link-error', 'rematch', 'exit', 'exit-opponent-left',
+    'select-character', 'select-track', 'select-laps', 'select-wait', 'select-result')
 $noDisplayMarker = 'No displays available'
 $notInternalMarker = '--arcade-link-preview is available in internal builds only.'
 
@@ -294,6 +297,20 @@ foreach ($run in $runs) {
         else {
             $failures += "default path: checker exit $checkerExit on $($run.BmpPath) as '$($run.Screen)'; required exit 1 (no arcade-link panel)"
         }
+        # The default path must fail as every other selected screen too.
+        foreach ($other in $selectedScreens) {
+            if ($other -eq $run.Screen) {
+                continue
+            }
+            $otherOutput = & $resolvedChecker $run.BmpPath $other 2>&1 | ForEach-Object { "$_" }
+            $otherExit = $LASTEXITCODE
+            if ($otherExit -eq 1) {
+                Write-Output "default path: checker rejected default.bmp as '$other' (exit 1): $(@($otherOutput)[-1])"
+            }
+            else {
+                $failures += "default path: checker exit $otherExit on $($run.BmpPath) as '$other'; required exit 1 (no arcade-link panel)"
+            }
+        }
     }
     elseif ($checkerExit -ne 0) {
         $failures += "screen '$($run.Screen)': checker exit $checkerExit on $($run.BmpPath)"
@@ -325,7 +342,7 @@ if ($failures.Count -ne 0) {
 }
 $defaultNote = ''
 if ($IncludeDefault) {
-    $defaultNote = ' + default path rejected as title'
+    $defaultNote = ' + default path rejected as title and every selected screen'
 }
 Write-Output "arcade-link preview check: PASS ($($selectedScreens.Count) screen(s)$defaultNote)"
 exit 0
