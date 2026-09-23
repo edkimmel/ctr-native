@@ -1336,6 +1336,25 @@ if(BUILD_TESTING)
     add_test(NAME native_capture_check_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_capture_check_isolation_test.cmake")
 
+    # Renders every arcade-link preview screen (plus the default path) with
+    # ctr_native and checks each capture with the RGB checker.  Needs the
+    # user-supplied assets/ctr-u.bin and a desktop session with a display;
+    # skips (77) otherwise.  Captures and logs are written only under the
+    # build tree.
+    if(WIN32)
+        add_test(NAME arcade_link_preview_render
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/arcade-link-preview-check.ps1"
+                -Executable "$<TARGET_FILE:ctr_native>"
+                -Checker "$<TARGET_FILE:ctr_native_arcade_link_capture_check>"
+                -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_link_preview_captures/$<CONFIG>"
+                -IncludeDefault)
+        set_tests_properties(arcade_link_preview_render PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 420
+            RUN_SERIAL TRUE)
+    endif()
+
     add_executable(native_canonical_world_mine_registry_v1_test tests/native_canonical_world_mine_registry_v1_test.c)
     set_target_properties(native_canonical_world_mine_registry_v1_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_link_libraries(native_canonical_world_mine_registry_v1_test PRIVATE ctr_native_canonical_world_mine_registry_v1)
