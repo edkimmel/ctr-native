@@ -7,7 +7,10 @@
 # API or an engine source, writes replay, checkpoint, or canonical state, or
 # reads the live identity itself (the caller supplies it). Both include only
 # their allowed headers; the library links exactly the adapter and the host
-# options, and stays portable C17 with extensions off.
+# options, and stays portable C17 with extensions off. The host-side test
+# read-back header (native_arcade_link_host_internal.h, MS-8) follows the
+# header rules and is named by no game source or main.c, and the select
+# view keeps the adapter's layout.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -82,7 +85,51 @@ endfunction()
 ctr_check_includes("${host_header}" "${header}"
     "<stdint\\.h>|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"")
 ctr_check_includes("${host_source}" "${source}"
-    "<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_link_host\\.h\"|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"")
+    "<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_link_host\\.h\"|\"platform/native_arcade_link_host_internal\\.h\"|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"")
+
+# 3b. The host-side test read-back header (MS-8): the same header-only and
+#     category rules as the public header, it includes only stdint.h, and no
+#     game source or main.c names it or its read-back.
+set(internal_header "include/platform/native_arcade_link_host_internal.h")
+ctr_read_source("${internal_header}" internal)
+foreach(term IN LISTS header_only_tokens network_tokens clock_game_tokens alloc_tokens lease_tokens state_tokens)
+    ctr_forbid("${internal_header}" "${internal}" "${term}")
+endforeach()
+ctr_check_includes("${internal_header}" "${internal}" "<stdint\\.h>")
+file(GLOB_RECURSE internal_scan_paths "${repo}/game/*.c" "${repo}/game/*.h")
+list(APPEND internal_scan_paths "${repo}/main.c")
+foreach(path IN LISTS internal_scan_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    file(READ "${path}" scanned)
+    foreach(term IN ITEMS native_arcade_link_host_internal NativeArcadeLinkHost_Internal)
+        ctr_forbid("${relative_path}" "${scanned}" "${term}")
+    endforeach()
+endforeach()
+
+# 3c. The select view (MS-8) mirrors the adapter's layout without naming
+#     it in the header: the .c static-asserts the capacities and sizes, and
+#     the public header declares the agreed-match read and the pure entropy
+#     mix.
+foreach(literal IN ITEMS
+        "_Static_assert(NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS == NATIVE_ARCADE_NETPLAY_VIEW_MAX_HUMANS,"
+        "_Static_assert(NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS == NATIVE_ARCADE_NETPLAY_VIEW_MAX_BOTS,"
+        "_Static_assert(sizeof(struct NativeArcadeLinkHostSelectView) == sizeof(struct NativeArcadeNetplaySelectView),"
+        "_Static_assert(sizeof(struct NativeArcadeLinkHostSelectHumanView) == sizeof(struct NativeArcadeNetplaySelectHumanView),"
+        "_Static_assert(NATIVE_ARCADE_LINK_HOST_MATCH_SLOTS == NATIVE_MATCH_CONFIG_V1_SLOT_COUNT,")
+    string(FIND "${source}" "${literal}" literal_at)
+    if(literal_at EQUAL -1)
+        message(FATAL_ERROR "arcade link host isolation: required text '${literal}' missing from ${host_source}")
+    endif()
+endforeach()
+foreach(literal IN ITEMS
+        "struct NativeArcadeLinkHostSelectView select;"
+        "int NativeArcadeLinkHost_GetAgreedMatch(struct NativeArcadeLinkHostMatch *out);"
+        "uint64_t NativeArcadeLinkHost_MixSelectEntropy(uint64_t entropy, uint64_t epoch);")
+    string(FIND "${header}" "${literal}" literal_at)
+    if(literal_at EQUAL -1)
+        message(FATAL_ERROR "arcade link host isolation: required text '${literal}' missing from ${host_header}")
+    endif()
+endforeach()
 
 # 4. ctr_native_arcade_link_host links exactly the adapter and the host
 #    options, in exactly one target_link_libraries call.

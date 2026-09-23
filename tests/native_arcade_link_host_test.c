@@ -1,5 +1,8 @@
 #include "platform/native_arcade_link_host.h"
 #include "platform/native_arcade_flow.h"
+#include "platform/native_arcade_link_host_internal.h"
+#include "platform/native_arcade_netplay.h"
+#include "platform/native_match_select_rules.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -27,6 +30,20 @@
 #define TEST_REPLACE_LOCAL_PORT 48502u
 #define TEST_REPLACE_DEAD_PEER_PORT 48503u
 #define TEST_REPLACE_SECOND_LOCAL_PORT 48504u
+#define TEST_ENTROPY_LOCAL_PORT 48505u
+#define TEST_ENTROPY_DEAD_PEER_PORT 48506u
+/* A real two-sided select: the host as CAB1 against a test-owned adapter
+ * as CAB2 (MS-8). */
+#define TEST_SELECT_HOST_PORT 48507u
+#define TEST_SELECT_PEER_PORT 48508u
+
+/* Bounds every loop that waits for the loopback pair; generous, not tuned. */
+#define PAIR_BUDGET 4000u
+
+/* The select preview schedule (host: 30 ticks per opponent step, 600-tick
+ * countdown). */
+#define PREVIEW_STEP_TICKS 30u
+#define PREVIEW_ITEM_TICKS 600u
 
 #define LOOPBACK_IPV4 UINT32_C(0x7F000001)
 
@@ -57,11 +74,27 @@ static void LinkOptions(struct NativeArcadeLinkOptions *options, uint8_t role, u
 	options->peerCount = 1u;
 }
 
+/* No agreed match: 0, and *out untouched. */
+static int CheckNoAgreedMatch(void)
+{
+	struct NativeArcadeLinkHostMatch match;
+	struct NativeArcadeLinkHostMatch sentinel;
+
+	memset(&match, 0xA5, sizeof(match));
+	sentinel = match;
+	CHECK(NativeArcadeLinkHost_GetAgreedMatch(&match) == 0);
+	CHECK(memcmp(&match, &sentinel, sizeof(match)) == 0);
+	CHECK(NativeArcadeLinkHost_GetAgreedMatch(NULL) == 0);
+	return 0;
+}
+
 /* Mode OFF and every call inert. */
 static int CheckInert(void)
 {
 	struct NativeArcadeLinkHostView view;
 
+	CHECK(CheckNoAgreedMatch() == 0);
+	CHECK(NativeArcadeLinkHost_InternalSelectEntropy() == 0u);
 	memset(&view, 0xA5, sizeof(view));
 	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF);
 	CHECK(NativeArcadeLinkHost_ScreenActive() == 0);
@@ -144,10 +177,21 @@ static const struct PreviewCase kPreviewCases[] = {
 		NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT, 0u, 0u, 0u},
 };
 
+static int CheckSelectZero(const struct NativeArcadeLinkHostSelectView *select)
+{
+	struct NativeArcadeLinkHostSelectView zero;
+
+	memset(&zero, 0, sizeof(zero));
+	CHECK(memcmp(select, &zero, sizeof(zero)) == 0);
+	return 0;
+}
+
 static int CheckPreviewView(const struct PreviewCase *expected, uint32_t ticks)
 {
 	struct NativeArcadeLinkHostView view;
 
+	CHECK(CheckNoAgreedMatch() == 0);
+	CHECK(NativeArcadeLinkHost_InternalSelectEntropy() == 0u);
 	memset(&view, 0xA5, sizeof(view));
 	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
 	CHECK(view.screen == expected->screen);
@@ -159,6 +203,8 @@ static int CheckPreviewView(const struct PreviewCase *expected, uint32_t ticks)
 	CHECK(view.rowsEnabled == expected->rowsEnabled);
 	CHECK(view.attract == expected->attract);
 	CHECK(view.reserved == 0u);
+	/* The original twelve previews carry no select view. */
+	CHECK(CheckSelectZero(&view.select) == 0);
 	return 0;
 }
 
@@ -234,6 +280,10 @@ static int CheckLinkView(uint32_t screen, uint32_t lobbyStatus, uint32_t ticksIn
 	CHECK(view.rowsEnabled == 0u);
 	CHECK(view.attract == ((screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF) ? 1u : 0u));
 	CHECK(view.reserved == 0u);
+	/* Neither the attract screen nor the lobby selects, and no race is
+	 * agreed. */
+	CHECK(CheckSelectZero(&view.select) == 0);
+	CHECK(CheckNoAgreedMatch() == 0);
 	return 0;
 }
 
@@ -257,6 +307,9 @@ static int EnterAndConnect(uint8_t localCab)
 	CHECK(view.attract == 0u);
 	CHECK(view.localCab == localCab);
 	CHECK(view.rowsEnabled == 0u);
+	CHECK(CheckSelectZero(&view.select) == 0);
+	/* LINK before any race: no agreed match. */
+	CHECK(CheckNoAgreedMatch() == 0);
 	CHECK(NativeArcadeLinkHost_ScreenActive() == 1);
 	return 0;
 }
@@ -362,6 +415,624 @@ static int TestSecondConfigureReplaces(void)
 	return 0;
 }
 
+/* ---- MS-8: select previews, select entropy, agreed match ---- */
+
+/* The rules module's tables, written out independently here (retail menu
+ * order) and cross-checked against the module below. */
+static const uint8_t kSelectTracks[16] = {3u, 6u, 4u, 14u, 9u, 2u, 8u, 0u, 5u, 1u, 12u, 10u, 15u, 7u, 11u, 16u};
+static const uint8_t kSelectLaps[3] = {3u, 5u, 7u};
+/* The first retail 2P AI set holding neither CRASH (0) nor CORTEX (1). */
+static const uint8_t kPreviewBots[4] = {6u, 4u, 2u, 3u};
+
+#define PREVIEW_CRASH 0u
+#define PREVIEW_CORTEX 1u
+#define PREVIEW_CRASH_COVE 3u
+#define PREVIEW_TIGER_TEMPLE 4u
+
+static void SetHuman(struct NativeArcadeLinkHostSelectHumanView *human, uint8_t character, uint8_t track, uint8_t laps,
+	uint8_t lockMask, uint8_t currentItem)
+{
+	human->present = 1u;
+	human->characterID = character;
+	human->trackID = track;
+	human->lapCount = laps;
+	human->lockMask = lockMask;
+	human->currentItem = currentItem;
+}
+
+/* The expected screen and select view of one select preview at a tick. */
+static void ExpectedSelectPreview(uint32_t preview, uint32_t ticks, uint32_t *screen,
+	struct NativeArcadeLinkHostSelectView *expected)
+{
+	uint32_t step = ticks / PREVIEW_STEP_TICKS;
+	struct NativeArcadeLinkHostSelectHumanView *local = &expected->humans[0];
+	struct NativeArcadeLinkHostSelectHumanView *opponent = &expected->humans[1];
+
+	memset(expected, 0, sizeof(*expected));
+	*screen = NATIVE_ARCADE_FLOW_SCREEN_SELECT;
+	expected->active = 1u;
+	expected->humanCount = 2u;
+	expected->localHuman = 0u;
+	expected->status = 0u; /* PICKING */
+	expected->ticksLeft = PREVIEW_ITEM_TICKS - (ticks % PREVIEW_ITEM_TICKS);
+	switch (preview)
+	{
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER:
+		SetHuman(local, PREVIEW_CRASH, PREVIEW_CRASH_COVE, 3u, 0u, 0u);
+		SetHuman(opponent, (uint8_t)(step % 8u), PREVIEW_CRASH_COVE, 3u, 0u, 0u);
+		break;
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK:
+		SetHuman(local, PREVIEW_CRASH, PREVIEW_CRASH_COVE, 3u, 1u, 1u);
+		SetHuman(opponent, PREVIEW_CORTEX, kSelectTracks[step % 16u], 3u, 1u, 1u);
+		expected->peerLockedCharacterMask = (uint16_t)(1u << PREVIEW_CORTEX);
+		break;
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS:
+		SetHuman(local, PREVIEW_CRASH, PREVIEW_CRASH_COVE, 3u, 3u, 2u);
+		SetHuman(opponent, PREVIEW_CORTEX, PREVIEW_TIGER_TEMPLE, kSelectLaps[step % 3u], 3u, 2u);
+		expected->peerLockedCharacterMask = (uint16_t)(1u << PREVIEW_CORTEX);
+		break;
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT:
+		SetHuman(local, PREVIEW_CRASH, PREVIEW_CRASH_COVE, 3u, 7u, 3u);
+		SetHuman(opponent, PREVIEW_CORTEX, PREVIEW_TIGER_TEMPLE, kSelectLaps[step % 3u], 3u, 2u);
+		expected->status = 1u; /* WAITING */
+		expected->ticksLeft = 0u;
+		expected->peerLockedCharacterMask = (uint16_t)(1u << PREVIEW_CORTEX);
+		break;
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT:
+	default:
+		*screen = NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT;
+		SetHuman(local, PREVIEW_CRASH, PREVIEW_CRASH_COVE, 3u, 7u, 3u);
+		SetHuman(opponent, PREVIEW_CORTEX, PREVIEW_TIGER_TEMPLE, 3u, 7u, 3u);
+		expected->status = 3u; /* CONFIRMED */
+		expected->ticksLeft = 0u;
+		expected->resolved = 1u;
+		expected->trackID = PREVIEW_TIGER_TEMPLE;
+		expected->trackDrawn = 1u;
+		expected->lapCount = 3u;
+		expected->lapsDrawn = 0u;
+		expected->characterReassignedMask = 0u;
+		expected->humanCharacter[0] = PREVIEW_CRASH;
+		expected->humanCharacter[1] = PREVIEW_CORTEX;
+		expected->botCount = 4u;
+		memcpy(expected->botCharacter, kPreviewBots, sizeof(kPreviewBots));
+		expected->peerLockedCharacterMask = (uint16_t)(1u << PREVIEW_CORTEX);
+		break;
+	}
+	expected->currentItem = local->currentItem;
+}
+
+/* The whole host view of a select preview at a tick, field by field. */
+static int CheckSelectPreviewView(uint32_t preview, uint32_t ticks, struct NativeArcadeLinkHostView *out)
+{
+	struct NativeArcadeLinkHostView view;
+	struct NativeArcadeLinkHostSelectView expected;
+	uint32_t screen = 0u;
+	uint32_t h;
+	uint32_t i;
+
+	ExpectedSelectPreview(preview, ticks, &screen, &expected);
+	memset(&view, 0xA5, sizeof(view));
+	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+	CHECK(view.screen == screen);
+	CHECK(view.lobbyStatus == 0u);
+	CHECK(view.endReason == 0u);
+	CHECK(view.selectedRow == 0u);
+	CHECK(view.ticksInScreen == ticks);
+	CHECK(view.localCab == 1u);
+	CHECK(view.rowsEnabled == 0u);
+	CHECK(view.attract == 0u);
+	CHECK(view.reserved == 0u);
+
+	CHECK(view.select.active == expected.active);
+	CHECK(view.select.humanCount == expected.humanCount);
+	CHECK(view.select.localHuman == expected.localHuman);
+	CHECK(view.select.currentItem == expected.currentItem);
+	CHECK(view.select.ticksLeft == expected.ticksLeft);
+	CHECK(view.select.status == expected.status);
+	CHECK(view.select.resolved == expected.resolved);
+	CHECK(view.select.trackID == expected.trackID);
+	CHECK(view.select.lapCount == expected.lapCount);
+	CHECK(view.select.trackDrawn == expected.trackDrawn);
+	CHECK(view.select.lapsDrawn == expected.lapsDrawn);
+	CHECK(view.select.characterReassignedMask == expected.characterReassignedMask);
+	CHECK(view.select.botCount == expected.botCount);
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS; i++)
+	{
+		CHECK(view.select.humanCharacter[i] == expected.humanCharacter[i]);
+	}
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS; i++)
+	{
+		CHECK(view.select.botCharacter[i] == expected.botCharacter[i]);
+	}
+	CHECK(view.select.peerLockedCharacterMask == expected.peerLockedCharacterMask);
+	CHECK(view.select.reserved[0] == 0u);
+	CHECK(view.select.reserved[1] == 0u);
+	for (h = 0u; h < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS; h++)
+	{
+		CHECK(view.select.humans[h].present == expected.humans[h].present);
+		CHECK(view.select.humans[h].characterID == expected.humans[h].characterID);
+		CHECK(view.select.humans[h].trackID == expected.humans[h].trackID);
+		CHECK(view.select.humans[h].lapCount == expected.humans[h].lapCount);
+		CHECK(view.select.humans[h].lockMask == expected.humans[h].lockMask);
+		CHECK(view.select.humans[h].currentItem == expected.humans[h].currentItem);
+		CHECK(view.select.humans[h].reserved[0] == 0u);
+		CHECK(view.select.humans[h].reserved[1] == 0u);
+	}
+	CHECK(memcmp(&view.select, &expected, sizeof(expected)) == 0);
+	if (out != NULL)
+	{
+		*out = view;
+	}
+	return 0;
+}
+
+/* Configures one select preview and ticks it to tick `ticks`. */
+static int ConfigurePreviewAt(uint32_t preview, uint32_t ticks)
+{
+	struct NativeArcadeLinkOptions options;
+	uint32_t tick;
+
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	options.preview = preview;
+	CHECK(NativeArcadeLinkHost_Configure(&options, NULL) == 1);
+	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_PREVIEW);
+	for (tick = 0u; tick < ticks; tick++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == ACT_NONE);
+	}
+	return 0;
+}
+
+static int TestSelectPreviews(void)
+{
+	static const uint32_t previews[5] = {
+		NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER, NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK,
+		NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS, NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT,
+		NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT};
+	struct NativeArcadeLinkHostView view;
+	uint32_t i;
+	uint32_t tick;
+
+	/* The independent tables above are the rules module's, and the result
+	 * preview's bots are the rules module's first AI set, so the previews
+	 * stay consistent with the rules. */
+	for (i = 0u; i < 8u; i++)
+	{
+		CHECK(NativeMatchSelect_CharacterAt(i) == (uint8_t)i);
+	}
+	for (i = 0u; i < 16u; i++)
+	{
+		CHECK(NativeMatchSelect_TrackAt(i) == kSelectTracks[i]);
+	}
+	for (i = 0u; i < 3u; i++)
+	{
+		CHECK(NativeMatchSelect_LapOptionAt(i) == kSelectLaps[i]);
+	}
+	for (i = 0u; i < 4u; i++)
+	{
+		CHECK(NativeMatchSelect_AiSetRacer(0u, i) == kPreviewBots[i]);
+		CHECK(kPreviewBots[i] != PREVIEW_CRASH);
+		CHECK(kPreviewBots[i] != PREVIEW_CORTEX);
+	}
+
+	/* Every tick of every select preview, through two countdown wraps and
+	 * several opponent-cursor wraps; GetAgreedMatch stays 0. */
+	for (i = 0u; i < 5u; i++)
+	{
+		CHECK(ConfigurePreviewAt(previews[i], 0u) == 0);
+		CHECK(NativeArcadeLinkHost_ScreenActive() == 1);
+		CHECK(NativeArcadeLinkHost_Enter() == 0);
+		CHECK(CheckSelectPreviewView(previews[i], 0u, NULL) == 0);
+		for (tick = 1u; tick <= 1300u; tick++)
+		{
+			CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == ACT_NONE);
+			CHECK(CheckSelectPreviewView(previews[i], tick, NULL) == 0);
+		}
+		CHECK(CheckNoAgreedMatch() == 0);
+		CHECK(NativeArcadeLinkHost_InternalSelectEntropy() == 0u);
+		/* AbortToTitle is LINK only: the preview is unchanged. */
+		NativeArcadeLinkHost_AbortToTitle();
+		CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_PREVIEW);
+		CHECK(CheckSelectPreviewView(previews[i], 1300u, NULL) == 0);
+	}
+
+	/* Literal spot checks: the opponent cursor at two tick values each. */
+	CHECK(ConfigurePreviewAt(NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER, 0u) == 0);
+	CHECK(CheckSelectPreviewView(NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER, 0u, &view) == 0);
+	CHECK(view.screen == 7u);
+	CHECK(view.select.currentItem == 0u);
+	CHECK(view.select.ticksLeft == 600u);
+	CHECK(view.select.humans[0].characterID == 0u);
+	CHECK(view.select.humans[1].characterID == 0u);
+	CHECK(view.select.peerLockedCharacterMask == 0u);
+	CHECK(ConfigurePreviewAt(NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER, 95u) == 0);
+	CHECK(CheckSelectPreviewView(NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER, 95u, &view) == 0);
+	CHECK(view.select.ticksLeft == 505u);
+	CHECK(view.select.humans[1].characterID == 3u);
+	CHECK(view.select.humans[1].currentItem == 0u);
+
+	CHECK(ConfigurePreviewAt(NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK, 60u) == 0);
+	CHECK(CheckSelectPreviewView(NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK, 60u, &view) == 0);
+	CHECK(view.select.currentItem == 1u);
+	CHECK(view.select.humans[0].lockMask == 1u);
+	CHECK(view.select.humans[0].trackID == 3u);
+	CHECK(view.select.humans[1].characterID == 1u);
+	CHECK(view.select.humans[1].trackID == 4u);
+	CHECK(view.select.peerLockedCharacterMask == 0x0002u);
+	CHECK(ConfigurePreviewAt(NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK, 480u) == 0);
+	CHECK(CheckSelectPreviewView(NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK, 480u, &view) == 0);
+	CHECK(view.select.humans[1].trackID == 3u);
+	CHECK(view.select.ticksLeft == 120u);
+
+	CHECK(ConfigurePreviewAt(NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS, 30u) == 0);
+	CHECK(CheckSelectPreviewView(NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS, 30u, &view) == 0);
+	CHECK(view.select.currentItem == 2u);
+	CHECK(view.select.humans[0].lapCount == 3u);
+	CHECK(view.select.humans[1].trackID == 4u);
+	CHECK(view.select.humans[1].lapCount == 5u);
+	CHECK(ConfigurePreviewAt(NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS, 60u) == 0);
+	CHECK(CheckSelectPreviewView(NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS, 60u, &view) == 0);
+	CHECK(view.select.humans[1].lapCount == 7u);
+
+	CHECK(ConfigurePreviewAt(NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT, 0u) == 0);
+	CHECK(CheckSelectPreviewView(NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT, 0u, &view) == 0);
+	CHECK(view.select.currentItem == 3u);
+	CHECK(view.select.status == 1u);
+	CHECK(view.select.ticksLeft == 0u);
+	CHECK(view.select.humans[0].lockMask == 7u);
+	CHECK(view.select.humans[1].lapCount == 3u);
+	CHECK(ConfigurePreviewAt(NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT, 90u) == 0);
+	CHECK(CheckSelectPreviewView(NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT, 90u, &view) == 0);
+	CHECK(view.select.humans[1].lapCount == 3u);
+	CHECK(view.select.humans[1].currentItem == 2u);
+
+	CHECK(ConfigurePreviewAt(NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT, 45u) == 0);
+	CHECK(CheckSelectPreviewView(NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT, 45u, &view) == 0);
+	CHECK(view.screen == 8u);
+	CHECK(view.select.status == 3u);
+	CHECK(view.select.resolved == 1u);
+	CHECK(view.select.trackID == 4u);
+	CHECK(view.select.trackDrawn == 1u);
+	CHECK(view.select.lapCount == 3u);
+	CHECK(view.select.lapsDrawn == 0u);
+	CHECK(view.select.humanCharacter[0] == 0u);
+	CHECK(view.select.humanCharacter[1] == 1u);
+	CHECK(view.select.botCount == 4u);
+	CHECK(view.select.botCharacter[0] == 6u);
+	CHECK(view.select.botCharacter[1] == 4u);
+	CHECK(view.select.botCharacter[2] == 2u);
+	CHECK(view.select.botCharacter[3] == 3u);
+	CHECK(view.select.botCharacter[4] == 0u);
+
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
+static int TestMixSelectEntropy(void)
+{
+	const uint64_t step = UINT64_C(0x9E3779B97F4A7C15);
+
+	CHECK(NativeArcadeLinkHost_MixSelectEntropy(0u, 0u) == 0u);
+	CHECK(NativeArcadeLinkHost_MixSelectEntropy(UINT64_C(0x0123456789ABCDEF), 0u) == UINT64_C(0x0123456789ABCDEF));
+	CHECK(NativeArcadeLinkHost_MixSelectEntropy(0u, 1u) == step);
+	CHECK(NativeArcadeLinkHost_MixSelectEntropy(0u, 2u) == UINT64_C(0x3C6EF372FE94F82A));
+	CHECK(NativeArcadeLinkHost_MixSelectEntropy(UINT64_C(0xFFFFFFFFFFFFFFFF), 1u) == ~step);
+	CHECK(NativeArcadeLinkHost_MixSelectEntropy(UINT64_C(0x1122334455667788), 3u) ==
+		(UINT64_C(0x1122334455667788) ^ (step * 3u)));
+	/* Consecutive epochs never collide for the same entropy. */
+	CHECK(NativeArcadeLinkHost_MixSelectEntropy(UINT64_C(42), 7u) != NativeArcadeLinkHost_MixSelectEntropy(UINT64_C(42), 8u));
+	return 0;
+}
+
+/* Every LINK Configure and every AbortToTitle hands the adapter a new
+ * select entropy: the options' entropy mixed with the next host epoch. The
+ * epoch is process-local (earlier tests already advanced it), so the checks
+ * recover it from the first value and follow it. */
+static int TestSelectEntropyEpochs(void)
+{
+	const uint64_t entropy = UINT64_C(0x1122334455667788);
+	const uint64_t step = UINT64_C(0x9E3779B97F4A7C15);
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	uint64_t first;
+	uint64_t second;
+	uint64_t third;
+	uint64_t fourth;
+	uint64_t zeroEntropy;
+
+	TestIdentity(&identity);
+	LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_ENTROPY_LOCAL_PORT, TEST_ENTROPY_DEAD_PEER_PORT);
+	options.selectEntropy = entropy;
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	first = NativeArcadeLinkHost_InternalSelectEntropy();
+	CHECK((first ^ entropy) != 0u);
+	CHECK(first != entropy);
+
+	/* Two consecutive AbortToTitle calls: two new, different values, one
+	 * epoch apart. */
+	NativeArcadeLinkHost_AbortToTitle();
+	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK);
+	second = NativeArcadeLinkHost_InternalSelectEntropy();
+	NativeArcadeLinkHost_AbortToTitle();
+	third = NativeArcadeLinkHost_InternalSelectEntropy();
+	CHECK(second != first);
+	CHECK(third != second);
+	CHECK(third != first);
+	CHECK((second ^ entropy) == ((first ^ entropy) + step));
+	CHECK((third ^ entropy) == ((second ^ entropy) + step));
+
+	/* Also after an Enter with an open link. */
+	CHECK(EnterAndConnect(1u) == 0);
+	NativeArcadeLinkHost_AbortToTitle();
+	fourth = NativeArcadeLinkHost_InternalSelectEntropy();
+	CHECK((fourth ^ entropy) == ((third ^ entropy) + step));
+
+	/* Shutdown does not reset the epoch: a fresh Configure continues it. */
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	options.selectEntropy = 0u;
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	zeroEntropy = NativeArcadeLinkHost_InternalSelectEntropy();
+	CHECK(zeroEntropy == ((fourth ^ entropy) + step));
+	CHECK(zeroEntropy != 0u);
+	NativeArcadeLinkHost_AbortToTitle();
+	CHECK(NativeArcadeLinkHost_InternalSelectEntropy() == zeroEntropy + step);
+
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
+static struct NativeArcadeNetplay g_peer;
+
+/* One tick of the host (CAB1) and the peer adapter (CAB2). */
+static void TickPair(uint32_t heldHost, uint32_t heldPeer, uint32_t *hostAction, uint32_t *peerAction)
+{
+	*hostAction = NativeArcadeLinkHost_Tick(heldHost, 0u);
+	*peerAction = (uint32_t)NativeArcadeNetplay_Tick(&g_peer, heldPeer, 0u);
+}
+
+/* A press on either side: a held tick, then a released tick; every action
+ * NONE. */
+static int PressPair(uint32_t heldHost, uint32_t heldPeer)
+{
+	uint32_t hostAction;
+	uint32_t peerAction;
+
+	TickPair(heldHost, heldPeer, &hostAction, &peerAction);
+	CHECK(hostAction == ACT_NONE);
+	CHECK(peerAction == ACT_NONE);
+	TickPair(0u, 0u, &hostAction, &peerAction);
+	CHECK(hostAction == ACT_NONE);
+	CHECK(peerAction == ACT_NONE);
+	return 0;
+}
+
+/* The host view's select outcome fields equal the adapter view's. */
+static int CheckSameOutcome(const struct NativeArcadeLinkHostSelectView *host, const struct NativeArcadeNetplaySelectView *peer)
+{
+	uint32_t i;
+
+	CHECK(host->resolved == peer->resolved);
+	CHECK(host->trackID == peer->trackID);
+	CHECK(host->lapCount == peer->lapCount);
+	CHECK(host->trackDrawn == peer->trackDrawn);
+	CHECK(host->lapsDrawn == peer->lapsDrawn);
+	CHECK(host->characterReassignedMask == peer->characterReassignedMask);
+	CHECK(host->botCount == peer->botCount);
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS; i++)
+	{
+		CHECK(host->humanCharacter[i] == peer->humanCharacter[i]);
+	}
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS; i++)
+	{
+		CHECK(host->botCharacter[i] == peer->botCharacter[i]);
+	}
+	return 0;
+}
+
+/*
+ * LINK end to end over loopback: the host as CAB1 against a test-owned
+ * adapter as CAB2 with the same fixture and the production timings. The
+ * host's select view follows the session (the opponent's lock and the
+ * greyed character arrive, the countdown runs), shows the confirmed
+ * outcome on SELECT_RESULT equal to the peer's, and GetAgreedMatch reports
+ * the agreed race config once START_RACE is returned, and nothing before.
+ */
+static int TestLinkSelectAndAgreedMatch(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	struct NativeArcadeNetplayConfig peerConfig;
+	struct NativeArcadeLinkHostView view;
+	struct NativeArcadeNetplayView peerView;
+	struct NativeArcadeLinkHostMatch match;
+	const struct NativeMatchConfigV1 *agreed;
+	uint32_t hostAction = ACT_NONE;
+	uint32_t peerAction = ACT_NONE;
+	uint32_t ticksLeft;
+	uint32_t tick;
+	uint32_t slot;
+	int hostStarted = 0;
+	int peerStarted = 0;
+
+	TestIdentity(&identity);
+	LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SELECT_HOST_PORT, TEST_SELECT_PEER_PORT);
+	options.selectEntropy = UINT64_C(0x5EED5EED5EED5EED);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+
+	NativeArcadeNetplay_DefaultConfig(&peerConfig);
+	CHECK(NativeArcadeLinkFixture_Build(&identity, &peerConfig.fixture));
+	peerConfig.candidates[0].ipv4 = LOOPBACK_IPV4;
+	peerConfig.candidates[0].port = (uint16_t)TEST_SELECT_HOST_PORT;
+	peerConfig.candidateCount = 1u;
+	peerConfig.localPort = (uint16_t)TEST_SELECT_PEER_PORT;
+	peerConfig.localRole = (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN;
+	peerConfig.selectEntropy = UINT64_C(0x0DDBA11);
+	CHECK(NativeArcadeNetplay_Init(&g_peer, &peerConfig) == 1);
+
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(NativeArcadeNetplay_Enter(&g_peer) == NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY);
+
+	/* Into SELECT on both sides, then one released tick to arm the menus. */
+	for (tick = 0u; tick < PAIR_BUDGET; tick++)
+	{
+		TickPair(0u, 0u, &hostAction, &peerAction);
+		CHECK(hostAction != (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE);
+		CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+		CHECK(NativeArcadeNetplay_GetView(&g_peer, &peerView) == 1);
+		if (view.screen != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT)
+		{
+			CHECK(CheckSelectZero(&view.select) == 0);
+		}
+		CHECK(CheckNoAgreedMatch() == 0);
+		if ((view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT) &&
+			(peerView.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT))
+		{
+			break;
+		}
+	}
+	CHECK(tick < PAIR_BUDGET);
+	TickPair(0u, 0u, &hostAction, &peerAction);
+
+	/* The local cursors start on the fixture: CRASH, CRASH_COVE, 3 laps. */
+	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+	CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(view.select.active == 1u);
+	CHECK(view.select.humanCount == 2u);
+	CHECK(view.select.localHuman == 0u);
+	CHECK(view.select.currentItem == 0u);
+	CHECK(view.select.status == 0u);
+	CHECK(view.select.resolved == 0u);
+	CHECK(view.select.humans[0].present == 1u);
+	CHECK(view.select.humans[0].characterID == 0u);
+	CHECK(view.select.humans[0].trackID == 3u);
+	CHECK(view.select.humans[0].lapCount == 3u);
+	CHECK(view.select.humans[0].lockMask == 0u);
+	CHECK(view.select.humans[2].present == 0u);
+	CHECK(view.select.humans[3].present == 0u);
+	CHECK((view.select.ticksLeft > 0u) && (view.select.ticksLeft <= 600u));
+	ticksLeft = view.select.ticksLeft;
+	TickPair(0u, 0u, &hostAction, &peerAction);
+	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+	CHECK(view.select.ticksLeft == ticksLeft - 1u);
+	/* By now the peer has been heard, on its own fixture character. */
+	CHECK(view.select.humans[1].present == 1u);
+	CHECK(view.select.humans[1].characterID == 1u);
+	CHECK(view.select.humans[1].lockMask == 0u);
+	CHECK(view.select.peerLockedCharacterMask == 0u);
+
+	/* The peer locks CORTEX: the host sees the lock and greys CORTEX. */
+	CHECK(PressPair(0u, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 0);
+	CHECK(PressPair(0u, 0u) == 0);
+	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+	CHECK(view.select.humans[1].lockMask == 1u);
+	CHECK(view.select.humans[1].characterID == 1u);
+	CHECK(view.select.humans[1].currentItem == 1u);
+	CHECK(view.select.peerLockedCharacterMask == 0x0002u);
+	CHECK(view.select.currentItem == 0u);
+
+	/* Both confirm the rest on the fixture cursors. */
+	CHECK(PressPair(NATIVE_ARCADE_MENU_BUTTON_CROSS, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 0);
+	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+	CHECK(view.select.currentItem == 1u);
+	CHECK(view.select.humans[0].lockMask == 1u);
+	CHECK(PressPair(NATIVE_ARCADE_MENU_BUTTON_CROSS, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 0);
+	CHECK(PressPair(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == 0);
+
+	/* SELECT_RESULT: the confirmed outcome, equal on both sides. */
+	for (tick = 0u; tick < PAIR_BUDGET; tick++)
+	{
+		CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+		if (view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT)
+		{
+			break;
+		}
+		TickPair(0u, 0u, &hostAction, &peerAction);
+		CHECK(hostAction != (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE);
+	}
+	CHECK(tick < PAIR_BUDGET);
+	CHECK(NativeArcadeNetplay_GetView(&g_peer, &peerView) == 1);
+	CHECK(view.select.active == 1u);
+	CHECK(view.select.status == 3u);
+	CHECK(view.select.currentItem == 3u);
+	CHECK(view.select.ticksLeft == 0u);
+	CHECK(view.select.resolved == 1u);
+	CHECK(view.select.trackID == 3u);
+	CHECK(view.select.lapCount == 3u);
+	CHECK(view.select.trackDrawn == 0u);
+	CHECK(view.select.lapsDrawn == 0u);
+	CHECK(view.select.characterReassignedMask == 0u);
+	CHECK(view.select.humanCharacter[0] == 0u);
+	CHECK(view.select.humanCharacter[1] == 1u);
+	CHECK(view.select.botCount == 4u);
+	CHECK(view.select.botCharacter[0] == kPreviewBots[0]);
+	CHECK(view.select.botCharacter[1] == kPreviewBots[1]);
+	CHECK(view.select.botCharacter[2] == kPreviewBots[2]);
+	CHECK(view.select.botCharacter[3] == kPreviewBots[3]);
+	CHECK(view.select.humans[0].lockMask == 7u);
+	CHECK(view.select.humans[1].lockMask == 7u);
+	CHECK(peerView.select.resolved == 1u);
+	CHECK(CheckSameOutcome(&view.select, &peerView.select) == 0);
+	CHECK(CheckNoAgreedMatch() == 0);
+
+	/* On to START_RACE: GetAgreedMatch reports nothing until it. */
+	for (tick = 0u; (tick < PAIR_BUDGET) && !(hostStarted && peerStarted); tick++)
+	{
+		TickPair(0u, 0u, &hostAction, &peerAction);
+		if (!hostStarted)
+		{
+			if (hostAction == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)
+			{
+				hostStarted = 1;
+			}
+			else
+			{
+				CHECK(CheckNoAgreedMatch() == 0);
+			}
+		}
+		peerStarted = peerStarted || (peerAction == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE);
+		CHECK(hostAction != (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE);
+		CHECK(peerAction != (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE);
+	}
+	CHECK(hostStarted && peerStarted);
+
+	agreed = NativeArcadeNetplay_AgreedConfig(&g_peer);
+	CHECK(agreed != NULL);
+	memset(&match, 0xA5, sizeof(match));
+	CHECK(NativeArcadeLinkHost_GetAgreedMatch(&match) == 1);
+	CHECK(match.trackID == agreed->trackID);
+	CHECK(match.trackID == 3u);
+	CHECK(match.lapCount == agreed->lapCount);
+	CHECK(match.lapCount == 3u);
+	CHECK(match.masterSeed == agreed->masterSeed);
+	CHECK(match.masterSeed != NATIVE_ARCADE_LINK_FIXTURE_MASTER_SEED);
+	CHECK(match.masterSeed != 0u);
+	for (slot = 0u; slot < NATIVE_ARCADE_LINK_HOST_MATCH_SLOTS; slot++)
+	{
+		CHECK(match.slotRole[slot] == agreed->slots[slot].role);
+		CHECK(match.slotCharacter[slot] == agreed->slots[slot].characterID);
+	}
+	CHECK(match.slotRole[0] == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN);
+	CHECK(match.slotCharacter[0] == 0u);
+	CHECK(match.slotRole[1] == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN);
+	CHECK(match.slotCharacter[1] == 1u);
+	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+	CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(CheckSelectZero(&view.select) == 0);
+
+	/* The game's abort: back to the attract screen, nothing agreed. */
+	NativeArcadeLinkHost_AbortToTitle();
+	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK);
+	CHECK(CheckNoAgreedMatch() == 0);
+
+	NativeArcadeNetplay_Shutdown(&g_peer);
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestInertBeforeConfigure() == 0);
@@ -370,6 +1041,10 @@ int main(void)
 	CHECK(TestLinkRejectsBadIdentity() == 0);
 	CHECK(TestLinkLifecycle() == 0);
 	CHECK(TestSecondConfigureReplaces() == 0);
+	CHECK(TestSelectPreviews() == 0);
+	CHECK(TestMixSelectEntropy() == 0);
+	CHECK(TestSelectEntropyEpochs() == 0);
+	CHECK(TestLinkSelectAndAgreedMatch() == 0);
 	puts("native_arcade_link_host_test: passed");
 	return 0;
 }

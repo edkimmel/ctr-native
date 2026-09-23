@@ -171,6 +171,71 @@ struct NativeArcadeNetplayConfig
 	uint64_t selectEntropy;
 };
 
+/* The select view's per-human and bot capacities. */
+#define NATIVE_ARCADE_NETPLAY_VIEW_MAX_HUMANS 4u
+#define NATIVE_ARCADE_NETPLAY_VIEW_MAX_BOTS 8u
+
+_Static_assert(NATIVE_ARCADE_NETPLAY_VIEW_MAX_HUMANS == NATIVE_MATCH_SELECT_MAX_HUMANS,
+	"the select view holds exactly the select session's humans");
+_Static_assert(NATIVE_ARCADE_NETPLAY_VIEW_MAX_BOTS == NATIVE_MATCH_CONFIG_V1_SLOT_COUNT,
+	"the select view holds exactly the outcome's bot characters");
+
+/* One human in the select view: the local human's own state, or a peer's
+ * last accepted record. Everything is 0 while present is 0. */
+struct NativeArcadeNetplaySelectHumanView
+{
+	/* 1 for the local human always; 1 for a peer once a record was heard */
+	uint8_t present;
+	/* cursor or locked value */
+	uint8_t characterID;
+	/* cursor or locked value (the vote) */
+	uint8_t trackID;
+	/* cursor or locked value (the vote) */
+	uint8_t lapCount;
+	/* NATIVE_MATCH_SELECT_LOCK_* bits */
+	uint8_t lockMask;
+	/* enum NativeMatchSelectItem: 0 character, 1 track, 2 laps, 3 done */
+	uint8_t currentItem;
+	uint8_t reserved[2];
+};
+
+/* The select phase, flat. Everything is 0 unless active. */
+struct NativeArcadeNetplaySelectView
+{
+	/* 1 on SELECT and SELECT_RESULT while a select session exists
+	 * (NativeArcadeNetplay_Select is non-NULL) */
+	uint8_t active;
+	uint8_t humanCount;
+	/* the local human's index (cabinet role - 1) */
+	uint8_t localHuman;
+	/* the local human's current item (enum NativeMatchSelectItem) */
+	uint8_t currentItem;
+	/* ticks until the local current item auto-locks; 0 once the local
+	 * human is DONE */
+	uint32_t ticksLeft;
+	/* enum NativeMatchSelectStatus */
+	uint8_t status;
+	/* 1 when the outcome fields below are valid (RESOLVED or CONFIRMED) */
+	uint8_t resolved;
+	uint8_t trackID;
+	uint8_t lapCount;
+	uint8_t trackDrawn;
+	uint8_t lapsDrawn;
+	/* bit h: human h was reassigned a character */
+	uint8_t characterReassignedMask;
+	uint8_t botCount;
+	/* the first humanCount used, the rest 0 */
+	uint8_t humanCharacter[NATIVE_ARCADE_NETPLAY_VIEW_MAX_HUMANS];
+	/* the first botCount used, the rest 0 */
+	uint8_t botCharacter[NATIVE_ARCADE_NETPLAY_VIEW_MAX_BOTS];
+	/* bit c: a peer has locked base character c (greyed on the character
+	 * screen; the session refuses CONFIRM on it) */
+	uint16_t peerLockedCharacterMask;
+	uint8_t reserved[2];
+	/* indexed by human; entries at or above humanCount stay 0 */
+	struct NativeArcadeNetplaySelectHumanView humans[NATIVE_ARCADE_NETPLAY_VIEW_MAX_HUMANS];
+};
+
 /* Everything a screen drawer needs, in the flow's own enums. */
 struct NativeArcadeNetplayView
 {
@@ -186,6 +251,8 @@ struct NativeArcadeNetplayView
 	uint8_t localRole;
 	uint8_t menuArmed;
 	uint8_t reserved[2];
+	/* The select phase (docs/MATCH_SELECT_MILESTONE.md section 2.7). */
+	struct NativeArcadeNetplaySelectView select;
 };
 
 struct NativeArcadeNetplay
@@ -292,7 +359,10 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 void NativeArcadeNetplay_OnTakeResult(struct NativeArcadeNetplay *netplay, enum NativeLockstepSessionResult result,
 	uint32_t frameIndex);
 
-/* Fills *view and returns 1; returns 0 on a NULL argument. */
+/* Fills *view and returns 1; returns 0 on a NULL argument. The select
+ * sub-view is filled from the select session while NativeArcadeNetplay_Select
+ * is non-NULL (SELECT and SELECT_RESULT, before and after RELINK), and is all
+ * zero otherwise. */
 int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struct NativeArcadeNetplayView *view);
 
 /* The config of the match running or just finished: non-NULL only on

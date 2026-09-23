@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define NATIVE_ARCADE_LINK_PREVIEW_LAST NATIVE_ARCADE_LINK_PREVIEW_EXIT_OPPONENT_LEFT
+#define NATIVE_ARCADE_LINK_PREVIEW_LAST NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT
 
 static const char k_linkOption[] = "--arcade-link";
 static const char k_portOption[] = "--arcade-link-port";
@@ -30,6 +30,11 @@ static const char *const k_previewNames[NATIVE_ARCADE_LINK_PREVIEW_LAST + 1u] = 
 	"rematch",
 	"exit",
 	"exit-opponent-left",
+	"select-character",
+	"select-track",
+	"select-laps",
+	"select-wait",
+	"select-result",
 };
 
 static int NativeArcadeLinkOptions_IsDigit(char c)

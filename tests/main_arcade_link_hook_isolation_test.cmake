@@ -17,7 +17,9 @@
 # the F5 and F8 quick-state hotkeys in native_platform.c are gated off in
 # link and preview mode and no other source requests a quick state; and the
 # START_RACE abort gives the retail box back when the host falls back to mode
-# OFF. The policy's own rules are in
+# OFF. Since MS-8 the START_RACE branch also logs the agreed match before
+# the abort, and main.c fills the host-local select entropy only inside the
+# link-enabled branch. The policy's own rules are in
 # main_arcade_link_policy_isolation_test.cmake.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
@@ -448,3 +450,52 @@ ctr_find_block("${hook_source_path} (START_RACE branch)" "${after_abort}"
 math(EXPR restore_length "${restore_end} - ${restore_begin} + 1")
 string(SUBSTRING "${after_abort}" ${restore_begin} ${restore_length} restore_block)
 ctr_require_literal("${hook_source_path} (START_RACE fallback)" "${restore_block}" "MainArcadeLink_RestoreMainMenu();")
+
+# 12. The START_RACE branch logs the agreed match (MS-8,
+#     docs/MATCH_SELECT_MILESTONE.md section 2.7) before it aborts to the
+#     title, while the link still holds the agreed config: the only
+#     GetAgreedMatch call is inside that branch, before AbortToTitle, and its
+#     success block logs through the hook's Platform_Log helper.
+string(REGEX MATCHALL "NativeArcadeLinkHost_GetAgreedMatch\\(" agreed_calls "${hook_code}")
+list(LENGTH agreed_calls agreed_call_count)
+if(NOT agreed_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call NativeArcadeLinkHost_GetAgreedMatch exactly once (found ${agreed_call_count})")
+endif()
+set(agreed_check "if (NativeArcadeLinkHost_GetAgreedMatch(&match))")
+ctr_require_order("${hook_source_path} (START_RACE branch)" "${start_block}"
+    "${agreed_check}" "MainArcadeLink_LogAgreedMatch(&match);"
+    "networked race launch is not wired yet" "NativeArcadeLinkHost_AbortToTitle();")
+ctr_find_block("${hook_source_path} (START_RACE branch)" "${start_block}" "${agreed_check}" agreed_begin agreed_end)
+math(EXPR agreed_length "${agreed_end} - ${agreed_begin} + 1")
+string(SUBSTRING "${start_block}" ${agreed_begin} ${agreed_length} agreed_block)
+ctr_require_literal("${hook_source_path} (agreed-match log)" "${agreed_block}" "MainArcadeLink_LogAgreedMatch(&match);")
+ctr_find_block("${hook_source_path}" "${hook_code}"
+    "static void MainArcadeLink_LogAgreedMatch(const struct NativeArcadeLinkHostMatch *match)" log_begin log_end)
+math(EXPR log_length "${log_end} - ${log_begin} + 1")
+string(SUBSTRING "${hook_code}" ${log_begin} ${log_length} log_block)
+ctr_require_literal("${hook_source_path} (agreed-match log)" "${log_block}"
+    "Platform_Log(\"[CTR Native] arcade link: agreed match track %u laps %u seed 0x%08X%08X slots")
+
+# 13. The host-side test read-back header is never included by game code:
+#     the hook's include allowlist above already excludes it; this also keeps
+#     the hook from naming the read-back itself.
+ctr_forbid("${hook_source_path}" "${hook_source}" "native_arcade_link_host_internal")
+ctr_forbid("${hook_source_path}" "${hook_source}" "NativeArcadeLinkHost_Internal")
+
+# 14. main.c fills the host-local select entropy only inside the
+#     link-enabled branch: exactly one assignment, inside the block of the
+#     first `if (arcadeLinkOptions.enabled != 0u)`, after the identity read.
+string(REGEX MATCHALL "arcadeLinkOptions\\.selectEntropy[ \t]*=" entropy_writes "${main_code}")
+list(LENGTH entropy_writes entropy_write_count)
+if(NOT entropy_write_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: main.c must assign arcadeLinkOptions.selectEntropy exactly once (found ${entropy_write_count})")
+endif()
+string(REGEX MATCHALL "selectEntropy" entropy_mentions "${main_code}")
+list(LENGTH entropy_mentions entropy_mention_count)
+if(NOT entropy_mention_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: main.c must name selectEntropy only in its one assignment (found ${entropy_mention_count})")
+endif()
+string(FIND "${main_code}" "arcadeLinkOptions.selectEntropy" entropy_at)
+if(NOT (entropy_at GREATER identity_at AND entropy_at LESS enabled_end))
+    message(FATAL_ERROR "arcade link hook isolation: main.c must fill arcadeLinkOptions.selectEntropy only inside its if (arcadeLinkOptions.enabled != 0u) block, after NativeIdentity_Get")
+endif()

@@ -168,9 +168,48 @@ static void MainArcadeLink_BuildAndDraw(struct GameTracker *gGT)
 	MainArcadeLink_Draw(gGT, &layout);
 }
 
+/* One letter per slot role for the agreed-match log line: 1 and 2 for the
+ * cabinets, B for a bot, - for an inactive slot (or anything else). */
+static char MainArcadeLink_RoleLetter(uint8_t role)
+{
+	switch (role)
+	{
+	case NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN:
+		return '1';
+	case NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN:
+		return '2';
+	case NATIVE_MATCH_SLOT_ROLE_BOT:
+		return 'B';
+	default:
+		return '-';
+	}
+}
+
+/* Logs the agreed match the link just started (docs/MATCH_SELECT_MILESTONE.md
+ * section 2.7): track, laps, the 64-bit seed as two 32-bit halves, and each
+ * slot's character, then the slot roles as letters. */
+static void MainArcadeLink_LogAgreedMatch(const struct NativeArcadeLinkHostMatch *match)
+{
+	char roles[NATIVE_ARCADE_LINK_HOST_MATCH_SLOTS + 1u];
+	uint32_t slot;
+
+	for (slot = 0u; slot < NATIVE_ARCADE_LINK_HOST_MATCH_SLOTS; slot++)
+	{
+		roles[slot] = MainArcadeLink_RoleLetter(match->slotRole[slot]);
+	}
+	roles[NATIVE_ARCADE_LINK_HOST_MATCH_SLOTS] = '\0';
+	Platform_Log("[CTR Native] arcade link: agreed match track %u laps %u seed 0x%08X%08X slots %u %u %u %u %u %u %u %u (%s)\n",
+		(unsigned)match->trackID, (unsigned)match->lapCount, (unsigned)(uint32_t)(match->masterSeed >> 32),
+		(unsigned)(uint32_t)(match->masterSeed & 0xFFFFFFFFu), (unsigned)match->slotCharacter[0],
+		(unsigned)match->slotCharacter[1], (unsigned)match->slotCharacter[2], (unsigned)match->slotCharacter[3],
+		(unsigned)match->slotCharacter[4], (unsigned)match->slotCharacter[5], (unsigned)match->slotCharacter[6],
+		(unsigned)match->slotCharacter[7], roles);
+}
+
 /* LINK mode: attract entry, one host tick, and the actions the game owns. */
 static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainArcadeLinkPolicyOutput *output)
 {
+	struct NativeArcadeLinkHostMatch match;
 	uint32_t action;
 
 	if (output->enterPressed != 0u)
@@ -182,6 +221,11 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 
 	if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)
 	{
+		/* The resolved match first, while the link still holds it. */
+		if (NativeArcadeLinkHost_GetAgreedMatch(&match))
+		{
+			MainArcadeLink_LogAgreedMatch(&match);
+		}
 		Platform_Log("[CTR Native] arcade link: networked race launch is not wired yet (docs/GAME_LOOP_UI_MILESTONE.md Task 7); returning to title\n");
 		NativeArcadeLinkHost_AbortToTitle();
 		/* AbortToTitle falls back to mode OFF if the link cannot reopen. The

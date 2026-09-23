@@ -1,9 +1,11 @@
 #define _CRT_SECURE_NO_WARNINGS
 #define SDL_MAIN_HANDLED
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(_WIN32)
 #include <io.h>
@@ -339,6 +341,12 @@ int main(int argc, char *argv[])
 			return NativeConsole_Return(1);
 		}
 		arcadeLinkIdentityPtr = &arcadeLinkIdentity;
+		/* Host-local select entropy (docs/MATCH_SELECT_MILESTONE.md section
+		 * 2.6): the wall clock mixed with the high-resolution counter, read
+		 * once. It is not match identity: it reaches the match only through
+		 * the exchanged select nonces and so the agreed masterSeed. Preview
+		 * and default runs never read it; it stays 0 there. */
+		arcadeLinkOptions.selectEntropy = ((uint64_t)time(NULL) << 32) ^ (uint64_t)SDL_GetPerformanceCounter();
 	}
 	if (!NativeArcadeLinkHost_Configure(&arcadeLinkOptions, arcadeLinkIdentityPtr))
 	{

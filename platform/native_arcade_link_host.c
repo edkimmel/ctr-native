@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "platform/native_arcade_flow.h"
+#include "platform/native_arcade_link_host_internal.h"
 #include "platform/native_arcade_link_options.h"
 #include "platform/native_arcade_menu_input.h"
 #include "platform/native_arcade_netplay.h"
@@ -17,6 +18,36 @@
  * session), so it lives in static storage rather than on any stack.
  */
 
+/* The host select view mirrors the adapter's field for field. */
+_Static_assert(NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS == NATIVE_ARCADE_NETPLAY_VIEW_MAX_HUMANS,
+	"the host select view holds exactly the adapter's humans");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS == NATIVE_ARCADE_NETPLAY_VIEW_MAX_BOTS,
+	"the host select view holds exactly the adapter's bots");
+_Static_assert(sizeof(struct NativeArcadeLinkHostSelectView) == sizeof(struct NativeArcadeNetplaySelectView),
+	"the host select view has the adapter's layout");
+_Static_assert(sizeof(struct NativeArcadeLinkHostSelectHumanView) == sizeof(struct NativeArcadeNetplaySelectHumanView),
+	"the host select human view has the adapter's layout");
+_Static_assert(NATIVE_ARCADE_LINK_HOST_MATCH_SLOTS == NATIVE_MATCH_CONFIG_V1_SLOT_COUNT,
+	"the agreed match holds exactly the config's slots");
+
+/* The select entropy mix constant: 2^64 divided by the golden ratio. */
+#define NATIVE_ARCADE_LINK_HOST_ENTROPY_STEP UINT64_C(0x9E3779B97F4A7C15)
+
+/* Select previews: the opponent cursor moves one step every
+ * PREVIEW_STEP_TICKS preview ticks, and the local countdown runs over
+ * PREVIEW_ITEM_TICKS (the 20 s select item, OD-1), so a capture at a given
+ * frame is deterministic. */
+#define NATIVE_ARCADE_LINK_HOST_PREVIEW_STEP_TICKS 30u
+#define NATIVE_ARCADE_LINK_HOST_PREVIEW_ITEM_TICKS 600u
+/* The preview picks: the local cabinet (human 0) is CRASH on CRASH_COVE,
+ * the opponent (human 1) is CORTEX voting TIGER_TEMPLE; both vote 3 laps. */
+#define NATIVE_ARCADE_LINK_HOST_PREVIEW_LOCAL_CHARACTER 0u    /* CRASH */
+#define NATIVE_ARCADE_LINK_HOST_PREVIEW_OPPONENT_CHARACTER 1u /* CORTEX */
+#define NATIVE_ARCADE_LINK_HOST_PREVIEW_LOCAL_TRACK 3u        /* CRASH_COVE */
+#define NATIVE_ARCADE_LINK_HOST_PREVIEW_OPPONENT_TRACK 4u     /* TIGER_TEMPLE */
+#define NATIVE_ARCADE_LINK_HOST_PREVIEW_LAPS 3u
+#define NATIVE_ARCADE_LINK_HOST_PREVIEW_BOT_COUNT 4u
+
 static uint32_t g_mode = NATIVE_ARCADE_LINK_HOST_MODE_OFF;
 static struct NativeArcadeLinkOptions g_options;
 static struct NativeArcadeNetplay g_netplay;
@@ -25,6 +56,28 @@ static struct NativeArcadeNetplayConfig g_config;
 static uint32_t g_idleTicks;
 /* Ticks since PREVIEW mode was configured. */
 static uint32_t g_previewTicks;
+/* Process-local host epoch: incremented by every LINK Configure and every
+ * AbortToTitle, before the adapter is initialized. Shutdown never resets
+ * it, so no two initializations in one process share an epoch. */
+static uint64_t g_epoch;
+
+uint64_t NativeArcadeLinkHost_MixSelectEntropy(uint64_t entropy, uint64_t epoch)
+{
+	return entropy ^ (epoch * NATIVE_ARCADE_LINK_HOST_ENTROPY_STEP);
+}
+
+/* A new epoch and the adapter entropy derived from it; called right before
+ * every NativeArcadeNetplay_Init. */
+static void NativeArcadeLinkHost_NextEpoch(uint64_t entropy)
+{
+	g_epoch += 1u;
+	g_config.selectEntropy = NativeArcadeLinkHost_MixSelectEntropy(entropy, g_epoch);
+}
+
+uint64_t NativeArcadeLinkHost_InternalSelectEntropy(void)
+{
+	return (g_mode == NATIVE_ARCADE_LINK_HOST_MODE_LINK) ? g_config.selectEntropy : 0u;
+}
 
 static uint32_t NativeArcadeLinkHost_SaturatingIncrement(uint32_t value)
 {
@@ -103,6 +156,7 @@ int NativeArcadeLinkHost_Configure(const struct NativeArcadeLinkOptions *options
 	g_config.candidateCount = options->peerCount;
 	g_config.localPort = options->localPort;
 	g_config.localRole = options->localRole;
+	NativeArcadeLinkHost_NextEpoch(options->selectEntropy);
 	if (!NativeArcadeNetplay_Init(&g_netplay, &g_config))
 	{
 		memset(&g_config, 0, sizeof(g_config));
@@ -163,6 +217,110 @@ uint32_t NativeArcadeLinkHost_Tick(uint32_t heldMenuButtons, uint8_t raceFinishe
 	return (uint32_t)NativeArcadeNetplay_Tick(&g_netplay, heldMenuButtons, raceFinished);
 }
 
+/*
+ * Synthesizes the select view of one select preview (*view already zeroed):
+ * two humans, the local cabinet human 0. The opponent's cursor steps through
+ * its current item's table in the rules module's order, one step every
+ * PREVIEW_STEP_TICKS, so it visibly moves yet every capture frame is
+ * deterministic. The countdown runs while the local human is picking and is
+ * 0 once it is done, as the link reports it.
+ */
+static void NativeArcadeLinkHost_PreviewSelectView(struct NativeArcadeLinkHostView *view)
+{
+	struct NativeArcadeLinkHostSelectView *sel = &view->select;
+	struct NativeArcadeLinkHostSelectHumanView *local = &sel->humans[0];
+	struct NativeArcadeLinkHostSelectHumanView *opponent = &sel->humans[1];
+	uint32_t step = g_previewTicks / NATIVE_ARCADE_LINK_HOST_PREVIEW_STEP_TICKS;
+	uint32_t racer;
+
+	view->screen = NATIVE_ARCADE_FLOW_SCREEN_SELECT;
+	sel->active = 1u;
+	sel->humanCount = 2u;
+	sel->localHuman = 0u;
+	sel->status = (uint8_t)NATIVE_MATCH_SELECT_STATUS_PICKING;
+	sel->ticksLeft = NATIVE_ARCADE_LINK_HOST_PREVIEW_ITEM_TICKS - (g_previewTicks % NATIVE_ARCADE_LINK_HOST_PREVIEW_ITEM_TICKS);
+
+	/* Both start on the fixture cursors: their own character, CRASH_COVE,
+	 * and 3 laps. */
+	local->present = 1u;
+	local->characterID = NATIVE_ARCADE_LINK_HOST_PREVIEW_LOCAL_CHARACTER;
+	local->trackID = NATIVE_ARCADE_LINK_HOST_PREVIEW_LOCAL_TRACK;
+	local->lapCount = NATIVE_ARCADE_LINK_HOST_PREVIEW_LAPS;
+	opponent->present = 1u;
+	opponent->characterID = NATIVE_ARCADE_LINK_HOST_PREVIEW_OPPONENT_CHARACTER;
+	opponent->trackID = NATIVE_ARCADE_LINK_HOST_PREVIEW_LOCAL_TRACK;
+	opponent->lapCount = NATIVE_ARCADE_LINK_HOST_PREVIEW_LAPS;
+
+	switch (g_options.preview)
+	{
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER:
+		local->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_CHARACTER;
+		opponent->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_CHARACTER;
+		opponent->characterID = NativeMatchSelect_CharacterAt(step % NATIVE_MATCH_SELECT_CHARACTER_COUNT);
+		break;
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK:
+		local->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_TRACK;
+		local->lockMask = (uint8_t)NATIVE_MATCH_SELECT_LOCK_CHARACTER;
+		opponent->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_TRACK;
+		opponent->lockMask = (uint8_t)NATIVE_MATCH_SELECT_LOCK_CHARACTER;
+		opponent->trackID = NativeMatchSelect_TrackAt(step % NATIVE_MATCH_SELECT_TRACK_COUNT);
+		break;
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS:
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT:
+		if (g_options.preview == (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS)
+		{
+			local->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_LAPS;
+			local->lockMask = (uint8_t)(NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK);
+		}
+		else
+		{
+			local->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_DONE;
+			local->lockMask = (uint8_t)(NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK |
+				NATIVE_MATCH_SELECT_LOCK_LAPS);
+			sel->status = (uint8_t)NATIVE_MATCH_SELECT_STATUS_WAITING;
+			sel->ticksLeft = 0u;
+		}
+		opponent->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_LAPS;
+		opponent->lockMask = (uint8_t)(NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK);
+		opponent->trackID = NATIVE_ARCADE_LINK_HOST_PREVIEW_OPPONENT_TRACK;
+		opponent->lapCount = NativeMatchSelect_LapOptionAt(step % NATIVE_MATCH_SELECT_LAP_OPTION_COUNT);
+		break;
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT:
+	default:
+		/* Both done; the two track votes differ, so the track is a draw
+		 * (here TIGER_TEMPLE), and the laps agree. The bots are the first
+		 * retail 2P AI set holding neither CRASH nor CORTEX: set 0. */
+		view->screen = NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT;
+		local->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_DONE;
+		local->lockMask = (uint8_t)(NATIVE_MATCH_SELECT_LOCK_CHARACTER | NATIVE_MATCH_SELECT_LOCK_TRACK |
+			NATIVE_MATCH_SELECT_LOCK_LAPS);
+		opponent->currentItem = (uint8_t)NATIVE_MATCH_SELECT_ITEM_DONE;
+		opponent->lockMask = local->lockMask;
+		opponent->trackID = NATIVE_ARCADE_LINK_HOST_PREVIEW_OPPONENT_TRACK;
+		sel->status = (uint8_t)NATIVE_MATCH_SELECT_STATUS_CONFIRMED;
+		sel->ticksLeft = 0u;
+		sel->resolved = 1u;
+		sel->trackID = NATIVE_ARCADE_LINK_HOST_PREVIEW_OPPONENT_TRACK;
+		sel->trackDrawn = 1u;
+		sel->lapCount = NATIVE_ARCADE_LINK_HOST_PREVIEW_LAPS;
+		sel->lapsDrawn = 0u;
+		sel->characterReassignedMask = 0u;
+		sel->humanCharacter[0] = NATIVE_ARCADE_LINK_HOST_PREVIEW_LOCAL_CHARACTER;
+		sel->humanCharacter[1] = NATIVE_ARCADE_LINK_HOST_PREVIEW_OPPONENT_CHARACTER;
+		sel->botCount = NATIVE_ARCADE_LINK_HOST_PREVIEW_BOT_COUNT;
+		for (racer = 0u; racer < NATIVE_ARCADE_LINK_HOST_PREVIEW_BOT_COUNT; racer++)
+		{
+			sel->botCharacter[racer] = NativeMatchSelect_AiSetRacer(0u, racer);
+		}
+		break;
+	}
+	sel->currentItem = local->currentItem;
+	if ((opponent->lockMask & NATIVE_MATCH_SELECT_LOCK_CHARACTER) != 0u)
+	{
+		sel->peerLockedCharacterMask = (uint16_t)(1u << opponent->characterID);
+	}
+}
+
 /* Synthesizes the view of one preview screen. *view is already zeroed. */
 static void NativeArcadeLinkHost_PreviewView(struct NativeArcadeLinkHostView *view)
 {
@@ -170,6 +328,13 @@ static void NativeArcadeLinkHost_PreviewView(struct NativeArcadeLinkHostView *vi
 	view->localCab = 1u;
 	switch (g_options.preview)
 	{
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER:
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK:
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS:
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT:
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT:
+		NativeArcadeLinkHost_PreviewSelectView(view);
+		break;
 	case NATIVE_ARCADE_LINK_PREVIEW_LOBBY_WAITING:
 		view->screen = NATIVE_ARCADE_FLOW_SCREEN_LOBBY;
 		view->lobbyStatus = NATIVE_ARCADE_FLOW_LOBBY_WAITING;
@@ -230,6 +395,49 @@ static void NativeArcadeLinkHost_PreviewView(struct NativeArcadeLinkHostView *vi
 	}
 }
 
+/* LINK: the adapter's select view, field for field. */
+static void NativeArcadeLinkHost_CopySelectView(const struct NativeArcadeNetplaySelectView *from,
+	struct NativeArcadeLinkHostSelectView *to)
+{
+	uint32_t i;
+
+	to->active = from->active;
+	to->humanCount = from->humanCount;
+	to->localHuman = from->localHuman;
+	to->currentItem = from->currentItem;
+	to->ticksLeft = from->ticksLeft;
+	to->status = from->status;
+	to->resolved = from->resolved;
+	to->trackID = from->trackID;
+	to->lapCount = from->lapCount;
+	to->trackDrawn = from->trackDrawn;
+	to->lapsDrawn = from->lapsDrawn;
+	to->characterReassignedMask = from->characterReassignedMask;
+	to->botCount = from->botCount;
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS; i++)
+	{
+		to->humanCharacter[i] = from->humanCharacter[i];
+	}
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS; i++)
+	{
+		to->botCharacter[i] = from->botCharacter[i];
+	}
+	to->peerLockedCharacterMask = from->peerLockedCharacterMask;
+	to->reserved[0] = 0u;
+	to->reserved[1] = 0u;
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS; i++)
+	{
+		to->humans[i].present = from->humans[i].present;
+		to->humans[i].characterID = from->humans[i].characterID;
+		to->humans[i].trackID = from->humans[i].trackID;
+		to->humans[i].lapCount = from->humans[i].lapCount;
+		to->humans[i].lockMask = from->humans[i].lockMask;
+		to->humans[i].currentItem = from->humans[i].currentItem;
+		to->humans[i].reserved[0] = 0u;
+		to->humans[i].reserved[1] = 0u;
+	}
+}
+
 int NativeArcadeLinkHost_GetView(struct NativeArcadeLinkHostView *view)
 {
 	struct NativeArcadeNetplayView netplayView;
@@ -261,6 +469,32 @@ int NativeArcadeLinkHost_GetView(struct NativeArcadeLinkHostView *view)
 			? 1u
 			: 0u);
 	view->attract = (uint8_t)((netplayView.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF) ? 1u : 0u);
+	NativeArcadeLinkHost_CopySelectView(&netplayView.select, &view->select);
+	return 1;
+}
+
+int NativeArcadeLinkHost_GetAgreedMatch(struct NativeArcadeLinkHostMatch *out)
+{
+	const struct NativeMatchConfigV1 *agreed;
+	uint32_t slot;
+
+	if ((out == NULL) || (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK))
+	{
+		return 0;
+	}
+	agreed = NativeArcadeNetplay_AgreedConfig(&g_netplay);
+	if (agreed == NULL)
+	{
+		return 0;
+	}
+	out->trackID = agreed->trackID;
+	out->lapCount = agreed->lapCount;
+	out->masterSeed = agreed->masterSeed;
+	for (slot = 0u; slot < NATIVE_ARCADE_LINK_HOST_MATCH_SLOTS; slot++)
+	{
+		out->slotRole[slot] = agreed->slots[slot].role;
+		out->slotCharacter[slot] = agreed->slots[slot].characterID;
+	}
 	return 1;
 }
 
@@ -271,6 +505,9 @@ void NativeArcadeLinkHost_AbortToTitle(void)
 		return;
 	}
 	NativeArcadeNetplay_Shutdown(&g_netplay);
+	/* Init restarts the adapter's select count, so a new epoch keeps the
+	 * next select's nonce from repeating an earlier one. */
+	NativeArcadeLinkHost_NextEpoch(g_options.selectEntropy);
 	if (!NativeArcadeNetplay_Init(&g_netplay, &g_config))
 	{
 		/* Defensive only: the stored config was accepted by Configure. */

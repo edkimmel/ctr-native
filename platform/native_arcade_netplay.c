@@ -639,6 +639,68 @@ void NativeArcadeNetplay_OnTakeResult(struct NativeArcadeNetplay *netplay, enum 
 	NativeArcadeNetplay_ApplyLatchedOutcome(netplay);
 }
 
+/* The select sub-view of an already zeroed view, from the session while it
+ * is exposed (SELECT and SELECT_RESULT). */
+static void NativeArcadeNetplay_FillSelectView(const struct NativeArcadeNetplay *netplay,
+	struct NativeArcadeNetplaySelectView *view)
+{
+	const struct NativeMatchSelectSession *session = NativeArcadeNetplay_Select(netplay);
+	const struct NativeMatchSelectOutcome *outcome;
+	const struct NativeMatchSelectHumanState *human;
+	uint32_t h;
+	uint32_t i;
+
+	if (session == NULL)
+	{
+		return;
+	}
+	view->active = 1u;
+	view->humanCount = (uint8_t)session->humanCount;
+	view->localHuman = (uint8_t)session->localHuman;
+	view->currentItem = (uint8_t)NativeMatchSelectSession_CurrentItem(session);
+	view->ticksLeft = NativeMatchSelectSession_TicksLeft(session);
+	view->status = (uint8_t)NativeMatchSelectSession_Status(session);
+
+	outcome = NativeMatchSelectSession_Outcome(session);
+	if (outcome != NULL)
+	{
+		view->resolved = 1u;
+		view->trackID = outcome->trackID;
+		view->lapCount = outcome->lapCount;
+		view->trackDrawn = outcome->trackDrawn;
+		view->lapsDrawn = outcome->lapsDrawn;
+		view->characterReassignedMask = outcome->characterReassignedMask;
+		view->botCount = outcome->botCount;
+		memcpy(view->humanCharacter, outcome->humanCharacter, sizeof(view->humanCharacter));
+		memcpy(view->botCharacter, outcome->botCharacter, sizeof(view->botCharacter));
+	}
+
+	for (i = 0u; i < NATIVE_MATCH_SELECT_CHARACTER_COUNT; i++)
+	{
+		uint8_t character = NativeMatchSelect_CharacterAt(i);
+
+		if ((character < 16u) && NativeMatchSelectSession_CharacterLockedByPeer(session, character))
+		{
+			view->peerLockedCharacterMask = (uint16_t)(view->peerLockedCharacterMask | (1u << character));
+		}
+	}
+
+	for (h = 0u; h < NATIVE_ARCADE_NETPLAY_VIEW_MAX_HUMANS; h++)
+	{
+		human = NativeMatchSelectSession_Human(session, h);
+		if ((human == NULL) || (human->seen == 0u))
+		{
+			continue;
+		}
+		view->humans[h].present = 1u;
+		view->humans[h].characterID = human->characterID;
+		view->humans[h].trackID = human->trackID;
+		view->humans[h].lapCount = human->lapCount;
+		view->humans[h].lockMask = human->lockMask;
+		view->humans[h].currentItem = human->currentItem;
+	}
+}
+
 int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struct NativeArcadeNetplayView *view)
 {
 	uint32_t screen;
@@ -658,6 +720,7 @@ int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struc
 	view->matchCount = netplay->matchCount;
 	view->localRole = netplay->config.localRole;
 	view->menuArmed = (uint8_t)((NativeArcadeMenuInput_IsArmed(&netplay->menuInput) != 0) ? 1u : 0u);
+	NativeArcadeNetplay_FillSelectView(netplay, &view->select);
 	return 1;
 }
 

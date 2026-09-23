@@ -71,7 +71,12 @@ enum NativeArcadeLinkPreview
 	NATIVE_ARCADE_LINK_PREVIEW_RESULTS_LINK_ERROR = 9,    /* "results-link-error" */
 	NATIVE_ARCADE_LINK_PREVIEW_REMATCH_WAIT = 10,         /* "rematch" */
 	NATIVE_ARCADE_LINK_PREVIEW_EXIT = 11,                 /* "exit" */
-	NATIVE_ARCADE_LINK_PREVIEW_EXIT_OPPONENT_LEFT = 12    /* "exit-opponent-left" */
+	NATIVE_ARCADE_LINK_PREVIEW_EXIT_OPPONENT_LEFT = 12,   /* "exit-opponent-left" */
+	NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER = 13,     /* "select-character" */
+	NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK = 14,         /* "select-track" */
+	NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS = 15,          /* "select-laps" */
+	NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT = 16,          /* "select-wait" */
+	NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT = 17         /* "select-result" */
 };
 
 /* ipv4 and port are host byte order, the same meaning as NativeUdpTransportAddress. */
@@ -90,12 +95,22 @@ struct NativeArcadeLinkOptions
 	uint32_t peerCount;
 	struct NativeArcadeLinkPeer peers[NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS];
 	uint32_t preview; /* enum NativeArcadeLinkPreview */
+	uint32_t reserved;
+	/* Host-local entropy for the select nonces (docs/MATCH_SELECT_MILESTONE.md
+	 * section 2.6). Never parsed from argv: ApplyArgs leaves it unchanged and
+	 * SetDefaults zeroes it; main.c fills it for a link run only. It is not
+	 * match identity: it reaches the match only through the exchanged select
+	 * nonces and so the agreed masterSeed. Previews and default runs never
+	 * read it. */
+	uint64_t selectEntropy;
 };
 
-/* NULL is a no-op. Otherwise zeroes the options: disabled, preview NONE. */
+/* NULL is a no-op. Otherwise zeroes the options: disabled, preview NONE,
+ * selectEntropy 0. */
 void NativeArcadeLinkOptions_SetDefaults(struct NativeArcadeLinkOptions *options);
 
-/* Returns 1 and updates *options on success; 0 with *options untouched otherwise. */
+/* Returns 1 and updates *options on success; 0 with *options untouched
+ * otherwise. selectEntropy is never read or changed. */
 int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcadeLinkOptions *options);
 
 /*
@@ -108,7 +123,7 @@ int NativeArcadeLinkOptions_ParsePeer(const char *text, struct NativeArcadeLinkP
 /* Returns 0 with *preview untouched on NULL or an unknown name ("none" is unknown). */
 int NativeArcadeLinkOptions_ParsePreview(const char *text, uint32_t *preview);
 
-/* "none" for NONE, the option name for TITLE..EXIT_OPPONENT_LEFT, else "unknown". */
+/* "none" for NONE, the option name for TITLE..SELECT_RESULT, else "unknown". */
 const char *NativeArcadeLinkOptions_PreviewName(uint32_t preview);
 
 /*

@@ -138,3 +138,48 @@ foreach(name TRACK_ID LAP_COUNT TICK_RATE_NUMERATOR TICK_RATE_DENOMINATOR MASTER
     ctr_require_single("${options_header}" "${name} definition" "${header}"
         "#[ \t]*define[ \t]+NATIVE_ARCADE_LINK_FIXTURE_${name}[^0-9a-zA-Z_]")
 endforeach()
+
+# 11. The preview enum is append-only: every value is pinned, with its
+#     option name in the trailing comment, and the name table in the .c
+#     lists the names in enum order (the five select previews, MS-8, follow
+#     the original twelve).
+set(preview_pins
+    "NONE 0 none" "TITLE 1 title" "LOBBY_WAITING 2 lobby" "LOBBY_CONNECTING 3 lobby-connecting"
+    "LOBBY_REJECTED 4 lobby-rejected" "MATCH_FOUND 5 match-found" "RESULTS_FINISHED 6 results"
+    "RESULTS_PEER_TIMEOUT 7 results-timeout" "RESULTS_DESYNC 8 results-desync"
+    "RESULTS_LINK_ERROR 9 results-link-error" "REMATCH_WAIT 10 rematch" "EXIT 11 exit"
+    "EXIT_OPPONENT_LEFT 12 exit-opponent-left" "SELECT_CHARACTER 13 select-character"
+    "SELECT_TRACK 14 select-track" "SELECT_LAPS 15 select-laps" "SELECT_WAIT 16 select-wait"
+    "SELECT_RESULT 17 select-result")
+ctr_read_source("platform/native_arcade_link_options.c" options_source)
+string(FIND "${options_source}" "k_previewNames[NATIVE_ARCADE_LINK_PREVIEW_LAST + 1u] = {" names_at)
+if(names_at EQUAL -1)
+    message(FATAL_ERROR "arcade link options isolation: missing the k_previewNames table in platform/native_arcade_link_options.c")
+endif()
+string(SUBSTRING "${options_source}" ${names_at} -1 names_tail)
+string(FIND "${names_tail}" "};" names_end)
+string(SUBSTRING "${names_tail}" 0 ${names_end} names_table)
+set(expected_names "")
+foreach(pin IN LISTS preview_pins)
+    string(REPLACE " " ";" pin_items "${pin}")
+    list(GET pin_items 0 pin_name)
+    list(GET pin_items 1 pin_value)
+    list(GET pin_items 2 pin_option)
+    ctr_require_single("${options_header}" "PREVIEW_${pin_name} = ${pin_value}" "${header}"
+        "NATIVE_ARCADE_LINK_PREVIEW_${pin_name} = ${pin_value},?[ \t]*/\\* \"${pin_option}\"")
+    list(APPEND expected_names "${pin_option}")
+endforeach()
+string(REGEX MATCHALL "\"[^\"]*\"" table_names "${names_table}")
+string(REPLACE "\"" "" table_names "${table_names}")
+if(NOT "${table_names}" STREQUAL "${expected_names}")
+    message(FATAL_ERROR "arcade link options isolation: k_previewNames must list '${expected_names}' in enum order (found '${table_names}')")
+endif()
+ctr_require_single("platform/native_arcade_link_options.c" "PREVIEW_LAST definition" "${options_source}"
+    "#define NATIVE_ARCADE_LINK_PREVIEW_LAST NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT[\r\n]")
+
+# 12. selectEntropy is host-local and never parsed: the options source never
+#     names it (SetDefaults zeroes it with the rest of the struct), and the
+#     header declares it once.
+ctr_forbid("platform/native_arcade_link_options.c" "${options_source}" "selectEntropy")
+# (The pattern stops before the ';', which a CMake list would split on.)
+ctr_require_single("${options_header}" "the selectEntropy field" "${header}" "uint64_t selectEntropy")

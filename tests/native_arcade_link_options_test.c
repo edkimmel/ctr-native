@@ -74,6 +74,47 @@ static int TestSetDefaults(void)
 	CHECK(options.localPort == 0);
 	CHECK(options.peerCount == 0);
 	CHECK(options.preview == NATIVE_ARCADE_LINK_PREVIEW_NONE);
+	CHECK(options.selectEntropy == 0u);
+	return 0;
+}
+
+/* selectEntropy is host-local and never parsed: ApplyArgs leaves it as the
+ * caller set it, on success and on failure, and no argument names it. */
+static int TestSelectEntropyNotParsed(void)
+{
+	char *cab1[] = {"ctr_native", "--arcade-link", "cab1", "--arcade-link-port", "48000", "--arcade-link-peer",
+		"10.0.0.2:48001"};
+	char *preview[] = {"ctr_native", "--arcade-link-preview", "select-result"};
+	char *entropyArg[] = {"ctr_native", "--arcade-link-select-entropy", "5", "--select-entropy", "6"};
+	char *bad[] = {"ctr_native", "--arcade-link", "cab3"};
+	struct NativeArcadeLinkOptions options;
+	struct NativeArcadeLinkOptions before;
+
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	options.selectEntropy = UINT64_C(0x0123456789ABCDEF);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(cab1), cab1, &options));
+	CHECK(options.enabled == 1);
+	CHECK(options.selectEntropy == UINT64_C(0x0123456789ABCDEF));
+
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	options.selectEntropy = UINT64_C(0xFEDCBA9876543210);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(preview), preview, &options));
+	CHECK(options.preview == NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT);
+	CHECK(options.selectEntropy == UINT64_C(0xFEDCBA9876543210));
+
+	/* Look-alike options are not ours: ignored, the entropy unchanged. */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(entropyArg), entropyArg, &options));
+	CHECK(options.selectEntropy == 0u);
+
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	options.selectEntropy = 7u;
+	before = options;
+	CHECK(!NativeArcadeLinkOptions_ApplyArgs(ARGC(bad), bad, &options));
+	CHECK(memcmp(&options, &before, sizeof(options)) == 0);
+
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(options.selectEntropy == 0u);
 	return 0;
 }
 
@@ -164,14 +205,28 @@ static int TestPreviewNames(void)
 		{"rematch", NATIVE_ARCADE_LINK_PREVIEW_REMATCH_WAIT},
 		{"exit", NATIVE_ARCADE_LINK_PREVIEW_EXIT},
 		{"exit-opponent-left", NATIVE_ARCADE_LINK_PREVIEW_EXIT_OPPONENT_LEFT},
+		{"select-character", NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER},
+		{"select-track", NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK},
+		{"select-laps", NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS},
+		{"select-wait", NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT},
+		{"select-result", NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT},
 	};
 	static const char *const rejected[] = {
 		"none", "", "Title", "TITLE", "lobby ", " lobby", "lobby-waiting", "result", "results-finished",
-		"exit-opponent", "rematch-wait", "0", "1",
+		"exit-opponent", "rematch-wait", "0", "1", "select", "select-", "select-char", "select-lap", "select-results",
+		"Select-track", "select-track ",
 	};
 	uint32_t preview;
 
-	CHECK(sizeof(names) / sizeof(names[0]) == 12u);
+	/* The twelve accepted values are unchanged; the five select previews are
+	 * appended after them (MS-8). */
+	CHECK(NATIVE_ARCADE_LINK_PREVIEW_EXIT_OPPONENT_LEFT == 12);
+	CHECK(NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER == 13);
+	CHECK(NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK == 14);
+	CHECK(NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS == 15);
+	CHECK(NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT == 16);
+	CHECK(NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT == 17);
+	CHECK(sizeof(names) / sizeof(names[0]) == 17u);
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
 	{
 		CHECK(names[i].preview == (uint32_t)(i + 1u));
@@ -193,7 +248,7 @@ static int TestPreviewNames(void)
 	CHECK(preview == 0xDEADBEEFu);
 	CHECK(!NativeArcadeLinkOptions_ParsePreview("title", NULL));
 	CHECK(strcmp(NativeArcadeLinkOptions_PreviewName(NATIVE_ARCADE_LINK_PREVIEW_NONE), "none") == 0);
-	CHECK(strcmp(NativeArcadeLinkOptions_PreviewName(13u), "unknown") == 0);
+	CHECK(strcmp(NativeArcadeLinkOptions_PreviewName(18u), "unknown") == 0);
 	CHECK(strcmp(NativeArcadeLinkOptions_PreviewName(0xFFFFFFFFu), "unknown") == 0);
 	return 0;
 }
@@ -480,6 +535,7 @@ int main(void)
 	CHECK(TestPreviewNames() == 0);
 	CHECK(TestApplyArgsValid() == 0);
 	CHECK(TestApplyArgsErrors() == 0);
+	CHECK(TestSelectEntropyNotParsed() == 0);
 	CHECK(TestFixture() == 0);
 	puts("native_arcade_link_options_test: ok");
 	return 0;
