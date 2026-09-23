@@ -880,6 +880,68 @@ int MainArcadeLinkLayout_Build(const struct MainArcadeLinkLayoutInput *input, st
 	return 1;
 }
 
+/* The host's select view into the layout's select fields, field for field. */
+static void MainArcadeLinkLayout_MapSelect(const struct NativeArcadeLinkHostSelectView *from, struct MainArcadeLinkLayoutSelect *to)
+{
+	uint32_t i;
+
+	to->active = from->active;
+	to->humanCount = from->humanCount;
+	to->localHuman = from->localHuman;
+	to->currentItem = from->currentItem;
+	to->ticksLeft = from->ticksLeft;
+	to->status = from->status;
+	to->resolved = from->resolved;
+	to->trackID = from->trackID;
+	to->lapCount = from->lapCount;
+	to->trackDrawn = from->trackDrawn;
+	to->lapsDrawn = from->lapsDrawn;
+	to->characterReassignedMask = from->characterReassignedMask;
+	to->botCount = from->botCount;
+	for (i = 0u; i < MAIN_ARCADE_LINK_LAYOUT_MAX_HUMANS; i++)
+	{
+		to->humanCharacter[i] = from->humanCharacter[i];
+	}
+	for (i = 0u; i < MAIN_ARCADE_LINK_LAYOUT_MAX_BOTS; i++)
+	{
+		to->botCharacter[i] = from->botCharacter[i];
+	}
+	to->peerLockedCharacterMask = from->peerLockedCharacterMask;
+	to->reserved[0] = 0u;
+	to->reserved[1] = 0u;
+	for (i = 0u; i < MAIN_ARCADE_LINK_LAYOUT_MAX_HUMANS; i++)
+	{
+		to->humans[i].present = from->humans[i].present;
+		to->humans[i].characterID = from->humans[i].characterID;
+		to->humans[i].trackID = from->humans[i].trackID;
+		to->humans[i].lapCount = from->humans[i].lapCount;
+		to->humans[i].lockMask = from->humans[i].lockMask;
+		to->humans[i].currentItem = from->humans[i].currentItem;
+		to->humans[i].reserved[0] = 0u;
+		to->humans[i].reserved[1] = 0u;
+	}
+}
+
+int MainArcadeLinkLayout_InputFromHostView(const struct NativeArcadeLinkHostView *view, struct MainArcadeLinkLayoutInput *input)
+{
+	if ((view == NULL) || (input == NULL))
+	{
+		return 0;
+	}
+
+	input->screen = view->screen;
+	input->lobbyStatus = view->lobbyStatus;
+	input->endReason = view->endReason;
+	input->selectedRow = view->selectedRow;
+	input->ticksInScreen = view->ticksInScreen;
+	input->localCab = view->localCab;
+	input->rowsEnabled = view->rowsEnabled;
+	input->attract = view->attract;
+	input->reserved = 0u;
+	MainArcadeLinkLayout_MapSelect(&view->select, &input->select);
+	return 1;
+}
+
 #undef MAIN_ARCADE_LINK_LAYOUT_CENTER_X
 #undef MAIN_ARCADE_LINK_LAYOUT_TITLE_Y
 #undef MAIN_ARCADE_LINK_LAYOUT_BODY1_Y

@@ -16,6 +16,15 @@
 # enum Characters entries); its font advances equal game/zGlobal_DATA.c
 # .font_charPixWidth; and every glyph of every layout string exists in the
 # retail font map (.font_characterIconID), with no PSX button glyph.
+#
+# Since MS-10b the layout owns the host-view mapping
+# (MainArcadeLinkLayout_InputFromHostView): its header, and only its header,
+# may also include the game-safe host glue header
+# (include/platform/native_arcade_link_host.h) for the plain view types and
+# value names; neither file names a host function (NativeArcadeLinkHost_*);
+# the header static-asserts the ten layout select values and capacities
+# against the host names beside the mapping's prototype; and the library
+# still links only ctr_native_arcade_flow (never the host glue).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -74,21 +83,36 @@ set(stdio_tokens printf snprintf stdio.h)
 # 1e. No topology-lease symbol.
 set(lease_tokens TopologyLease Acquire Activate Publish Retire LOAD_Hub_ReadFile)
 
+# 1f. No host function (MS-10b): the layout uses only the host glue's plain
+#     view types and value names and never calls into the host.
+set(host_call_tokens NativeArcadeLinkHost_)
+
 foreach(relative_path IN LISTS layout_files)
     ctr_read_source("${relative_path}" source)
-    foreach(term IN LISTS netplay_tokens game_tokens alloc_tokens stdio_tokens lease_tokens)
+    foreach(term IN LISTS netplay_tokens game_tokens alloc_tokens stdio_tokens lease_tokens host_call_tokens)
         ctr_forbid("${relative_path}" "${source}" "${term}")
     endforeach()
 
     # 2. #include lines may only name stdint.h, stddef.h, string.h, the
-    #    arcade flow header, or the layout's own header.
+    #    arcade flow header, or the layout's own header; the layout header
+    #    alone may also include the host glue header (MS-10b), exactly once.
+    set(allowed_includes "<stdint\\.h>|<stddef\\.h>|<string\\.h>|\"platform/native_arcade_flow\\.h\"|\"MAIN/MainArcadeLinkLayout\\.h\"")
+    if(relative_path STREQUAL layout_header)
+        string(APPEND allowed_includes "|\"platform/native_arcade_link_host\\.h\"")
+    endif()
     string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${source}")
     foreach(include_line IN LISTS include_lines)
-        if(NOT include_line MATCHES "^#[ \t]*include[ \t]*(<stdint\\.h>|<stddef\\.h>|<string\\.h>|\"platform/native_arcade_flow\\.h\"|\"MAIN/MainArcadeLinkLayout\\.h\")[ \t]*$")
+        if(NOT include_line MATCHES "^#[ \t]*include[ \t]*(${allowed_includes})[ \t]*$")
             message(FATAL_ERROR "arcade link layout isolation: disallowed include '${include_line}' in ${relative_path}")
         endif()
     endforeach()
 endforeach()
+ctr_read_source("${layout_header}" header_source)
+string(REGEX MATCHALL "#[ \t]*include[ \t]*\"platform/native_arcade_link_host\\.h\"" host_includes "${header_source}")
+list(LENGTH host_includes host_include_count)
+if(NOT host_include_count EQUAL 1)
+    message(FATAL_ERROR "arcade link layout isolation: ${layout_header} must include platform/native_arcade_link_host.h exactly once (found ${host_include_count})")
+endif()
 
 # 3a. ctr_native_arcade_link_layout links ctr_native_arcade_flow and nothing
 #     else, in exactly one target_link_libraries call.
@@ -386,3 +410,24 @@ foreach(literal IN LISTS literals)
         endif()
     endforeach()
 endforeach()
+
+# 9. The host-view mapping (MS-10b): the header declares
+#    MainArcadeLinkLayout_InputFromHostView and, beside it, static-asserts
+#    each of the ten select values and capacities the mapping relies on
+#    against the host name it mirrors; the source defines the mapping.
+ctr_require_literal("${layout_header}" "${header}"
+    "int MainArcadeLinkLayout_InputFromHostView(const struct NativeArcadeLinkHostView *view, struct MainArcadeLinkLayoutInput *input);")
+foreach(pair
+        "LAYOUT_MAX_HUMANS HOST_VIEW_MAX_HUMANS" "LAYOUT_MAX_BOTS HOST_VIEW_MAX_BOTS"
+        "SELECT_ITEM_CHARACTER HOST_SELECT_ITEM_CHARACTER" "SELECT_ITEM_TRACK HOST_SELECT_ITEM_TRACK"
+        "SELECT_ITEM_LAPS HOST_SELECT_ITEM_LAPS" "SELECT_ITEM_DONE HOST_SELECT_ITEM_DONE"
+        "SELECT_LOCK_CHARACTER HOST_SELECT_LOCK_CHARACTER" "SELECT_LOCK_TRACK HOST_SELECT_LOCK_TRACK"
+        "SELECT_LOCK_LAPS HOST_SELECT_LOCK_LAPS" "SELECT_STATUS_FAILED HOST_SELECT_STATUS_FAILED")
+    string(REPLACE " " ";" pair_items "${pair}")
+    list(GET pair_items 0 mirror)
+    list(GET pair_items 1 host)
+    ctr_require_literal("${layout_header}" "${header}"
+        "_Static_assert(MAIN_ARCADE_LINK_${mirror} == NATIVE_ARCADE_LINK_${host},")
+endforeach()
+ctr_require_literal("game/MAIN/MainArcadeLinkLayout.c" "${layout_code}"
+    "int MainArcadeLinkLayout_InputFromHostView(const struct NativeArcadeLinkHostView *view, struct MainArcadeLinkLayoutInput *input)")

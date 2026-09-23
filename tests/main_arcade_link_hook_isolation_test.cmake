@@ -22,9 +22,10 @@
 # link-enabled branch. Since MS-8b no MainArcadeLink* game file names a
 # match-config slot role, the match-config struct, or a match-select value:
 # they use the host's own names. Since MS-9 the drawer static-asserts the
-# four player-colour mirrors and the layout's select values against the host
-# names, and copies the host select view into the layout input. The policy's
-# own rules are in
+# four player-colour mirrors. Since MS-10b the drawer maps the host view into
+# the layout input only through the layout's
+# MainArcadeLinkLayout_InputFromHostView (whose header now holds the select
+# value static asserts). The policy's own rules are in
 # main_arcade_link_policy_isolation_test.cmake.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
@@ -208,23 +209,34 @@ foreach(pair
         "_Static_assert((int)MAIN_ARCADE_LINK_${mirror} == ${retail},")
 endforeach()
 
-# 4b. The layout's select values and capacities are static-asserted against
-#     the host names they mirror (MS-9), and the drawer copies the host's
-#     select view into the layout input on every draw.
-foreach(pair
-        "LAYOUT_MAX_HUMANS HOST_VIEW_MAX_HUMANS" "LAYOUT_MAX_BOTS HOST_VIEW_MAX_BOTS"
-        "SELECT_ITEM_CHARACTER HOST_SELECT_ITEM_CHARACTER" "SELECT_ITEM_TRACK HOST_SELECT_ITEM_TRACK"
-        "SELECT_ITEM_LAPS HOST_SELECT_ITEM_LAPS" "SELECT_ITEM_DONE HOST_SELECT_ITEM_DONE"
-        "SELECT_LOCK_CHARACTER HOST_SELECT_LOCK_CHARACTER" "SELECT_LOCK_TRACK HOST_SELECT_LOCK_TRACK"
-        "SELECT_LOCK_LAPS HOST_SELECT_LOCK_LAPS" "SELECT_STATUS_FAILED HOST_SELECT_STATUS_FAILED")
-    string(REPLACE " " ";" pair_items "${pair}")
-    list(GET pair_items 0 mirror)
-    list(GET pair_items 1 host)
-    ctr_require_literal("${hook_source_path}" "${hook_source}"
-        "_Static_assert(MAIN_ARCADE_LINK_${mirror} == NATIVE_ARCADE_LINK_${host},")
-endforeach()
-ctr_require_literal("${hook_source_path}" "${hook_source}"
-    "MainArcadeLink_MapSelect(&view.select, &input.select);")
+# 4b. The drawer turns the host view into the layout input only through the
+#     layout's own mapping (MS-10b, MainArcadeLinkLayout_InputFromHostView,
+#     which tests/main_arcade_link_view_layout_test.c proves every host view
+#     passes MainArcadeLinkLayout_Build through; the layout header
+#     static-asserts the mapped select values against the host names, see
+#     main_arcade_link_layout_isolation_test.cmake): in
+#     MainArcadeLink_BuildAndDraw, GetView, then the mapping, then Build, and
+#     the hook keeps no copy of its own (no MapSelect helper, no write to a
+#     layout input field).
+ctr_strip_comments("${hook_source}" hook_code)
+ctr_find_block("${hook_source_path}" "${hook_code}"
+    "static void MainArcadeLink_BuildAndDraw(struct GameTracker *gGT)" draw_begin draw_end)
+math(EXPR draw_length "${draw_end} - ${draw_begin} + 1")
+string(SUBSTRING "${hook_code}" ${draw_begin} ${draw_length} draw_block)
+ctr_require_order("${hook_source_path} (MainArcadeLink_BuildAndDraw)" "${draw_block}"
+    "NativeArcadeLinkHost_GetView(&view)"
+    "MainArcadeLinkLayout_InputFromHostView(&view, &input)"
+    "MainArcadeLinkLayout_Build(&input, &layout)"
+    "MainArcadeLink_Draw(gGT, &layout);")
+string(REGEX MATCHALL "MainArcadeLinkLayout_InputFromHostView\\(" mapping_calls "${hook_code}")
+list(LENGTH mapping_calls mapping_call_count)
+if(NOT mapping_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call MainArcadeLinkLayout_InputFromHostView exactly once (found ${mapping_call_count})")
+endif()
+ctr_forbid("${hook_source_path}" "${hook_code}" "MapSelect")
+if(draw_block MATCHES "input\\.[^ \t\r\n=;]+[ \t]*=[^=]")
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeLink_BuildAndDraw writes a layout input field ('${CMAKE_MATCH_0}'); map the host view only through MainArcadeLinkLayout_InputFromHostView")
+endif()
 
 # 5. Dormant by default: in MainArcadeLink_Frame nothing but plain
 #    declarations precede the host-mode OFF check, which returns 0.

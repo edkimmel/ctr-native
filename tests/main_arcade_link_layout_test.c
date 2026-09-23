@@ -1642,6 +1642,118 @@ static int TestSelectGeometrySweep(void)
 	return 0;
 }
 
+/* MainArcadeLinkLayout_InputFromHostView (MS-10b): NULL leaves *input
+ * untouched; otherwise every field is copied from the host view, field for
+ * field, and every reserved byte is zero whatever the view or the input
+ * held before. Distinct byte values make a swapped or dropped field show. */
+static int TestInputFromHostView(void)
+{
+	struct NativeArcadeLinkHostView view;
+	struct MainArcadeLinkLayoutInput input;
+	struct MainArcadeLinkLayoutInput sentinel;
+	uint32_t i;
+
+	memset(&view, 0xEE, sizeof(view));
+	memset(&input, 0x5A, sizeof(input));
+	sentinel = input;
+	CHECK(MainArcadeLinkLayout_InputFromHostView(NULL, &input) == 0);
+	CHECK(memcmp(&input, &sentinel, sizeof(input)) == 0);
+	CHECK(MainArcadeLinkLayout_InputFromHostView(&view, NULL) == 0);
+	CHECK(MainArcadeLinkLayout_InputFromHostView(NULL, NULL) == 0);
+
+	view.screen = 0x01020304u;
+	view.lobbyStatus = 0x05060708u;
+	view.endReason = 0x090A0B0Cu;
+	view.selectedRow = 0x0D0E0F10u;
+	view.ticksInScreen = 0x11121314u;
+	view.localCab = 0x15u;
+	view.rowsEnabled = 0x16u;
+	view.attract = 0x17u;
+	view.select.active = 0x21u;
+	view.select.humanCount = 0x22u;
+	view.select.localHuman = 0x23u;
+	view.select.currentItem = 0x24u;
+	view.select.ticksLeft = 0x25262728u;
+	view.select.status = 0x29u;
+	view.select.resolved = 0x2Au;
+	view.select.trackID = 0x2Bu;
+	view.select.lapCount = 0x2Cu;
+	view.select.trackDrawn = 0x2Du;
+	view.select.lapsDrawn = 0x2Eu;
+	view.select.characterReassignedMask = 0x2Fu;
+	view.select.botCount = 0x30u;
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS; i++)
+	{
+		view.select.humanCharacter[i] = (uint8_t)(0x31u + i);
+	}
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS; i++)
+	{
+		view.select.botCharacter[i] = (uint8_t)(0x35u + i);
+	}
+	view.select.peerLockedCharacterMask = 0x3D3Eu;
+	for (i = 0u; i < NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS; i++)
+	{
+		view.select.humans[i].present = (uint8_t)(0x40u + 0x10u * i);
+		view.select.humans[i].characterID = (uint8_t)(0x41u + 0x10u * i);
+		view.select.humans[i].trackID = (uint8_t)(0x42u + 0x10u * i);
+		view.select.humans[i].lapCount = (uint8_t)(0x43u + 0x10u * i);
+		view.select.humans[i].lockMask = (uint8_t)(0x44u + 0x10u * i);
+		view.select.humans[i].currentItem = (uint8_t)(0x45u + 0x10u * i);
+	}
+	/* view.reserved and every select reserved byte stay 0xEE. */
+
+	CHECK(MainArcadeLinkLayout_InputFromHostView(&view, &input) == 1);
+	CHECK(input.screen == 0x01020304u);
+	CHECK(input.lobbyStatus == 0x05060708u);
+	CHECK(input.endReason == 0x090A0B0Cu);
+	CHECK(input.selectedRow == 0x0D0E0F10u);
+	CHECK(input.ticksInScreen == 0x11121314u);
+	CHECK(input.localCab == 0x15u);
+	CHECK(input.rowsEnabled == 0x16u);
+	CHECK(input.attract == 0x17u);
+	CHECK(input.reserved == 0u);
+	CHECK(input.select.active == 0x21u);
+	CHECK(input.select.humanCount == 0x22u);
+	CHECK(input.select.localHuman == 0x23u);
+	CHECK(input.select.currentItem == 0x24u);
+	CHECK(input.select.ticksLeft == 0x25262728u);
+	CHECK(input.select.status == 0x29u);
+	CHECK(input.select.resolved == 0x2Au);
+	CHECK(input.select.trackID == 0x2Bu);
+	CHECK(input.select.lapCount == 0x2Cu);
+	CHECK(input.select.trackDrawn == 0x2Du);
+	CHECK(input.select.lapsDrawn == 0x2Eu);
+	CHECK(input.select.characterReassignedMask == 0x2Fu);
+	CHECK(input.select.botCount == 0x30u);
+	for (i = 0u; i < MAIN_ARCADE_LINK_LAYOUT_MAX_HUMANS; i++)
+	{
+		CHECK(input.select.humanCharacter[i] == (uint8_t)(0x31u + i));
+	}
+	for (i = 0u; i < MAIN_ARCADE_LINK_LAYOUT_MAX_BOTS; i++)
+	{
+		CHECK(input.select.botCharacter[i] == (uint8_t)(0x35u + i));
+	}
+	CHECK(input.select.peerLockedCharacterMask == 0x3D3Eu);
+	CHECK(input.select.reserved[0] == 0u);
+	CHECK(input.select.reserved[1] == 0u);
+	for (i = 0u; i < MAIN_ARCADE_LINK_LAYOUT_MAX_HUMANS; i++)
+	{
+		CHECK(input.select.humans[i].present == (uint8_t)(0x40u + 0x10u * i));
+		CHECK(input.select.humans[i].characterID == (uint8_t)(0x41u + 0x10u * i));
+		CHECK(input.select.humans[i].trackID == (uint8_t)(0x42u + 0x10u * i));
+		CHECK(input.select.humans[i].lapCount == (uint8_t)(0x43u + 0x10u * i));
+		CHECK(input.select.humans[i].lockMask == (uint8_t)(0x44u + 0x10u * i));
+		CHECK(input.select.humans[i].currentItem == (uint8_t)(0x45u + 0x10u * i));
+		CHECK(input.select.humans[i].reserved[0] == 0u);
+		CHECK(input.select.humans[i].reserved[1] == 0u);
+	}
+
+	/* The view is only read. */
+	CHECK(view.screen == 0x01020304u);
+	CHECK(view.reserved == 0xEEu);
+	return 0;
+}
+
 int main(void)
 {
 	if (TestMirroredConstants() != 0) return 1;
@@ -1669,6 +1781,7 @@ int main(void)
 	if (TestSelectInvalid() != 0) return 1;
 	if (TestSelectFieldsIgnoredElsewhere() != 0) return 1;
 	if (TestSelectGeometrySweep() != 0) return 1;
+	if (TestInputFromHostView() != 0) return 1;
 	printf("main_arcade_link_layout_test: ok\n");
 	return 0;
 }

@@ -394,7 +394,8 @@ target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_con
 # Match-select resolution rules (docs/MATCH_SELECT_MILESTONE.md section 2.1,
 # MS-2): pure tables mirrored from retail, seed derivation, tie draws, vote,
 # character, and bot resolution, the outcome digest, and the resolved config
-# builder. Not linked into ctr_native yet.
+# builder. Reaches ctr_native through the select session, the arcade-link
+# host adapter, and the host glue.
 add_library(ctr_native_match_select_rules STATIC platform/native_match_select_rules.c)
 set_target_properties(ctr_native_match_select_rules PROPERTIES
     C_STANDARD 17
@@ -406,7 +407,8 @@ target_link_libraries(ctr_native_match_select_rules PUBLIC ctr_native_match_conf
 
 # Match-select wire message (docs/MATCH_SELECT_MILESTONE.md section 2.2,
 # MS-3): the pure, transactional 64-byte select record codec with an FNV-1a
-# 64 trailer; table membership from the rules. Not linked into ctr_native yet.
+# 64 trailer; table membership from the rules. Reaches ctr_native through
+# the select session, the arcade-link host adapter, and the host glue.
 add_library(ctr_native_match_select_message STATIC platform/native_match_select_message.c)
 set_target_properties(ctr_native_match_select_message PROPERTIES
     C_STANDARD 17
@@ -419,7 +421,8 @@ target_link_libraries(ctr_native_match_select_message PUBLIC ctr_native_match_se
 # Match-select session (docs/MATCH_SELECT_MILESTONE.md section 2.3, MS-4):
 # the pure, caller-owned select agreement state machine over the rules and
 # the select message codec. Transport-free; only its fault test links the
-# virtual datagram harness. Not linked into ctr_native yet.
+# virtual datagram harness. Reaches ctr_native through the arcade-link host
+# adapter and the host glue.
 add_library(ctr_native_match_select_session STATIC platform/native_match_select_session.c)
 set_target_properties(ctr_native_match_select_session PROPERTIES
     C_STANDARD 17
@@ -1351,6 +1354,19 @@ if(BUILD_TESTING)
 
     add_test(NAME native_arcade_link_host_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_link_host_isolation_test.cmake")
+
+    # Arcade-link host view into the screen layout (MS-10b): every tick of
+    # every preview and of a live loopback LINK run (host as cabinet 1 on
+    # ports 48520-48521 against a test-owned adapter) passes the drawer's
+    # path, GetView -> MainArcadeLinkLayout_InputFromHostView -> Build.
+    add_executable(main_arcade_link_view_layout_test tests/main_arcade_link_view_layout_test.c)
+    set_target_properties(main_arcade_link_view_layout_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(main_arcade_link_view_layout_test PRIVATE ctr_native_arcade_link_host ctr_native_arcade_link_layout)
+    add_test(NAME main_arcade_link_view_layout_unit COMMAND $<TARGET_FILE:main_arcade_link_view_layout_test>)
 
     # Arcade-link live hook (docs/GAME_LOOP_UI_MILESTONE.md section 2.5, Task
     # 6b-2): native only, dormant by default, host glue API only, and wired

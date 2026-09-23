@@ -2,6 +2,7 @@
 #define MAIN_ARCADE_LINK_LAYOUT_H
 
 #include "platform/native_arcade_flow.h"
+#include "platform/native_arcade_link_host.h"
 
 #include <stdint.h>
 
@@ -18,11 +19,13 @@
  * exactly one PANEL (the menu frame).
  *
  * The match-select screens (docs/MATCH_SELECT_MILESTONE.md section 2.8)
- * read the layout-owned select fields below, which the drawer fills field
- * for field from the host's select view. The layout owns its own name
- * tables and select-order lists (characters 0..7; the 16 base multiplayer
- * tracks in retail menu order; laps 3, 5, 7) and never names the selection
- * modules.
+ * read the layout-owned select fields below, which
+ * MainArcadeLinkLayout_InputFromHostView fills field for field from the
+ * host's view. The layout owns its own name tables and select-order lists
+ * (characters 0..7; the 16 base multiplayer tracks in retail menu order;
+ * laps 3, 5, 7) and never names the selection modules. From the host glue
+ * header it uses only the plain view types and value names; it calls no
+ * host function and does not link the host library.
  *
  * Pure: caller-owned output, no heap use, no I/O, no mutable state, and
  * fully deterministic. Unused bytes of every item and every unused item are
@@ -73,8 +76,9 @@ struct MainArcadeLinkLayout
 	struct MainArcadeLinkItem items[MAIN_ARCADE_LINK_LAYOUT_MAX_ITEMS];
 };
 
-/* The select screens' capacities and values. The drawer static-asserts each
- * against the host name it mirrors (NATIVE_ARCADE_LINK_HOST_*). */
+/* The select screens' capacities and values. Each is static-asserted below,
+ * next to MainArcadeLinkLayout_InputFromHostView, against the host name it
+ * mirrors (NATIVE_ARCADE_LINK_HOST_*). */
 #define MAIN_ARCADE_LINK_LAYOUT_MAX_HUMANS 4u
 #define MAIN_ARCADE_LINK_LAYOUT_MAX_BOTS 8u
 #define MAIN_ARCADE_LINK_SELECT_ITEM_CHARACTER 0u
@@ -183,5 +187,26 @@ struct MainArcadeLinkLayoutInput
  * characters, and botCount at most 8 - humanCount with known bot
  * characters. Screens OFF (without attract) and RACING give count 0. */
 int MainArcadeLinkLayout_Build(const struct MainArcadeLinkLayoutInput *input, struct MainArcadeLinkLayout *out);
+
+/* The layout's select fields mirror the host's select view; keep the
+ * capacities and values in step so the field-for-field copy below is
+ * exact. */
+_Static_assert(MAIN_ARCADE_LINK_LAYOUT_MAX_HUMANS == NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS, "MAIN_ARCADE_LINK_LAYOUT_MAX_HUMANS must match NATIVE_ARCADE_LINK_HOST_VIEW_MAX_HUMANS");
+_Static_assert(MAIN_ARCADE_LINK_LAYOUT_MAX_BOTS == NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS, "MAIN_ARCADE_LINK_LAYOUT_MAX_BOTS must match NATIVE_ARCADE_LINK_HOST_VIEW_MAX_BOTS");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_ITEM_CHARACTER == NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER, "MAIN_ARCADE_LINK_SELECT_ITEM_CHARACTER must match NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_ITEM_TRACK == NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_TRACK, "MAIN_ARCADE_LINK_SELECT_ITEM_TRACK must match NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_TRACK");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_ITEM_LAPS == NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_LAPS, "MAIN_ARCADE_LINK_SELECT_ITEM_LAPS must match NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_LAPS");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_ITEM_DONE == NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE, "MAIN_ARCADE_LINK_SELECT_ITEM_DONE must match NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_LOCK_CHARACTER == NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER, "MAIN_ARCADE_LINK_SELECT_LOCK_CHARACTER must match NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_CHARACTER");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_LOCK_TRACK == NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_TRACK, "MAIN_ARCADE_LINK_SELECT_LOCK_TRACK must match NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_TRACK");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_LOCK_LAPS == NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_LAPS, "MAIN_ARCADE_LINK_SELECT_LOCK_LAPS must match NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_LAPS");
+_Static_assert(MAIN_ARCADE_LINK_SELECT_STATUS_FAILED == NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_FAILED, "MAIN_ARCADE_LINK_SELECT_STATUS_FAILED must match NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_FAILED");
+
+/* Fills *input from the host's view, field for field: the screen fields and
+ * every select field, with every reserved byte zero. The result is exactly
+ * what the drawer hands MainArcadeLinkLayout_Build. Returns 1 on success;
+ * returns 0 with *input untouched when either argument is NULL. Pure: it
+ * validates nothing (MainArcadeLinkLayout_Build does). */
+int MainArcadeLinkLayout_InputFromHostView(const struct NativeArcadeLinkHostView *view, struct MainArcadeLinkLayoutInput *input);
 
 #endif

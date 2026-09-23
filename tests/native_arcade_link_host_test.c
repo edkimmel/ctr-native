@@ -4,6 +4,8 @@
 #include "platform/native_arcade_netplay.h"
 #include "platform/native_match_select_rules.h"
 
+#include "native_arcade_link_loopback_test_fixture.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -45,34 +47,10 @@
 #define PREVIEW_STEP_TICKS 30u
 #define PREVIEW_ITEM_TICKS 600u
 
-#define LOOPBACK_IPV4 UINT32_C(0x7F000001)
-
 /* Well under the default 150-tick per-candidate attempt budget. */
 #define LOBBY_TICKS 5u
 
 #define ACT_NONE ((uint32_t)NATIVE_ARCADE_FLOW_ACTION_NONE)
-
-static void TestIdentity(struct NativeIdentityV1 *identity)
-{
-	uint32_t i;
-
-	for (i = 0u; i < NATIVE_IDENTITY_DIGEST_BYTES; i++)
-	{
-		identity->build[i] = (uint8_t)(i + 1u);
-		identity->content[i] = (uint8_t)(0x80u + i);
-	}
-}
-
-static void LinkOptions(struct NativeArcadeLinkOptions *options, uint8_t role, uint32_t localPort, uint32_t peerPort)
-{
-	NativeArcadeLinkOptions_SetDefaults(options);
-	options->enabled = 1u;
-	options->localRole = role;
-	options->localPort = (uint16_t)localPort;
-	options->peers[0].ipv4 = LOOPBACK_IPV4;
-	options->peers[0].port = (uint16_t)peerPort;
-	options->peerCount = 1u;
-}
 
 /* No agreed match: 0, and *out untouched. */
 static int CheckNoAgreedMatch(void)
@@ -127,7 +105,7 @@ static int TestNullAndDisabled(void)
 	CHECK(NativeArcadeLinkHost_Configure(NULL, NULL) == 0);
 	CHECK(CheckInert() == 0);
 
-	TestIdentity(&identity);
+	NativeArcadeLinkLoopback_Identity(&identity);
 	CHECK(NativeArcadeLinkHost_Configure(NULL, &identity) == 0);
 	CHECK(CheckInert() == 0);
 
@@ -249,7 +227,7 @@ static int TestLinkRejectsBadIdentity(void)
 	struct NativeArcadeLinkOptions options;
 	struct NativeIdentityV1 identity;
 
-	LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_LINK_LOCAL_PORT, TEST_LINK_DEAD_PEER_PORT);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_LINK_LOCAL_PORT, TEST_LINK_DEAD_PEER_PORT);
 	CHECK(NativeArcadeLinkHost_Configure(&options, NULL) == 0);
 	CHECK(CheckInert() == 0);
 
@@ -258,7 +236,7 @@ static int TestLinkRejectsBadIdentity(void)
 	CHECK(CheckInert() == 0);
 
 	/* A valid identity with options the adapter rejects (no port). */
-	TestIdentity(&identity);
+	NativeArcadeLinkLoopback_Identity(&identity);
 	options.localPort = 0u;
 	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 0);
 	CHECK(CheckInert() == 0);
@@ -320,8 +298,8 @@ static int TestLinkLifecycle(void)
 	struct NativeIdentityV1 identity;
 	uint32_t i;
 
-	TestIdentity(&identity);
-	LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_LINK_LOCAL_PORT, TEST_LINK_DEAD_PEER_PORT);
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_LINK_LOCAL_PORT, TEST_LINK_DEAD_PEER_PORT);
 	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
 	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK);
 	CHECK(NativeArcadeLinkHost_ScreenActive() == 0);
@@ -369,8 +347,8 @@ static int TestSecondConfigureReplaces(void)
 	struct NativeArcadeLinkOptions disabledOptions;
 	struct NativeIdentityV1 identity;
 
-	TestIdentity(&identity);
-	LinkOptions(&linkOptions, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, TEST_REPLACE_LOCAL_PORT,
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&linkOptions, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, TEST_REPLACE_LOCAL_PORT,
 		TEST_REPLACE_DEAD_PEER_PORT);
 	NativeArcadeLinkOptions_SetDefaults(&previewOptions);
 	previewOptions.preview = NATIVE_ARCADE_LINK_PREVIEW_REMATCH_WAIT;
@@ -395,7 +373,7 @@ static int TestSecondConfigureReplaces(void)
 	CHECK(EnterAndConnect(2u) == 0);
 
 	/* Replaced by LINK as CAB1 on another port while the first is open. */
-	LinkOptions(&linkOptions, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_REPLACE_SECOND_LOCAL_PORT,
+	NativeArcadeLinkLoopback_LinkOptions(&linkOptions, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_REPLACE_SECOND_LOCAL_PORT,
 		TEST_REPLACE_DEAD_PEER_PORT);
 	CHECK(NativeArcadeLinkHost_Configure(&linkOptions, &identity) == 1);
 	CHECK(CheckLinkView(NATIVE_ARCADE_FLOW_SCREEN_OFF, NATIVE_ARCADE_FLOW_LOBBY_WAITING, 0u, 1u) == 0);
@@ -741,8 +719,8 @@ static int TestSelectEntropyEpochs(void)
 	uint64_t fourth;
 	uint64_t zeroEntropy;
 
-	TestIdentity(&identity);
-	LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_ENTROPY_LOCAL_PORT, TEST_ENTROPY_DEAD_PEER_PORT);
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_ENTROPY_LOCAL_PORT, TEST_ENTROPY_DEAD_PEER_PORT);
 	options.selectEntropy = entropy;
 	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
 	first = NativeArcadeLinkHost_InternalSelectEntropy();
@@ -786,29 +764,6 @@ static int TestSelectEntropyEpochs(void)
 
 static struct NativeArcadeNetplay g_peer;
 
-/* One tick of the host (CAB1) and the peer adapter (CAB2). */
-static void TickPair(uint32_t heldHost, uint32_t heldPeer, uint32_t *hostAction, uint32_t *peerAction)
-{
-	*hostAction = NativeArcadeLinkHost_Tick(heldHost, 0u);
-	*peerAction = (uint32_t)NativeArcadeNetplay_Tick(&g_peer, heldPeer, 0u);
-}
-
-/* A press on either side: a held tick, then a released tick; every action
- * NONE. */
-static int PressPair(uint32_t heldHost, uint32_t heldPeer)
-{
-	uint32_t hostAction;
-	uint32_t peerAction;
-
-	TickPair(heldHost, heldPeer, &hostAction, &peerAction);
-	CHECK(hostAction == ACT_NONE);
-	CHECK(peerAction == ACT_NONE);
-	TickPair(0u, 0u, &hostAction, &peerAction);
-	CHECK(hostAction == ACT_NONE);
-	CHECK(peerAction == ACT_NONE);
-	return 0;
-}
-
 /* The host view's select outcome fields equal the adapter view's. */
 static int CheckSameOutcome(const struct NativeArcadeLinkHostSelectView *host, const struct NativeArcadeNetplaySelectView *peer)
 {
@@ -844,7 +799,6 @@ static int TestLinkSelectAndAgreedMatch(void)
 {
 	struct NativeArcadeLinkOptions options;
 	struct NativeIdentityV1 identity;
-	struct NativeArcadeNetplayConfig peerConfig;
 	struct NativeArcadeLinkHostView view;
 	struct NativeArcadeNetplayView peerView;
 	struct NativeArcadeLinkHostMatch match;
@@ -857,20 +811,13 @@ static int TestLinkSelectAndAgreedMatch(void)
 	int hostStarted = 0;
 	int peerStarted = 0;
 
-	TestIdentity(&identity);
-	LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SELECT_HOST_PORT, TEST_SELECT_PEER_PORT);
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SELECT_HOST_PORT, TEST_SELECT_PEER_PORT);
 	options.selectEntropy = UINT64_C(0x5EED5EED5EED5EED);
 	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
 
-	NativeArcadeNetplay_DefaultConfig(&peerConfig);
-	CHECK(NativeArcadeLinkFixture_Build(&identity, &peerConfig.fixture));
-	peerConfig.candidates[0].ipv4 = LOOPBACK_IPV4;
-	peerConfig.candidates[0].port = (uint16_t)TEST_SELECT_HOST_PORT;
-	peerConfig.candidateCount = 1u;
-	peerConfig.localPort = (uint16_t)TEST_SELECT_PEER_PORT;
-	peerConfig.localRole = (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN;
-	peerConfig.selectEntropy = UINT64_C(0x0DDBA11);
-	CHECK(NativeArcadeNetplay_Init(&g_peer, &peerConfig) == 1);
+	CHECK(NativeArcadeLinkLoopback_PeerInit(&g_peer, &identity, TEST_SELECT_HOST_PORT, TEST_SELECT_PEER_PORT,
+		UINT64_C(0x0DDBA11)) == 1);
 
 	CHECK(NativeArcadeLinkHost_Enter() == 1);
 	CHECK(NativeArcadeNetplay_Enter(&g_peer) == NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY);
@@ -878,7 +825,7 @@ static int TestLinkSelectAndAgreedMatch(void)
 	/* Into SELECT on both sides, then one released tick to arm the menus. */
 	for (tick = 0u; tick < PAIR_BUDGET; tick++)
 	{
-		TickPair(0u, 0u, &hostAction, &peerAction);
+		NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
 		CHECK(hostAction != (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE);
 		CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
 		CHECK(NativeArcadeNetplay_GetView(&g_peer, &peerView) == 1);
@@ -894,7 +841,7 @@ static int TestLinkSelectAndAgreedMatch(void)
 		}
 	}
 	CHECK(tick < PAIR_BUDGET);
-	TickPair(0u, 0u, &hostAction, &peerAction);
+	NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
 
 	/* The local cursors start on the fixture: CRASH, CRASH_COVE, 3 laps. */
 	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
@@ -914,7 +861,7 @@ static int TestLinkSelectAndAgreedMatch(void)
 	CHECK(view.select.humans[3].present == 0u);
 	CHECK((view.select.ticksLeft > 0u) && (view.select.ticksLeft <= 600u));
 	ticksLeft = view.select.ticksLeft;
-	TickPair(0u, 0u, &hostAction, &peerAction);
+	NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
 	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
 	CHECK(view.select.ticksLeft == ticksLeft - 1u);
 	/* By now the peer has been heard, on its own fixture character. */
@@ -924,8 +871,8 @@ static int TestLinkSelectAndAgreedMatch(void)
 	CHECK(view.select.peerLockedCharacterMask == 0u);
 
 	/* The peer locks CORTEX: the host sees the lock and greys CORTEX. */
-	CHECK(PressPair(0u, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 0);
-	CHECK(PressPair(0u, 0u) == 0);
+	CHECK(NativeArcadeLinkLoopback_PressPair(&g_peer, 0u, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 1);
+	CHECK(NativeArcadeLinkLoopback_PressPair(&g_peer, 0u, 0u) == 1);
 	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
 	CHECK(view.select.humans[1].lockMask == 1u);
 	CHECK(view.select.humans[1].characterID == 1u);
@@ -934,12 +881,12 @@ static int TestLinkSelectAndAgreedMatch(void)
 	CHECK(view.select.currentItem == 0u);
 
 	/* Both confirm the rest on the fixture cursors. */
-	CHECK(PressPair(NATIVE_ARCADE_MENU_BUTTON_CROSS, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 0);
+	CHECK(NativeArcadeLinkLoopback_PressPair(&g_peer, NATIVE_ARCADE_MENU_BUTTON_CROSS, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 1);
 	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
 	CHECK(view.select.currentItem == 1u);
 	CHECK(view.select.humans[0].lockMask == 1u);
-	CHECK(PressPair(NATIVE_ARCADE_MENU_BUTTON_CROSS, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 0);
-	CHECK(PressPair(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == 0);
+	CHECK(NativeArcadeLinkLoopback_PressPair(&g_peer, NATIVE_ARCADE_MENU_BUTTON_CROSS, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 1);
+	CHECK(NativeArcadeLinkLoopback_PressPair(&g_peer, NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == 1);
 
 	/* SELECT_RESULT: the confirmed outcome, equal on both sides. */
 	for (tick = 0u; tick < PAIR_BUDGET; tick++)
@@ -949,7 +896,7 @@ static int TestLinkSelectAndAgreedMatch(void)
 		{
 			break;
 		}
-		TickPair(0u, 0u, &hostAction, &peerAction);
+		NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
 		CHECK(hostAction != (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE);
 	}
 	CHECK(tick < PAIR_BUDGET);
@@ -980,7 +927,7 @@ static int TestLinkSelectAndAgreedMatch(void)
 	/* On to START_RACE: GetAgreedMatch reports nothing until it. */
 	for (tick = 0u; (tick < PAIR_BUDGET) && !(hostStarted && peerStarted); tick++)
 	{
-		TickPair(0u, 0u, &hostAction, &peerAction);
+		NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
 		if (!hostStarted)
 		{
 			if (hostAction == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)
