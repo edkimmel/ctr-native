@@ -216,7 +216,12 @@ ctest --test-dir build-msvc-x86 -C Debug --output-on-failure
 ```
 
 Use `build-msvc-x86`; other `build-msvc-x86-*` directories are from earlier
-milestones. The full suite passes. LF-to-CRLF warnings are benign.
+milestones. The full suite (111 tests) passes. LF-to-CRLF warnings are
+benign. The `arcade_link_preview_render` test (Windows only) renders every
+arcade-link preview with `ctr_native.exe` and checks each capture; it skips
+when `assets/ctr-u.bin` is absent, no display is available, or the build
+rejects the internal-only preview option, and writes its captures and logs
+under `build-msvc-x86\arcade_link_preview_captures\<config>`.
 
 `ctr_native.exe` needs a connected desktop session with a display. Without
 one, platform init fails, the SDL error is logged, and the exe exits 1. SDL
@@ -276,6 +281,14 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
   (unattended frame capture); renderer seam in `platform/native_renderer.c`.
+- Preview capture check (offline, never linked by `ctr_native`):
+  `platform/native_capture_check.c`, `include/platform/native_capture_check.h`
+  (RGB-only BMP checker for arcade-link preview captures);
+  `tools/arcade_link_capture_check.c` (CLI
+  `ctr_native_arcade_link_capture_check <capture.bmp> <screen>`);
+  `tools/arcade-link-preview-check.ps1` (renders and checks all 12 previews
+  plus the default path; `-Png` writes alpha-stripped review PNGs, since the
+  capture alpha byte is the PS1 mask bit).
 - Startup robustness: `platform/native_sdl_assert.c`,
   `include/platform/native_sdl_assert.h` (SDL assertion handler);
   `Platform_Init` in `platform/native_platform.c` (fail-fast platform init).

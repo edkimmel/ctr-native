@@ -8,8 +8,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Checker,
 
-    # Absolute directory for captures, logs, and review PNGs.  Every run uses
-    # it as its working directory so nothing lands in the repository.
+    # Absolute directory for captures, per-run logs, and review PNGs.  Each
+    # run uses it as its working directory; the game itself still writes the
+    # gitignored `Crash Team Racing.log` in the repository root.
     [Parameter(Mandatory = $true)]
     [string]$OutputDirectory,
 

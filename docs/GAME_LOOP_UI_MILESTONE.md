@@ -485,11 +485,44 @@ for the operator to confirm or change after seeing the built flow.
 
 Run these from the repository root in a Windows command prompt, with
 assets/ctr-u.bin in place (the executable finds assets/ from its own
-directory). Captures go to the gitignored debug\captures folder. Frame 1320 is
-past the title intro's menu-ready frame, so the preview screen is up. Run
-them from a connected desktop session (with no display the game exits 1; see
-risk 12); each capture run takes about 45 seconds. Each line writes one BMP
-and exits:
+directory), from a connected desktop session (with no display the game exits
+1; see risk 12). Captures go to the gitignored debug\captures folder. Frame
+1320 is past the title intro's menu-ready frame, so the preview screen is up,
+and the title preview's blinking PRESS START is visible on it.
+
+The capture BMPs are 32-bit, and their alpha byte is the PS1 mask bit, not
+opacity (docs/TEXTURE_FILTER_MILESTONE.md section 5). Most pixels have alpha
+0, and the translucent panel writes mask bit 0, so a viewer or converter that
+honours BMP alpha (for example System.Drawing Image.FromFile saved as PNG)
+shows most of the screen, including the whole panel rectangle, as white or
+transparent with only fragments of the title art. That is a viewing
+artefact, not a rendering bug; review the RGB only.
+
+The recommended path is one command. It renders all 12 previews plus the
+default path in parallel (about 45 seconds wall time), captures frame 1320 of
+each, checks each capture with the RGB checker, and with -Png writes
+alpha-stripped review PNGs. -OutputDirectory must be an absolute path:
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\arcade-link-preview-check.ps1 -Executable build-msvc-x86\Debug\ctr_native.exe -Checker build-msvc-x86\Debug\ctr_native_arcade_link_capture_check.exe -OutputDirectory "%CD%\debug\captures" -IncludeDefault -Png
+```
+
+Open the `<screen>-review.png` files in debug\captures. Each preview should
+show a dark translucent panel with a grey frame behind the text, the section
+2.4 strings, and, on the four results screens, the REMATCH highlight.
+`default-review.png` is the default path (no arcade-link option) at the same
+frame, showing the retail title and main-menu box, for comparison; the
+checker must reject it. The script exits 0 on pass, 1 on fail, and 77 (skip)
+when the disc image is absent, no display is available, or the build rejects
+the internal-only preview option. -Screens a,b limits the run to named
+screens, and -Frame and -ExitFrame move the capture. A single BMP can be
+checked with `build-msvc-x86\Debug\ctr_native_arcade_link_capture_check.exe
+<capture.bmp> <screen>` (exit 0 pass, 1 fail, 2 usage, IO, or parse error).
+The checker's limits are in risk 14.
+
+To capture one screen by hand, each line below writes one BMP and exits
+(about 45 seconds each). View the BMPs in a viewer that ignores BMP alpha, or
+use the -Png review path above:
 
 ```bat
 mkdir debug\captures
@@ -549,7 +582,7 @@ the title until Task 7.
 ## 5. Task list
 
 Baseline before this milestone: 91 tests, 100% passing (commit 52976808c).
-Current state: 108 tests, 100% passing. Tasks 1-6b-5 are done; Tasks 7 and 8
+Current state: 111 tests, 100% passing. Tasks 1-6b-6 are done; Tasks 7 and 8
 are gated (see their entries); this document stays open until they land.
 
 ### Task 1 -- this document
@@ -755,6 +788,42 @@ source other than native_platform.c (native_savestate.c, which defines
 them, is excluded). Docs, comments, and an isolation test only: verified by
 the full suite, not re-reviewed.
 
+### Task 6b-6 -- preview render check and review-capture fix
+
+Status: done (59184279d, a09cdd26c). Investigated a report that all 12
+`--arcade-link-preview` captures looked like a white screen with only
+fragments of the title art. Root cause: not a rendering bug. The capture BMP
+is 32-bit and its alpha byte is the PS1 mask bit
+(docs/TEXTURE_FILTER_MILESTONE.md section 5); in a frame-1320 preview
+capture 471,319 of 480,000 pixels have alpha 0 (the default-path capture:
+408,437), so a converter or viewer that honours BMP alpha (for example
+System.Drawing Image.FromFile saved as PNG) shows those pixels transparent
+or white. The translucent panel writes mask bit 0, which is why the white
+area matched the panel rectangle. With alpha forced to 255 the RGB shows
+every screen correctly: a dark translucent panel with a grey frame behind
+the text, the section 2.4 strings, and the REMATCH highlight on the four
+results screens. The default path at frame 1320 shows the retail title and
+main-menu box. No game code changed; "How to review the flow" (section 3)
+now leads with an alpha-stripped review path.
+Landed as include/platform/native_capture_check.h,
+platform/native_capture_check.c, tests/native_capture_check_test.c, and
+tests/native_capture_check_isolation_test.cmake (library
+ctr_native_capture_check, a pure offline RGB-only checker for 24 and 32 bpp
+BMP captures: panel frame, dimmed translucent fill that is neither flat nor
+white, text in each expected line band, empty unused bands, and the REMATCH
+highlight on results screens; tests native_capture_check_unit, on synthetic
+frames only, and native_capture_check_isolation, which keeps the library free
+of game, SDL, and runtime code and out of ctr_native); the CLI
+tools/arcade_link_capture_check.c (executable
+ctr_native_arcade_link_capture_check); tools/arcade-link-preview-check.ps1;
+and the ctest arcade_link_preview_render in CMakeLists.txt (WIN32 only,
+RUN_SERIAL; it runs the script with -IncludeDefault, skips with code 77 when
+assets/ctr-u.bin is absent, no display is available, or the build rejects
+the internal-only preview option, and writes its captures and logs under
+build-msvc-x86\arcade_link_preview_captures\<config>). Checker limits are in
+risk 14. No review required: no frame or render order, input, identity,
+replay, canonical-state, or lease change.
+
 ### Task 7 -- networked race launch
 
 Status: gated on integration step 3 (live two-human-plus-bot roster). On
@@ -780,7 +849,7 @@ retail standings drawing. Review required.
 
 ### Task 9 -- docs close-out
 
-Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-5.
+Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
 
 ## 6. Risks and open questions
 
@@ -826,3 +895,16 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-5.
     the G29; it is logged and ignored. When the exe owns its console window
     (e.g. double-clicked), every early exit waits on "Press Enter to close
     this window...".
+13. Preview legibility (observed on the review PNGs, not fixed; a layout and
+    colour decision for the owner). On lobby-rejected the red body lines
+    (LINK REFUSED, SETTINGS DO NOT MATCH) are legible but low-contrast over
+    the dark panel. On the results screens the EXIT row overlaps the title
+    art's CTR logo and TM mark behind the translucent panel; it is still
+    legible.
+14. The preview capture checker cannot tell apart screens that share a
+    layout: the four results screens, exit and exit-opponent-left, and lobby
+    and lobby-connecting. It does not check title wording or colour. Its
+    thresholds were calibrated on 800x600 nearest-filter captures only.
+15. Every game run, including each run of the preview check script, writes
+    `Crash Team Racing.log` into the repository root, because main.c changes
+    into the base directory. The file is gitignored.
