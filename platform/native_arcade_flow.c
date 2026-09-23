@@ -18,6 +18,8 @@ void NativeArcadeFlow_DefaultTimings(struct NativeArcadeFlowTimings *timings)
 	timings->rematchWaitTimeoutTicks = NATIVE_ARCADE_FLOW_DEFAULT_REMATCH_WAIT_TIMEOUT_TICKS;
 	timings->opponentLeftNoticeTicks = NATIVE_ARCADE_FLOW_DEFAULT_OPPONENT_LEFT_NOTICE_TICKS;
 	timings->exitHoldTicks = NATIVE_ARCADE_FLOW_DEFAULT_EXIT_HOLD_TICKS;
+	timings->selectResultHoldTicks = NATIVE_ARCADE_FLOW_DEFAULT_SELECT_RESULT_HOLD_TICKS;
+	timings->launchTimeoutTicks = NATIVE_ARCADE_FLOW_DEFAULT_LAUNCH_TIMEOUT_TICKS;
 }
 
 static int NativeArcadeFlow_TimingsValid(const struct NativeArcadeFlowTimings *timings)
@@ -25,7 +27,7 @@ static int NativeArcadeFlow_TimingsValid(const struct NativeArcadeFlowTimings *t
 	if ((timings->lobbyRetryPauseTicks == 0u) || (timings->matchFoundHoldTicks == 0u) ||
 		(timings->resultsDwellTicks == 0u) || (timings->resultsIdleTimeoutTicks == 0u) ||
 		(timings->rematchWaitTimeoutTicks == 0u) || (timings->opponentLeftNoticeTicks == 0u) ||
-		(timings->exitHoldTicks == 0u))
+		(timings->exitHoldTicks == 0u) || (timings->selectResultHoldTicks == 0u) || (timings->launchTimeoutTicks == 0u))
 	{
 		return 0;
 	}
@@ -66,6 +68,8 @@ int NativeArcadeFlow_Init(struct NativeArcadeFlow *flow, const struct NativeArca
 	flow->ticksSinceRetry = 0u;
 	flow->ticksSinceInput = 0u;
 	flow->screenSerial = 0u;
+	flow->relinked = 0u;
+	flow->ticksSinceRelink = 0u;
 	return 1;
 }
 
@@ -77,6 +81,8 @@ static void NativeArcadeFlow_EnterScreen(struct NativeArcadeFlow *flow, uint32_t
 	flow->ticksInScreen = 0u;
 	flow->ticksSinceRetry = 0u;
 	flow->ticksSinceInput = 0u;
+	flow->relinked = 0u;
+	flow->ticksSinceRelink = 0u;
 	flow->screenSerial += 1u;
 	if (screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS)
 	{
@@ -116,6 +122,10 @@ static int NativeArcadeFlow_ObservationValid(const struct NativeArcadeFlowObserv
 		return 0;
 	}
 	if (observation->raceFinished > 1u)
+	{
+		return 0;
+	}
+	if (observation->selectStatus > (uint8_t)NATIVE_ARCADE_FLOW_SELECT_FAILED)
 	{
 		return 0;
 	}
@@ -180,9 +190,76 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_TickMatchFound(struct Native
 	}
 	if (flow->ticksInScreen >= flow->timings.matchFoundHoldTicks)
 	{
+		NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+		return NATIVE_ARCADE_FLOW_ACTION_BEGIN_SELECT;
+	}
+	return NATIVE_ARCADE_FLOW_ACTION_NONE;
+}
+
+/* Every select-phase failure is shown as LINK ERROR on the results screen. */
+static enum NativeArcadeFlowAction NativeArcadeFlow_SelectLinkError(struct NativeArcadeFlow *flow)
+{
+	flow->endReason = NATIVE_ARCADE_FLOW_END_LINK_ERROR;
+	NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	return NATIVE_ARCADE_FLOW_ACTION_NONE;
+}
+
+/* SELECT: menu events belong to the caller's select session (BACK is
+ * ignored, SEL-7), so the flow never reads them here. */
+static enum NativeArcadeFlowAction NativeArcadeFlow_TickSelect(struct NativeArcadeFlow *flow, uint32_t status,
+	uint32_t selectStatus)
+{
+	if (status != NATIVE_ARCADE_FLOW_LOBBY_READY)
+	{
+		return NativeArcadeFlow_SelectLinkError(flow);
+	}
+	if (selectStatus == (uint32_t)NATIVE_ARCADE_FLOW_SELECT_FAILED)
+	{
+		return NativeArcadeFlow_SelectLinkError(flow);
+	}
+	if (selectStatus == (uint32_t)NATIVE_ARCADE_FLOW_SELECT_CONFIRMED)
+	{
+		NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+	}
+	return NATIVE_ARCADE_FLOW_ACTION_NONE;
+}
+
+/* SELECT_RESULT: events are ignored. Phase 1 holds, then RELINK; phase 2
+ * waits for the relinked lobby, starting on the tick after RELINK. */
+static enum NativeArcadeFlowAction NativeArcadeFlow_TickSelectResult(struct NativeArcadeFlow *flow, uint32_t status)
+{
+	if (flow->relinked == 0u)
+	{
+		/* The lobby status is the old link's here and is ignored. */
+		if (flow->ticksInScreen >= flow->timings.selectResultHoldTicks)
+		{
+			flow->relinked = 1u;
+			flow->ticksSinceRelink = 0u;
+			flow->ticksSinceRetry = 0u;
+			return NATIVE_ARCADE_FLOW_ACTION_RELINK;
+		}
+		return NATIVE_ARCADE_FLOW_ACTION_NONE;
+	}
+
+	if (flow->ticksSinceRelink < UINT32_MAX)
+	{
+		flow->ticksSinceRelink += 1u;
+	}
+	if (status == NATIVE_ARCADE_FLOW_LOBBY_READY)
+	{
 		NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_RACING);
 		return NATIVE_ARCADE_FLOW_ACTION_START_RACE;
 	}
+	if ((status == NATIVE_ARCADE_FLOW_LOBBY_REJECTED) || (flow->ticksSinceRelink >= flow->timings.launchTimeoutTicks))
+	{
+		return NativeArcadeFlow_SelectLinkError(flow);
+	}
+	if ((status == NATIVE_ARCADE_FLOW_LOBBY_WAITING) || (status == NATIVE_ARCADE_FLOW_LOBBY_LOST))
+	{
+		return NativeArcadeFlow_RetryPause(flow);
+	}
+	/* CONNECTING */
+	flow->ticksSinceRetry = 0u;
 	return NATIVE_ARCADE_FLOW_ACTION_NONE;
 }
 
@@ -345,6 +422,10 @@ enum NativeArcadeFlowAction NativeArcadeFlow_Tick(struct NativeArcadeFlow *flow,
 		return NativeArcadeFlow_TickRematchWait(flow, status, event);
 	case NATIVE_ARCADE_FLOW_SCREEN_EXIT:
 		return NativeArcadeFlow_TickExit(flow);
+	case NATIVE_ARCADE_FLOW_SCREEN_SELECT:
+		return NativeArcadeFlow_TickSelect(flow, status, observation->selectStatus);
+	case NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT:
+		return NativeArcadeFlow_TickSelectResult(flow, status);
 	default:
 		return NATIVE_ARCADE_FLOW_ACTION_NONE;
 	}

@@ -1,13 +1,15 @@
 # Structural isolation for the arcade-link host adapter (native_arcade_netplay):
 # the only production module that composes the lobby layer with the
-# failure-handling layer and drives the pure arcade screen flow. It names no
-# topology-lease symbol, uses no heap, clock, or engine source, reaches no OS
-# networking API directly, writes no replay, checkpoint, or canonical state,
+# failure-handling layer and the match-select session and drives the pure
+# arcade screen flow. It names no topology-lease symbol, uses no heap,
+# clock, or engine source, reaches no OS networking API directly, writes no
+# replay, checkpoint, or canonical state,
 # never touches the virtual-datagram test harness, includes only its allowed
 # headers, exposes a public API whose own names stay free of every token the
 # lockstep and failure-handling isolation rules forbid under the engine
-# sources (so engine code can call it), links exactly its seven composed
-# libraries and never the transport directly, stays portable C17 with
+# sources (so engine code can call it), links exactly its eight composed
+# libraries and never the transport directly, static-asserts that a select
+# record fills exactly one peer-link aux datagram, stays portable C17 with
 # extensions off, and keeps its four defaults frozen.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
@@ -61,11 +63,12 @@ foreach(relative_path IN LISTS netplay_files)
     endforeach()
 
     # 2. #include lines may only name the C headers string.h, stdint.h, and
-    #    stddef.h, the module's own header, and the seven composed platform
-    #    headers.
+    #    stddef.h, the module's own header, the seven original composed
+    #    platform headers, the three match-select headers, and native_sha256.h
+    #    (the select nonce hash).
     string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${source}")
     foreach(include_line IN LISTS include_lines)
-        if(NOT include_line MATCHES "^#[ \t]*include[ \t]*(<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_lobby_state\\.h\"|\"platform/native_lockstep_match_outcome\\.h\"|\"platform/native_lockstep_match_roster\\.h\"|\"platform/native_lockstep_rematch\\.h\"|\"platform/native_match_config\\.h\")[ \t]*$")
+        if(NOT include_line MATCHES "^#[ \t]*include[ \t]*(<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_lobby_state\\.h\"|\"platform/native_lockstep_match_outcome\\.h\"|\"platform/native_lockstep_match_roster\\.h\"|\"platform/native_lockstep_rematch\\.h\"|\"platform/native_match_config\\.h\"|\"platform/native_match_select_message\\.h\"|\"platform/native_match_select_rules\\.h\"|\"platform/native_match_select_session\\.h\"|\"platform/native_sha256\\.h\")[ \t]*$")
             message(FATAL_ERROR "arcade netplay isolation: disallowed include '${include_line}' in ${relative_path}")
         endif()
     endforeach()
@@ -95,8 +98,9 @@ foreach(public_name IN LISTS public_names)
     endforeach()
 endforeach()
 
-# 4. ctr_native_arcade_netplay links exactly its seven composed libraries and
-#    nothing else, in exactly one target_link_libraries call, and reaches the
+# 4. ctr_native_arcade_netplay links exactly its eight composed libraries
+#    (the seven of Task 4 and ctr_native_match_select_session) and nothing
+#    else, in exactly one target_link_libraries call, and reaches the
 #    transport only through the lobby layer: never ctr_native_udp_transport
 #    or the virtual-datagram harness directly.
 ctr_read_source("CMakeLists.txt" cmake)
@@ -114,7 +118,7 @@ list(REMOVE_ITEM link_items "" PUBLIC PRIVATE INTERFACE)
 set(expected_link_items
     ctr_native_arcade_flow ctr_native_arcade_menu_input ctr_native_lobby_state
     ctr_native_lockstep_match_outcome ctr_native_lockstep_match_roster ctr_native_lockstep_rematch
-    ctr_native_match_config)
+    ctr_native_match_config ctr_native_match_select_session)
 foreach(expected IN LISTS expected_link_items)
     list(FIND link_items "${expected}" expected_index)
     if(expected_index EQUAL -1)
@@ -124,12 +128,12 @@ endforeach()
 foreach(item IN LISTS link_items)
     list(FIND expected_link_items "${item}" item_index)
     if(item_index EQUAL -1)
-        message(FATAL_ERROR "arcade netplay isolation: ${target} links unexpected item '${item}'; only the seven composed libraries are allowed")
+        message(FATAL_ERROR "arcade netplay isolation: ${target} links unexpected item '${item}'; only the eight composed libraries are allowed")
     endif()
 endforeach()
 list(LENGTH link_items link_item_count)
-if(NOT link_item_count EQUAL 7)
-    message(FATAL_ERROR "arcade netplay isolation: ${target} must link exactly seven libraries, found ${link_item_count} ('${link_items}')")
+if(NOT link_item_count EQUAL 8)
+    message(FATAL_ERROR "arcade netplay isolation: ${target} must link exactly eight libraries, found ${link_item_count} ('${link_items}')")
 endif()
 foreach(forbidden IN ITEMS ctr_native_virtual_datagram ctr_native_udp_transport)
     string(FIND "${link_call}" "${forbidden}" leak)
@@ -171,3 +175,10 @@ ctr_require_regex("${netplay_header} (RETRANSMIT_INTERVAL_TICKS must stay 1u)" "
 ctr_require_regex("${netplay_header} (STALL_TIMEOUT_TICKS must stay 90u)" "${header}"
     "\n#define NATIVE_ARCADE_NETPLAY_DEFAULT_STALL_TIMEOUT_TICKS 90u   /\\* 3 s at the 30 Hz loop, UX-9 \\*/\r?\n")
 
+
+# 6. A composed select record fills exactly one peer-link aux datagram: the
+#    adapter carries the static assert that ties the two widths together
+#    (docs/MATCH_SELECT_MILESTONE.md section 2.4), so neither can drift alone.
+ctr_read_source("platform/native_arcade_netplay.c" netplay_source)
+ctr_require_regex("platform/native_arcade_netplay.c (select record width == aux width)" "${netplay_source}"
+    "_Static_assert\\(NATIVE_MATCH_SELECT_MESSAGE_V1_ENCODED_BYTES == NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES,")

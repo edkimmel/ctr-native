@@ -11,9 +11,13 @@
 
 /*
  * Tests for the arcade-link host adapter (platform/native_arcade_netplay.c,
- * docs/GAME_LOOP_UI_MILESTONE.md section 2.3, Tasks 4, 4b, and 4c). The socket tests run
- * two adapters in this one process -- A as CAB1_HUMAN and B as CAB2_HUMAN --
- * over real loopback UDP sockets through the real, unmodified lobby layer,
+ * docs/GAME_LOOP_UI_MILESTONE.md section 2.3, Tasks 4, 4b, and 4c, and the
+ * select phase of docs/MATCH_SELECT_MILESTONE.md section 2.6, MS-7: every
+ * path to START_RACE now goes MATCH_FOUND -> SELECT -> SELECT_RESULT ->
+ * RELINK -> READY, and the race runs on the resolved config). The socket
+ * tests run two adapters in this one process -- A as CAB1_HUMAN and B as
+ * CAB2_HUMAN -- over real loopback UDP sockets through the real, unmodified
+ * lobby layer,
  * each with exactly one candidate pointing at the other's port, the same
  * "two roles, one process" idiom tests/native_lobby_state_test.c uses.
  *
@@ -77,6 +81,31 @@
 #define TEST_HOOK_DIVERGE_A_PORT 48430u
 #define TEST_HOOK_DIVERGE_B_PORT 48431u
 
+/* MS-7: the select phase. */
+#define TEST_SELECT_PICKS_A_PORT 48432u
+#define TEST_SELECT_PICKS_B_PORT 48433u
+
+#define TEST_SELECT_IDLE_A_PORT 48434u
+#define TEST_SELECT_IDLE_B_PORT 48435u
+
+#define TEST_SELECT_SAME_A_PORT 48436u
+#define TEST_SELECT_SAME_B_PORT 48437u
+
+#define TEST_SELECT_SILENCE_A_PORT 48438u
+#define TEST_SELECT_SILENCE_B_PORT 48439u
+
+#define TEST_SELECT_LAUNCH_A_PORT 48440u
+#define TEST_SELECT_LAUNCH_B_PORT 48441u
+
+#define TEST_SELECT_REMATCH_A_PORT 48442u
+#define TEST_SELECT_REMATCH_B_PORT 48443u
+
+#define TEST_SELECT_AUX_A_PORT 48444u
+#define TEST_SELECT_AUX_B_PORT 48445u
+
+#define TEST_SELECT_BLOCKED_A_PORT 48446u
+#define TEST_SELECT_BLOCKED_B_PORT 48447u
+
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
 #define ATTEMPT_TICKS_PER_CANDIDATE 20u
@@ -88,6 +117,19 @@
 #define REMATCH_WAIT_TIMEOUT_TICKS 60u
 #define OPPONENT_LEFT_NOTICE_TICKS 4u
 #define EXIT_HOLD_TICKS 3u
+#define SELECT_RESULT_HOLD_TICKS 8u
+#define LAUNCH_TIMEOUT_TICKS 60u
+
+/* Select session timings: every scripted pick below finishes well inside
+ * one item; an idle select auto-picks after three items. */
+#define SELECT_ITEM_TICKS 30u
+#define SELECT_PEER_SILENCE_TICKS 90u
+
+/* The fixture's cursors: slot characters 0 (CAB1) and 1 (CAB2); its trackID
+ * is not a table track, so the cursor starts on the first, CRASH_COVE (3);
+ * lapCount 3. */
+#define FIXTURE_TRACK_CURSOR 3u
+#define FIXTURE_LAP_CURSOR 3u
 
 /* Bounds every outer test-driving loop; generous, not tuned. */
 #define DRIVE_BUDGET 2000u
@@ -96,6 +138,7 @@
 
 #define BTN_CROSS NATIVE_ARCADE_MENU_BUTTON_CROSS
 #define BTN_DOWN NATIVE_ARCADE_MENU_BUTTON_DOWN
+#define BTN_UP NATIVE_ARCADE_MENU_BUTTON_UP
 #define BTN_TRIANGLE NATIVE_ARCADE_MENU_BUTTON_TRIANGLE
 
 #define ACT_NONE NATIVE_ARCADE_FLOW_ACTION_NONE
@@ -105,6 +148,8 @@
 #define ACT_BEGIN_REMATCH NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH
 #define ACT_CLOSE_LINK NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK
 #define ACT_RETURN_TO_TITLE NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE
+#define ACT_BEGIN_SELECT NATIVE_ARCADE_FLOW_ACTION_BEGIN_SELECT
+#define ACT_RELINK NATIVE_ARCADE_FLOW_ACTION_RELINK
 
 /* Adapters are large (each owns a lobby, peer link, and session), so they
  * live in static storage rather than on the stack. */
@@ -122,6 +167,16 @@ static void SmallTimings(struct NativeArcadeFlowTimings *timings)
 	timings->rematchWaitTimeoutTicks = REMATCH_WAIT_TIMEOUT_TICKS;
 	timings->opponentLeftNoticeTicks = OPPONENT_LEFT_NOTICE_TICKS;
 	timings->exitHoldTicks = EXIT_HOLD_TICKS;
+	timings->selectResultHoldTicks = SELECT_RESULT_HOLD_TICKS;
+	timings->launchTimeoutTicks = LAUNCH_TIMEOUT_TICKS;
+}
+
+static void SmallSelectTimings(struct NativeMatchSelectTimings *timings)
+{
+	timings->characterTicks = SELECT_ITEM_TICKS;
+	timings->trackTicks = SELECT_ITEM_TICKS;
+	timings->lapTicks = SELECT_ITEM_TICKS;
+	timings->peerSilenceTicks = SELECT_PEER_SILENCE_TICKS;
 }
 
 static int MakeConfig(struct NativeArcadeNetplayConfig *config, const struct NativeMatchConfigV1 *fixture, uint8_t role,
@@ -139,6 +194,7 @@ static int MakeConfig(struct NativeArcadeNetplayConfig *config, const struct Nat
 	config->attemptTicksPerCandidate = ATTEMPT_TICKS_PER_CANDIDATE;
 	config->retransmitIntervalTicks = RETRANSMIT_INTERVAL_TICKS;
 	SmallTimings(&config->timings);
+	SmallSelectTimings(&config->selectTimings);
 	return 1;
 }
 
@@ -320,6 +376,204 @@ static int InitRejectsUntouched(const struct NativeArcadeNetplayConfig *config)
 	return memcmp(&g_probe, &g_sentinel, sizeof(g_probe)) == 0;
 }
 
+/* The config both cabinets must race on after a two-human select on base
+ * with these locked picks (index 0 CAB1, 1 CAB2) and the adapters' nonces
+ * (entropy 0, the given select serial), computed here from the rules module
+ * directly. */
+static int ExpectedResolvedConfig(const struct NativeMatchConfigV1 *base, const uint8_t characters[2],
+	const uint8_t tracks[2], const uint8_t laps[2], uint32_t selectSerial, struct NativeMatchSelectOutcome *outcomeOut,
+	struct NativeMatchConfigV1 *configOut)
+{
+	struct NativeMatchSelectChoice choices[2];
+	struct NativeMatchSelectOutcome outcome;
+	uint32_t h;
+
+	memset(choices, 0, sizeof(choices));
+	for (h = 0; h < 2u; h++)
+	{
+		choices[h].characterID = characters[h];
+		choices[h].trackID = tracks[h];
+		choices[h].lapCount = laps[h];
+		if (!NativeArcadeNetplay_DeriveSelectNonce(0u, (uint8_t)(NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN + h), selectSerial,
+				&choices[h].nonce))
+		{
+			return 0;
+		}
+	}
+	memset(&outcome, 0, sizeof(outcome));
+	if (!NativeMatchSelect_Resolve(base, 2u, choices, &outcome) || !NativeMatchSelect_BuildConfig(base, &outcome, configOut))
+	{
+		return 0;
+	}
+	if (outcomeOut != NULL)
+	{
+		*outcomeOut = outcome;
+	}
+	return 1;
+}
+
+/* The bot slots, in slot order, hold the first retail 2P AI set that holds
+ * neither human character (the LOAD_Robots2P rule). */
+static int BotsAreRetailSet(const struct NativeMatchConfigV1 *config)
+{
+	uint8_t slotA = 0u;
+	uint8_t slotB = 0u;
+	uint8_t humanA;
+	uint8_t humanB;
+	uint32_t set;
+	uint32_t racer;
+	uint32_t slot;
+	uint32_t bot = 0u;
+	uint32_t chosen = NATIVE_MATCH_SELECT_AI_SET_COUNT;
+
+	if (!NativeMatchConfigV1_FindRoleSlot(config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &slotA) ||
+		!NativeMatchConfigV1_FindRoleSlot(config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &slotB))
+	{
+		return 0;
+	}
+	humanA = config->slots[slotA].characterID;
+	humanB = config->slots[slotB].characterID;
+	for (set = 0; (set < NATIVE_MATCH_SELECT_AI_SET_COUNT) && (chosen == NATIVE_MATCH_SELECT_AI_SET_COUNT); set++)
+	{
+		int clash = 0;
+
+		for (racer = 0; racer < NATIVE_MATCH_SELECT_AI_SET_RACERS; racer++)
+		{
+			uint8_t id = NativeMatchSelect_AiSetRacer(set, racer);
+
+			clash = clash || (id == humanA) || (id == humanB);
+		}
+		if (!clash)
+		{
+			chosen = set;
+		}
+	}
+	if (chosen == NATIVE_MATCH_SELECT_AI_SET_COUNT)
+	{
+		return 0;
+	}
+	for (slot = 0; slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; slot++)
+	{
+		if (config->slots[slot].role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT)
+		{
+			if ((bot >= NATIVE_MATCH_SELECT_AI_SET_RACERS) ||
+				(config->slots[slot].characterID != NativeMatchSelect_AiSetRacer(chosen, bot)))
+			{
+				return 0;
+			}
+			bot += 1u;
+		}
+	}
+	return bot == NATIVE_MATCH_SELECT_AI_SET_RACERS;
+}
+
+/* Ticks both with no buttons until each has returned BEGIN_SELECT, then
+ * one more released tick so both menus are armed on SELECT. */
+static int DriveBothIntoSelect(void)
+{
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+
+	if (!DriveBothUntil(ACT_BEGIN_SELECT))
+	{
+		return 0;
+	}
+	TickBoth(0u, 0u, 0u, &actionA, &actionB);
+	return (actionA == ACT_NONE) && (actionB == ACT_NONE) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT) &&
+		(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT) && (NativeArcadeNetplay_Select(&g_a) != NULL) &&
+		(NativeArcadeNetplay_Select(&g_b) != NULL);
+}
+
+/* Parallel scripted presses, one per step for each cabinet (0: none): each
+ * step is a held tick and a released tick, and every action must be NONE. */
+static int PressScripts(const uint32_t *scriptA, const uint32_t *scriptB, uint32_t steps)
+{
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint32_t step;
+
+	for (step = 0; step < steps; step++)
+	{
+		TickBoth(scriptA[step], scriptB[step], 0u, &actionA, &actionB);
+		if ((actionA != ACT_NONE) || (actionB != ACT_NONE))
+		{
+			return 0;
+		}
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		if ((actionA != ACT_NONE) || (actionB != ACT_NONE))
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+/* One side's per-tick invariants while driving to a race: RELINK only on
+ * SELECT_RESULT, exactly one RELINK before START_RACE, no agreed config
+ * before RACING, and the select session visible exactly on the select
+ * screens. */
+static int CheckSelectPath(const struct NativeArcadeNetplay *netplay, enum NativeArcadeFlowAction action, uint32_t *relinks,
+	int *started)
+{
+	uint32_t screen = ScreenOf(netplay);
+
+	if (*started)
+	{
+		return 1;
+	}
+	if (action == ACT_RELINK)
+	{
+		if (screen != NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT)
+		{
+			return 0;
+		}
+		*relinks += 1u;
+	}
+	if (action == ACT_START_RACE)
+	{
+		*started = 1;
+		return (*relinks == 1u) && (screen == NATIVE_ARCADE_FLOW_SCREEN_RACING) &&
+			(NativeArcadeNetplay_AgreedConfig(netplay) != NULL) && (NativeArcadeNetplay_Select(netplay) == NULL);
+	}
+	if (NativeArcadeNetplay_AgreedConfig(netplay) != NULL)
+	{
+		return 0;
+	}
+	if ((screen == NATIVE_ARCADE_FLOW_SCREEN_SELECT) || (screen == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT))
+	{
+		return NativeArcadeNetplay_Select(netplay) != NULL;
+	}
+	return NativeArcadeNetplay_Select(netplay) == NULL;
+}
+
+/* From the select screens: ticks both with no buttons until each has
+ * returned START_RACE, checking CheckSelectPath on every tick. */
+static int DriveBothToRaceChecked(void)
+{
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint32_t relinksA = 0u;
+	uint32_t relinksB = 0u;
+	int startedA = 0;
+	int startedB = 0;
+	uint32_t tick;
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && !(startedA && startedB); tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		if ((actionA == ACT_CLOSE_LINK) || (actionA == ACT_RETURN_TO_TITLE) || (actionB == ACT_CLOSE_LINK) ||
+			(actionB == ACT_RETURN_TO_TITLE))
+		{
+			return 0;
+		}
+		if (!CheckSelectPath(&g_a, actionA, &relinksA, &startedA) || !CheckSelectPath(&g_b, actionB, &relinksB, &startedB))
+		{
+			return 0;
+		}
+	}
+	return startedA && startedB;
+}
+
 /* 1. Pure: defaults, Init validation, cause mapping, rematch seed. */
 static int TestPure(void)
 {
@@ -358,6 +612,15 @@ static int TestPure(void)
 	CHECK(config.reserved == 0u);
 	NativeArcadeFlow_DefaultTimings(&timings);
 	CHECK(memcmp(&config.timings, &timings, sizeof(timings)) == 0);
+	/* The select session's defaults: 600 ticks per item (OD-1), 90 of
+	 * silence (SEL-9); no entropy. */
+	CHECK(config.selectTimings.characterTicks == NATIVE_MATCH_SELECT_SESSION_DEFAULT_ITEM_TICKS);
+	CHECK(config.selectTimings.trackTicks == NATIVE_MATCH_SELECT_SESSION_DEFAULT_ITEM_TICKS);
+	CHECK(config.selectTimings.lapTicks == NATIVE_MATCH_SELECT_SESSION_DEFAULT_ITEM_TICKS);
+	CHECK(config.selectTimings.peerSilenceTicks == NATIVE_MATCH_SELECT_SESSION_DEFAULT_PEER_SILENCE_TICKS);
+	CHECK(config.selectTimings.characterTicks == 600u);
+	CHECK(config.selectTimings.peerSilenceTicks == 90u);
+	CHECK(config.selectEntropy == 0u);
 	memset(&zeroFixture, 0, sizeof(zeroFixture));
 	CHECK(memcmp(&config.fixture, &zeroFixture, sizeof(zeroFixture)) == 0);
 	for (i = 0; i < NATIVE_LOBBY_STATE_MAX_CANDIDATES; i++)
@@ -472,6 +735,34 @@ static int TestPure(void)
 	bad = base;
 	bad.timings.resultsIdleTimeoutTicks = bad.timings.resultsDwellTicks;
 	CHECK(InitRejectsUntouched(&bad));
+	bad = base;
+	bad.timings.selectResultHoldTicks = 0u;
+	CHECK(InitRejectsUntouched(&bad));
+	bad = base;
+	bad.timings.launchTimeoutTicks = 0u;
+	CHECK(InitRejectsUntouched(&bad));
+
+	/* Select timings with any zero field. */
+	bad = base;
+	bad.selectTimings.characterTicks = 0u;
+	CHECK(InitRejectsUntouched(&bad));
+	bad = base;
+	bad.selectTimings.trackTicks = 0u;
+	CHECK(InitRejectsUntouched(&bad));
+	bad = base;
+	bad.selectTimings.lapTicks = 0u;
+	CHECK(InitRejectsUntouched(&bad));
+	bad = base;
+	bad.selectTimings.peerSilenceTicks = 0u;
+	CHECK(InitRejectsUntouched(&bad));
+	bad = base;
+	bad.selectTimings.characterTicks = 1u;
+	bad.selectTimings.trackTicks = 1u;
+	bad.selectTimings.lapTicks = 1u;
+	bad.selectTimings.peerSilenceTicks = 1u;
+	bad.selectEntropy = UINT64_MAX;
+	CHECK(NativeArcadeNetplay_Init(&g_probe, &bad) == 1);
+	CHECK(g_probe.config.selectEntropy == UINT64_MAX);
 
 	/* Success: stored config, fixture proposal, dormant flow, local slot. */
 	memset(&g_probe, 0xA5, sizeof(g_probe));
@@ -481,6 +772,12 @@ static int TestPure(void)
 	CHECK(g_probe.lobbyBegun == 0u);
 	CHECK(g_probe.raceArmed == 0u);
 	CHECK(g_probe.rematchBlocked == 0u);
+	CHECK(g_probe.selectActive == 0u);
+	CHECK(g_probe.relinked == 0u);
+	CHECK(g_probe.relinkBlocked == 0u);
+	CHECK(g_probe.selectSerial == 0u);
+	CHECK(g_probe.outcomeValid == 0u);
+	CHECK(NativeArcadeNetplay_Select(&g_probe) == NULL);
 	CHECK(g_probe.matchCount == 0u);
 	CHECK(g_probe.pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_NONE);
 	CHECK(memcmp(&g_probe.config, &base, sizeof(base)) == 0);
@@ -559,6 +856,8 @@ static int TestDormancy(void)
 	CHECK(memcmp(&g_a, &g_sentinel, sizeof(g_a)) == 0);
 	CHECK(NativeArcadeNetplay_Link(&g_a) == NULL);
 	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(NativeArcadeNetplay_Select(&g_a) == NULL);
+	CHECK(NativeArcadeNetplay_Select(NULL) == NULL);
 
 	NativeArcadeNetplay_OnTakeResult(&g_a, NATIVE_LOCKSTEP_SESSION_STALL, 0u);
 	NativeArcadeNetplay_OnTakeResult(&g_a, NATIVE_LOCKSTEP_SESSION_OK, 0u);
@@ -602,15 +901,21 @@ static int TestDormancy(void)
 	return 0;
 }
 
-/* 3. Lobby to race on the fixture. */
+/* 3. Lobby to race: the lobby agrees on the fixture, an idle select
+ * resolves it, and the race runs on the resolved config. */
 static int TestLobbyToRace(void)
 {
+	static const uint8_t characters[2] = {0u, 1u};
+	static const uint8_t tracks[2] = {FIXTURE_TRACK_CURSOR, FIXTURE_TRACK_CURSOR};
+	static const uint8_t laps[2] = {FIXTURE_LAP_CURSOR, FIXTURE_LAP_CURSOR};
 	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
 	struct NativeArcadeNetplayView view;
 	const struct NativeMatchConfigV1 *agreedA;
 	const struct NativeMatchConfigV1 *agreedB;
 
 	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(ExpectedResolvedConfig(&fixture, characters, tracks, laps, 1u, NULL, &expected));
 	CHECK(InitPair(&fixture, &fixture, TEST_RACE_A_PORT, TEST_RACE_B_PORT));
 	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
 
@@ -635,8 +940,9 @@ static int TestLobbyToRace(void)
 	agreedB = NativeArcadeNetplay_AgreedConfig(&g_b);
 	CHECK(agreedA != NULL);
 	CHECK(agreedB != NULL);
-	CHECK(memcmp(agreedA, &fixture, sizeof(fixture)) == 0);
-	CHECK(memcmp(agreedB, &fixture, sizeof(fixture)) == 0);
+	CHECK(memcmp(agreedA, &expected, sizeof(expected)) == 0);
+	CHECK(memcmp(agreedB, &expected, sizeof(expected)) == 0);
+	CHECK(agreedA->masterSeed != fixture.masterSeed);
 
 	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
 	CHECK(view.matchCount == 1u);
@@ -658,10 +964,17 @@ static int TestLobbyToRace(void)
 	return 0;
 }
 
-/* 4. Both choose REMATCH: a new link on the derived seed, and a new race. */
+/* 4. Both choose REMATCH: a new link on the seed derived from the finished
+ * match's config, a new select on it (OD-3), and a new race. */
 static int TestBothRematch(void)
 {
+	static const uint8_t characters[2] = {0u, 1u};
+	static const uint8_t tracks[2] = {FIXTURE_TRACK_CURSOR, FIXTURE_TRACK_CURSOR};
+	static const uint8_t laps[2] = {FIXTURE_LAP_CURSOR, FIXTURE_LAP_CURSOR};
 	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 first;
+	struct NativeMatchConfigV1 rematchBase;
+	struct NativeMatchConfigV1 expected;
 	struct NativeArcadeNetplayView view;
 	enum NativeArcadeFlowAction actionA;
 	enum NativeArcadeFlowAction actionB;
@@ -670,10 +983,11 @@ static int TestBothRematch(void)
 	uint64_t expectedSeed = 0u;
 
 	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
-	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&fixture, &expectedSeed) == 1);
 	CHECK(EnterAndRace(&fixture, TEST_REMATCH_A_PORT, TEST_REMATCH_B_PORT));
 	CHECK(FinishAndDwell());
 	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) != NULL);
+	first = *NativeArcadeNetplay_AgreedConfig(&g_a);
+	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&first, &expectedSeed) == 1);
 
 	TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
 	CHECK(actionA == ACT_BEGIN_REMATCH);
@@ -681,9 +995,14 @@ static int TestBothRematch(void)
 	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
 	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
 	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
-	/* A brand-new link is handshaking on the rematch config. */
+	/* A brand-new link is handshaking on the rematch config, which carries
+	 * the derived seed. */
 	CHECK(NativeLockstepPeerLink_Mode(NativeArcadeNetplay_Link(&g_a)) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
 	CHECK(NativeLockstepPeerLink_Mode(NativeArcadeNetplay_Link(&g_b)) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+	CHECK(g_a.currentConfig.masterSeed == expectedSeed);
+	CHECK(memcmp(&g_a.currentConfig, &g_b.currentConfig, sizeof(g_a.currentConfig)) == 0);
+	rematchBase = g_a.currentConfig;
+	CHECK(ExpectedResolvedConfig(&rematchBase, characters, tracks, laps, 2u, NULL, &expected));
 
 	CHECK(DriveBothUntil(ACT_START_RACE));
 	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
@@ -694,9 +1013,12 @@ static int TestBothRematch(void)
 	CHECK(agreedA != NULL);
 	CHECK(agreedB != NULL);
 	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
-	CHECK(agreedA->masterSeed == expectedSeed);
+	/* The rematch select resolved its base: a new seed again. */
+	CHECK(memcmp(agreedA, &expected, sizeof(expected)) == 0);
+	CHECK(agreedA->masterSeed != expectedSeed);
+	CHECK(agreedA->masterSeed != first.masterSeed);
 	CHECK(agreedA->masterSeed != fixture.masterSeed);
-	CHECK(agreedA->trackID == fixture.trackID);
+	CHECK(agreedA->trackID == first.trackID);
 
 	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
 	CHECK(view.matchCount == 2u);
@@ -998,12 +1320,17 @@ static int TickUntilLeft(struct NativeArcadeNetplay *netplay, uint32_t screen)
  * reach START_RACE. */
 static int TestStaggeredEnter(void)
 {
+	static const uint8_t characters[2] = {0u, 1u};
+	static const uint8_t tracks[2] = {FIXTURE_TRACK_CURSOR, FIXTURE_TRACK_CURSOR};
+	static const uint8_t laps[2] = {FIXTURE_LAP_CURSOR, FIXTURE_LAP_CURSOR};
 	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
 	const struct NativeMatchConfigV1 *agreedA;
 	const struct NativeMatchConfigV1 *agreedB;
 	uint32_t tick;
 
 	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(ExpectedResolvedConfig(&fixture, characters, tracks, laps, 1u, NULL, &expected));
 	CHECK(InitPairDefaultCadence(&fixture, TEST_STAGGER_ENTER_A_PORT, TEST_STAGGER_ENTER_B_PORT));
 	CHECK(g_a.config.attemptTicksPerCandidate == 150u);
 	CHECK(g_a.config.retransmitIntervalTicks == 1u);
@@ -1025,18 +1352,20 @@ static int TestStaggeredEnter(void)
 	CHECK(agreedA != NULL);
 	CHECK(agreedB != NULL);
 	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
-	CHECK(memcmp(agreedA, &fixture, sizeof(fixture)) == 0);
+	CHECK(memcmp(agreedA, &expected, sizeof(expected)) == 0);
 
 	ShutdownBoth();
 	return 0;
 }
 
 /* 10. B1: staggered rematch with the production cadence. A confirms REMATCH;
- * B stays on RESULTS for 20 more ticks and then confirms. Both must reach
- * START_RACE again on the same derived config. */
+ * B stays on RESULTS for 20 more ticks and then confirms. Both must agree on
+ * the same derived rematch config, select on it, and reach START_RACE again
+ * on the same resolved config. */
 static int TestStaggeredRematch(void)
 {
 	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 first;
 	enum NativeArcadeFlowAction actionA;
 	enum NativeArcadeFlowAction actionB;
 	const struct NativeMatchConfigV1 *agreedA;
@@ -1045,10 +1374,11 @@ static int TestStaggeredRematch(void)
 	uint32_t tick;
 
 	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
-	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&fixture, &expectedSeed) == 1);
 	CHECK(InitPairDefaultCadence(&fixture, TEST_STAGGER_REMATCH_A_PORT, TEST_STAGGER_REMATCH_B_PORT));
 	CHECK(EnterAndRaceInitialized());
 	CHECK(FinishAndDwell());
+	first = *NativeArcadeNetplay_AgreedConfig(&g_a);
+	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&first, &expectedSeed) == 1);
 
 	TickBoth(BTN_CROSS, 0u, 0u, &actionA, &actionB);
 	CHECK(actionA == ACT_BEGIN_REMATCH);
@@ -1067,6 +1397,9 @@ static int TestStaggeredRematch(void)
 	TickBoth(0u, BTN_CROSS, 0u, &actionA, &actionB);
 	CHECK(actionB == ACT_BEGIN_REMATCH);
 	CHECK(actionA == ACT_NONE);
+	/* Both propose the same rematch config on the derived seed. */
+	CHECK(g_a.currentConfig.masterSeed == expectedSeed);
+	CHECK(memcmp(&g_a.currentConfig, &g_b.currentConfig, sizeof(g_a.currentConfig)) == 0);
 
 	CHECK(DriveBothUntil(ACT_START_RACE));
 	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
@@ -1076,7 +1409,8 @@ static int TestStaggeredRematch(void)
 	CHECK(agreedA != NULL);
 	CHECK(agreedB != NULL);
 	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
-	CHECK(agreedA->masterSeed == expectedSeed);
+	CHECK(agreedA->masterSeed != expectedSeed);
+	CHECK(agreedA->masterSeed != first.masterSeed);
 	CHECK(g_a.matchCount == 2u);
 	CHECK(g_b.matchCount == 2u);
 
@@ -1315,6 +1649,7 @@ static int TestInRaceDivergenceFromPoll(void)
 static int TestRematchBuildFailureBlocks(void)
 {
 	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 agreed;
 	enum NativeArcadeFlowAction actionA;
 	enum NativeArcadeFlowAction actionB;
 	uint32_t tick;
@@ -1327,6 +1662,7 @@ static int TestRematchBuildFailureBlocks(void)
 	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
 	CHECK(EnterAndRace(&fixture, TEST_BLOCKED_A_PORT, TEST_BLOCKED_B_PORT));
 	CHECK(FinishAndDwell());
+	agreed = *NativeArcadeNetplay_AgreedConfig(&g_a);
 
 	g_a.currentConfig.lapCount = 0u;
 	TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
@@ -1339,10 +1675,10 @@ static int TestRematchBuildFailureBlocks(void)
 	/* The corrupted config was not replaced by a guess either. */
 	CHECK(g_a.currentConfig.lapCount == 0u);
 	CHECK(NativeArcadeNetplay_Link(&g_b) != NULL);
-	/* Put the old, valid config (with the old seed) back: from here on only
-	 * the block itself stops a restart from beginning a lobby on the old
+	/* Put the old, valid agreed config (with the old seed) back: from here on
+	 * only the block itself stops a restart from beginning a lobby on the old
 	 * seed, so a Link that stays NULL proves RestartLobby refuses. */
-	g_a.currentConfig = fixture;
+	g_a.currentConfig = agreed;
 
 	for (tick = 0; (tick < DRIVE_BUDGET) && !titleA; tick++)
 	{
@@ -1689,6 +2025,692 @@ static int TestHookDivergenceBeforeTick(void)
 	return 0;
 }
 
+/* 18. MS-7: scripted picks. A picks Tiny (2), votes ROO_TUBES (6) and 5
+ * laps; B picks Crash (0), votes SLIDE_COLISEUM (16) and 5 laps. Both
+ * CONFIRMED -> SELECT_RESULT -> RELINK -> READY -> START_RACE on one
+ * byte-identical config: the track is one of the two votes (a seeded draw),
+ * 5 laps, the picks in slots 0 and 1, the retail bot set, and a new seed. */
+static int TestSelectScriptedPicks(void)
+{
+	/* A: NEXT, NEXT, CONFIRM (character); NEXT, CONFIRM (track); NEXT,
+	 * CONFIRM (laps). B: PREV, CONFIRM; PREV (wraps), CONFIRM; NEXT, CONFIRM. */
+	static const uint32_t scriptA[7] = {BTN_DOWN, BTN_DOWN, BTN_CROSS, BTN_DOWN, BTN_CROSS, BTN_DOWN, BTN_CROSS};
+	static const uint32_t scriptB[7] = {BTN_UP, BTN_CROSS, BTN_UP, BTN_CROSS, BTN_DOWN, BTN_CROSS, 0u};
+	static const uint8_t characters[2] = {2u, 0u};
+	static const uint8_t tracks[2] = {6u, 16u};
+	static const uint8_t laps[2] = {5u, 5u};
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	struct NativeMatchSelectOutcome expectedOutcome;
+	const struct NativeMatchConfigV1 *agreedA;
+	const struct NativeMatchConfigV1 *agreedB;
+	const struct NativeMatchSelectHumanState *human;
+	uint64_t nonceA = 0u;
+	uint64_t nonceB = 0u;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(ExpectedResolvedConfig(&fixture, characters, tracks, laps, 1u, &expectedOutcome, &expected));
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(0u, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, 1u, &nonceA));
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(0u, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, 1u, &nonceB));
+	CHECK(nonceA != nonceB);
+
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_PICKS_A_PORT, TEST_SELECT_PICKS_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	/* The select base is the lobby-agreed fixture; no agreed race config yet. */
+	CHECK(memcmp(&g_a.select.base, &fixture, sizeof(fixture)) == 0);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(g_a.selectSerial == 1u);
+	CHECK(g_b.selectSerial == 1u);
+
+	CHECK(PressScripts(scriptA, scriptB, 7u));
+
+	/* Each local human is done with exactly its picks. */
+	human = NativeMatchSelectSession_Human(NativeArcadeNetplay_Select(&g_a), 0u);
+	CHECK(human != NULL);
+	CHECK(human->lockMask == 7u);
+	CHECK(human->characterID == 2u);
+	CHECK(human->trackID == 6u);
+	CHECK(human->lapCount == 5u);
+	CHECK(human->nonce == nonceA);
+	human = NativeMatchSelectSession_Human(NativeArcadeNetplay_Select(&g_b), 1u);
+	CHECK(human != NULL);
+	CHECK(human->lockMask == 7u);
+	CHECK(human->characterID == 0u);
+	CHECK(human->trackID == 16u);
+	CHECK(human->lapCount == 5u);
+	CHECK(human->nonce == nonceB);
+
+	CHECK(DriveBothToRaceChecked());
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	CHECK(NativeLockstepPeerLink_Mode(NativeArcadeNetplay_Link(&g_a)) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_Mode(NativeArcadeNetplay_Link(&g_b)) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	agreedA = NativeArcadeNetplay_AgreedConfig(&g_a);
+	agreedB = NativeArcadeNetplay_AgreedConfig(&g_b);
+	CHECK(agreedA != NULL);
+	CHECK(agreedB != NULL);
+	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
+	CHECK(memcmp(agreedA, &expected, sizeof(expected)) == 0);
+	CHECK((agreedA->trackID == 6u) || (agreedA->trackID == 16u));
+	CHECK(agreedA->lapCount == 5u);
+	CHECK(agreedA->slots[g_a.localSlot].characterID == 2u);
+	CHECK(agreedA->slots[g_b.localSlot].characterID == 0u);
+	CHECK(BotsAreRetailSet(agreedA));
+	CHECK(agreedA->masterSeed != fixture.masterSeed);
+	CHECK(agreedA->masterSeed != 0u);
+
+	/* Both adapters kept the outcome they relinked on: the track came from
+	 * a draw between the two votes, the laps did not. */
+	CHECK(g_a.outcomeValid == 1u);
+	CHECK(g_b.outcomeValid == 1u);
+	CHECK(memcmp(&g_a.lastOutcome, &expectedOutcome, sizeof(expectedOutcome)) == 0);
+	CHECK(memcmp(&g_b.lastOutcome, &expectedOutcome, sizeof(expectedOutcome)) == 0);
+	CHECK(g_a.lastOutcome.trackDrawn == 1u);
+	CHECK(g_a.lastOutcome.lapsDrawn == 0u);
+	CHECK(g_a.lastOutcome.characterReassignedMask == 0u);
+
+	/* The two adapters used different nonces, and each saw the other's. */
+	CHECK(g_a.select.humans[0].nonce == nonceA);
+	CHECK(g_a.select.humans[1].nonce == nonceB);
+	CHECK(g_b.select.humans[0].nonce == nonceA);
+	CHECK(g_b.select.humans[1].nonce == nonceB);
+	CHECK(g_a.relinked == 1u);
+	CHECK(g_a.relinkBlocked == 0u);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* 19. MS-7: both idle. Every item auto-locks on its cursor (SEL-6): Crash
+ * and Cortex (the fixture's slot characters), CRASH_COVE (the fixture track
+ * is not a table track), 3 laps; nothing is drawn, and the seed is new. */
+static int TestSelectIdleAutoPick(void)
+{
+	static const uint8_t characters[2] = {0u, 1u};
+	static const uint8_t tracks[2] = {FIXTURE_TRACK_CURSOR, FIXTURE_TRACK_CURSOR};
+	static const uint8_t laps[2] = {FIXTURE_LAP_CURSOR, FIXTURE_LAP_CURSOR};
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	const struct NativeMatchConfigV1 *agreedA;
+	const struct NativeMatchConfigV1 *agreedB;
+	const struct NativeMatchSelectHumanState *human;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(ExpectedResolvedConfig(&fixture, characters, tracks, laps, 1u, NULL, &expected));
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_IDLE_A_PORT, TEST_SELECT_IDLE_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+
+	/* The initial cursors. */
+	human = NativeMatchSelectSession_Human(NativeArcadeNetplay_Select(&g_a), 0u);
+	CHECK(human != NULL);
+	CHECK(human->characterID == 0u);
+	CHECK(human->trackID == FIXTURE_TRACK_CURSOR);
+	CHECK(human->lapCount == FIXTURE_LAP_CURSOR);
+	CHECK(human->lockMask == 0u);
+	human = NativeMatchSelectSession_Human(NativeArcadeNetplay_Select(&g_b), 1u);
+	CHECK(human != NULL);
+	CHECK(human->characterID == 1u);
+	CHECK(human->trackID == FIXTURE_TRACK_CURSOR);
+	CHECK(human->lapCount == FIXTURE_LAP_CURSOR);
+
+	CHECK(DriveBothToRaceChecked());
+	agreedA = NativeArcadeNetplay_AgreedConfig(&g_a);
+	agreedB = NativeArcadeNetplay_AgreedConfig(&g_b);
+	CHECK(agreedA != NULL);
+	CHECK(agreedB != NULL);
+	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
+	CHECK(memcmp(agreedA, &expected, sizeof(expected)) == 0);
+	CHECK(agreedA->slots[g_a.localSlot].characterID == 0u);
+	CHECK(agreedA->slots[g_b.localSlot].characterID == 1u);
+	CHECK(agreedA->trackID == 3u);
+	CHECK(agreedA->lapCount == 3u);
+	CHECK(BotsAreRetailSet(agreedA));
+	CHECK(agreedA->masterSeed != fixture.masterSeed);
+	CHECK(g_a.lastOutcome.trackDrawn == 0u);
+	CHECK(g_a.lastOutcome.lapsDrawn == 0u);
+	CHECK(g_a.lastOutcome.characterReassignedMask == 0u);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* Polls a link directly until an aux record from sender human `sender` with
+ * the character locked has arrived, discarding everything taken on the way:
+ * the record is then in flight as far as the adapter is concerned. Returns
+ * 0 if the budget ran out. */
+static int AbsorbLockedCharacterRecord(struct NativeLockstepPeerLink *link, uint8_t sender)
+{
+	uint8_t bytes[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	size_t size = 0u;
+	uint32_t spin;
+
+	for (spin = 0; spin < DRIVE_BUDGET; spin++)
+	{
+		NativeLockstepPeerLink_Poll(link);
+		while (NativeLockstepPeerLink_TakeAux(link, bytes, sizeof(bytes), &size))
+		{
+			struct NativeCodecReader reader;
+			struct NativeMatchSelectMessageV1 message;
+			uint32_t cause = 0u;
+
+			NativeCodecReader_Init(&reader, bytes, size);
+			if (NativeMatchSelectMessageV1_Decode(&reader, &message, &cause) && (message.senderHuman == sender) &&
+				((message.lockMask & NATIVE_MATCH_SELECT_LOCK_CHARACTER) != 0u))
+			{
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+/* 20. MS-7: both lock the same character on the same tick. B moves to Crash
+ * (0), A's cursor is on Crash; both CONFIRM on one tick. A locks first and
+ * sends; that record is still in flight when B's CONFIRM runs (the test
+ * absorbs it at B's link before B ticks, as crossing datagrams would be), so
+ * B's lock is not refused. Resolution reassigns CAB2 (OD-2): Cortex (1), the
+ * lowest free character, identically on both. */
+static int TestSelectSameCharacterSameTick(void)
+{
+	static const uint8_t characters[2] = {0u, 0u};
+	static const uint8_t tracks[2] = {FIXTURE_TRACK_CURSOR, FIXTURE_TRACK_CURSOR};
+	static const uint8_t laps[2] = {FIXTURE_LAP_CURSOR, FIXTURE_LAP_CURSOR};
+	static const uint32_t moveA[1] = {0u};
+	static const uint32_t moveB[1] = {BTN_UP};
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	struct NativeMatchSelectOutcome expectedOutcome;
+	const struct NativeMatchConfigV1 *agreedA;
+	const struct NativeMatchConfigV1 *agreedB;
+	const struct NativeMatchSelectHumanState *human;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(ExpectedResolvedConfig(&fixture, characters, tracks, laps, 1u, &expectedOutcome, &expected));
+	CHECK(expectedOutcome.characterReassignedMask == 0x2u);
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_SAME_A_PORT, TEST_SELECT_SAME_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	CHECK(PressScripts(moveA, moveB, 1u));
+	CHECK(NativeMatchSelectSession_Human(&g_b.select, 1u)->characterID == 0u);
+
+	/* The same tick: A confirms and sends; B confirms before seeing it. */
+	actionA = NativeArcadeNetplay_Tick(&g_a, BTN_CROSS, 0u);
+	CHECK(actionA == ACT_NONE);
+	CHECK((NativeMatchSelectSession_Human(&g_a.select, 0u)->lockMask & NATIVE_MATCH_SELECT_LOCK_CHARACTER) != 0u);
+	CHECK(AbsorbLockedCharacterRecord(NativeArcadeNetplay_Link(&g_b), 0u));
+	actionB = NativeArcadeNetplay_Tick(&g_b, BTN_CROSS, 0u);
+	CHECK(actionB == ACT_NONE);
+	human = NativeMatchSelectSession_Human(&g_b.select, 1u);
+	CHECK((human->lockMask & NATIVE_MATCH_SELECT_LOCK_CHARACTER) != 0u);
+	CHECK(human->characterID == 0u);
+
+	TickBoth(0u, 0u, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_NONE);
+	CHECK(actionB == ACT_NONE);
+	CHECK(DriveBothToRaceChecked());
+
+	agreedA = NativeArcadeNetplay_AgreedConfig(&g_a);
+	agreedB = NativeArcadeNetplay_AgreedConfig(&g_b);
+	CHECK(agreedA != NULL);
+	CHECK(agreedB != NULL);
+	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
+	CHECK(memcmp(agreedA, &expected, sizeof(expected)) == 0);
+	CHECK(agreedA->slots[g_a.localSlot].characterID == 0u);
+	CHECK(agreedA->slots[g_b.localSlot].characterID == 1u);
+	CHECK(BotsAreRetailSet(agreedA));
+	CHECK(g_a.lastOutcome.characterReassignedMask == 0x2u);
+	CHECK(g_b.lastOutcome.characterReassignedMask == 0x2u);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* 21. MS-7: B shuts down during SELECT. A's link stays READY (UDP has no
+ * disconnect), so A fails by select peer silence (SEL-9) and shows LINK
+ * ERROR; it never returns START_RACE and never relinks. */
+static int TestSelectPeerSilence(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	enum NativeArcadeFlowAction action;
+	uint32_t tick;
+	uint32_t ticks = 0u;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_SILENCE_A_PORT, TEST_SELECT_SILENCE_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	for (tick = 0; tick < 5u; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+	}
+	NativeArcadeNetplay_Shutdown(&g_b);
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK(action == ACT_NONE);
+		ticks += 1u;
+	}
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(NativeMatchSelectSession_Status(&g_a.select) == (uint32_t)NATIVE_MATCH_SELECT_STATUS_FAILED);
+	CHECK(NativeMatchSelectSession_Fault(&g_a.select) == (uint32_t)NATIVE_MATCH_SELECT_SESSION_FAULT_PEER_SILENT);
+	/* B's last record may land on A's first tick after the shutdown or
+	 * before it; the silence then runs its full length. */
+	CHECK(ticks <= SELECT_PEER_SILENCE_TICKS);
+	CHECK(ticks >= SELECT_PEER_SILENCE_TICKS - 2u);
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	CHECK(g_a.relinked == 0u);
+	CHECK(g_a.outcomeValid == 0u);
+	CHECK(NativeArcadeNetplay_Select(&g_a) == NULL);
+	/* RESULTS shows the select base: nothing was resolved. */
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) != NULL);
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), &fixture, sizeof(fixture)) == 0);
+
+	/* Nothing starts afterwards either. */
+	for (tick = 0; tick < 50u; tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK(action != ACT_START_RACE);
+		CHECK(action != ACT_RELINK);
+	}
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* From SELECT, idle until both are on SELECT_RESULT, CONFIRMED, and neither
+ * has relinked yet. */
+static int DriveBothToSelectResult(void)
+{
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint32_t tick;
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && !((ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT) &&
+													 (ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT));
+		 tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		if ((actionA != ACT_NONE) || (actionB != ACT_NONE))
+		{
+			return 0;
+		}
+	}
+	return (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT) &&
+		(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT) &&
+		(NativeMatchSelectSession_Status(&g_a.select) == (uint32_t)NATIVE_MATCH_SELECT_STATUS_CONFIRMED) &&
+		(NativeMatchSelectSession_Status(&g_b.select) == (uint32_t)NATIVE_MATCH_SELECT_STATUS_CONFIRMED) &&
+		(g_a.relinked == 0u) && (g_b.relinked == 0u);
+}
+
+/* 22. MS-7: B shuts down right after both are CONFIRMED, during A's result
+ * hold. A still relinks on the resolved config, nobody answers the relink
+ * handshake, and A shows LINK ERROR exactly at the launch timeout, never
+ * START_RACE. */
+static int TestSelectLaunchTimeout(void)
+{
+	static const uint8_t characters[2] = {0u, 1u};
+	static const uint8_t tracks[2] = {FIXTURE_TRACK_CURSOR, FIXTURE_TRACK_CURSOR};
+	static const uint8_t laps[2] = {FIXTURE_LAP_CURSOR, FIXTURE_LAP_CURSOR};
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	enum NativeArcadeFlowAction action;
+	uint32_t tick;
+	uint32_t ticksSinceRelink = 0u;
+	uint32_t restarts = 0u;
+	int relinked = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(ExpectedResolvedConfig(&fixture, characters, tracks, laps, 1u, NULL, &expected));
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_LAUNCH_A_PORT, TEST_SELECT_LAUNCH_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	CHECK(DriveBothToSelectResult());
+	NativeArcadeNetplay_Shutdown(&g_b);
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK(action != ACT_START_RACE);
+		if (relinked)
+		{
+			ticksSinceRelink += 1u;
+			CHECK((action == ACT_NONE) || (action == ACT_RESTART_LOBBY));
+			restarts += (action == ACT_RESTART_LOBBY) ? 1u : 0u;
+		}
+		else if (action == ACT_RELINK)
+		{
+			relinked = 1;
+			/* The relink is on the resolved config, on a new link. */
+			CHECK(g_a.relinked == 1u);
+			CHECK(g_a.relinkBlocked == 0u);
+			CHECK(g_a.outcomeValid == 1u);
+			CHECK(memcmp(&g_a.currentConfig, &expected, sizeof(expected)) == 0);
+			CHECK(NativeLockstepPeerLink_Mode(NativeArcadeNetplay_Link(&g_a)) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+		}
+		else
+		{
+			CHECK(action == ACT_NONE);
+		}
+	}
+	CHECK(relinked);
+	CHECK(ticksSinceRelink == LAUNCH_TIMEOUT_TICKS);
+	/* The 20-tick attempt budget ran out unanswered, and the retries ran. */
+	CHECK(restarts > 0u);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(g_a.raceArmed == 0u);
+	CHECK(g_a.matchCount == 0u);
+	/* RESULTS shows the resolved config the relink proposed. */
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), &expected, sizeof(expected)) == 0);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* 22b. MS-7: a resolved config that cannot be built blocks the relink. A's
+ * current config is corrupted during the result hold (lapCount 0), so
+ * RELINK cannot build: A closes the old link, begins nothing, refuses every
+ * restart (even once the valid base is put back), and shows LINK ERROR at
+ * the launch timeout; it never races on the base config. BEGIN_REMATCH
+ * clears the block. */
+static int TestSelectRelinkBuildFailureBlocks(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint32_t tick;
+	uint32_t ticksSinceRelink = 0u;
+	uint32_t restarts = 0u;
+	int relinked = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_BLOCKED_A_PORT, TEST_SELECT_BLOCKED_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	CHECK(DriveBothToSelectResult());
+	g_a.currentConfig.lapCount = 0u;
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT); tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA != ACT_START_RACE);
+		CHECK(actionB != ACT_START_RACE);
+		if (relinked)
+		{
+			ticksSinceRelink += 1u;
+			CHECK((actionA == ACT_NONE) || (actionA == ACT_RESTART_LOBBY));
+			restarts += (actionA == ACT_RESTART_LOBBY) ? 1u : 0u;
+			CHECK(g_a.lobbyBegun == 0u);
+			CHECK(NativeArcadeNetplay_Link(&g_a) == NULL);
+		}
+		else if (actionA == ACT_RELINK)
+		{
+			relinked = 1;
+			CHECK(g_a.relinked == 1u);
+			CHECK(g_a.relinkBlocked == 1u);
+			CHECK(g_a.outcomeValid == 0u);
+			CHECK(g_a.lobbyBegun == 0u);
+			CHECK(NativeArcadeNetplay_Link(&g_a) == NULL);
+			/* Not replaced by a guess. */
+			CHECK(g_a.currentConfig.lapCount == 0u);
+			/* The valid base back: only the block stops a restart now. */
+			g_a.currentConfig = fixture;
+		}
+		else
+		{
+			CHECK(actionA == ACT_NONE);
+		}
+	}
+	CHECK(relinked);
+	CHECK(ticksSinceRelink == LAUNCH_TIMEOUT_TICKS);
+	CHECK(restarts > 0u);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(g_a.relinkBlocked == 1u);
+	CHECK(g_a.matchCount == 0u);
+
+	/* BEGIN_REMATCH clears the block. */
+	for (tick = 0; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	}
+	CHECK(NativeArcadeNetplay_Tick(&g_a, BTN_CROSS, 0u) == ACT_BEGIN_REMATCH);
+	CHECK(g_a.relinkBlocked == 0u);
+	CHECK(g_a.relinked == 0u);
+	CHECK(g_a.lobbyBegun == 1u);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* 23. MS-7, OD-3: a rematch goes back through select. The first match is
+ * picked (Coco 3 and Dingodile 5, TIGER_TEMPLE 4, 7 laps); both REMATCH;
+ * READY -> MATCH_FOUND -> SELECT, where each cursor starts on that cabinet's
+ * previous picks; new picks start a race on a config whose seed differs from
+ * the previous match's. */
+static int TestSelectRematchThroughSelect(void)
+{
+	/* First select. A: 3 x NEXT, CONFIRM; 2 x NEXT, CONFIRM; PREV (wraps to
+	 * 7), CONFIRM. B: 4 x NEXT, CONFIRM; 2 x NEXT, CONFIRM; PREV, CONFIRM. */
+	static const uint32_t firstA[10] = {BTN_DOWN, BTN_DOWN, BTN_DOWN, BTN_CROSS, BTN_DOWN, BTN_DOWN, BTN_CROSS, BTN_UP,
+		BTN_CROSS, 0u};
+	static const uint32_t firstB[10] = {BTN_DOWN, BTN_DOWN, BTN_DOWN, BTN_DOWN, BTN_CROSS, BTN_DOWN, BTN_DOWN,
+		BTN_CROSS, BTN_UP, BTN_CROSS};
+	/* Rematch select. A: NEXT, CONFIRM (N_GIN 4); NEXT, CONFIRM (COCO_PARK
+	 * 14); NEXT (wraps to 3), CONFIRM. B confirms every cursor as it is. */
+	static const uint32_t secondA[6] = {BTN_DOWN, BTN_CROSS, BTN_DOWN, BTN_CROSS, BTN_DOWN, BTN_CROSS};
+	static const uint32_t secondB[6] = {BTN_CROSS, BTN_CROSS, BTN_CROSS, 0u, 0u, 0u};
+	static const uint8_t firstCharacters[2] = {3u, 5u};
+	static const uint8_t firstTracks[2] = {4u, 4u};
+	static const uint8_t firstLaps[2] = {7u, 7u};
+	static const uint8_t secondCharacters[2] = {4u, 5u};
+	static const uint8_t secondTracks[2] = {14u, 4u};
+	static const uint8_t secondLaps[2] = {3u, 7u};
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 first;
+	struct NativeMatchConfigV1 expected;
+	struct NativeMatchConfigV1 rematchBase;
+	const struct NativeMatchConfigV1 *agreedA;
+	const struct NativeMatchConfigV1 *agreedB;
+	const struct NativeMatchSelectHumanState *human;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint64_t rematchSeed = 0u;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(ExpectedResolvedConfig(&fixture, firstCharacters, firstTracks, firstLaps, 1u, NULL, &expected));
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_REMATCH_A_PORT, TEST_SELECT_REMATCH_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	CHECK(PressScripts(firstA, firstB, 10u));
+	CHECK(DriveBothToRaceChecked());
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) != NULL);
+	first = *NativeArcadeNetplay_AgreedConfig(&g_a);
+	CHECK(memcmp(&first, &expected, sizeof(expected)) == 0);
+	CHECK(first.trackID == 4u);
+	CHECK(first.lapCount == 7u);
+	CHECK(first.slots[g_a.localSlot].characterID == 3u);
+	CHECK(first.slots[g_b.localSlot].characterID == 5u);
+	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&first, &rematchSeed) == 1);
+
+	/* Race, finish, both REMATCH. */
+	CHECK(FinishAndDwell());
+	TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_BEGIN_REMATCH);
+	CHECK(actionB == ACT_BEGIN_REMATCH);
+	CHECK(g_a.relinked == 0u);
+	CHECK(NativeArcadeNetplay_Select(&g_a) == NULL);
+	rematchBase = g_a.currentConfig;
+	CHECK(rematchBase.masterSeed == rematchSeed);
+
+	/* READY -> MATCH_FOUND -> SELECT on the rematch config. */
+	CHECK(DriveBothIntoSelect());
+	CHECK(g_a.selectSerial == 2u);
+	CHECK(g_b.selectSerial == 2u);
+	CHECK(memcmp(&g_a.select.base, &rematchBase, sizeof(rematchBase)) == 0);
+	CHECK(memcmp(&g_b.select.base, &rematchBase, sizeof(rematchBase)) == 0);
+	/* Each cursor starts on that cabinet's previous picks (OD-3). */
+	human = NativeMatchSelectSession_Human(NativeArcadeNetplay_Select(&g_a), 0u);
+	CHECK(human != NULL);
+	CHECK(human->characterID == 3u);
+	CHECK(human->trackID == 4u);
+	CHECK(human->lapCount == 7u);
+	CHECK(human->lockMask == 0u);
+	human = NativeMatchSelectSession_Human(NativeArcadeNetplay_Select(&g_b), 1u);
+	CHECK(human != NULL);
+	CHECK(human->characterID == 5u);
+	CHECK(human->trackID == 4u);
+	CHECK(human->lapCount == 7u);
+	CHECK(human->lockMask == 0u);
+
+	/* New picks. */
+	CHECK(ExpectedResolvedConfig(&rematchBase, secondCharacters, secondTracks, secondLaps, 2u, NULL, &expected));
+	CHECK(PressScripts(secondA, secondB, 6u));
+	CHECK(DriveBothToRaceChecked());
+	agreedA = NativeArcadeNetplay_AgreedConfig(&g_a);
+	agreedB = NativeArcadeNetplay_AgreedConfig(&g_b);
+	CHECK(agreedA != NULL);
+	CHECK(agreedB != NULL);
+	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
+	CHECK(memcmp(agreedA, &expected, sizeof(expected)) == 0);
+	CHECK(agreedA->slots[g_a.localSlot].characterID == 4u);
+	CHECK(agreedA->slots[g_b.localSlot].characterID == 5u);
+	CHECK((agreedA->trackID == 14u) || (agreedA->trackID == 4u));
+	CHECK((agreedA->lapCount == 3u) || (agreedA->lapCount == 7u));
+	CHECK(BotsAreRetailSet(agreedA));
+	CHECK(agreedA->masterSeed != first.masterSeed);
+	CHECK(agreedA->masterSeed != rematchSeed);
+	CHECK(g_a.matchCount == 2u);
+	CHECK(g_b.matchCount == 2u);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* 24. MS-7: the select nonce (golden values computed independently with
+ * .NET System.Security.Cryptography.SHA256 over the documented 39-byte
+ * input), and the stale-datagram guard at BEGIN_SELECT. */
+static int TestSelectNonceAndAuxDiscard(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeLockstepPeerLink *linkA;
+	struct NativeLockstepPeerLink *linkB;
+	uint8_t junk[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	enum NativeArcadeFlowAction action = ACT_NONE;
+	uint64_t nonce = 0u;
+	uint64_t other = 0u;
+	uint32_t tick;
+	uint32_t i;
+
+	/* Golden. */
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(UINT64_C(0x0123456789abcdef), 1u, 1u, &nonce) == 1);
+	CHECK(nonce == UINT64_C(0x150cf333915b2da1));
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(0u, 1u, 1u, &nonce) == 1);
+	CHECK(nonce == UINT64_C(0xebc8503d7e4da731));
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(0u, 2u, 1u, &nonce) == 1);
+	CHECK(nonce == UINT64_C(0x67c8684915b85584));
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(0u, 1u, 2u, &nonce) == 1);
+	CHECK(nonce == UINT64_C(0x0a1192063a37884d));
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(0u, 2u, 2u, &nonce) == 1);
+	CHECK(nonce == UINT64_C(0x7e020a119e4f0815));
+
+	/* Deterministic, and sensitive to every input, including the high
+	 * bytes of the entropy and serial. */
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(UINT64_C(0x0123456789abcdef), 1u, 1u, &nonce) == 1);
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(UINT64_C(0x0123456789abcdef), 1u, 1u, &other) == 1);
+	CHECK(nonce == other);
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(UINT64_C(0x0123456789abcdee), 1u, 1u, &other) == 1);
+	CHECK(nonce != other);
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(UINT64_C(0x8123456789abcdef), 1u, 1u, &other) == 1);
+	CHECK(nonce != other);
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(UINT64_C(0x0123456789abcdef), 2u, 1u, &other) == 1);
+	CHECK(nonce != other);
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(UINT64_C(0x0123456789abcdef), 1u, 2u, &other) == 1);
+	CHECK(nonce != other);
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(UINT64_C(0x0123456789abcdef), 1u, UINT32_C(0x01000001), &other) == 1);
+	CHECK(nonce != other);
+	/* NULL output: 0. */
+	CHECK(NativeArcadeNetplay_DeriveSelectNonce(0u, 1u, 1u, NULL) == 0);
+
+	/* The aux inbox is empty right after BEGIN_SELECT, even with junk queued
+	 * before it. Drive both until A is on MATCH_FOUND, then B alone until its
+	 * link runs. */
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(InitPair(&fixture, &fixture, TEST_SELECT_AUX_A_PORT, TEST_SELECT_AUX_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) != NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND); tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK((actionB == ACT_NONE) || (actionB == ACT_BEGIN_SELECT));
+	}
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND);
+	for (tick = 0; (tick < DRIVE_BUDGET) && (LobbyStatusOf(&g_b) != (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY); tick++)
+	{
+		(void)NativeArcadeNetplay_Tick(&g_b, 0u, 0u);
+	}
+	linkA = NativeArcadeNetplay_Link(&g_a);
+	linkB = NativeArcadeNetplay_Link(&g_b);
+	CHECK(NativeLockstepPeerLink_Mode(linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_Mode(linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	memset(junk, 0xEE, sizeof(junk));
+	for (i = 0; i < 5u; i++)
+	{
+		CHECK(NativeLockstepPeerLink_SendAux(linkB, junk, sizeof(junk)) == 1);
+	}
+	for (tick = 0; (tick < DRIVE_BUDGET) && (NativeLockstepPeerLink_AuxCount(linkA) < 5u); tick++)
+	{
+		NativeLockstepPeerLink_Poll(linkA);
+	}
+	CHECK(NativeLockstepPeerLink_AuxCount(linkA) >= 5u);
+
+	/* A alone, through the rest of its MATCH_FOUND hold. */
+	for (tick = 0; (tick < DRIVE_BUDGET) && (action != ACT_BEGIN_SELECT); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK((action == ACT_NONE) || (action == ACT_BEGIN_SELECT));
+	}
+	CHECK(action == ACT_BEGIN_SELECT);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(NativeArcadeNetplay_Link(&g_a) == linkA);
+	CHECK(NativeLockstepPeerLink_AuxCount(linkA) == 0u);
+	CHECK(NativeArcadeNetplay_Select(&g_a) != NULL);
+	/* The junk was discarded unread, never fed to the session. */
+	CHECK(NativeMatchSelectSession_DroppedMalformed(&g_a.select) == 0u);
+	CHECK(NativeMatchSelectSession_Status(&g_a.select) == (uint32_t)NATIVE_MATCH_SELECT_STATUS_PICKING);
+
+	/* The select still completes and both race. */
+	CHECK(DriveBothUntil(ACT_START_RACE));
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), NativeArcadeNetplay_AgreedConfig(&g_b),
+			  sizeof(struct NativeMatchConfigV1)) == 0);
+
+	ShutdownBoth();
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestPure() == 0);
@@ -1708,6 +2730,14 @@ int main(void)
 	CHECK(TestBeginFailureRecovers() == 0);
 	CHECK(TestHookFaultBeforeTick() == 0);
 	CHECK(TestHookDivergenceBeforeTick() == 0);
+	CHECK(TestSelectScriptedPicks() == 0);
+	CHECK(TestSelectIdleAutoPick() == 0);
+	CHECK(TestSelectSameCharacterSameTick() == 0);
+	CHECK(TestSelectPeerSilence() == 0);
+	CHECK(TestSelectLaunchTimeout() == 0);
+	CHECK(TestSelectRelinkBuildFailureBlocks() == 0);
+	CHECK(TestSelectRematchThroughSelect() == 0);
+	CHECK(TestSelectNonceAndAuxDiscard() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }

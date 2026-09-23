@@ -7,21 +7,37 @@
 
 /*
  * Arcade-link screen flow (docs/GAME_LOOP_UI_MILESTONE.md section 2.2, with
- * the UX defaults of section 3). A deterministic state machine for the
- * arcade-link screens: OFF, LOBBY, MATCH_FOUND, RACING, RESULTS,
- * REMATCH_WAIT, and EXIT. It is fed once per tick with one navigation event
- * (from the arcade menu input seam) and one observation (the lobby layer's
- * status mapped onto this module's own lobby-status enum, a race-finished
- * flag, and an in-race link-failure reason), and returns at most one action
- * per tick for the caller to execute.
+ * the UX defaults of section 3, and the match-select phase of
+ * docs/MATCH_SELECT_MILESTONE.md section 2.5). A deterministic state machine
+ * for the arcade-link screens: OFF, LOBBY, MATCH_FOUND, SELECT,
+ * SELECT_RESULT, RACING, RESULTS, REMATCH_WAIT, and EXIT. It is fed once per
+ * tick with one navigation event (from the arcade menu input seam) and one
+ * observation (the lobby layer's status mapped onto this module's own
+ * lobby-status enum, a race-finished flag, an in-race link-failure reason,
+ * and the caller's select status), and returns at most one action per tick
+ * for the caller to execute.
  *
  * Outline:
  * - OFF is inert. NativeArcadeFlow_Enter moves to LOBBY (BEGIN_LOBBY).
  * - LOBBY retries WAITING or LOST indefinitely after lobbyRetryPauseTicks
  *   (UX-5), never retries REJECTED automatically (CONFIRM retries it), moves
  *   to MATCH_FOUND on READY, and BACK closes the link and exits.
- * - MATCH_FOUND holds for matchFoundHoldTicks, then START_RACE; losing READY
- *   during the hold returns to LOBBY (RESTART_LOBBY).
+ * - MATCH_FOUND holds for matchFoundHoldTicks, then moves to SELECT
+ *   (BEGIN_SELECT); losing READY during the hold returns to LOBBY
+ *   (RESTART_LOBBY). It never starts a race itself.
+ * - SELECT ignores every menu event (the caller routes them to its select
+ *   session; BACK is ignored, SEL-7). Checked in order: a lobby status
+ *   other than READY, then select status FAILED, each move to RESULTS with
+ *   LINK_ERROR; select status CONFIRMED moves to SELECT_RESULT.
+ * - SELECT_RESULT ignores every menu event. Phase 1: it shows the resolved
+ *   match, ignoring the lobby status, and on the tick ticksInScreen reaches
+ *   selectResultHoldTicks returns RELINK (the caller relinks on the
+ *   resolved config). Phase 2 starts on the tick after RELINK, because a
+ *   READY still observed on the RELINK tick belongs to the old link; checked
+ *   in order: READY moves to RACING (START_RACE); REJECTED, or
+ *   launchTimeoutTicks ticks since RELINK, moves to RESULTS with
+ *   LINK_ERROR; WAITING or LOST returns RESTART_LOBBY after
+ *   lobbyRetryPauseTicks; CONNECTING stays.
  * - RACING ignores menu events; a link failure outranks a same-tick finish
  *   (UX-6). Either moves to RESULTS with the matching end reason.
  * - RESULTS has rows REMATCH (default focus, UX-7) and EXIT, ignores events
@@ -44,6 +60,8 @@
 #define NATIVE_ARCADE_FLOW_DEFAULT_REMATCH_WAIT_TIMEOUT_TICKS 300u
 #define NATIVE_ARCADE_FLOW_DEFAULT_OPPONENT_LEFT_NOTICE_TICKS 90u
 #define NATIVE_ARCADE_FLOW_DEFAULT_EXIT_HOLD_TICKS 60u
+#define NATIVE_ARCADE_FLOW_DEFAULT_SELECT_RESULT_HOLD_TICKS 60u /* SEL-8 */
+#define NATIVE_ARCADE_FLOW_DEFAULT_LAUNCH_TIMEOUT_TICKS 300u    /* SEL-9 */
 
 /* Results screen rows. */
 #define NATIVE_ARCADE_FLOW_ROW_REMATCH 0u
@@ -58,7 +76,9 @@ enum NativeArcadeFlowScreen
 	NATIVE_ARCADE_FLOW_SCREEN_RACING = 3,
 	NATIVE_ARCADE_FLOW_SCREEN_RESULTS = 4,
 	NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT = 5,
-	NATIVE_ARCADE_FLOW_SCREEN_EXIT = 6
+	NATIVE_ARCADE_FLOW_SCREEN_EXIT = 6,
+	NATIVE_ARCADE_FLOW_SCREEN_SELECT = 7,
+	NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT = 8
 };
 
 /* Mirrors the lobby layer's modes without naming them. */
@@ -89,11 +109,21 @@ enum NativeArcadeFlowAction
 	NATIVE_ARCADE_FLOW_ACTION_START_RACE = 3,
 	NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH = 4,
 	NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK = 5,
-	NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE = 6
+	NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE = 6,
+	NATIVE_ARCADE_FLOW_ACTION_BEGIN_SELECT = 7,
+	NATIVE_ARCADE_FLOW_ACTION_RELINK = 8
 };
 
-/* Every timing is in 30 Hz game-loop ticks and must be at least 1;
- * resultsIdleTimeoutTicks must exceed resultsDwellTicks. */
+/* The caller's select session status, mapped onto this module's own enum. */
+enum NativeArcadeFlowSelectStatus
+{
+	NATIVE_ARCADE_FLOW_SELECT_PENDING = 0,
+	NATIVE_ARCADE_FLOW_SELECT_CONFIRMED = 1,
+	NATIVE_ARCADE_FLOW_SELECT_FAILED = 2
+};
+
+/* Every timing (all nine) is in 30 Hz game-loop ticks and must be at least
+ * 1; resultsIdleTimeoutTicks must exceed resultsDwellTicks. */
 struct NativeArcadeFlowTimings
 {
 	uint32_t lobbyRetryPauseTicks;
@@ -103,6 +133,10 @@ struct NativeArcadeFlowTimings
 	uint32_t rematchWaitTimeoutTicks;
 	uint32_t opponentLeftNoticeTicks;
 	uint32_t exitHoldTicks;
+	/* SELECT_RESULT hold before RELINK (SEL-8). */
+	uint32_t selectResultHoldTicks;
+	/* Ticks after RELINK without READY before LINK_ERROR (SEL-9). */
+	uint32_t launchTimeoutTicks;
 };
 
 struct NativeArcadeFlowObservation
@@ -114,7 +148,10 @@ struct NativeArcadeFlowObservation
 	uint32_t linkFailure;
 	/* 0 or 1 */
 	uint8_t raceFinished;
-	uint8_t reserved[3];
+	/* enum NativeArcadeFlowSelectStatus; acted on in SELECT only, but
+	 * validated on every screen. */
+	uint8_t selectStatus;
+	uint8_t reserved[2];
 };
 
 struct NativeArcadeFlow
@@ -136,6 +173,11 @@ struct NativeArcadeFlow
 	uint32_t ticksSinceInput;
 	/* Incremented on every screen entry, including re-entry (wraps). */
 	uint32_t screenSerial;
+	/* SELECT_RESULT: 1 once RELINK has been returned (phase 2); cleared on
+	 * every screen entry. */
+	uint32_t relinked;
+	/* SELECT_RESULT phase 2: ticks since the RELINK tick (saturating). */
+	uint32_t ticksSinceRelink;
 };
 
 /* Fills in the frozen default timings. NULL is a no-op. */
@@ -151,7 +193,8 @@ int NativeArcadeFlow_Init(struct NativeArcadeFlow *flow, const struct NativeArca
 enum NativeArcadeFlowAction NativeArcadeFlow_Enter(struct NativeArcadeFlow *flow);
 
 /* Advances one tick. Returns at most one action. NULL arguments, an invalid
- * observation, or screen OFF return NONE and change nothing. Event values
+ * observation (lobbyStatus, linkFailure, raceFinished, or selectStatus out of
+ * range), or screen OFF return NONE and change nothing. Event values
  * above NATIVE_ARCADE_MENU_EVENT_BACK are treated as NONE. */
 enum NativeArcadeFlowAction NativeArcadeFlow_Tick(struct NativeArcadeFlow *flow,
 	const struct NativeArcadeFlowObservation *observation, enum NativeArcadeMenuEvent event);

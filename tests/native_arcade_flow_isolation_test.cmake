@@ -2,7 +2,7 @@
 # a pure state machine with no OS-networking, topology-lease, heap, clock,
 # game, presentation, or netplay dependency. Its only includes are stdint.h,
 # stddef.h, its own header, and the arcade menu input header; the library
-# links only ctr_native_arcade_menu_input; the seven default timings cannot
+# links only ctr_native_arcade_menu_input; the nine default timings cannot
 # silently change; and the target stays portable C17 with extensions off.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
@@ -114,7 +114,7 @@ if(NOT (properties_at LESS standard_at AND standard_at LESS required_at AND requ
     message(FATAL_ERROR "arcade flow isolation: ${target} C17/no-extensions properties are out of order")
 endif()
 
-# 9. The seven default timings (30 Hz ticks, UX-3/5/7/10) are frozen.
+# 9. The nine default timings (30 Hz ticks, UX-3/5/7/10, SEL-8/9) are frozen.
 ctr_read_source("${flow_header}" header)
 ctr_require_regex("${flow_header} (LOBBY_RETRY_PAUSE_TICKS must stay 30u)" "${header}"
     "#define NATIVE_ARCADE_FLOW_DEFAULT_LOBBY_RETRY_PAUSE_TICKS 30u[^0-9a-zA-Z_]")
@@ -130,3 +130,8 @@ ctr_require_regex("${flow_header} (OPPONENT_LEFT_NOTICE_TICKS must stay 90u)" "$
     "#define NATIVE_ARCADE_FLOW_DEFAULT_OPPONENT_LEFT_NOTICE_TICKS 90u[^0-9a-zA-Z_]")
 ctr_require_regex("${flow_header} (EXIT_HOLD_TICKS must stay 60u)" "${header}"
     "#define NATIVE_ARCADE_FLOW_DEFAULT_EXIT_HOLD_TICKS 60u[^0-9a-zA-Z_]")
+#    The two select-phase timings (SEL-8, SEL-9) are frozen too.
+ctr_require_regex("${flow_header} (SELECT_RESULT_HOLD_TICKS must stay 60u)" "${header}"
+    "#define NATIVE_ARCADE_FLOW_DEFAULT_SELECT_RESULT_HOLD_TICKS 60u[^0-9a-zA-Z_]")
+ctr_require_regex("${flow_header} (LAUNCH_TIMEOUT_TICKS must stay 300u)" "${header}"
+    "#define NATIVE_ARCADE_FLOW_DEFAULT_LAUNCH_TIMEOUT_TICKS 300u[^0-9a-zA-Z_]")

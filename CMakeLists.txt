@@ -335,9 +335,10 @@ target_link_libraries(ctr_native_arcade_flow PUBLIC ctr_native_arcade_menu_input
 
 # Arcade-link host adapter (docs/GAME_LOOP_UI_MILESTONE.md section 2.3): the
 # only production module that composes the lobby layer with the
-# failure-handling layer and drives the pure arcade screen flow. It reaches
-# the transport only through ctr_native_lobby_state. Reaches ctr_native
-# through the host glue.
+# failure-handling layer and the match-select session
+# (docs/MATCH_SELECT_MILESTONE.md section 2.6) and drives the pure arcade
+# screen flow. It reaches the transport only through ctr_native_lobby_state.
+# Reaches ctr_native through the host glue.
 add_library(ctr_native_arcade_netplay STATIC platform/native_arcade_netplay.c)
 set_target_properties(ctr_native_arcade_netplay PROPERTIES
     C_STANDARD 17
@@ -348,7 +349,7 @@ target_include_directories(ctr_native_arcade_netplay PUBLIC ${CMAKE_SOURCE_DIR}/
 target_link_libraries(ctr_native_arcade_netplay PUBLIC
     ctr_native_arcade_flow ctr_native_arcade_menu_input ctr_native_lobby_state
     ctr_native_lockstep_match_outcome ctr_native_lockstep_match_roster ctr_native_lockstep_rematch
-    ctr_native_match_config)
+    ctr_native_match_config ctr_native_match_select_session)
 
 # Arcade-link screen layout builder (docs/GAME_LOOP_UI_MILESTONE.md section
 # 2.4, Task 5): a pure draw-list builder under game/MAIN with no game globals

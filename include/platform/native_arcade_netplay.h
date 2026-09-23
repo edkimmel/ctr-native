@@ -9,36 +9,79 @@
 #include "platform/native_lockstep_match_outcome.h"
 #include "platform/native_lockstep_match_roster.h"
 #include "platform/native_match_config.h"
+#include "platform/native_match_select_rules.h"
+#include "platform/native_match_select_session.h"
 
 /*
- * Arcade-link host adapter (docs/GAME_LOOP_UI_MILESTONE.md section 2.3).
+ * Arcade-link host adapter (docs/GAME_LOOP_UI_MILESTONE.md section 2.3, with
+ * the match-select phase of docs/MATCH_SELECT_MILESTONE.md section 2.6).
  *
  * Role: this is the only production module that composes the lobby layer
  * (native_lobby_state) with the failure-handling layer (match outcome,
- * match roster, rematch) and drives the pure arcade screen flow
+ * match roster, rematch) and the match-select session
+ * (native_match_select_session), and drives the pure arcade screen flow
  * (native_arcade_flow) with the arcade menu input seam. It is the single
  * composition point: engine-side code calls only the NativeArcadeNetplay_*
- * names below and never names a lobby, outcome, roster, or rematch function
- * itself, so the existing structural isolation rules on engine sources stay
- * exactly as strict as they are.
+ * names below and never names a lobby, outcome, roster, rematch, or select
+ * function itself, so the existing structural isolation rules on engine
+ * sources stay exactly as strict as they are.
  *
  * Platform-only hooks: NativeArcadeNetplay_OnTakeResult and
  * NativeArcadeNetplay_Link carry lockstep types in their signatures (a
  * session result and a peer link). They are platform-side hooks for the
  * Task 8 race driver only, which lives under platform/. Game code must not
  * call them: naming their types there would fail
- * tests/native_lockstep_isolation_test.cmake. Every other name below is
- * safe for game code.
+ * tests/native_lockstep_isolation_test.cmake. NativeArcadeNetplay_Select
+ * names no lockstep type, but it returns a select-session type, and game
+ * code reads select state only through the host API. Every other name below
+ * is safe for game code.
  *
  * Each tick it polls the lobby, maps the lobby mode onto the flow's lobby
  * status, re-arms the menu input on every screen entry (release-to-arm,
- * UX-3), runs the flow once, and executes the host-side actions itself:
- * BEGIN_LOBBY opens a lobby on the current proposal, RESTART_LOBBY restarts
- * its candidate cycle (or closes and begins again when no lobby is open or
- * the restart is refused), CLOSE_LINK closes it, and BEGIN_REMATCH closes
- * it, builds the rematch config, and opens a new lobby on that. START_RACE
+ * UX-3), drives the select session while selecting (below), runs the flow
+ * once, and executes the host-side actions itself: BEGIN_LOBBY opens a lobby
+ * on the current proposal, RESTART_LOBBY restarts its candidate cycle (or
+ * closes and begins again when no lobby is open or the restart is refused),
+ * CLOSE_LINK closes it, BEGIN_REMATCH closes it, builds the rematch config,
+ * and opens a new lobby on that, BEGIN_SELECT starts the select session, and
+ * RELINK builds the resolved config and opens a new lobby on it. START_RACE
  * and RETURN_TO_TITLE are only returned: the caller owns level loading and
  * the title screen, and this adapter never loads a level.
+ *
+ * Select phase (docs/MATCH_SELECT_MILESTONE.md sections 2.3-2.6): the flow
+ * goes LOBBY or REMATCH_WAIT -> MATCH_FOUND -> SELECT -> SELECT_RESULT ->
+ * RACING; MATCH_FOUND never starts a race.
+ * - BEGIN_SELECT discards every datagram already waiting in the link's aux
+ *   inbox (a stale-datagram guard; the peer resends its full state every
+ *   tick, so nothing is lost), counts the select (selectSerial), derives the
+ *   nonce (NativeArcadeNetplay_DeriveSelectNonce with config.selectEntropy),
+ *   and starts the session on the agreed lobby config (the base): humanCount
+ *   is the base's number of human-role slots, the local human is localRole
+ *   - 1, and the cursors start on this cabinet's own slot character, the
+ *   base track, and the base lap count, each replaced by the first table
+ *   entry when it is not a table value. On a rematch the base carries the
+ *   previous picks, so each cursor starts on them (OD-3). If the session
+ *   cannot start, the flow is told FAILED and shows LINK ERROR.
+ * - Each tick on SELECT, and on SELECT_RESULT until RELINK has run, after
+ *   the lobby poll and before the flow runs: every aux datagram is taken
+ *   into the session (Accept), the menu event goes to the session on SELECT
+ *   only (BACK is ignored there, SEL-7), the session ticks, and its status
+ *   becomes the flow's select status (CONFIRMED, FAILED, else PENDING).
+ *   After the flow's action has run, while still on SELECT or SELECT_RESULT
+ *   before RELINK, one composed select record is sent on the aux route.
+ *   Sending through the result hold is the linger: a peer still waiting for
+ *   the confirming record receives it (section 2.3).
+ * - RELINK closes the lobby and builds the resolved config
+ *   (NativeMatchSelect_BuildConfig on the base and the session outcome).
+ *   On success it becomes the current config and a new lobby is begun on
+ *   it: the relink handshake re-checks the full config byte for byte. On
+ *   failure nothing is begun and the relink is blocked like a failed
+ *   rematch: RESTART_LOBBY begins nothing until Enter, Shutdown,
+ *   RETURN_TO_TITLE, BEGIN_REMATCH, or BEGIN_SELECT clears the block, so
+ *   the flow ends in LINK ERROR at its launch timeout and never races on
+ *   the base config.
+ * - START_RACE arms the race on the current config, which is then the
+ *   resolved config.
  *
  * The adapter itself reads the link every Tick, including during RACING:
  * the lobby poll drains arriving bundles into the session, and when that
@@ -54,12 +97,14 @@
  * Two cabinets that both chose REMATCH therefore propose byte-identical
  * configs and reach READY; a cabinet that chose EXIT has closed its link, so
  * the other side's handshake goes unanswered until the flow's rematch wait
- * times out and it shows OPPONENT LEFT. Every rematch opens a brand-new peer
- * link and session: nothing from a finished, diverged, or faulted session is
- * ever reused. If the rematch seed or config cannot be built (defensive
- * only), the adapter opens no lobby at all and refuses every restart until
- * the rematch wait times out to OPPONENT LEFT: it never races again on the
- * old seed.
+ * times out and it shows OPPONENT LEFT. The rematch config is the base of
+ * the next select (OD-3), so the next race runs on that select's resolved
+ * config and seed, not on the rematch seed itself. Every rematch opens a
+ * brand-new peer link and session: nothing from a finished, diverged, or
+ * faulted session is ever reused. If the rematch seed or config cannot be
+ * built (defensive only), the adapter opens no lobby at all and refuses
+ * every restart until the rematch wait times out to OPPONENT LEFT: it never
+ * races again on the old seed.
  *
  * HELLO cadence (UX-5): the handshake HELLO is retransmitted every tick,
  * because the peer link requires Retransmit before Poll on every tick while
@@ -107,6 +152,13 @@ struct NativeArcadeNetplayConfig
 	uint32_t retransmitIntervalTicks;
 	uint32_t stallTimeoutTicks;
 	struct NativeArcadeFlowTimings timings;
+	/* Per-item countdowns and peer silence of every select; each field must
+	 * be at least 1. */
+	struct NativeMatchSelectTimings selectTimings;
+	/* Host-local entropy for the select nonces (never parsed from argv; 0 in
+	 * tests and previews). It reaches the match only through the exchanged
+	 * nonces and so the agreed masterSeed. */
+	uint64_t selectEntropy;
 };
 
 /* Everything a screen drawer needs, in the flow's own enums. */
@@ -129,8 +181,9 @@ struct NativeArcadeNetplayView
 struct NativeArcadeNetplay
 {
 	struct NativeArcadeNetplayConfig config;
-	/* The proposal of the current (or next) match: the fixture, or the
-	 * latest rematch config. */
+	/* The proposal of the current (or next) link: the fixture or the latest
+	 * rematch config (the select base), and after a successful RELINK the
+	 * resolved config. */
 	struct NativeMatchConfigV1 currentConfig;
 	struct NativeArcadeFlow flow;
 	struct NativeArcadeMenuInput menuInput;
@@ -148,13 +201,31 @@ struct NativeArcadeNetplay
 	/* Set when a rematch config could not be built: no lobby is begun until
 	 * Enter, Shutdown, or RETURN_TO_TITLE clears it. */
 	uint8_t rematchBlocked;
-	uint8_t reserved[3];
+	/* 1 once BEGIN_SELECT has started the select session successfully (the
+	 * session is valid); 0 when it could not start, which reads FAILED. */
+	uint8_t selectActive;
+	/* 1 once RELINK has run for the current select: the session is no
+	 * longer driven and nothing more is sent. */
+	uint8_t relinked;
+	/* Set when RELINK could not build the resolved config: no lobby is
+	 * begun until Enter, Shutdown, RETURN_TO_TITLE, BEGIN_REMATCH, or
+	 * BEGIN_SELECT clears it. */
+	uint8_t relinkBlocked;
+	/* Selects begun by this adapter (the nonce input); never reset. */
+	uint32_t selectSerial;
+	/* 1 once RELINK built a config from lastOutcome. */
+	uint8_t outcomeValid;
+	uint8_t reserved2[3];
+	/* The outcome the last successful RELINK built its config from. */
+	struct NativeMatchSelectOutcome lastOutcome;
+	struct NativeMatchSelectSession select;
 };
 
 /* memset 0, then the four NATIVE_ARCADE_NETPLAY_DEFAULT_* values, the flow's
- * default timings, and localRole CAB1_HUMAN. fixture, candidates,
- * candidateCount, and localPort stay zero for the caller to fill. NULL is a
- * no-op. */
+ * default timings, the select session's default timings
+ * (NativeMatchSelectSession_DefaultTimings), selectEntropy 0, and localRole
+ * CAB1_HUMAN. fixture, candidates, candidateCount, and localPort stay zero
+ * for the caller to fill. NULL is a no-op. */
 void NativeArcadeNetplay_DefaultConfig(struct NativeArcadeNetplayConfig *config);
 
 /* Validates and stores the config and leaves the adapter dormant on screen
@@ -163,7 +234,8 @@ void NativeArcadeNetplay_DefaultConfig(struct NativeArcadeNetplayConfig *config)
  * or CAB2_HUMAN or is absent from the fixture, a zero local port, zero or
  * more than NATIVE_LOBBY_STATE_MAX_CANDIDATES candidates, a zero attempt
  * budget, a retransmit interval other than 1, an input delay or stall timeout
- * outside the ranges the lower layers accept, or timings the flow rejects.
+ * outside the ranges the lower layers accept, timings the flow rejects, or
+ * select timings with any zero field.
  * Must not be called on an adapter with an open lobby (it would be
  * overwritten without being closed): call Shutdown first. */
 int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct NativeArcadeNetplayConfig *config);
@@ -194,12 +266,19 @@ void NativeArcadeNetplay_OnTakeResult(struct NativeArcadeNetplay *netplay, enum 
 /* Fills *view and returns 1; returns 0 on a NULL argument. */
 int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struct NativeArcadeNetplayView *view);
 
-/* The config of the match found, running, or just finished: non-NULL only
- * on MATCH_FOUND, RACING, and RESULTS. This proposal is the agreement: the
- * handshake only completes when both proposals are byte-identical
- * (docs/LOBBY_MILESTONE.md section 2.2), so reaching READY proves the peer
- * holds exactly this config. */
+/* The config of the match running or just finished: non-NULL only on
+ * RACING and RESULTS. This proposal is the agreement: the handshake only
+ * completes when both proposals are byte-identical (docs/LOBBY_MILESTONE.md
+ * section 2.2), so reaching READY proves the peer holds exactly this
+ * config. On RACING it is the resolved select config that the relink
+ * handshake validated. On RESULTS it is the current config: the resolved
+ * config after a race or a relink that timed out, or the select base when
+ * the select itself failed or its config could not be built. */
 const struct NativeMatchConfigV1 *NativeArcadeNetplay_AgreedConfig(const struct NativeArcadeNetplay *netplay);
+
+/* The select session, for a view (read-only): non-NULL only while the flow
+ * is on SELECT or SELECT_RESULT and the session started. */
+const struct NativeMatchSelectSession *NativeArcadeNetplay_Select(const struct NativeArcadeNetplay *netplay);
 
 /* Platform-side hook for the Task 8 race driver only (it carries a lockstep
  * type; game code must not call it, see the block comment above): the open
@@ -216,6 +295,14 @@ uint32_t NativeArcadeNetplay_EndReasonForCause(uint32_t outcomeCause);
  * order. Returns 1 with *seedOut set; returns 0 with *seedOut untouched on a
  * NULL argument, a digest failure, or no qualifying word. */
 int NativeArcadeNetplay_DeriveRematchSeed(const struct NativeMatchConfigV1 *previous, uint64_t *seedOut);
+
+/* Pure and deterministic (docs/MATCH_SELECT_MILESTONE.md section 2.6): the
+ * select nonce is the first little-endian 8-byte word of
+ * SHA-256("CTRN match select nonce v1" (26 ASCII bytes, no NUL) || entropy
+ * (8 bytes LE) || localRole (1 byte) || selectSerial (4 bytes LE)). Any
+ * value of each input is hashed as given. Returns 1 with *nonceOut set;
+ * returns 0 with nothing written for a NULL nonceOut. */
+int NativeArcadeNetplay_DeriveSelectNonce(uint64_t entropy, uint8_t localRole, uint32_t selectSerial, uint64_t *nonceOut);
 
 /* Closes any open lobby and returns the flow to OFF. Safe on NULL, on a
  * zero-initialized struct (which it leaves closed without touching the
