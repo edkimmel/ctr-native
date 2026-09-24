@@ -509,12 +509,17 @@ static int NativeArcadeNetplay_LaunchPhase(const struct NativeArcadeNetplay *net
 /*
  * The first READY of a relink lobby (RL-1, RL-4): a fresh agreement on the
  * digest of this cabinet's relink proposal. The aux inbox is emptied first:
- * it holds only what arrived in the poll that found this new link RUNNING,
- * and the agreement accepts records from the next poll on, so nothing that
- * reached this socket before or together with the handshake completion can
- * commit it. If the digest cannot be taken (a defensive path only: the
- * proposal was validated when it was proposed), the agreement stays inactive
- * and the flow times out to LINK ERROR.
+ * it holds only what the poll that found this new link RUNNING read, and the
+ * agreement accepts records from the next poll on. In-order delivery already
+ * rules out stale records (the peer's old records arrive before its new
+ * HELLO); this discard is defence in depth against reordering within that
+ * completing poll only, which reads at most
+ * NATIVE_LOCKSTEP_PEER_LINK_POLL_BUDGET datagrams. The residual is a
+ * reordered or delayed stale record read after that poll
+ * (docs/RACE_LAUNCH_MILESTONE.md section 7, risk 1). If the digest cannot be
+ * taken (a defensive path only: the proposal was validated when it was
+ * proposed), the agreement stays inactive and the flow times out to LINK
+ * ERROR.
  */
 static void NativeArcadeNetplay_BeginLaunch(struct NativeArcadeNetplay *netplay)
 {
