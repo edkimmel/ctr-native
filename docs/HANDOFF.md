@@ -514,7 +514,7 @@ RS-1). It is tracked in `docs/ROSTER_MILESTONE.md`. The live adapter
 `game/MAIN/MainArcadeRaceSetup.{c,h}` is the seam Task 7 calls.
 `arcade_roster_determinism` (label `live`) proves both profiles, and
 `--arcade-roster-proof-profile one-cab` launches a one-machine 1P arcade
-race with seven bots. The suite is 135 tests, and `ctest -LE live` skips
+race with seven bots. The suite is 138 tests, and `ctest -LE live` skips
 the two slow live tests.
 
 The arcade-link and match-select screens play the retail menu sounds
@@ -523,8 +523,10 @@ The arcade-link and match-select screens play the retail menu sounds
 accepted RS-1..RS-24, SEL-1..SEL-17, and UX-1..UX-11.
 
 1. Task 7, networked race launch through `MainArcadeRaceSetup`, planned in
-   `docs/RACE_LAUNCH_MILESTONE.md` as slices RL-S1..RL-S11 (RL-S1, the plan,
-   is done; RL-1..RL-15 are its defaults). It covers
+   `docs/RACE_LAUNCH_MILESTONE.md` as slices RL-S1..RL-S11 (RL-S1..RL-S4 are
+   done: the reviewed plan, launch record codec, sound-ID isolation, and
+   flow launch gate; next are RL-S5, RL-S6, RL-S7, RL-S8a; RL-1..RL-15 are
+   its defaults). It covers
    asymmetric relink completion (`docs/MATCH_SELECT_MILESTONE.md`
    section 7), extending the setup isolation test's caller allow-list,
    disabling the pause-menu vibration toggle in linked races, and keeping
