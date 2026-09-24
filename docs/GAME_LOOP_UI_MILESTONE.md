@@ -164,7 +164,11 @@ RETURN_TO_TITLE are returned to the caller (the game), which owns level
 loading. Race-time hooks (task 8) feed each TakeFrameInputs result into the
 outcome tracker and the roster, and a latched outcome becomes the flow's
 link-failure reason: STALL_TIMEOUT maps to PEER_TIMEOUT, DIVERGED to
-DESYNC, FAULTED to LINK_ERROR.
+DESYNC, FAULTED to LINK_ERROR. The view's localMenuEvent is the menu event
+the most recent Tick took from the local buttons (NONE on every other tick,
+on screen OFF, and after Init, Enter, or Shutdown); it is presentation only
+(menu sounds), never a peer's input, and changes nothing the flow, select,
+lobby, or wire sees.
 
 The race driver is not the link's only reader: the adapter's own lobby poll
 runs every tick, including during RACING, and drains arriving bundles into
@@ -467,8 +471,9 @@ options and, for a link, the caller's identity. Game code calls only
 Configure, Mode, ScreenActive, Enter, Tick (held NATIVE_ARCADE_MENU_BUTTON_*
 bits and a race-finished flag in, a flow action out), GetView (a flat view
 with the local cabinet, whether the results rows accept input, whether the
-title attract layout applies, and the select view of the match-select
-screens), GetAgreedMatch (track, laps, seed, and slot roles and characters
+title attract layout applies, the local menu event the last Tick consumed
+(localMenuEvent: LINK only, NONE in PREVIEW, local input only, for menu
+sounds), and the select view of the match-select screens), GetAgreedMatch (track, laps, seed, and slot roles and characters
 of the agreed race config, for the START_RACE log), AbortToTitle (close
 the link and return to screen OFF when START_RACE cannot be honoured yet),
 and Shutdown. docs/MATCH_SELECT_MILESTONE.md section 2.7 lists the select

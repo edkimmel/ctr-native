@@ -1700,7 +1700,10 @@ static int TestInputFromHostView(void)
 		view.select.humans[i].lockMask = (uint8_t)(0x44u + 0x10u * i);
 		view.select.humans[i].currentItem = (uint8_t)(0x45u + 0x10u * i);
 	}
-	/* view.reserved and every select reserved byte stay 0xEE. */
+	/* localMenuEvent is not a layout input (it drives menu sounds, not
+	 * drawing): a distinct value that must not reach input.reserved. Every
+	 * select reserved byte stays 0xEE. */
+	view.localMenuEvent = 0x18u;
 
 	CHECK(MainArcadeLinkLayout_InputFromHostView(&view, &input) == 1);
 	CHECK(input.screen == 0x01020304u);
@@ -1750,7 +1753,7 @@ static int TestInputFromHostView(void)
 
 	/* The view is only read. */
 	CHECK(view.screen == 0x01020304u);
-	CHECK(view.reserved == 0xEEu);
+	CHECK(view.localMenuEvent == 0x18u);
 	return 0;
 }
 

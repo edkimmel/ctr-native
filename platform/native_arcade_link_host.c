@@ -393,11 +393,13 @@ static void NativeArcadeLinkHost_PreviewSelectView(struct NativeArcadeLinkHostVi
 	}
 }
 
-/* Synthesizes the view of one preview screen. *view is already zeroed. */
+/* Synthesizes the view of one preview screen. *view is already zeroed. A
+ * preview consumes no input, so localMenuEvent is always NONE. */
 static void NativeArcadeLinkHost_PreviewView(struct NativeArcadeLinkHostView *view)
 {
 	view->ticksInScreen = g_previewTicks;
 	view->localCab = 1u;
+	view->localMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE;
 	switch (g_options.preview)
 	{
 	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER:
@@ -541,6 +543,7 @@ int NativeArcadeLinkHost_GetView(struct NativeArcadeLinkHostView *view)
 			? 1u
 			: 0u);
 	view->attract = (uint8_t)((netplayView.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF) ? 1u : 0u);
+	view->localMenuEvent = netplayView.localMenuEvent;
 	NativeArcadeLinkHost_CopySelectView(&netplayView.select, &view->select);
 	return 1;
 }

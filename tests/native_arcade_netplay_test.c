@@ -124,6 +124,12 @@
 /* MS-8b: a pre-race LINK ERROR closes the link. */
 #define TEST_SELECT_CLOSE_A_PORT 48458u
 #define TEST_SELECT_CLOSE_B_PORT 48459u
+/* The local menu event in the view: one adapter against a dead peer port,
+ * then a real pair on SELECT. */
+#define TEST_MENU_EVENT_A_PORT 48460u
+#define TEST_MENU_EVENT_DEAD_PORT 48461u
+#define TEST_MENU_EVENT_PAIR_A_PORT 48462u
+#define TEST_MENU_EVENT_PAIR_B_PORT 48463u
 
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
@@ -287,6 +293,19 @@ static uint32_t EndReasonOf(const struct NativeArcadeNetplay *netplay)
 
 	(void)NativeArcadeNetplay_GetView(netplay, &view);
 	return view.endReason;
+}
+
+/* The view's localMenuEvent; 0xFF when GetView fails. */
+static uint32_t MenuEventOf(const struct NativeArcadeNetplay *netplay)
+{
+	struct NativeArcadeNetplayView view;
+
+	memset(&view, 0xA5, sizeof(view));
+	if (!NativeArcadeNetplay_GetView(netplay, &view))
+	{
+		return 0xFFu;
+	}
+	return view.localMenuEvent;
 }
 
 /* One tick of both adapters, A first, recording both actions. */
@@ -3677,6 +3696,156 @@ static int TestSelectLinkErrorClosesLink(void)
 	return 0;
 }
 
+/*
+ * The view's localMenuEvent (presentation only, for menu sounds): the event
+ * the most recent Tick consumed from this adapter's own buttons, and NONE on
+ * every tick without a new armed edge, on the first tick after a screen
+ * change (release-to-arm), on screen OFF, after Init, Enter, and Shutdown,
+ * and whatever the peer presses.
+ */
+static int TestLocalMenuEvent(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeArcadeNetplayConfig config;
+	struct NativeArcadeNetplayView view;
+	enum NativeArcadeFlowAction action;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint8_t peerCharacter;
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(MakeConfig(&config, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_MENU_EVENT_A_PORT,
+		TEST_MENU_EVENT_DEAD_PORT));
+
+	/* A fresh Init reports NONE, whatever the struct held. */
+	memset(&g_a, 0xA5, sizeof(g_a));
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+	CHECK(g_a.lastMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+
+	/* Screen OFF: no menu event is consumed. */
+	CHECK(NativeArcadeNetplay_Tick(&g_a, BTN_CROSS, 0u) == ACT_NONE);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+
+	/* LOBBY, connecting to a dead port. The first tick only arms. */
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	(void)NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+	CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	CHECK(view.menuArmed == 1u);
+	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	CHECK(view.reserved == 0u);
+
+	/* A rising NEXT is reported on its own tick only: held and released
+	 * ticks report NONE. The lobby ignores NEXT, PREV, and CONFIRM while
+	 * connecting, so the screen stays LOBBY throughout. */
+	(void)NativeArcadeNetplay_Tick(&g_a, BTN_DOWN, 0u);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NEXT);
+	(void)NativeArcadeNetplay_Tick(&g_a, BTN_DOWN, 0u);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	(void)NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	(void)NativeArcadeNetplay_Tick(&g_a, BTN_UP, 0u);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_PREV);
+	(void)NativeArcadeNetplay_Tick(&g_a, BTN_CROSS, 0u);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_CONFIRM);
+	(void)NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+
+	/* BACK leaves the lobby and is reported on that tick. */
+	CHECK(NativeArcadeNetplay_Tick(&g_a, BTN_TRIANGLE, 0u) == ACT_CLOSE_LINK);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_EXIT);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_BACK);
+
+	/* The first tick on the new screen re-arms: a fresh CROSS press there
+	 * is not an event. */
+	(void)NativeArcadeNetplay_Tick(&g_a, BTN_CROSS, 0u);
+	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+	CHECK(view.menuArmed == 0u);
+	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+
+	/* Through the exit hold to the title. */
+	for (tick = 0u; tick < DRIVE_BUDGET; tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+		if (action == ACT_RETURN_TO_TITLE)
+		{
+			break;
+		}
+		CHECK(action == ACT_NONE);
+	}
+	CHECK(tick < DRIVE_BUDGET);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_OFF);
+
+	/* A Tick on screen OFF clears an event left by the tick that reached
+	 * it, and changes nothing else. */
+	g_a.lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_BACK;
+	memcpy(&g_sentinel, &g_a, sizeof(g_a));
+	g_sentinel.lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE;
+	CHECK(NativeArcadeNetplay_Tick(&g_a, BTN_TRIANGLE, 0u) == ACT_NONE);
+	CHECK(memcmp(&g_a, &g_sentinel, sizeof(g_a)) == 0);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+
+	/* Enter, Shutdown, and Init each clear it. */
+	g_a.lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_CONFIRM;
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	g_a.lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NEXT;
+	NativeArcadeNetplay_Shutdown(&g_a);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	g_a.lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_PREV;
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	NativeArcadeNetplay_Shutdown(&g_a);
+
+	/* A real pair on SELECT: each view reports only its own presses. */
+	CHECK(InitPair(&fixture, &fixture, TEST_MENU_EVENT_PAIR_A_PORT, TEST_MENU_EVENT_PAIR_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	CHECK(MenuEventOf(&g_b) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	peerCharacter = NativeMatchSelectSession_Human(&g_b.select, 1u)->characterID;
+
+	/* B steps its cursor: B reports NEXT, A reports NONE. */
+	TickBoth(0u, BTN_DOWN, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_NONE);
+	CHECK(actionB == ACT_NONE);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	CHECK(MenuEventOf(&g_b) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NEXT);
+	CHECK(NativeMatchSelectSession_Human(&g_b.select, 1u)->characterID != peerCharacter);
+	peerCharacter = NativeMatchSelectSession_Human(&g_b.select, 1u)->characterID;
+
+	/* A hears B's new cursor, and still reports NONE. */
+	for (tick = 0u; tick < 3u; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+		CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+		CHECK(MenuEventOf(&g_b) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	}
+	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+	CHECK(view.select.humans[1].characterID == peerCharacter);
+
+	/* A confirms: A reports CONFIRM, B reports NONE; held, both NONE. */
+	TickBoth(BTN_CROSS, 0u, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_NONE);
+	CHECK(actionB == ACT_NONE);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_CONFIRM);
+	CHECK(MenuEventOf(&g_b) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	TickBoth(BTN_CROSS, 0u, 0u, &actionA, &actionB);
+	CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	CHECK(MenuEventOf(&g_b) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+
+	ShutdownBoth();
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestPure() == 0);
@@ -3710,6 +3879,7 @@ int main(void)
 	CHECK(TestSelectOldLinkLost() == 0);
 	CHECK(TestSelectView() == 0);
 	CHECK(TestSelectLinkErrorClosesLink() == 0);
+	CHECK(TestLocalMenuEvent() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }

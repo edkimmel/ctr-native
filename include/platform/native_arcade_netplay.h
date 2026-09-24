@@ -256,7 +256,12 @@ struct NativeArcadeNetplayView
 	uint32_t matchCount;
 	uint8_t localRole;
 	uint8_t menuArmed;
-	uint8_t reserved[2];
+	/* enum NativeArcadeMenuEvent the most recent Tick consumed for the local
+	 * player (lastMenuEvent below): NONE before the first Tick, on screen
+	 * OFF, and on every tick without a new edge. Local input only: a peer's
+	 * input never appears here. Presentation only (menu sounds). */
+	uint8_t localMenuEvent;
+	uint8_t reserved;
 	/* The select phase (docs/MATCH_SELECT_MILESTONE.md section 2.7). */
 	struct NativeArcadeNetplaySelectView select;
 };
@@ -313,6 +318,13 @@ struct NativeArcadeNetplay
 	/* 1 once lastReadyConfig holds a READY proposal; cleared by Enter and
 	 * Shutdown. */
 	uint8_t lastReadyValid;
+	/* enum NativeArcadeMenuEvent: the event step 4 of the most recent Tick
+	 * produced and fed to the select session and the flow. Every Tick on an
+	 * initialized adapter sets it to NONE first (the dormant screen-OFF path
+	 * included), so it never outlives its tick; Init, Enter, and Shutdown
+	 * clear it. Presentation only: it feeds nothing, is never sent, and
+	 * stays out of the match config, seeds, and simulation identity. */
+	uint8_t lastMenuEvent;
 	/* The outcome the last successful RELINK built its config from. */
 	struct NativeMatchSelectOutcome lastOutcome;
 	/* The proposal of the most recent lobby that reached READY, taken on the
@@ -348,10 +360,11 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay *netplay);
 
 /* One game-loop tick. heldMenuButtons uses the NATIVE_ARCADE_MENU_BUTTON_*
- * bits; raceFinished is nonzero once the local race has finished. On screen
- * OFF (or for NULL or an uninitialized adapter) returns NONE and touches
- * nothing. Otherwise returns the flow's action after executing its host-side
- * part; START_RACE and RETURN_TO_TITLE are the caller's cue. */
+ * bits; raceFinished is nonzero once the local race has finished. For NULL
+ * or an uninitialized adapter returns NONE and touches nothing. On screen OFF
+ * returns NONE and changes nothing but lastMenuEvent, which reads NONE.
+ * Otherwise returns the flow's action after executing its host-side part;
+ * START_RACE and RETURN_TO_TITLE are the caller's cue. */
 enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay *netplay, uint32_t heldMenuButtons,
 	uint8_t raceFinished);
 

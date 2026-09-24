@@ -20,6 +20,9 @@
 _Static_assert(NATIVE_MATCH_SELECT_MESSAGE_V1_ENCODED_BYTES == NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES,
 	"the select record must fill exactly one peer-link aux datagram");
 
+/* Every menu event fits the uint8_t lastMenuEvent and view localMenuEvent. */
+_Static_assert((unsigned)NATIVE_ARCADE_MENU_EVENT_BACK <= 0xFFu, "a menu event must fit in one byte");
+
 /* The ASCII domain tag of the select nonce hash, without its NUL. */
 static const char k_selectNonceTag[] = "CTRN match select nonce v1";
 
@@ -107,6 +110,7 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 	NativeArcadeMenuInput_Reset(&netplay->menuInput);
 	netplay->lastScreenSerial = NativeArcadeFlow_ScreenSerial(&netplay->flow);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+	netplay->lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE;
 	netplay->localSlot = localSlot;
 	netplay->initialized = 1u;
 	return 1;
@@ -200,6 +204,7 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
 		netplay->rematchBlocked = 0u;
 		netplay->raceConfigValid = 0u;
 		netplay->lastReadyValid = 0u;
+		netplay->lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE;
 		NativeArcadeNetplay_ClearSelect(netplay);
 		NativeArcadeNetplay_BeginLobby(netplay);
 	}
@@ -509,9 +514,17 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	enum NativeArcadeFlowAction action;
 	uint32_t serial;
 
+	if ((netplay == NULL) || (netplay->initialized == 0u))
+	{
+		return NATIVE_ARCADE_FLOW_ACTION_NONE;
+	}
+
+	/* 0. No menu event consumed yet this tick, so the last one never
+	 * outlives its tick (presentation only; it drives nothing). */
+	netplay->lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE;
+
 	/* 1. Dormant: nothing is polled or changed. */
-	if ((netplay == NULL) || (netplay->initialized == 0u) ||
-		(NativeArcadeFlow_Screen(&netplay->flow) == NATIVE_ARCADE_FLOW_SCREEN_OFF))
+	if (NativeArcadeFlow_Screen(&netplay->flow) == NATIVE_ARCADE_FLOW_SCREEN_OFF)
 	{
 		return NATIVE_ARCADE_FLOW_ACTION_NONE;
 	}
@@ -556,8 +569,10 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 		netplay->lastScreenSerial = serial;
 	}
 
-	/* 4. At most one menu event. */
+	/* 4. At most one menu event, from the local player's own buttons; kept
+	 * for the view. */
 	event = NativeArcadeMenuInput_Update(&netplay->menuInput, heldMenuButtons);
+	netplay->lastMenuEvent = (uint8_t)event;
 
 	/* 5. Observation. */
 	memset(&observation, 0, sizeof(observation));
@@ -713,6 +728,7 @@ int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struc
 	view->matchCount = netplay->matchCount;
 	view->localRole = netplay->config.localRole;
 	view->menuArmed = (uint8_t)((NativeArcadeMenuInput_IsArmed(&netplay->menuInput) != 0) ? 1u : 0u);
+	view->localMenuEvent = netplay->lastMenuEvent;
 	NativeArcadeNetplay_FillSelectView(netplay, &view->select);
 	return 1;
 }
@@ -873,6 +889,7 @@ void NativeArcadeNetplay_Shutdown(struct NativeArcadeNetplay *netplay)
 	netplay->raceConfigValid = 0u;
 	netplay->lobbyReadySeen = 0u;
 	netplay->lastReadyValid = 0u;
+	netplay->lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE;
 	NativeArcadeNetplay_ClearSelect(netplay);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 }

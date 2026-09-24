@@ -39,6 +39,9 @@
  * as CAB2 (MS-8). */
 #define TEST_SELECT_HOST_PORT 48507u
 #define TEST_SELECT_PEER_PORT 48508u
+/* The local menu event in LINK mode, against a dead peer. */
+#define TEST_MENU_EVENT_LOCAL_PORT 48509u
+#define TEST_MENU_EVENT_DEAD_PEER_PORT 48510u
 
 /* Bounds every loop that waits for the loopback pair; generous, not tuned. */
 #define PAIR_BUDGET 4000u
@@ -181,7 +184,7 @@ static int CheckPreviewView(const struct PreviewCase *expected, uint32_t ticks)
 	CHECK(view.localCab == 1u);
 	CHECK(view.rowsEnabled == expected->rowsEnabled);
 	CHECK(view.attract == expected->attract);
-	CHECK(view.reserved == 0u);
+	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
 	/* The original twelve previews carry no select view. */
 	CHECK(CheckSelectZero(&view.select) == 0);
 	return 0;
@@ -258,7 +261,7 @@ static int CheckLinkView(uint32_t screen, uint32_t lobbyStatus, uint32_t ticksIn
 	CHECK(view.localCab == localCab);
 	CHECK(view.rowsEnabled == 0u);
 	CHECK(view.attract == ((screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF) ? 1u : 0u));
-	CHECK(view.reserved == 0u);
+	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
 	/* Neither the attract screen nor the lobby selects, and no race is
 	 * agreed. */
 	CHECK(CheckSelectZero(&view.select) == 0);
@@ -500,7 +503,7 @@ static int CheckSelectPreviewView(uint32_t preview, uint32_t ticks, struct Nativ
 	CHECK(view.localCab == 1u);
 	CHECK(view.rowsEnabled == 0u);
 	CHECK(view.attract == 0u);
-	CHECK(view.reserved == 0u);
+	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
 
 	CHECK(view.select.active == expected.active);
 	CHECK(view.select.humanCount == expected.humanCount);
@@ -871,19 +874,40 @@ static int TestLinkSelectAndAgreedMatch(void)
 	CHECK(view.select.humans[1].lockMask == 0u);
 	CHECK(view.select.peerLockedCharacterMask == 0u);
 
-	/* The peer locks CORTEX: the host sees the lock and greys CORTEX. */
-	CHECK(NativeArcadeLinkLoopback_PressPair(&g_peer, 0u, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 1);
+	/* The peer locks CORTEX: the host sees the lock and greys CORTEX, but
+	 * the peer's CONFIRM never appears as the host's local menu event. */
+	NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, NATIVE_ARCADE_MENU_BUTTON_CROSS, &hostAction, &peerAction);
+	CHECK(hostAction == ACT_NONE);
+	CHECK(peerAction == ACT_NONE);
+	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	CHECK(NativeArcadeNetplay_GetView(&g_peer, &peerView) == 1);
+	CHECK(peerView.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_CONFIRM);
+	NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+	CHECK(hostAction == ACT_NONE);
+	CHECK(peerAction == ACT_NONE);
 	CHECK(NativeArcadeLinkLoopback_PressPair(&g_peer, 0u, 0u) == 1);
 	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
 	CHECK(view.select.humans[1].lockMask == 1u);
 	CHECK(view.select.humans[1].characterID == 1u);
 	CHECK(view.select.humans[1].currentItem == 1u);
 	CHECK(view.select.peerLockedCharacterMask == 0x0002u);
 	CHECK(view.select.currentItem == 0u);
 
-	/* Both confirm the rest on the fixture cursors. */
-	CHECK(NativeArcadeLinkLoopback_PressPair(&g_peer, NATIVE_ARCADE_MENU_BUTTON_CROSS, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 1);
+	/* Both confirm the rest on the fixture cursors. The host's own CONFIRM
+	 * is its local menu event on the held tick, NONE on the released one. */
+	NativeArcadeLinkLoopback_TickPair(&g_peer, NATIVE_ARCADE_MENU_BUTTON_CROSS, NATIVE_ARCADE_MENU_BUTTON_CROSS, &hostAction,
+		&peerAction);
+	CHECK(hostAction == ACT_NONE);
+	CHECK(peerAction == ACT_NONE);
 	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_CONFIRM);
+	NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+	CHECK(hostAction == ACT_NONE);
+	CHECK(peerAction == ACT_NONE);
+	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
+	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
 	CHECK(view.select.currentItem == 1u);
 	CHECK(view.select.humans[0].lockMask == 1u);
 	CHECK(NativeArcadeLinkLoopback_PressPair(&g_peer, NATIVE_ARCADE_MENU_BUTTON_CROSS, NATIVE_ARCADE_MENU_BUTTON_CROSS) == 1);
@@ -989,6 +1013,77 @@ static int TestLinkSelectAndAgreedMatch(void)
 	return 0;
 }
 
+/* The host view's localMenuEvent; 0xFF when GetView fails. */
+static uint32_t HostMenuEvent(void)
+{
+	struct NativeArcadeLinkHostView view;
+
+	memset(&view, 0xA5, sizeof(view));
+	if (!NativeArcadeLinkHost_GetView(&view))
+	{
+		return 0xFFu;
+	}
+	return view.localMenuEvent;
+}
+
+/*
+ * LINK: GetView carries the menu event the last NativeArcadeLinkHost_Tick
+ * consumed for the local player, NONE before the first tick, on screen OFF,
+ * on ticks without a new edge, right after a screen change, and after
+ * AbortToTitle. (PREVIEW reports NONE: CheckPreviewView and
+ * CheckSelectPreviewView check it on ticks with CROSS held.)
+ */
+static int TestLinkLocalMenuEvent(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_MENU_EVENT_LOCAL_PORT,
+		TEST_MENU_EVENT_DEAD_PEER_PORT);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+
+	/* Screen OFF: nothing consumed. */
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == ACT_NONE);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+
+	/* LOBBY: the first tick arms, then each rising edge on its own tick. */
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_DOWN, 0u) == ACT_NONE);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NEXT);
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_DOWN, 0u) == ACT_NONE);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_UP, 0u) == ACT_NONE);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_PREV);
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_START, 0u) == ACT_NONE);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_CONFIRM);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+
+	/* BACK leaves the lobby for EXIT; the next tick re-arms, so a fresh
+	 * press there reports NONE. */
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_TRIANGLE, 0u) ==
+		(uint32_t)NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_BACK);
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == ACT_NONE);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+
+	/* AbortToTitle re-initializes the link: NONE again. */
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_DOWN, 0u) == ACT_NONE);
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NEXT);
+	NativeArcadeLinkHost_AbortToTitle();
+	CHECK(HostMenuEvent() == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestInertBeforeConfigure() == 0);
@@ -1001,6 +1096,7 @@ int main(void)
 	CHECK(TestMixSelectEntropy() == 0);
 	CHECK(TestSelectEntropyEpochs() == 0);
 	CHECK(TestLinkSelectAndAgreedMatch() == 0);
+	CHECK(TestLinkLocalMenuEvent() == 0);
 	puts("native_arcade_link_host_test: passed");
 	return 0;
 }

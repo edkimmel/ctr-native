@@ -23,7 +23,8 @@
  * Preview mode never opens a socket either.
  *
  * This header is safe for game code: it names only this module's own types,
- * the host options, the menu-input button bits, and the identity struct.
+ * the host options, the menu-input button bits and events, and the identity
+ * struct.
  * Screen, lobby-status, end-reason, and action values use the enums of
  * include/platform/native_arcade_flow.h, carried here as uint32_t.
  *
@@ -154,7 +155,10 @@ struct NativeArcadeLinkHostView
 	uint8_t rowsEnabled;
 	/* 1 when the screen is OFF: the title attract layout applies */
 	uint8_t attract;
-	uint8_t reserved;
+	/* enum NativeArcadeMenuEvent the last NativeArcadeLinkHost_Tick consumed
+	 * for the local player (LINK only; NONE otherwise, in PREVIEW, and before
+	 * the first tick). Local input only: a peer's input never appears here. */
+	uint8_t localMenuEvent;
 	/* The select screens (docs/MATCH_SELECT_MILESTONE.md section 2.7). */
 	struct NativeArcadeLinkHostSelectView select;
 };

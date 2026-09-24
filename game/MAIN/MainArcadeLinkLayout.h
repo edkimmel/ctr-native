@@ -203,10 +203,12 @@ _Static_assert(MAIN_ARCADE_LINK_SELECT_LOCK_LAPS == NATIVE_ARCADE_LINK_HOST_SELE
 _Static_assert(MAIN_ARCADE_LINK_SELECT_STATUS_FAILED == NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_FAILED, "MAIN_ARCADE_LINK_SELECT_STATUS_FAILED must match NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_FAILED");
 
 /* Fills *input from the host's view, field for field: the screen fields and
- * every select field, with every reserved byte zero. The result is exactly
- * what the drawer hands MainArcadeLinkLayout_Build. Returns 1 on success;
- * returns 0 with *input untouched when either argument is NULL. Pure: it
- * validates nothing (MainArcadeLinkLayout_Build does). */
+ * every select field, with every reserved byte zero. The view's
+ * localMenuEvent is not mapped: it is for menu sounds, not drawing, and
+ * never reaches the layout. The result is exactly what the drawer hands
+ * MainArcadeLinkLayout_Build. Returns 1 on success; returns 0 with *input
+ * untouched when either argument is NULL. Pure: it validates nothing
+ * (MainArcadeLinkLayout_Build does). */
 int MainArcadeLinkLayout_InputFromHostView(const struct NativeArcadeLinkHostView *view, struct MainArcadeLinkLayoutInput *input);
 
 #endif
