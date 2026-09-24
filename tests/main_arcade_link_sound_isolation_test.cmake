@@ -16,7 +16,7 @@
 # game/MAIN/MainArcadeLink.c, once, after the decision, and never by the
 # decision, the layout, the policy, or any platform/native_arcade_* source or
 # header. The hook resets the decision's snapshot on every frame the layer
-# does not own.
+# does not own, after the START_RACE AbortToTitle, and on RETURN_TO_TITLE.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -87,7 +87,7 @@ set(netplay_tokens
 #     the hook plays the sound.
 set(game_tokens
     OtherFX Howl HOWL howl sdata gGT GameTracker GamepadSystem common.h functions.h MM_TITLE MM_MENU D230 RectMenu RECTMENU_
-    DecalFont CTR_Box PrimMem OTMem audioRNG randomNumber advRng RNG Rng rand)
+    DecalFont CTR_Box PrimMem OTMem audioRNG randomNumber advRng RNG Rng "rand(")
 
 # 1c. No heap use.
 set(alloc_tokens malloc calloc realloc "free(" alloca)
@@ -217,7 +217,8 @@ endforeach()
 
 # 5. The hook static-asserts every mirror against the flow value, plays the
 #    retail sound exactly once, in its sound helper, after the decision, and
-#    resets the snapshot on every frame the layer does not own.
+#    resets the snapshot on every frame the layer does not own, after the
+#    START_RACE AbortToTitle, and on RETURN_TO_TITLE.
 set(hook_path "game/MAIN/MainArcadeLink.c")
 ctr_read_source("${hook_path}" hook)
 foreach(mirror IN LISTS mirror_pairs)
@@ -262,6 +263,26 @@ string(SUBSTRING "${hook_code}" ${not_owned_at} -1 not_owned_tail)
 string(FIND "${not_owned_tail}" "return 0;" not_owned_return)
 string(SUBSTRING "${not_owned_tail}" 0 ${not_owned_return} not_owned_block)
 ctr_require_literal("${hook_path} (not-owned frame)" "${not_owned_block}" "MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);")
+# The START_RACE branch resets after its AbortToTitle, and the
+# RETURN_TO_TITLE branch resets before its retail title request; each check
+# reads only its own branch, so the other branch's reset cannot satisfy it.
+set(start_race_head "if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)")
+set(return_title_head "else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)")
+ctr_require_order("${hook_path}" "${hook_code}" "${start_race_head}" "${return_title_head}")
+string(FIND "${hook_code}" "${start_race_head}" start_race_at)
+string(FIND "${hook_code}" "${return_title_head}" return_title_at)
+math(EXPR start_race_length "${return_title_at} - ${start_race_at}")
+string(SUBSTRING "${hook_code}" ${start_race_at} ${start_race_length} start_race_block)
+ctr_require_order("${hook_path} (START_RACE branch)" "${start_race_block}"
+    "NativeArcadeLinkHost_AbortToTitle();"
+    "MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);")
+string(SUBSTRING "${hook_code}" ${return_title_at} -1 return_title_tail)
+set(title_request_head "if (gGT->levelID != MAIN_MENU_LEVEL)")
+ctr_require_order("${hook_path}" "${return_title_tail}" "${return_title_head}" "${title_request_head}")
+string(FIND "${return_title_tail}" "${title_request_head}" title_request_at)
+string(SUBSTRING "${return_title_tail}" 0 ${title_request_at} return_title_block)
+ctr_require_literal("${hook_path} (RETURN_TO_TITLE branch, before the title request)" "${return_title_block}"
+    "MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);")
 ctr_require_literal("${hook_path}" "${hook_code}" "static struct MainArcadeLinkSoundState s_mainArcadeLinkSound;")
 
 # 6. Sound stays in the thin hook: no arcade-link platform source or header,

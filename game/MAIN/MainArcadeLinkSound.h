@@ -136,11 +136,11 @@ int MainArcadeLinkSound_InputFromHostView(const struct NativeArcadeLinkHostView 
  * frame is stored and NONE returned (SND-10).
  *
  * Otherwise, with "screen changed" meaning the screen differs from the
- * previous frame's, and a "fresh failure entry" meaning a screen change onto
- * RESULTS with end reason PEER_TIMEOUT, DESYNC, or LINK_ERROR, or onto any
- * screen whose failure end reason (those three or OPPONENT_LEFT) differs
- * from the previous frame's, the first local-input cue that applies wins
- * (SND-1):
+ * previous frame's, a "failure end reason" meaning PEER_TIMEOUT, DESYNC,
+ * LINK_ERROR, or OPPONENT_LEFT, and a "fresh failure entry" meaning a screen
+ * change onto RESULTS with any failure end reason, or onto any other screen
+ * whose failure end reason differs from the previous frame's, the first
+ * local-input cue that applies wins (SND-1):
  * - CONFIRM: enterPressed and the screen went from OFF to another screen
  *   (SND-4).
  * - MOVE: event PREV or NEXT, the screen did not change, and either the

@@ -637,11 +637,14 @@ aborts to the title until Task 7.
 These are new defaults, pending owner review (not yet accepted). The pure
 decision is game/MAIN/MainArcadeLinkSound.{c,h}; the hook
 (game/MAIN/MainArcadeLink.c) calls it on the view the drawer already reads
-and plays the result. A "fresh failure entry" is a screen change onto
-RESULTS with end reason PEER_TIMEOUT, DESYNC, or LINK_ERROR, or onto any
-screen whose failure end reason (those three or OPPONENT_LEFT) differs from
-the previous frame's; RESULTS always sets its reason afresh, while EXIT,
-REMATCH_WAIT, and a rematch's screens can carry an old one.
+and plays the result. A "failure end reason" is PEER_TIMEOUT, DESYNC,
+LINK_ERROR, or OPPONENT_LEFT. A "fresh failure entry" is a screen change
+onto RESULTS with any failure end reason, or onto any other screen whose
+failure end reason differs from the previous frame's; RESULTS always sets
+its reason afresh, while EXIT, REMATCH_WAIT, and a rematch's screens can
+carry an old one. OPPONENT_LEFT never reaches RESULTS today (the flow sends
+it to EXIT, platform/native_arcade_flow.c:360-361), but the decision would
+treat it there like the other three.
 
 1. SND-1: Retail IDs, each played as `OtherFX_Play(id, 1)`: MOVE 0
    (game/RECTMENU.c:799, game/230/MM_Characters.c:1156,
@@ -702,7 +705,7 @@ REMATCH_WAIT, and a rematch's screens can carry an old one.
     gGT->frameTimer_MainFrame_ResetDB. It writes sdata->criticalSectionCount
     (game/HOWL/HOWL_Channel.c:3-31), the channelTaken and channelFree lists,
     ChannelUpdateFlags, channelAttrNew, and one ChannelStats entry
-    (HOWL_Channel.c:74-146), and sdata->countSounds (CountSounds,
+    (HOWL_Channel.c:74-155), and sdata->countSounds (CountSounds,
     HOWL_OtherFX.c:3). With anti-spam flag 1 it may also recycle the same
     sound's channel if that sound started less than 10 frames ago
     (Channel_DestroySelf, HOWL_Channel.c:110). It never touches
@@ -712,7 +715,11 @@ REMATCH_WAIT, and a rematch's screens can carry an old one.
     lists are inside sdata, which checkpoints capture (they are relocated in
     platform/native_checkpoint.c:1442-1443), but link and preview mode reject
     every replay option and disable quick states (section 2.5), so no
-    checkpoint or replay is taken there. The arcade-link screens are menus
+    checkpoint or replay is taken there, although after AbortToTitle falls
+    back to mode OFF (game/MAIN/MainArcadeLink.c:287-293) quick states work
+    again while link-screen sounds may still occupy the HOWL channel lists,
+    which is harmless and identical to a retail menu sound still playing.
+    The arcade-link screens are menus
     outside any race frame, and audio is presentation (RS-8,
     docs/ROSTER_MILESTONE.md).
 
@@ -739,10 +746,10 @@ REMATCH_WAIT, and a rematch's screens can carry an old one.
 ## 5. Task list
 
 Baseline before this milestone: 91 tests, 100% passing (commit 52976808c).
-Current state: 111 tests, 100% passing, at the close of Tasks 1-6b-6; 119
-after the match-select milestone (docs/MATCH_SELECT_MILESTONE.md). Tasks
-1-6b-6 are done; Tasks 7 and 8 are gated (see their entries); this
-document stays open until they land.
+Current state: 135 tests, 100% passing, at the close of Tasks 1-6b-7
+(111 at the close of Tasks 1-6b-6; 119 after the match-select milestone,
+docs/MATCH_SELECT_MILESTONE.md). Tasks 1-6b-7 are done; Tasks 7 and 8 are
+gated (see their entries); this document stays open until they land.
 
 ### Task 1 -- this document
 
@@ -1008,6 +1015,11 @@ file-count floor of the MainArcadeLink* scan). The sound isolation test also
 enforces that the retail sound call appears only in the hook, once, after the
 decision, and in no platform/native_arcade_* source or header, the policy,
 or the layout.
+Note for Task 7: `countSounds` (CountSounds, game/HOWL/HOWL_OtherFX.c:3)
+feeds the sound IDs OtherFX_Play returns and callers keep (for example
+gGT->rainSoundID, game/DropRain.c:29), and it already differs between
+cabinets through ordinary retail menu use; Task 7 must keep sound IDs out
+of any cross-cabinet identity.
 
 ### Task 7 -- networked race launch
 
