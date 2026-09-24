@@ -514,35 +514,28 @@ RS-1). It is tracked in `docs/ROSTER_MILESTONE.md`. The live adapter
 `game/MAIN/MainArcadeRaceSetup.{c,h}` is the seam Task 7 calls.
 `arcade_roster_determinism` (label `live`) proves both profiles, and
 `--arcade-roster-proof-profile one-cab` launches a one-machine 1P arcade
-race with seven bots. The suite is 133 tests, and `ctest -LE live` skips
+race with seven bots. The suite is 135 tests, and `ctest -LE live` skips
 the two slow live tests.
 
-1. Arcade-link menu sound effects. The arcade-link and match-select
-   screens are silent today: `game/MAIN/MainArcadeLink.c` plays no sound.
-   Add the retail menu sounds for navigate, confirm, back, and error
-   through the same calls the retail menus use. They are host-local
-   presentation and stay out of simulation identity.
-2. Owner-decision status update. The owner accepted every open default:
-   RS-1..RS-24 (`docs/ROSTER_MILESTONE.md`), SEL-1..SEL-17
-   (`docs/MATCH_SELECT_MILESTONE.md` section 4), and UX-1..UX-11
-   (`docs/GAME_LOOP_UI_MILESTONE.md` section 3). Those docs and three code
-   headers still say "pending owner review": `native_arcade_bot_rules.h`
-   (lines 14-15 and 59), `MainArcadeRaceSetupPlan.h:221`, and
-   `native_arcade_roster_proof.h:175`. The fix is a status-only,
-   comment-only update.
-3. Task 7, networked race launch through `MainArcadeRaceSetup`. It covers
+The arcade-link and match-select screens play the retail menu sounds
+(`game/MAIN/MainArcadeLinkSound.{c,h}`; defaults SND-1..SND-11 in
+`docs/GAME_LOOP_UI_MILESTONE.md` section 3.1 await owner review). The owner
+accepted RS-1..RS-24, SEL-1..SEL-17, and UX-1..UX-11.
+
+1. Task 7, networked race launch through `MainArcadeRaceSetup`. It covers
    asymmetric relink completion (`docs/MATCH_SELECT_MILESTONE.md`
    section 7), extending the setup isolation test's caller allow-list,
-   and disabling the pause-menu vibration toggle in linked races. A ONE_CAB
+   disabling the pause-menu vibration toggle in linked races, and keeping
+   sound IDs (`countSounds`) out of any cross-cabinet identity. A ONE_CAB
    lobby/UI flow is a separate follow-up.
-4. Task 8, in-race lockstep drive and failure handling, gated on Task 7 and
+2. Task 8, in-race lockstep drive and failure handling, gated on Task 7 and
    live V4 projection. It must:
    - make VBlanks per tick deterministic (host timing feeds
      `elapsedTimeMS` and `frameTimer_Confetti`);
    - compare race-relative control (frameCounter and
      frameTimer_VsyncCallback are boot-relative);
    - project the post-setup RNG bank from `MainArcadeRaceSetup_Bank()`.
-5. Real two-cabinet and G29 validation (actual wire, LAN switch,
+3. Real two-cabinet and G29 validation (actual wire, LAN switch,
    latency/loss, wheel input) needs cabinet access. It is the separately
    gated requirement for step 6 (CAB1 G29/kiosk gate) and step 7
    (two-cabinet fleet acceptance).
