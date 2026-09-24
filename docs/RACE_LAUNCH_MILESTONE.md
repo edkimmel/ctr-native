@@ -258,18 +258,31 @@ caller bounds its own waits, as the proof does
 :435 for race tick 0):
 
 - On START_RACE the caller holds the launch until the TITLE window opens,
-  at most launchWindowTimeoutTicks = 300.
+  at most launchWindowTimeoutTicks = 900 (30 s). For race 2 the window
+  must cover the rest of the return load plus the title intro up to frame
+  230 (TITLE_INTRO_MENU_READY_FRAME, include/ovr_230.h:48), and the flow
+  can reach the next START_RACE soon after RESULTS: its holds are 30 to
+  90 ticks (the flow defaults, include/platform/native_arcade_flow.h:63-71).
+  At 300 the intro alone would take 230 ticks, leaving 70 for the load;
+  900 leaves 670. The roster proof waits up to 3600 for its window
+  (NATIVE_ARCADE_ROSTER_PROOF_LAUNCH_WAIT_TIMEOUT_TICKS,
+  include/platform/native_arcade_roster_proof.h:216).
 - From Launch it waits at most launchValidateTimeoutTicks = 1800 for
   VALIDATED, and the same bound again from VALIDATED for race tick 0.
   1800 is the proof's own bound
   (NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT_TICKS and
   _RACE_TICK_TIMEOUT_TICKS,
-  include/platform/native_arcade_roster_proof.h:217-218): a race-track load runs over many frames and pauses inside each file
-  read, so 300 would be too tight.
+  include/platform/native_arcade_roster_proof.h:217-218): a race-track
+  load runs over many frames and pauses inside each file read, so 300
+  would be too tight. The second bound is loose by design: VALIDATED is
+  reached inside MainInit_FinalizeInit (game/MAIN/MainInit.c:486), a few
+  frames before race tick 0, so it only catches a stall.
 - Any expiry is an RL-11 local failure.
 
-Race tick 0 is the first frame after VALIDATED with no load in progress
-(Loading.stage LOAD_IDLE) and the LOADING bit clear. The proof's
+Race tick 0 is the first frame after VALIDATED on the plan's level with no
+load in progress (Loading.stage LOAD_IDLE) and the LOADING bit clear.
+VALIDATED alone is not enough: after the RL-9 change it is also visible on
+the idle main-menu level after the race, until Disarm. The proof's
 definition (the first frame the DRIVERS extraction succeeds,
 MainArcadeRosterProof.c:579-591) needs CTR_INTERNAL canonical
 extraction, which the shipping caller does not have.
@@ -288,7 +301,21 @@ main-menu level the way the link's return to title does
 (MainArcadeLink.c:300-306): boolDemoMode 0, numPlyrNextGame 1,
 mainMenuState MAIN_MENU_TITLE, then MainRaceTrack_RequestLoad of the
 main-menu level. The cabinet shows RESULTS, rematch, and select there, as
-the layer does today.
+the layer does today. RL-10 fixes the frame of the return and of the pad
+clear.
+
+A link failure or LOST can take the flow out of RACING during the staged
+race-track load (platform/native_arcade_flow.c:275-286).
+MainRaceTrack_RequestLoad overwrites Loading.stage without checking it
+(game/MAIN/MainRaceTrack.c:27), and the link's return checks only levelID
+(MainArcadeLink.c:300), which LOAD_LevelFile has already set to the race
+level (game/LOAD/LOAD_Level.c:43). So the caller runs the return step
+(numPlyrNextGame 1 and the request) only when Loading.stage is LOAD_IDLE
+or LOAD_REQUESTED; otherwise it defers the step to the first LOAD_IDLE
+frame. The race level then initializes and the setup ends VALIDATED or
+FAILED before the return load runs. Deferring numPlyrNextGame too keeps
+the race load's own read of it (game/LOAD/LOAD_TenStages.c:102) intact.
+RL-S7 tests a failure during the race load.
 
 Race frames are ticked, not owned. MainArcadeLink_LinkTick runs only on
 owned frames (MainArcadeLink.c:378-398), so the policy gains one input
@@ -313,9 +340,11 @@ exactly once per race, always deferred to the first idle main-menu frame
 after the race (the main-menu level, no load in progress, LOADING clear),
 aborts included, so RS-15 restores the vibration bits there
 (game/MAIN/MainArcadeRaceSetup.h:131-140). The one exception is an Arm or
-Launch failure at the title: the caller Disarms at once, since it is
-already on the idle main-menu level. It never Disarms off the idle
-main-menu level, except just before a process exit.
+Launch failure at the title: the caller Disarms at once. That is safe
+because a failed Launch wrote no field: fieldsWritten is set only on
+success (game/MAIN/MainArcadeRaceSetupCore.c:214), and Disarm writes only
+when it is set (:423), so this Disarm writes nothing. It never Disarms
+off the idle main-menu level, except just before a process exit.
 
 The deferred Disarm needs one reviewed seam change, made in RL-S8b, the
 slice that adds the caller. The return load runs MainInit_FinalizeInit,
@@ -328,9 +357,29 @@ spurious failure. The change: OnFinalizeInitBegin while VALIDATED, when
 the level being initialized (the begin view's fields.levelID) is the
 main-menu level, is a no-op instead of FAILED/STATE. FAILED is already a
 no-op on every level (MainArcadeRaceSetupCore.c:256-259) and stays so.
-SEEDED on any level, and VALIDATED on any other level, keep today's
-FAILED/STATE. A core unit test in tests/main_arcade_race_setup_core_test.c
-pins these cases, and the header rule is rewritten in the same slice.
+SEEDED on any level, VALIDATED on any other level, and VALIDATED with no
+tracker keep today's FAILED/STATE.
+
+The no-op needs the view. The setup adapter reads the live fields only
+when MainArcadeRaceSetupCore_HookReadsView returns 1
+(game/MAIN/MainArcadeRaceSetup.c:315-321), and for FINALIZE_INIT_BEGIN
+that is LAUNCHED only (MainArcadeRaceSetupCore.c:226-229); otherwise
+fields.levelID arrives as 0 and the no-op would never fire. So
+HookReadsView(FINALIZE_INIT_BEGIN) also returns 1 in VALIDATED, and the
+setup adapter fills fields.levelID there. The same slice rewrites the
+header rule (MainArcadeRaceSetup.h:63-69), the core header comments
+(game/MAIN/MainArcadeRaceSetupCore.h:324-325 on the begin view, and
+:429-445 on HookReadsView and the pre-drivers hook), and the
+HookReadsView cases in tests/main_arcade_race_setup_core_test.c. That
+core test pins: VALIDATED with the main-menu level is a no-op; VALIDATED
+with a race level, and VALIDATED with no tracker, still latch STATE.
+
+An abort while LAUNCHED whose return load replaces the queued race level
+(the return requested at LOAD_REQUESTED, RL-8) initializes the main-menu
+level in LAUNCHED and so ends in FAILED/LEVEL_MISMATCH
+(MainArcadeRaceSetupCore.c:267-271). That second failure log, after the
+RL-11 one, is expected, and the RL-S7 core test or the setup core test
+pins it.
 
 A rematch is a second armed race in one process (ROSTER risk 11),
 covered by the decision-core unit test and the live gate.
@@ -345,28 +394,47 @@ sets a flag that stays on (platform/native_input.c:1182); retail input
 reads the pads from the next frame's input update, and while the flag is
 on Platform_InputUpdate replays them and skips SDL and the keyboard
 (:1040-1046). So no local input reaches the race, no unplugged-pad pause
-fires (MainFrame_HaveAllPads), and neither cabinet drives a kart. Unlike
-the proof, the caller cannot rely on exiting: it clears the pads with
-Platform_InputClearInstalledPadSnapshots (:1187-1190) on the frame it
-reports the race finished, on every RL-11 path, and on the first frame
-the flow leaves RACING for any other reason (a link failure or LOST),
-always before RESULTS accepts input. A decision-core test and a
-hook-isolation pin enforce the clear. launchRehearsalTicks = 150 (5 s)
-after race tick 0 (RL-8) the caller reports the race finished; the flow
-shows RESULTS (RACE COMPLETE) with REMATCH and EXIT on the main-menu
-level. There is no input exchange and no in-race stall or desync
-detection beyond the netplay adapter's existing lobby poll, and the two
-cabinets are not synchronized. Task 8 replaces the rehearsal with the
-lockstep drive and the real finish.
+fires (MainFrame_HaveAllPads), and neither cabinet drives a kart.
+
+Unlike the proof, the caller cannot rely on exiting, so it clears the
+pads with Platform_InputClearInstalledPadSnapshots (:1187-1190), but not
+on the finish frame. The clear takes effect at the next VSync input poll
+(game/MAIN/MainDrawCb.c:47-50), and MainFrame_GameLogic keeps running on
+the race level until the LOADING bit is set (game/MAIN/MainMain.c:222-225,
+:494, :499), so live local input would reach the race for a few frames: a
+START tap reaches the pause check (game/MAIN/MainFrame.c:431), a missing
+pad 1 pauses through MainFrame_HaveAllPads while Loading.stage is
+LOAD_IDLE (MainFrame.c:554), and a surviving PAUSE_1 would fail the
+rematch Launch precondition (game/MAIN/MainArcadeRaceSetupCore.c:186-189).
+The rule: on the frame it reports the race finished or an RL-11 failure,
+or first sees the flow leave RACING for any other reason (a link failure
+or LOST), the caller sets numPlyrNextGame 1 and requests the return load
+(RL-8, deferred while a race-track load runs). It clears the installed
+pads on the first later frame with LOADING set, when GameLogic no longer
+runs, or on the first idle main-menu frame if that comes first. Until
+then RESULTS reads the neutral pads. On the normal path the clear still
+lands well inside the flow's resultsDwellTicks of 30, during which
+RESULTS ignores input (platform/native_arcade_flow.c:300); a return
+deferred behind a race-track load only holds RESULTS on neutral pads
+longer. A decision-core test and a hook-isolation pin enforce the clear
+frame.
+
+launchRehearsalTicks = 150 (5 s) after race tick 0 (RL-8) the caller
+reports the race finished; the flow shows RESULTS (RACE COMPLETE) with
+REMATCH and EXIT on the main-menu level. There is no input exchange and
+no in-race stall or desync detection beyond the netplay adapter's
+existing lobby poll, and the two cabinets are not synchronized. Task 8
+replaces the rehearsal with the lockstep drive and the real finish.
 
 RL-11 Setup failure response (closes RS-10). An Arm or Launch failure, an
 RL-8 wait expiry, or a FAILED setup status before the rehearsal ends,
 ends the linked race locally as LINK ERROR: the caller reports a local
 race failure to the host (a new host input), the flow shows RESULTS LINK
-ERROR, the caller clears the rehearsal pads (RL-10), the cabinet returns
-to the main-menu level and Disarms on the first idle main-menu frame
-(RL-9), and the log names the failure. The peer is not told: until Task
-8 it finishes its rehearsal; with Task 8 it stalls into PEER TIMEOUT.
+ERROR, the cabinet returns to the main-menu level (RL-8, deferred while
+a race-track load runs), the caller clears the rehearsal pads on the
+RL-10 frame and Disarms on the first idle main-menu frame (RL-9), and the
+log names the failure. The peer is not told: until Task 8 it finishes
+its rehearsal; with Task 8 it stalls into PEER TIMEOUT.
 
 RL-12 Setup digests. Not sent on the wire in Task 7. Each cabinet logs
 one line per validated race
@@ -382,8 +450,9 @@ linked race), confirming a DualShock vibration row in the pause options
 skipped, fixed in place with a minimal change and a comment. The
 analog-controller row stays retail (ROSTER risk 9). Pausing itself stays
 retail until Task 8 decides pause under lockstep; the neutral rehearsal
-pads make it unreachable, and until RL-S8a the layer tap clearing on
-owned frames would also block a START tap.
+pads make it unreachable. The layer's tap clearing runs after GameLogic
+(the render hook, game/MAIN/MainMain.c:522, after :499) and never
+blocked it.
 
 RL-14 Sound IDs. countSounds (the sdata field,
 include/regionsEXE.h:3262, incremented by CountSounds at
@@ -428,12 +497,18 @@ this gate proves the game-level launch. The asymmetric cases are proven
 deterministically by the netplay loopback tests (RL-S5), not live.
 
 Review changes. The plan review changed three defaults. RL-8 gained the
-bounded waits (launchWindowTimeoutTicks = 300, launchValidateTimeoutTicks
-= 1800), a race tick 0 the shipping caller can see, and the tickOnly hook
-output. RL-9 now defers Disarm to the first idle main-menu frame after
-every race, aborts included, and adds the setup seam change for VALIDATED
-on the main-menu level. RL-10 now installs the pads from the Launch frame
-and clears them before RESULTS accepts input. The review only clarified
+bounded waits (launchWindowTimeoutTicks, now 900 after the re-review,
+and launchValidateTimeoutTicks = 1800), a race tick 0 the shipping caller
+can see, and the tickOnly hook output. RL-9 now defers Disarm to the
+first idle main-menu frame after every race, aborts included, and adds
+the setup seam change for VALIDATED on the main-menu level. RL-10 now
+installs the pads from the Launch frame and clears them before RESULTS
+accepts input. The re-review of that change raised
+launchWindowTimeoutTicks from 300 to 900 (race 2 must wait out the
+return load and the title intro), made HookReadsView read the begin view
+in VALIDATED so the RL-9 no-op can fire, moved the pad clear to the first
+frame with LOADING set (or the first idle main-menu frame), and deferred
+the return step while a race-track load runs. The review only clarified
 RL-2 (the aux-size assert), RL-3 (the agreement lifecycle), RL-4 (what
 the 300-tick linger covers), RL-5 (validation and check order), RL-6
 (where lastReadyConfig is taken), RL-7 (the traced path), RL-11 (the pad
@@ -464,7 +539,8 @@ non-skipped PASS). No other value changed.
 - Commit on `arcade` only, no push. Anything touching identity, the wire,
   replay, canonical state, or the setup seam is reviewed. The one setup
   seam change in Task 7 is the RL-9 OnFinalizeInitBegin rule (VALIDATED
-  on the main-menu level is a no-op), in RL-S8b.
+  on the main-menu level is a no-op, and HookReadsView reads the begin
+  view in VALIDATED), in RL-S8b.
 
 ## 6. Task list
 
@@ -475,7 +551,9 @@ pointer in docs/GAME_LOOP_UI_MILESTONE.md. Plan reviewed; the review
 changed RL-8 (bounded waits and the tickOnly hook output), RL-9 (the
 Disarm point plus a setup seam change), and RL-10 (pad install and
 clear), and clarified RL-2..RL-7, RL-11, and RL-13..RL-15 (section 4,
-"Review changes"). Closed in the review close-out commit.
+"Review changes"). Closed in the review close-out commit. Re-reviewed
+after the RL-9 change (no BLOCKER); findings closed in the follow-up
+commit.
 
 ### RL-S2 -- launch record codec and agreement state
 
@@ -542,17 +620,23 @@ NativeMatchConfigV1 and the allow-list is unchanged.
 Status: planned. Pure, in game/MAIN, a standalone library: launch, the
 bounded waits, race tick 0, the rehearsal, return to the main menu, the
 Disarm point, failure mapping, and two races in a row (RL-8..RL-11).
-Tests: a core unit test with the pad install and clear cases (install
-from the Launch frame; clear on the finish, on every RL-11 path, and when
-the flow leaves RACING otherwise), the bounded-wait expiries, and the
-Disarm point (deferred to the idle main-menu frame; at once on an Arm or
-Launch failure at the title); a purity isolation test with the section 5
-token ban.
+Tests: a core unit test with the return and pad cases (install from the
+Launch frame; on the finish, on every RL-11 path, and when the flow
+leaves RACING otherwise, numPlyrNextGame 1 and the return request on
+that frame, and the clear only on the first later frame with LOADING set
+or the first idle main-menu frame; a failure during the race-track load
+defers the return step to the first LOAD_IDLE frame), the bounded-wait
+expiries, race tick 0 only on the plan's level, and the Disarm point
+(deferred to the idle main-menu frame; at once on an Arm or Launch
+failure at the title); a purity isolation test with the section 5 token
+ban.
 
 ### RL-S8a -- race frames ticked, not owned
 
-Status: planned. Review required. The RL-8 policy change: the RACING
-input and the tickOnly output of MainArcadeLinkPolicy, and
+Status: planned. Review required. Needs RL-S6 (the RACING input reads
+the host racing query; the host's link screen is private today,
+platform/native_arcade_link_host.c:159). The RL-8 policy change: the
+RACING input and the tickOnly output of MainArcadeLinkPolicy, and
 MainArcadeLink_Frame ticking the host and returning 0 on tickOnly
 frames. Tests: the RL-8 policy unit test in
 tests/main_arcade_link_policy_test.c, including the struct layout pins,
@@ -562,13 +646,16 @@ race reaches RACING off the main-menu level until then.
 
 ### RL-S8b -- live race caller
 
-Status: planned. Review required. Needs RL-S5, RL-S7, and RL-S8a. The
+Status: planned. Review required. Needs RL-S5, RL-S6, RL-S7, and
+RL-S8a. The
 caller in the unity chain, right after MAIN/MainArcadeLink.c and before
 MAIN/MainArcadeRosterProof.c (game/game_unity.h:271-276), so it follows
 the 230 title (:261) and MainArcadeRaceSetup.c (:128) it calls and keeps
 the proof after the arcade-link hook. The rehearsal pads; the duplicated
-LeaveTitle; the digest log; the RL-9 setup seam change with its core unit
-test; the setup allow-list extended with exactly this caller file; hook
+LeaveTitle; the digest log; the RL-9 setup seam change (the VALIDATED
+main-menu no-op and HookReadsView in VALIDATED) with the core header
+comments and its core unit test; the setup allow-list extended with
+exactly this caller file; hook
 isolation updates, including the pad clear pin and the LeaveTitle pin;
 the section 5 token ban on the caller.
 
