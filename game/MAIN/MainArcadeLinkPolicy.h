@@ -37,8 +37,14 @@
  * hidden nor restored, and the demo countdown is left alone. On the idle
  * main-menu level RACING is owned by the rules above.
  *
- * Pure: caller-owned output, no heap use, no I/O, no mutable state, and
- * fully deterministic.
+ * The link's return to title (docs/RACE_LAUNCH_MILESTONE.md section 7,
+ * race-launch risk 10). The main-menu load the RETURN_TO_TITLE action asks
+ * for runs only while no level load is running (the load stage IDLE or
+ * REQUESTED), like the race caller's return step; otherwise it waits, and
+ * the hook asks again on every later frame (MainArcadeLinkPolicy_ReturnStep).
+ *
+ * Pure: caller-owned output and pending flag, no heap use, no I/O, no
+ * mutable state, and fully deterministic.
  */
 
 /* Mirrors of the arcade-link host modes (include/platform/native_arcade_link_host.h). */
@@ -70,6 +76,13 @@
 #define MAIN_ARCADE_LINK_POLICY_BTN_START 0x1000u
 #define MAIN_ARCADE_LINK_POLICY_BTN_SELECT 0x2000u
 #define MAIN_ARCADE_LINK_POLICY_BTN_TRIANGLE 0x40000u
+
+/* Classes of the retail load stage (Loading.stage, include/namespace_Main.h)
+ * for the return step: LOAD_IDLE, LOAD_REQUESTED, and any other stage (a
+ * level load is running). The hook maps the stage to its class. */
+#define MAIN_ARCADE_LINK_POLICY_STAGE_IDLE 0u
+#define MAIN_ARCADE_LINK_POLICY_STAGE_REQUESTED 1u
+#define MAIN_ARCADE_LINK_POLICY_STAGE_OTHER 2u
 
 struct MainArcadeLinkPolicyInput
 {
@@ -163,5 +176,25 @@ int MainArcadeLinkPolicy_TitleMenuReady(const struct MainArcadeLinkPolicyInput *
  *   runs as retail.
  */
 int MainArcadeLinkPolicy_Decide(const struct MainArcadeLinkPolicyInput *input, struct MainArcadeLinkPolicyOutput *output);
+
+/*
+ * The gate of the link's return step (boolDemoMode 0, numPlyrNextGame 1,
+ * mainMenuState MAIN_MENU_TITLE, then the main-menu level load), for one
+ * frame. *pending is the caller's host-local flag: 1 while a return step is
+ * owed. returnAction is 1 on the frame the host returns RETURN_TO_TITLE,
+ * loadingStage is MAIN_ARCADE_LINK_POLICY_STAGE_* (any other value counts as
+ * OTHER), and onMainMenuLevel is 1 when the current level is the main-menu
+ * level. The flags count any nonzero value as 1.
+ *
+ * Returns 1 when the step runs this frame, else 0; returns 0, touching
+ * nothing, when pending is NULL. With neither returnAction nor *pending, it
+ * returns 0 and *pending stays 0. Otherwise, a step is owed and:
+ * - onMainMenuLevel: nothing to return from; *pending is cleared, returns 0.
+ * - loadingStage IDLE or REQUESTED: *pending is cleared, returns 1.
+ * - any other stage (a level load is running, so the request would overwrite
+ *   its stage and numPlyrNextGame would change its read): *pending is set,
+ *   returns 0.
+ */
+int MainArcadeLinkPolicy_ReturnStep(uint8_t *pending, uint8_t returnAction, uint32_t loadingStage, uint8_t onMainMenuLevel);
 
 #endif

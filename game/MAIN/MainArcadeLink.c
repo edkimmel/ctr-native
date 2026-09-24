@@ -104,6 +104,11 @@ static uint8_t s_mainArcadeLinkHidMainMenu;
  * keeps its SND-9 cue. */
 static struct MainArcadeLinkSoundState s_mainArcadeLinkSound;
 
+/* 1 while the link's return to title waits for a running level load to end
+ * (race-launch risk 10, MainArcadeLinkPolicy_ReturnStep). Host-local: never
+ * part of saved, replayed, or canonical state. */
+static uint8_t s_mainArcadeLinkReturnPending;
+
 static void MainArcadeLink_HideMainMenu(void)
 {
 	if ((MM_MENU_MAIN.state & INVISIBLE) == 0)
@@ -270,6 +275,49 @@ static void MainArcadeLink_LogAgreedMatch(const struct NativeArcadeLinkHostMatch
 		(unsigned)match->slotCharacter[7], roles);
 }
 
+/* The policy's class of the retail loading stage. */
+static uint32_t MainArcadeLink_StageClass(void)
+{
+	if (sdata->Loading.stage == LOAD_IDLE)
+	{
+		return MAIN_ARCADE_LINK_POLICY_STAGE_IDLE;
+	}
+	if (sdata->Loading.stage == LOAD_REQUESTED)
+	{
+		return MAIN_ARCADE_LINK_POLICY_STAGE_REQUESTED;
+	}
+	return MAIN_ARCADE_LINK_POLICY_STAGE_OTHER;
+}
+
+/* The retail demo-mode exit (MainMain.c): back to the title. The same body
+ * as the race caller's MainArcadeRaceLaunch_RequestReturn
+ * (tests/main_arcade_link_hook_isolation_test.cmake 16f2), and reached only
+ * through MainArcadeLink_ReturnStep. */
+static void MainArcadeLink_RequestReturn(struct GameTracker *gGT)
+{
+	gGT->boolDemoMode = 0;
+	gGT->numPlyrNextGame = 1;
+	sdata->mainMenuState = MAIN_MENU_TITLE;
+	MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL);
+}
+
+/*
+ * The gated return step (docs/RACE_LAUNCH_MILESTONE.md section 7, race-launch
+ * risk 10; a native-layer fix, not a retail bug). MainRaceTrack_RequestLoad
+ * overwrites Loading.stage, and LOAD_LevelFile sets levelID to the race level
+ * as soon as a race-track load starts, so a RETURN_TO_TITLE during that load
+ * would clobber it and change its read of numPlyrNextGame. The step runs only
+ * at LOAD_IDLE or LOAD_REQUESTED, as the race caller's does; otherwise it is
+ * owed, and MainArcadeLink_Frame asks again on every later frame.
+ */
+static void MainArcadeLink_ReturnStep(struct GameTracker *gGT, uint8_t returnAction)
+{
+	if (MainArcadeLinkPolicy_ReturnStep(&s_mainArcadeLinkReturnPending, returnAction, MainArcadeLink_StageClass(), (gGT->levelID == MAIN_MENU_LEVEL) ? 1u : 0u))
+	{
+		MainArcadeLink_RequestReturn(gGT);
+	}
+}
+
 /* LINK mode: attract entry, one host tick, and the actions the game owns. */
 static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainArcadeLinkPolicyOutput *output)
 {
@@ -306,14 +354,9 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 		/* The session ended back on the attract screen: no previous view
 		 * for sounds. */
 		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
-		if (gGT->levelID != MAIN_MENU_LEVEL)
-		{
-			/* The retail demo-mode exit (MainMain.c): back to the title. */
-			gGT->boolDemoMode = 0;
-			gGT->numPlyrNextGame = 1;
-			sdata->mainMenuState = MAIN_MENU_TITLE;
-			MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL);
-		}
+		/* Back to the title off the main-menu level, gated on the load
+		 * stage (race-launch risk 10). */
+		MainArcadeLink_ReturnStep(gGT, 1u);
 	}
 }
 
@@ -375,6 +418,10 @@ int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 	{
 		return 0;
 	}
+
+	/* An owed return to title (race-launch risk 10) runs on the first frame
+	 * with no level load running, owned, ticked, or neither. */
+	MainArcadeLink_ReturnStep(gGT, 0u);
 
 	MainArcadeLink_Gather(gGT, gGS, &input);
 	s_mainArcadeLinkPrevRawHeld = input.rawHeld;

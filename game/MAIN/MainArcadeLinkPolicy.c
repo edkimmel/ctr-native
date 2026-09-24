@@ -115,3 +115,28 @@ int MainArcadeLinkPolicy_Decide(const struct MainArcadeLinkPolicyInput *input, s
 	output->resetDemoCountdown = ((link == 0) || (screenActive != 0) || (enter != 0)) ? 1u : 0u;
 	return 1;
 }
+
+/* Race-launch risk 10: never over a running level load. */
+int MainArcadeLinkPolicy_ReturnStep(uint8_t *pending, uint8_t returnAction, uint32_t loadingStage, uint8_t onMainMenuLevel)
+{
+	if (pending == NULL)
+	{
+		return 0;
+	}
+	if ((returnAction == 0u) && (*pending == 0u))
+	{
+		return 0;
+	}
+	if (onMainMenuLevel != 0u)
+	{
+		*pending = 0u;
+		return 0;
+	}
+	if ((loadingStage == MAIN_ARCADE_LINK_POLICY_STAGE_IDLE) || (loadingStage == MAIN_ARCADE_LINK_POLICY_STAGE_REQUESTED))
+	{
+		*pending = 0u;
+		return 1;
+	}
+	*pending = 1u;
+	return 0;
+}

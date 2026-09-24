@@ -208,3 +208,12 @@ string(FIND "${unity}" "#include \"MAIN/MainArcadeLink.c\"" hook_at)
 if(layout_at EQUAL -1 OR policy_at EQUAL -1 OR hook_at EQUAL -1 OR NOT (layout_at LESS policy_at AND policy_at LESS hook_at))
     message(FATAL_ERROR "arcade link policy isolation: game/game_unity.h must include the layout, then the policy, then the hook")
 endif()
+
+# 7. The return step's load-stage classes (race-launch risk 10) are the
+#    policy's own values, and the hook maps the retail stages to them (its
+#    mapping is pinned by main_arcade_link_hook_isolation_test.cmake 16f2).
+foreach(stage_class "STAGE_IDLE 0u" "STAGE_REQUESTED 1u" "STAGE_OTHER 2u")
+    ctr_require_regex("${policy_header}" "${header}" "(^|\n)#define MAIN_ARCADE_LINK_POLICY_${stage_class}\r?\n")
+endforeach()
+ctr_require_literal("${policy_header}" "${header}"
+    "int MainArcadeLinkPolicy_ReturnStep(uint8_t *pending, uint8_t returnAction, uint32_t loadingStage, uint8_t onMainMenuLevel);")

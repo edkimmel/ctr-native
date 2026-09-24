@@ -31,13 +31,14 @@ validation (HANDOFF steps 6-7).
 ## 2. Starting point
 
 This section records the code as it stood when the plan was written
-(894788d2b), and its line citations are of that time. What Task 7 changed
-is recorded in sections 4 and 6; in particular START_RACE no longer aborts
-to the title (RL-S8b), and the vibration toggle cited last is guarded
-(RL-S9).
+(894788d2b), and its line citations are of that time, except those of
+game/MAIN/MainArcadeLink.c, which cite the file as it stands after the
+race-launch risk 10 fix (section 7). What Task 7 changed is recorded in
+sections 4 and 6; in particular START_RACE no longer aborts to the title
+(RL-S8b), and the vibration toggle cited last is guarded (RL-S9).
 
 - START_RACE logs the agreed match and aborts to the title
-  (game/MAIN/MainArcadeLink.c:279-297). No race reaches RACING today.
+  (game/MAIN/MainArcadeLink.c:339-351). No race reaches RACING today.
 - Each relink handshake completes independently per side
   (include/platform/native_lockstep_peer_link.h:95, :172), so one cabinet
   can reach START_RACE while the other times out to LINK ERROR. The aux
@@ -59,9 +60,9 @@ to the title (RL-S8b), and the vibration toggle cited last is guarded
   RACING counts as active, platform/native_arcade_link_host.c:248-259).
   The hook (game/MAIN/MainFrame_RenderFrame.c:80) would therefore already
   tick the host on race frames: MainArcadeLink_LinkTick runs only on owned
-  frames (before RL-S8a; game/MAIN/MainArcadeLink.c:391-411). On those
-  frames it would also clear every pad tap and hide the box (:399-406),
-  reset the demo countdown (:418-423), and return 1 (:426), so the render
+  frames (before RL-S8a; game/MAIN/MainArcadeLink.c:447-471). On those
+  frames it would also clear every pad tap and hide the box (:455-462),
+  reset the demo countdown (:480-483), and return 1 (:486), so the render
   frame clears the collected menu input with RECTMENU_ClearInput
   (MainFrame_RenderFrame.c:96-101). The layout draws nothing on RACING
   (game/MAIN/MainArcadeLinkLayout.c:874).
@@ -285,10 +286,10 @@ a config the peer did not hold.
 RL-8 Launch point, waits, and race frames. Every networked launch starts
 from the title launch window on the idle main-menu level, the same TITLE
 window the roster proof uses: MainArcadeLink_TitleMenuReady
-(game/MAIN/MainArcadeLink.c:343-353, the wrapper the roster proof calls
+(game/MAIN/MainArcadeLink.c:395-405, the wrapper the roster proof calls
 at game/MAIN/MainArcadeRosterProof.c:269) around
 MainArcadeLinkPolicy_TitleMenuReady. The window needs mainMenuState
-MAIN_MENU_TITLE (MainArcadeLink.c:335) and is closed during a load and
+MAIN_MENU_TITLE (MainArcadeLink.c:384) and is closed during a load and
 during the title intro before frame 230 (TITLE_INTRO_MENU_READY_FRAME,
 include/ovr_230.h:48), so after race 1 it opens only once the return load
 and the intro are done.
@@ -339,35 +340,41 @@ bodies make the same calls in the same order.
 
 Return. After the race, finished or failed, the caller loads the
 main-menu level the way the link's return to title does
-(MainArcadeLink.c:303-309): boolDemoMode 0, numPlyrNextGame 1,
-mainMenuState MAIN_MENU_TITLE, then MainRaceTrack_RequestLoad of the
-main-menu level. The cabinet shows RESULTS, rematch, and select there, as
-the layer does today. RL-10 fixes the frame of the return and of the pad
-clear.
+(MainArcadeLink_RequestReturn, MainArcadeLink.c:296-302): boolDemoMode 0,
+numPlyrNextGame 1, mainMenuState MAIN_MENU_TITLE, then
+MainRaceTrack_RequestLoad of the main-menu level. The cabinet shows
+RESULTS, rematch, and select there, as the layer does today. RL-10 fixes
+the frame of the return and of the pad clear.
 
 A link failure or LOST can take the flow out of RACING during the staged
 race-track load (platform/native_arcade_flow.c:282-293).
 MainRaceTrack_RequestLoad overwrites Loading.stage without checking it
-(game/MAIN/MainRaceTrack.c:27), and the link's return checks only levelID
-(MainArcadeLink.c:303), which LOAD_LevelFile has already set to the race
-level (game/LOAD/LOAD_Level.c:43). So the caller runs the return step
-(numPlyrNextGame 1 and the request) only when Loading.stage is LOAD_IDLE
-or LOAD_REQUESTED; otherwise it defers the step to the first LOAD_IDLE
-frame. The race level then initializes and the setup ends VALIDATED or
-FAILED before the return load runs. Deferring numPlyrNextGame too keeps
-the race load's own read of it (game/LOAD/LOAD_TenStages.c:102) intact.
-RL-S7 tests a failure during the race load.
+(game/MAIN/MainRaceTrack.c:27), and a levelID check alone does not help:
+LOAD_LevelFile has already set levelID to the race level
+(game/LOAD/LOAD_Level.c:43). So both returns gate on the stage: each
+runs its return step (numPlyrNextGame 1 and the request) only when
+Loading.stage is LOAD_IDLE or LOAD_REQUESTED. Otherwise the caller
+defers the step to the first LOAD_IDLE frame, and the link's return to
+title (which checked only levelID until the race-launch risk 10 fix,
+section 7) defers it to the first LOAD_IDLE or LOAD_REQUESTED frame,
+dropping it if the level is by then the main-menu level
+(MainArcadeLinkPolicy_ReturnStep, applied by MainArcadeLink_ReturnStep,
+MainArcadeLink.c:313-319). The race level then initializes and the setup
+ends VALIDATED or FAILED before the return load runs. Deferring
+numPlyrNextGame too keeps the race load's own read of it
+(game/LOAD/LOAD_TenStages.c:102) intact. RL-S7 tests a failure during
+the race load.
 
 Race frames are ticked, not owned. MainArcadeLink_LinkTick runs only on
-owned frames (MainArcadeLink.c:391-411), so the policy gains one input
+owned frames (MainArcadeLink.c:447-471), so the policy gains one input
 (the host flow is on RACING) and one output, tickOnly, each in a reserved
 byte of its struct. On a LINK frame with the flow on RACING and not on
 the idle main-menu level (a load in progress, or another level),
 MainArcadeLinkPolicy_Decide sets tickOnly and heldButtons only; owns,
 enterPressed, hideBox, restoreBox, resetDemoCountdown, and clearTaps stay
 0. MainArcadeLink_Frame then runs MainArcadeLink_LinkTick and nothing
-else, and returns 0. So no pad tap is cleared (:399-402), the box is not
-hidden (:403-406), the demo countdown is not reset (:418-423), and the
+else, and returns 0. So no pad tap is cleared (:455-458), the box is not
+hidden (:459-462), the demo countdown is not reset (:480-483), and the
 render frame does not call RECTMENU_ClearInput
 (game/MAIN/MainFrame_RenderFrame.c:96-101). Retail race input is
 untouched (the rehearsal pads now, the Task 8 lockstep pads later). An
@@ -987,19 +994,24 @@ game/MAIN/MainArcadeRaceSetupPlan.h and game/MAIN/MainArcadeRaceSetupCore.h.
 8. Stale bundles after a rematch (GAME_LOOP_UI risk 2) stay a Task 8 test
    item.
 9. The ONE_CAB lobby and UI flow is a follow-up (ROSTER risk 14).
-10. The link's own return to title does not check the load stage. The
-    RETURN_TO_TITLE branch of MainArcadeLink_LinkTick
-    (game/MAIN/MainArcadeLink.c, the `action == ...RETURN_TO_TITLE`
-    block) calls MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL) whenever
-    levelID is not the main-menu level, without checking Loading.stage,
-    and MainRaceTrack_RequestLoad overwrites the stage. After a link
-    failure during the race-track load (levelID already the race level),
-    EXIT on RESULTS could therefore overwrite a running load. Not
-    reachable today: the neutral rehearsal pads stay installed until after
-    the caller's deferred return, so no local input can confirm EXIT (the
-    internal autopilot confirms only on a FINISHED RESULTS), and
-    the RESULTS idle timeout (900 ticks) plus the EXIT hold (60) needs
-    about 960 ticked frames inside one load. It becomes reachable if the
-    pads are cleared earlier or Task 8 changes the input source. Suggested
-    fix: request the load only at LOAD_IDLE or LOAD_REQUESTED, as the race
-    caller's return step does.
+10. Fixed: the link's own return to title did not check the load stage.
+    Its return step now runs only at LOAD_IDLE or LOAD_REQUESTED, like the
+    race caller's: MainArcadeLinkPolicy_ReturnStep decides, and on any
+    other stage the step is deferred on a host-local pending flag that
+    MainArcadeLink_Frame services on every later frame, dropping it if
+    the level is by then the main-menu level
+    (game/MAIN/MainArcadeLink.c:313-319 and :424). History: the
+    RETURN_TO_TITLE branch of MainArcadeLink_LinkTick called
+    MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL) whenever levelID was not
+    the main-menu level, without checking Loading.stage, and
+    MainRaceTrack_RequestLoad overwrites the stage. After a link failure
+    during the race-track load (levelID already the race level), EXIT on
+    RESULTS could therefore have overwritten a running load. It was not
+    reachable at the time: the neutral rehearsal pads stay installed until
+    after the caller's deferred return, so no local input can confirm EXIT
+    (the internal autopilot confirms only on a FINISHED RESULTS), and the
+    RESULTS idle timeout (900 ticks) plus the EXIT hold (60) needs about
+    960 ticked frames inside one load. It would have become reachable if
+    the pads were cleared earlier or Task 8 changed the input source. The
+    suggested fix, now made: request the load only at LOAD_IDLE or
+    LOAD_REQUESTED, as the race caller's return step does.

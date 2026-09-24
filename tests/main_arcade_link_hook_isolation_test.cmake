@@ -45,7 +45,11 @@
 # its step and apply order. Since the RL-S8b review, section 16 also pins
 # the finish latch as the core's (16b2), the caller's return step identical
 # to the link's return to title (16f2), and the caller's plan level tied to
-# the race setup plan's level rule (16h).
+# the race setup plan's level rule (16h). Since the race-launch risk 10 fix
+# the link's return to title is the helper MainArcadeLink_RequestReturn,
+# reached only through the policy's load-stage gate
+# (MainArcadeLinkPolicy_ReturnStep), which defers it on a host-local pending
+# flag while a level load runs (16f2).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -924,19 +928,78 @@ ctr_require_order("${proof_source_path} (MainArcadeRosterProof_LeaveTitle)" "${p
     "sdata->ptrActiveMenu = NULL;")
 
 # 16f2. The duplicated return step (RL-8): MainArcadeRaceLaunch_RequestReturn
-#      makes the same steps as the link's return to title (the
-#      RETURN_TO_TITLE branch's off-main-menu block in MainArcadeLink.c), so
-#      the two bodies are identical (comment-free code, whitespace
-#      collapsed), and they are boolDemoMode 0, numPlyrNextGame 1,
-#      mainMenuState MAIN_MENU_TITLE, then the main-menu level load.
+#      makes the same steps as the link's return to title (the hook's
+#      MainArcadeLink_RequestReturn), so the two bodies are identical
+#      (comment-free code, whitespace collapsed), and they are boolDemoMode
+#      0, numPlyrNextGame 1, mainMenuState MAIN_MENU_TITLE, then the
+#      main-menu level load. Since the race-launch risk 10 fix the link's
+#      step is gated on the load stage like the caller's: the hook names
+#      MainRaceTrack_RequestLoad exactly once, inside that helper; the
+#      helper is called only inside MainArcadeLink_ReturnStep, whose body is
+#      exactly the policy's gate (MainArcadeLinkPolicy_ReturnStep on the
+#      host-local pending flag, the stage class, and the main-menu level
+#      test) around it; the stage class maps LOAD_IDLE and LOAD_REQUESTED;
+#      the step is asked twice, with the action in the RETURN_TO_TITLE
+#      branch and without it in MainArcadeLink_Frame between the NULL guard
+#      and the gather; and no other game or platform source names the
+#      pending flag.
+set(hook_helper_signature "static void MainArcadeLink_RequestReturn(struct GameTracker *gGT)")
+ctr_find_block("${hook_source_path}" "${hook_code}" "${hook_helper_signature}" hook_reload_begin hook_reload_end)
+math(EXPR hook_reload_length "${hook_reload_end} - ${hook_reload_begin} + 1")
+string(SUBSTRING "${hook_code}" ${hook_reload_begin} ${hook_reload_length} hook_reload_block)
+string(REGEX MATCHALL "MainRaceTrack_RequestLoad\\(" hook_load_requests "${hook_code}")
+list(LENGTH hook_load_requests hook_load_request_count)
+string(FIND "${hook_reload_block}" "MainRaceTrack_RequestLoad(" hook_load_in_helper)
+if(NOT hook_load_request_count EQUAL 1 OR hook_load_in_helper EQUAL -1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must name MainRaceTrack_RequestLoad exactly once, inside MainArcadeLink_RequestReturn (found ${hook_load_request_count})")
+endif()
+string(REGEX MATCHALL "MainArcadeLink_RequestReturn\\(" hook_helper_names "${hook_code}")
+list(LENGTH hook_helper_names hook_helper_name_count)
+if(NOT hook_helper_name_count EQUAL 2)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must define MainArcadeLink_RequestReturn and call it exactly once (found ${hook_helper_name_count} names)")
+endif()
+set(hook_step_signature "static void MainArcadeLink_ReturnStep(struct GameTracker *gGT, uint8_t returnAction)")
+ctr_find_block("${hook_source_path}" "${hook_code}" "${hook_step_signature}" hook_step_begin hook_step_end)
+math(EXPR hook_step_length "${hook_step_end} - ${hook_step_begin} + 1")
+string(SUBSTRING "${hook_code}" ${hook_step_begin} ${hook_step_length} hook_step_block)
+if(NOT hook_step_block MATCHES "^\\{[ \t\r\n]*if \\(MainArcadeLinkPolicy_ReturnStep\\(&s_mainArcadeLinkReturnPending, returnAction, MainArcadeLink_StageClass\\(\\), \\(gGT->levelID == MAIN_MENU_LEVEL\\) \\? 1u : 0u\\)\\)[ \t\r\n]*\\{[ \t\r\n]*MainArcadeLink_RequestReturn\\(gGT\\);[ \t\r\n]*\\}[ \t\r\n]*\\}$")
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeLink_ReturnStep must run MainArcadeLink_RequestReturn only when MainArcadeLinkPolicy_ReturnStep allows it, and nothing else (found '${hook_step_block}')")
+endif()
+string(REGEX MATCHALL "MainArcadeLinkPolicy_ReturnStep\\(" hook_gate_calls "${hook_code}")
+list(LENGTH hook_gate_calls hook_gate_call_count)
+if(NOT hook_gate_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call MainArcadeLinkPolicy_ReturnStep exactly once, in MainArcadeLink_ReturnStep (found ${hook_gate_call_count})")
+endif()
+ctr_find_block("${hook_source_path}" "${hook_code}" "static uint32_t MainArcadeLink_StageClass(void)" hook_stage_begin hook_stage_end)
+math(EXPR hook_stage_length "${hook_stage_end} - ${hook_stage_begin} + 1")
+string(SUBSTRING "${hook_code}" ${hook_stage_begin} ${hook_stage_length} hook_stage_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " hook_stage_flat "${hook_stage_block}")
+if(NOT hook_stage_flat STREQUAL "{ if (sdata->Loading.stage == LOAD_IDLE) { return MAIN_ARCADE_LINK_POLICY_STAGE_IDLE; } if (sdata->Loading.stage == LOAD_REQUESTED) { return MAIN_ARCADE_LINK_POLICY_STAGE_REQUESTED; } return MAIN_ARCADE_LINK_POLICY_STAGE_OTHER; }")
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeLink_StageClass must map LOAD_IDLE and LOAD_REQUESTED to their policy classes and every other stage to OTHER (found '${hook_stage_flat}')")
+endif()
+string(REGEX MATCHALL "MainArcadeLink_ReturnStep\\([^)]*\\)" hook_step_names "${hook_code}")
+if(NOT "${hook_step_names}" STREQUAL "MainArcadeLink_ReturnStep(struct GameTracker *gGT, uint8_t returnAction);MainArcadeLink_ReturnStep(gGT, 1u);MainArcadeLink_ReturnStep(gGT, 0u)")
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must define MainArcadeLink_ReturnStep and ask it twice, with the action in the RETURN_TO_TITLE branch and then without it in MainArcadeLink_Frame (found '${hook_step_names}')")
+endif()
 ctr_find_block("${hook_source_path}" "${hook_code}"
     "else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)" hook_return_begin hook_return_end)
 math(EXPR hook_return_length "${hook_return_end} - ${hook_return_begin} + 1")
 string(SUBSTRING "${hook_code}" ${hook_return_begin} ${hook_return_length} hook_return_branch)
-ctr_find_block("${hook_source_path} (RETURN_TO_TITLE branch)" "${hook_return_branch}" "if (gGT->levelID != MAIN_MENU_LEVEL)"
-    hook_reload_begin hook_reload_end)
-math(EXPR hook_reload_length "${hook_reload_end} - ${hook_reload_begin} + 1")
-string(SUBSTRING "${hook_return_branch}" ${hook_reload_begin} ${hook_reload_length} hook_reload_block)
+ctr_require_literal("${hook_source_path} (RETURN_TO_TITLE branch)" "${hook_return_branch}" "MainArcadeLink_ReturnStep(gGT, 1u);")
+ctr_require_order("${hook_source_path} (MainArcadeLink_Frame)" "${frame_block}"
+    "${off_check}" "if ((gGT == NULL) || (gGS == NULL))" "MainArcadeLink_ReturnStep(gGT, 0u);"
+    "MainArcadeLink_Gather(gGT, gGS, &input);" "MainArcadeLinkPolicy_Decide(&input, &output)")
+ctr_require_literal("${hook_source_path}" "${hook_code}" "static uint8_t s_mainArcadeLinkReturnPending;")
+file(GLOB_RECURSE pending_scan_paths
+    "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/platform/*.c" "${repo}/platform/*.h" "${repo}/include/*.h")
+foreach(path IN LISTS pending_scan_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    if(relative_path STREQUAL hook_source_path)
+        continue()
+    endif()
+    file(READ "${path}" source)
+    ctr_forbid("${relative_path}" "${source}" "s_mainArcadeLinkReturnPending")
+endforeach()
 ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_RequestReturn(struct GameTracker *gGT)"
     caller_return_begin caller_return_end)
 math(EXPR caller_return_length "${caller_return_end} - ${caller_return_begin} + 1")

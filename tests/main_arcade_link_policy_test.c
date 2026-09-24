@@ -737,6 +737,107 @@ static int TestHeldReported(void)
 	return 0;
 }
 
+#define STAGE_IDLE MAIN_ARCADE_LINK_POLICY_STAGE_IDLE
+#define STAGE_REQUESTED MAIN_ARCADE_LINK_POLICY_STAGE_REQUESTED
+#define STAGE_OTHER MAIN_ARCADE_LINK_POLICY_STAGE_OTHER
+
+/* Race-launch risk 10: the link's return step runs only while no level load
+ * is running, and is deferred, not dropped, otherwise. */
+static int TestReturnStep(void)
+{
+	uint8_t pending;
+	int frame;
+
+	CHECK(STAGE_IDLE != STAGE_REQUESTED);
+	CHECK(STAGE_REQUESTED != STAGE_OTHER);
+	CHECK(STAGE_IDLE != STAGE_OTHER);
+
+	/* NULL: nothing runs. */
+	CHECK(MainArcadeLinkPolicy_ReturnStep(NULL, 1u, STAGE_IDLE, 0u) == 0);
+
+	/* The action at IDLE or REQUESTED runs now; nothing is owed. */
+	pending = 0u;
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 1u, STAGE_IDLE, 0u) == 1);
+	CHECK(pending == 0u);
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 1u, STAGE_REQUESTED, 0u) == 1);
+	CHECK(pending == 0u);
+
+	/* The action while a load runs: owed, not run. */
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 1u, STAGE_OTHER, 0u) == 0);
+	CHECK(pending == 1u);
+
+	/* Still owed for as long as the load runs. */
+	for (frame = 0; frame < 1000; frame++)
+	{
+		CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0u, STAGE_OTHER, 0u) == 0);
+		CHECK(pending == 1u);
+	}
+	/* Any unknown stage value counts as OTHER. */
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0u, 3u, 0u) == 0);
+	CHECK(pending == 1u);
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0u, 0xFFFFFFFFu, 0u) == 0);
+	CHECK(pending == 1u);
+	/* A second action while owed merges with it. */
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 1u, STAGE_OTHER, 0u) == 0);
+	CHECK(pending == 1u);
+
+	/* Then the first IDLE frame runs it once and clears it. */
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0u, STAGE_IDLE, 0u) == 1);
+	CHECK(pending == 0u);
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0u, STAGE_IDLE, 0u) == 0);
+	CHECK(pending == 0u);
+
+	/* A REQUESTED frame services an owed step too. */
+	pending = 1u;
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0u, STAGE_REQUESTED, 0u) == 1);
+	CHECK(pending == 0u);
+
+	/* Owed, then already on the main-menu level: cleared with no run, at
+	 * every stage. */
+	{
+		static const uint32_t stages[] = {STAGE_IDLE, STAGE_REQUESTED, STAGE_OTHER};
+
+		for (size_t s = 0; s < sizeof(stages) / sizeof(stages[0]); s++)
+		{
+			pending = 1u;
+			CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0u, stages[s], 1u) == 0);
+			CHECK(pending == 0u);
+			CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0u, STAGE_IDLE, 0u) == 0);
+			CHECK(pending == 0u);
+
+			/* The action on the main-menu level: no run, nothing owed. */
+			CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 1u, stages[s], 1u) == 0);
+			CHECK(pending == 0u);
+		}
+	}
+
+	/* No action and nothing owed: never runs, on any stage or level. */
+	{
+		static const uint32_t stages[] = {STAGE_IDLE, STAGE_REQUESTED, STAGE_OTHER, 3u};
+
+		for (size_t s = 0; s < sizeof(stages) / sizeof(stages[0]); s++)
+		{
+			for (uint8_t level = 0u; level < 2u; level++)
+			{
+				pending = 0u;
+				CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0u, stages[s], level) == 0);
+				CHECK(pending == 0u);
+			}
+		}
+	}
+
+	/* The flags count any nonzero value as 1. */
+	pending = 0u;
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0xFFu, STAGE_OTHER, 0u) == 0);
+	CHECK(pending == 1u);
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0u, STAGE_OTHER, 2u) == 0);
+	CHECK(pending == 0u);
+	pending = 7u;
+	CHECK(MainArcadeLinkPolicy_ReturnStep(&pending, 0u, STAGE_IDLE, 0u) == 1);
+	CHECK(pending == 0u);
+	return 0;
+}
+
 int main(void)
 {
 	if (TestLayout() != 0) return 1;
@@ -753,6 +854,7 @@ int main(void)
 	if (TestPreview() != 0) return 1;
 	if (TestRestore() != 0) return 1;
 	if (TestHeldReported() != 0) return 1;
+	if (TestReturnStep() != 0) return 1;
 	printf("main_arcade_link_policy_test: ok\n");
 	return 0;
 }
