@@ -1086,7 +1086,10 @@ Task 8.
 ### Task 8 -- in-race lockstep drive and failure handling
 
 Status: planned in docs/LOCKSTEP_RACE_MILESTONE.md; live V4 projection is
-its slice LR-S4 (Task 7 is done). The race driver lives under platform/, because it calls the platform-only
+its slice LR-S4 (Task 7 is done). The sketch below is superseded, including
+its per-tick order (digests recorded after the install) and the standings
+on RESULTS: docs/LOCKSTEP_RACE_MILESTONE.md section 4 is the design. The
+race driver lives under platform/, because it calls the platform-only
 NativeArcadeNetplay_OnTakeResult and NativeArcadeNetplay_Link hooks and the
 lockstep session API, none of which game code may name. Per tick:
 submit the local pad, compose and send, poll, take frame inputs, install
