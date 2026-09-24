@@ -517,24 +517,19 @@ RS-1). It is tracked in `docs/ROSTER_MILESTONE.md`. The live adapter
 race with seven bots. The suite is 133 tests, and `ctest -LE live` skips
 the two slow live tests.
 
-1. ONE_CAB full-race proof. In a Debug build,
-   `game/UI/UI_Rank.c:173-199` reads `pos.y` uninitialized, and every 1P
-   arcade race stops on an MSVC run-time check dialog at the first rank
-   change. The value is render-only and not simulation state. Once it is
-   initialized (owner approved: fix retail bugs in place), remove the checker's `-OneCabTicks 90`
-   cap so ONE_CAB runs F-H run 900 ticks, and add ONE_CAB variants of
-   run C (demo-race launch) and run E (odd offset).
-2. Arcade-link menu sound effects. The arcade-link and match-select
+1. Arcade-link menu sound effects. The arcade-link and match-select
    screens are silent today: `game/MAIN/MainArcadeLink.c` plays no sound.
    Add the retail menu sounds for navigate, confirm, back, and error
    through the same calls the retail menus use. They are host-local
    presentation and stay out of simulation identity.
-
-   The owner accepted every open default: RS-1..RS-24
-   (`docs/ROSTER_MILESTONE.md`), SEL-1..SEL-17
+2. Owner-decision status update. The owner accepted every open default:
+   RS-1..RS-24 (`docs/ROSTER_MILESTONE.md`), SEL-1..SEL-17
    (`docs/MATCH_SELECT_MILESTONE.md` section 4), and UX-1..UX-11
-   (`docs/GAME_LOOP_UI_MILESTONE.md` section 3). Those docs still say
-   "pending review" and need a status-only update.
+   (`docs/GAME_LOOP_UI_MILESTONE.md` section 3). Those docs and three code
+   headers still say "pending owner review": `native_arcade_bot_rules.h`
+   (lines 14-15 and 59), `MainArcadeRaceSetupPlan.h:221`, and
+   `native_arcade_roster_proof.h:175`. The fix is a status-only,
+   comment-only update.
 3. Task 7, networked race launch through `MainArcadeRaceSetup`. It covers
    asymmetric relink completion (`docs/MATCH_SELECT_MILESTONE.md`
    section 7), extending the setup isolation test's caller allow-list,
