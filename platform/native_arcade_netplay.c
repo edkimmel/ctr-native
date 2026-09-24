@@ -577,6 +577,11 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	/* 5. Observation. */
 	memset(&observation, 0, sizeof(observation));
 	observation.lobbyStatus = NativeArcadeNetplay_LobbyStatus(netplay);
+	/* RL-S4 transitional rule; RL-S5 replaces it with the launch agreement
+	 * (docs/RACE_LAUNCH_MILESTONE.md RL-1..RL-6), and until then READY
+	 * implies COMMITTED, so behaviour is unchanged. */
+	observation.launchStatus = (uint8_t)((observation.lobbyStatus == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY)
+			? NATIVE_ARCADE_FLOW_LAUNCH_COMMITTED : NATIVE_ARCADE_FLOW_LAUNCH_PENDING);
 	observation.linkFailure = netplay->pendingLinkFailure;
 	observation.raceFinished = (uint8_t)((raceFinished != 0u) ? 1u : 0u);
 	observation.selectStatus = (uint8_t)NATIVE_ARCADE_FLOW_SELECT_PENDING;

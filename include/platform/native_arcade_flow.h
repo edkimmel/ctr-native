@@ -14,8 +14,8 @@
  * tick with one navigation event (from the arcade menu input seam) and one
  * observation (the lobby layer's status mapped onto this module's own
  * lobby-status enum, a race-finished flag, an in-race link-failure reason,
- * and the caller's select status), and returns at most one action per tick
- * for the caller to execute.
+ * the caller's select status, and the caller's launch status), and returns
+ * at most one action per tick for the caller to execute.
  *
  * Outline:
  * - OFF is inert. NativeArcadeFlow_Enter moves to LOBBY (BEGIN_LOBBY).
@@ -35,10 +35,11 @@
  *   selectResultHoldTicks returns RELINK (the caller relinks on the
  *   resolved config). Phase 2 starts on the tick after RELINK, because a
  *   READY still observed on the RELINK tick belongs to the old link; checked
- *   in order: READY moves to RACING (START_RACE); REJECTED, or
- *   launchTimeoutTicks ticks since RELINK, moves to RESULTS with
- *   LINK_ERROR and returns CLOSE_LINK; WAITING or LOST returns
- *   RESTART_LOBBY after lobbyRetryPauseTicks; CONNECTING stays.
+ *   in order: READY with launch COMMITTED moves to RACING (START_RACE);
+ *   REJECTED, or launchTimeoutTicks ticks since RELINK, moves to RESULTS
+ *   with LINK_ERROR and returns CLOSE_LINK; WAITING or LOST returns
+ *   RESTART_LOBBY after lobbyRetryPauseTicks; CONNECTING, and READY with
+ *   launch PENDING, stay.
  * - Every pre-race LINK_ERROR (from SELECT or SELECT_RESULT) closes the
  *   link: a lobby left open on RESULTS could still complete a relink
  *   handshake in the background, so a later REMATCH could derive from a
@@ -129,6 +130,13 @@ enum NativeArcadeFlowSelectStatus
 	NATIVE_ARCADE_FLOW_SELECT_FAILED = 2
 };
 
+/* The caller's launch agreement status (RL-5, docs/RACE_LAUNCH_MILESTONE.md). */
+enum NativeArcadeFlowLaunchStatus
+{
+	NATIVE_ARCADE_FLOW_LAUNCH_PENDING = 0,
+	NATIVE_ARCADE_FLOW_LAUNCH_COMMITTED = 1
+};
+
 /* Every timing (all nine) is in 30 Hz game-loop ticks and must be at least
  * 1; resultsIdleTimeoutTicks must exceed resultsDwellTicks. */
 struct NativeArcadeFlowTimings
@@ -142,7 +150,8 @@ struct NativeArcadeFlowTimings
 	uint32_t exitHoldTicks;
 	/* SELECT_RESULT hold before RELINK (SEL-8). */
 	uint32_t selectResultHoldTicks;
-	/* Ticks after RELINK without READY before LINK_ERROR (SEL-9). */
+	/* Ticks after RELINK without READY and a launch commit before LINK_ERROR
+	 * (SEL-9, RL-5). */
 	uint32_t launchTimeoutTicks;
 };
 
@@ -158,8 +167,14 @@ struct NativeArcadeFlowObservation
 	/* enum NativeArcadeFlowSelectStatus; acted on in SELECT only, but
 	 * validated on every screen. */
 	uint8_t selectStatus;
-	uint8_t reserved[2];
+	/* enum NativeArcadeFlowLaunchStatus; acted on in SELECT_RESULT phase 2
+	 * only, but validated on every screen, like selectStatus. */
+	uint8_t launchStatus;
+	uint8_t reserved[1];
 };
+
+/* launchStatus took the first reserved byte: the observation did not grow. */
+_Static_assert(sizeof(struct NativeArcadeFlowObservation) == 12u, "NativeArcadeFlowObservation must stay 12 bytes");
 
 struct NativeArcadeFlow
 {
@@ -200,9 +215,10 @@ int NativeArcadeFlow_Init(struct NativeArcadeFlow *flow, const struct NativeArca
 enum NativeArcadeFlowAction NativeArcadeFlow_Enter(struct NativeArcadeFlow *flow);
 
 /* Advances one tick. Returns at most one action. NULL arguments, an invalid
- * observation (lobbyStatus, linkFailure, raceFinished, or selectStatus out of
- * range), or screen OFF return NONE and change nothing. Event values
- * above NATIVE_ARCADE_MENU_EVENT_BACK are treated as NONE. */
+ * observation (lobbyStatus, linkFailure, raceFinished, selectStatus, or
+ * launchStatus out of range; a launchStatus above COMMITTED is invalid), or
+ * screen OFF return NONE and change nothing. Event values above
+ * NATIVE_ARCADE_MENU_EVENT_BACK are treated as NONE. */
 enum NativeArcadeFlowAction NativeArcadeFlow_Tick(struct NativeArcadeFlow *flow,
 	const struct NativeArcadeFlowObservation *observation, enum NativeArcadeMenuEvent event);
 

@@ -129,6 +129,10 @@ static int NativeArcadeFlow_ObservationValid(const struct NativeArcadeFlowObserv
 	{
 		return 0;
 	}
+	if (observation->launchStatus > (uint8_t)NATIVE_ARCADE_FLOW_LAUNCH_COMMITTED)
+	{
+		return 0;
+	}
 	return 1;
 }
 
@@ -230,8 +234,10 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_TickSelect(struct NativeArca
 }
 
 /* SELECT_RESULT: events are ignored. Phase 1 holds, then RELINK; phase 2
- * waits for the relinked lobby, starting on the tick after RELINK. */
-static enum NativeArcadeFlowAction NativeArcadeFlow_TickSelectResult(struct NativeArcadeFlow *flow, uint32_t status)
+ * waits for the relinked lobby and the launch commit (RL-5), starting on the
+ * tick after RELINK. */
+static enum NativeArcadeFlowAction NativeArcadeFlow_TickSelectResult(struct NativeArcadeFlow *flow, uint32_t status,
+	uint32_t launchStatus)
 {
 	if (flow->relinked == 0u)
 	{
@@ -250,7 +256,8 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_TickSelectResult(struct Nati
 	{
 		flow->ticksSinceRelink += 1u;
 	}
-	if (status == NATIVE_ARCADE_FLOW_LOBBY_READY)
+	/* The launch commit is checked before the timeout on the same tick. */
+	if ((status == NATIVE_ARCADE_FLOW_LOBBY_READY) && (launchStatus == (uint32_t)NATIVE_ARCADE_FLOW_LAUNCH_COMMITTED))
 	{
 		NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_RACING);
 		return NATIVE_ARCADE_FLOW_ACTION_START_RACE;
@@ -263,7 +270,7 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_TickSelectResult(struct Nati
 	{
 		return NativeArcadeFlow_RetryPause(flow);
 	}
-	/* CONNECTING */
+	/* CONNECTING, or READY with the launch PENDING. */
 	flow->ticksSinceRetry = 0u;
 	return NATIVE_ARCADE_FLOW_ACTION_NONE;
 }
@@ -430,7 +437,7 @@ enum NativeArcadeFlowAction NativeArcadeFlow_Tick(struct NativeArcadeFlow *flow,
 	case NATIVE_ARCADE_FLOW_SCREEN_SELECT:
 		return NativeArcadeFlow_TickSelect(flow, status, observation->selectStatus);
 	case NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT:
-		return NativeArcadeFlow_TickSelectResult(flow, status);
+		return NativeArcadeFlow_TickSelectResult(flow, status, observation->launchStatus);
 	default:
 		return NATIVE_ARCADE_FLOW_ACTION_NONE;
 	}

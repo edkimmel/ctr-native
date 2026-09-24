@@ -26,6 +26,9 @@
 #define SS_CONFIRMED NATIVE_ARCADE_FLOW_SELECT_CONFIRMED
 #define SS_FAILED NATIVE_ARCADE_FLOW_SELECT_FAILED
 
+#define LA_PENDING NATIVE_ARCADE_FLOW_LAUNCH_PENDING
+#define LA_COMMITTED NATIVE_ARCADE_FLOW_LAUNCH_COMMITTED
+
 #define LS_WAITING NATIVE_ARCADE_FLOW_LOBBY_WAITING
 #define LS_CONNECTING NATIVE_ARCADE_FLOW_LOBBY_CONNECTING
 #define LS_READY NATIVE_ARCADE_FLOW_LOBBY_READY
@@ -81,24 +84,59 @@ static enum NativeArcadeFlowAction StepSel(struct NativeArcadeFlow *flow, uint32
 	return NativeArcadeFlow_Tick(flow, &observation, event);
 }
 
-/* Runs `count` ticks of the same lobby status, select status, and event;
- * every tick must return NONE and keep the screen. */
-static int RunQuietSel(struct NativeArcadeFlow *flow, uint32_t count, uint32_t status, uint8_t selectStatus,
+/* One tick with a select status and a launch status (no failure, not
+ * finished). */
+static enum NativeArcadeFlowAction StepSelLaunch(struct NativeArcadeFlow *flow, uint32_t status, uint8_t selectStatus,
+	uint8_t launchStatus, enum NativeArcadeMenuEvent event)
+{
+	struct NativeArcadeFlowObservation observation = Obs(status, END_NONE, 0u);
+
+	observation.selectStatus = selectStatus;
+	observation.launchStatus = launchStatus;
+	return NativeArcadeFlow_Tick(flow, &observation, event);
+}
+
+/* One tick with a launch status (select PENDING, no failure, not finished). */
+static enum NativeArcadeFlowAction StepLaunch(struct NativeArcadeFlow *flow, uint32_t status, uint8_t launchStatus,
 	enum NativeArcadeMenuEvent event)
+{
+	return StepSelLaunch(flow, status, SS_PENDING, launchStatus, event);
+}
+
+/* Runs `count` ticks of the same lobby status, select status, launch status,
+ * and event; every tick must return NONE and keep the screen. */
+static int RunQuietSelLaunch(struct NativeArcadeFlow *flow, uint32_t count, uint32_t status, uint8_t selectStatus,
+	uint8_t launchStatus, enum NativeArcadeMenuEvent event)
 {
 	uint32_t screen = NativeArcadeFlow_Screen(flow);
 	uint32_t i;
 
 	for (i = 0; i < count; i++)
 	{
-		CHECK(StepSel(flow, status, selectStatus, event) == ACT_NONE);
+		CHECK(StepSelLaunch(flow, status, selectStatus, launchStatus, event) == ACT_NONE);
 		CHECK(NativeArcadeFlow_Screen(flow) == screen);
 	}
 	return 0;
 }
 
-/* Runs `count` ticks of the same lobby status and event (select PENDING);
- * every tick must return NONE and keep the screen. */
+/* Runs `count` ticks of the same lobby status, select status, and event
+ * (launch PENDING); every tick must return NONE and keep the screen. */
+static int RunQuietSel(struct NativeArcadeFlow *flow, uint32_t count, uint32_t status, uint8_t selectStatus,
+	enum NativeArcadeMenuEvent event)
+{
+	return RunQuietSelLaunch(flow, count, status, selectStatus, LA_PENDING, event);
+}
+
+/* Runs `count` ticks of the same lobby status, launch status, and event
+ * (select PENDING); every tick must return NONE and keep the screen. */
+static int RunQuietLaunch(struct NativeArcadeFlow *flow, uint32_t count, uint32_t status, uint8_t launchStatus,
+	enum NativeArcadeMenuEvent event)
+{
+	return RunQuietSelLaunch(flow, count, status, SS_PENDING, launchStatus, event);
+}
+
+/* Runs `count` ticks of the same lobby status and event (select and launch
+ * PENDING); every tick must return NONE and keep the screen. */
 static int RunQuiet(struct NativeArcadeFlow *flow, uint32_t count, uint32_t status, enum NativeArcadeMenuEvent event)
 {
 	return RunQuietSel(flow, count, status, SS_PENDING, event);
@@ -153,11 +191,12 @@ static int ToRelinked(struct NativeArcadeFlow *flow)
 	return 0;
 }
 
-/* Through select, the relink, and READY on the tick after RELINK. */
+/* Through select, the relink, and READY with the launch COMMITTED on the
+ * tick after RELINK. */
 static int ToRacing(struct NativeArcadeFlow *flow)
 {
 	CHECK(ToRelinked(flow) == 0);
-	CHECK(Step(flow, LS_READY, END_NONE, 0u, EV_NONE) == ACT_START_RACE);
+	CHECK(StepLaunch(flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_START_RACE);
 	CHECK(NativeArcadeFlow_Screen(flow) == SC_RACING);
 	return 0;
 }
@@ -223,11 +262,16 @@ static int TestDefaultsAndInit(void)
 	CHECK((int)SC_SELECT == 7 && (int)SC_SELECT_RESULT == 8);
 	CHECK((int)ACT_BEGIN_SELECT == 7 && (int)ACT_RELINK == 8);
 	CHECK((int)SS_PENDING == 0 && (int)SS_CONFIRMED == 1 && (int)SS_FAILED == 2);
-	/* selectStatus took one reserved byte: the observation did not grow. */
+	CHECK((int)LA_PENDING == 0 && (int)LA_COMMITTED == 1);
+	/* selectStatus and then launchStatus each took one reserved byte: the
+	 * observation did not grow. */
 	CHECK(sizeof(struct NativeArcadeFlowObservation) == 12u);
+	CHECK(offsetof(struct NativeArcadeFlowObservation, lobbyStatus) == 0u);
+	CHECK(offsetof(struct NativeArcadeFlowObservation, linkFailure) == 4u);
 	CHECK(offsetof(struct NativeArcadeFlowObservation, raceFinished) == 8u);
 	CHECK(offsetof(struct NativeArcadeFlowObservation, selectStatus) == 9u);
-	CHECK(offsetof(struct NativeArcadeFlowObservation, reserved) == 10u);
+	CHECK(offsetof(struct NativeArcadeFlowObservation, launchStatus) == 10u);
+	CHECK(offsetof(struct NativeArcadeFlowObservation, reserved) == 11u);
 
 	memset(&timings, 0xA5, sizeof(timings));
 	NativeArcadeFlow_DefaultTimings(&timings);
@@ -396,6 +440,17 @@ static int ExpectInvalidIgnored(struct NativeArcadeFlow *flow)
 	CHECK(StepSel(flow, LS_READY, 3u, EV_NONE) == ACT_NONE);
 	CHECK(StepSel(flow, LS_READY, 255u, EV_CONFIRM) == ACT_NONE);
 	CHECK(StepSel(flow, LS_LOST, 3u, EV_BACK) == ACT_NONE);
+	/* A launch status above COMMITTED is invalid on every screen too,
+	 * including a READY that would otherwise start the race (RL-5). */
+	CHECK(StepLaunch(flow, LS_READY, 2u, EV_NONE) == ACT_NONE);
+	CHECK(StepLaunch(flow, LS_READY, 255u, EV_CONFIRM) == ACT_NONE);
+	CHECK(StepSelLaunch(flow, LS_READY, SS_CONFIRMED, 2u, EV_NONE) == ACT_NONE);
+	CHECK(StepLaunch(flow, LS_WAITING, 2u, EV_NONE) == ACT_NONE);
+	CHECK(StepLaunch(flow, LS_REJECTED, 255u, EV_NONE) == ACT_NONE);
+	CHECK(StepLaunch(flow, LS_LOST, 2u, EV_BACK) == ACT_NONE);
+	CHECK(NativeArcadeFlow_Screen(flow) == snapshot.screen);
+	CHECK(NativeArcadeFlow_TicksInScreen(flow) == snapshot.ticksInScreen);
+	CHECK(NativeArcadeFlow_ScreenSerial(flow) == snapshot.screenSerial);
 	CHECK(memcmp(flow, &snapshot, sizeof(*flow)) == 0);
 	return 0;
 }
@@ -434,6 +489,24 @@ static int TestInvalidObservations(void)
 	CHECK(Step(&flow, LS_CONNECTING, END_NONE, 0u, EV_NONE) == ACT_CLOSE_LINK);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
 	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
+
+	/* Phase 2 right after RELINK, where a valid READY with COMMITTED would
+	 * start the race. */
+	CHECK(ToRelinked(&flow) == 0);
+	CHECK(ExpectInvalidIgnored(&flow) == 0);
+	CHECK(flow.ticksSinceRelink == 0u);
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_START_RACE);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RACING);
+
+	CHECK(ToRematchWait(&flow) == 0);
+	CHECK(RunQuiet(&flow, 5u, LS_CONNECTING, EV_NONE) == 0);
+	CHECK(ExpectInvalidIgnored(&flow) == 0);
+
+	CHECK(ToLobby(&flow) == 0);
+	CHECK(Step(&flow, LS_WAITING, END_NONE, 0u, EV_BACK) == ACT_CLOSE_LINK);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_EXIT);
+	CHECK(RunQuiet(&flow, 10u, LS_WAITING, EV_NONE) == 0);
+	CHECK(ExpectInvalidIgnored(&flow) == 0);
 	return 0;
 }
 
@@ -697,16 +770,16 @@ static int TestSelectResult(void)
 	CHECK(Step(&flow, LS_CONNECTING, END_NONE, 0u, EV_NONE) == ACT_NONE);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
 	CHECK(flow.ticksSinceRelink == 1u);
-	/* Phase 2 READY: RACING with START_RACE. */
-	CHECK(Step(&flow, LS_READY, END_NONE, 0u, EV_NONE) == ACT_START_RACE);
+	/* Phase 2 READY with the launch COMMITTED: RACING with START_RACE. */
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_START_RACE);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RACING);
 	CHECK(NativeArcadeFlow_TicksInScreen(&flow) == 0u);
 	CHECK(flow.relinked == 0u);
 
-	/* READY on the first tick after RELINK starts at once, whatever the
-	 * select status and event. */
+	/* READY with COMMITTED on the first tick after RELINK starts at once,
+	 * whatever the select status and event. */
 	CHECK(ToRelinked(&flow) == 0);
-	CHECK(StepSel(&flow, LS_READY, SS_FAILED, EV_BACK) == ACT_START_RACE);
+	CHECK(StepSelLaunch(&flow, LS_READY, SS_FAILED, LA_COMMITTED, EV_BACK) == ACT_START_RACE);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RACING);
 
 	/* REJECTED after RELINK is LINK ERROR. */
@@ -726,10 +799,10 @@ static int TestSelectResult(void)
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
 	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
 
-	/* READY outranks the timeout on the 300th tick. */
+	/* READY with COMMITTED outranks the timeout on the 300th tick. */
 	CHECK(ToRelinked(&flow) == 0);
 	CHECK(RunQuiet(&flow, 299u, LS_CONNECTING, EV_NONE) == 0);
-	CHECK(Step(&flow, LS_READY, END_NONE, 0u, EV_NONE) == ACT_START_RACE);
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_START_RACE);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RACING);
 
 	/* WAITING: RESTART_LOBBY at ticks 30, 60, ... 270 after RELINK without a
@@ -765,6 +838,208 @@ static int TestSelectResult(void)
 	CHECK(Step(&flow, LS_WAITING, END_NONE, 0u, EV_NONE) == ACT_RELINK);
 	CHECK(RunQuiet(&flow, 29u, LS_WAITING, EV_NONE) == 0);
 	CHECK(Step(&flow, LS_WAITING, END_NONE, 0u, EV_NONE) == ACT_RESTART_LOBBY);
+	return 0;
+}
+
+/* RL-5: SELECT_RESULT phase 2 starts the race only on READY with the launch
+ * COMMITTED; READY with PENDING waits, still under launchTimeoutTicks. */
+static int TestLaunchGatePendingWaitsThenCommits(void)
+{
+	struct NativeArcadeFlow flow;
+	uint32_t serial;
+
+	CHECK(ToRelinked(&flow) == 0);
+	serial = NativeArcadeFlow_ScreenSerial(&flow);
+	CHECK(RunQuietLaunch(&flow, 10u, LS_READY, LA_PENDING, EV_NONE) == 0);
+	CHECK(RunQuietSelLaunch(&flow, 5u, LS_READY, SS_CONFIRMED, LA_PENDING, EV_CONFIRM) == 0);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
+	CHECK(NativeArcadeFlow_ScreenSerial(&flow) == serial);
+	CHECK(NativeArcadeFlow_LobbyStatus(&flow) == LS_READY);
+	CHECK(flow.relinked == 1u);
+	CHECK(flow.ticksSinceRelink == 15u);
+	CHECK(NativeArcadeFlow_EndReason(&flow) == END_NONE);
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_START_RACE);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RACING);
+	CHECK(NativeArcadeFlow_ScreenSerial(&flow) == serial + 1u);
+	CHECK(NativeArcadeFlow_TicksInScreen(&flow) == 0u);
+	CHECK(flow.relinked == 0u);
+	return 0;
+}
+
+/* READY with PENDING until launchTimeoutTicks: LINK ERROR with CLOSE_LINK on
+ * exactly the timeout tick. */
+static int TestLaunchGatePendingTimesOut(void)
+{
+	struct NativeArcadeFlow flow;
+
+	CHECK(ToRelinked(&flow) == 0);
+	CHECK(RunQuietLaunch(&flow, 299u, LS_READY, LA_PENDING, EV_NONE) == 0);
+	CHECK(flow.ticksSinceRelink == 299u);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
+	CHECK(StepLaunch(&flow, LS_READY, LA_PENDING, EV_NONE) == ACT_CLOSE_LINK);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
+	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
+	CHECK(NativeArcadeFlow_SelectedRow(&flow) == ROW_REMATCH);
+	return 0;
+}
+
+/* On the tick launchTimeoutTicks expires, READY with COMMITTED still wins
+ * (the commit is checked before the timeout), while READY with PENDING on
+ * that same tick is LINK ERROR. */
+static int TestLaunchGateCommitOnTimeoutTick(void)
+{
+	struct NativeArcadeFlowTimings timings;
+	struct NativeArcadeFlow committed;
+	struct NativeArcadeFlow pending;
+
+	CHECK(ToRelinked(&committed) == 0);
+	CHECK(RunQuietLaunch(&committed, 299u, LS_READY, LA_PENDING, EV_NONE) == 0);
+	memcpy(&pending, &committed, sizeof(committed));
+
+	CHECK(StepLaunch(&committed, LS_READY, LA_COMMITTED, EV_NONE) == ACT_START_RACE);
+	CHECK(NativeArcadeFlow_Screen(&committed) == SC_RACING);
+	CHECK(NativeArcadeFlow_EndReason(&committed) == END_NONE);
+
+	CHECK(StepLaunch(&pending, LS_READY, LA_PENDING, EV_NONE) == ACT_CLOSE_LINK);
+	CHECK(NativeArcadeFlow_Screen(&pending) == SC_RESULTS);
+	CHECK(NativeArcadeFlow_EndReason(&pending) == END_LINK_ERROR);
+
+	/* The same with a custom launch timeout of 3. */
+	NativeArcadeFlow_DefaultTimings(&timings);
+	timings.launchTimeoutTicks = 3u;
+	CHECK(NativeArcadeFlow_Init(&committed, &timings) == 1);
+	CHECK(NativeArcadeFlow_Enter(&committed) == ACT_BEGIN_LOBBY);
+	CHECK(Step(&committed, LS_READY, END_NONE, 0u, EV_NONE) == ACT_NONE);
+	CHECK(RunQuiet(&committed, 44u, LS_READY, EV_NONE) == 0);
+	CHECK(Step(&committed, LS_READY, END_NONE, 0u, EV_NONE) == ACT_BEGIN_SELECT);
+	CHECK(StepSel(&committed, LS_READY, SS_CONFIRMED, EV_NONE) == ACT_NONE);
+	CHECK(RunQuiet(&committed, 59u, LS_READY, EV_NONE) == 0);
+	CHECK(Step(&committed, LS_READY, END_NONE, 0u, EV_NONE) == ACT_RELINK);
+	CHECK(RunQuietLaunch(&committed, 2u, LS_READY, LA_PENDING, EV_NONE) == 0);
+	memcpy(&pending, &committed, sizeof(committed));
+	CHECK(StepLaunch(&committed, LS_READY, LA_COMMITTED, EV_NONE) == ACT_START_RACE);
+	CHECK(NativeArcadeFlow_Screen(&committed) == SC_RACING);
+	CHECK(StepLaunch(&pending, LS_READY, LA_PENDING, EV_NONE) == ACT_CLOSE_LINK);
+	CHECK(NativeArcadeFlow_Screen(&pending) == SC_RESULTS);
+	CHECK(NativeArcadeFlow_EndReason(&pending) == END_LINK_ERROR);
+	return 0;
+}
+
+/* COMMITTED with a lobby status other than READY never starts the race and
+ * follows the existing phase-2 rule for that status. */
+static int TestLaunchGateCommittedNeedsReady(void)
+{
+	struct NativeArcadeFlow flow;
+	uint32_t tick;
+
+	/* CONNECTING stays until the timeout. */
+	CHECK(ToRelinked(&flow) == 0);
+	CHECK(RunQuietLaunch(&flow, 299u, LS_CONNECTING, LA_COMMITTED, EV_NONE) == 0);
+	CHECK(StepLaunch(&flow, LS_CONNECTING, LA_COMMITTED, EV_NONE) == ACT_CLOSE_LINK);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
+	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
+
+	/* WAITING and LOST retry every 30 ticks, then time out on tick 300. */
+	CHECK(ToRelinked(&flow) == 0);
+	for (tick = 1u; tick < 300u; tick++)
+	{
+		uint32_t status = ((tick / 30u) % 2u == 0u) ? (uint32_t)LS_WAITING : (uint32_t)LS_LOST;
+		enum NativeArcadeFlowAction action = StepLaunch(&flow, status, LA_COMMITTED, EV_NONE);
+
+		CHECK(action == (((tick % 30u) == 0u) ? ACT_RESTART_LOBBY : ACT_NONE));
+		CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
+	}
+	CHECK(StepLaunch(&flow, LS_LOST, LA_COMMITTED, EV_NONE) == ACT_CLOSE_LINK);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
+	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
+
+	/* REJECTED is LINK ERROR at once. */
+	CHECK(ToRelinked(&flow) == 0);
+	CHECK(RunQuietLaunch(&flow, 3u, LS_CONNECTING, LA_COMMITTED, EV_NONE) == 0);
+	CHECK(StepLaunch(&flow, LS_REJECTED, LA_COMMITTED, EV_NONE) == ACT_CLOSE_LINK);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
+	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
+	return 0;
+}
+
+/* READY with PENDING resets the retry pause, like CONNECTING. */
+static int TestLaunchGatePendingResetsRetryPause(void)
+{
+	struct NativeArcadeFlow flow;
+
+	CHECK(ToRelinked(&flow) == 0);
+	CHECK(RunQuiet(&flow, 15u, LS_WAITING, EV_NONE) == 0);
+	CHECK(flow.ticksSinceRetry == 15u);
+	CHECK(RunQuietLaunch(&flow, 1u, LS_READY, LA_PENDING, EV_NONE) == 0);
+	CHECK(flow.ticksSinceRetry == 0u);
+	/* The following WAITING waits the full 30 ticks. */
+	CHECK(RunQuiet(&flow, 29u, LS_WAITING, EV_NONE) == 0);
+	CHECK(Step(&flow, LS_WAITING, END_NONE, 0u, EV_NONE) == ACT_RESTART_LOBBY);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
+	return 0;
+}
+
+/* launchStatus is read in SELECT_RESULT phase 2 only. */
+static int TestLaunchGateIgnoredOutsidePhase2(void)
+{
+	struct NativeArcadeFlow flow;
+
+	/* LOBBY: READY with PENDING still moves to MATCH_FOUND. */
+	CHECK(ToLobby(&flow) == 0);
+	CHECK(StepLaunch(&flow, LS_READY, LA_PENDING, EV_NONE) == ACT_NONE);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_MATCH_FOUND);
+	/* MATCH_FOUND: the hold ends in BEGIN_SELECT whatever the launch status,
+	 * and COMMITTED never starts a race there. */
+	CHECK(RunQuietLaunch(&flow, 22u, LS_READY, LA_COMMITTED, EV_NONE) == 0);
+	CHECK(RunQuietLaunch(&flow, 22u, LS_READY, LA_PENDING, EV_NONE) == 0);
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_BEGIN_SELECT);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT);
+	/* SELECT: COMMITTED does not leave SELECT; CONFIRMED with PENDING does. */
+	CHECK(RunQuietSelLaunch(&flow, 10u, LS_READY, SS_PENDING, LA_COMMITTED, EV_CONFIRM) == 0);
+	CHECK(StepSelLaunch(&flow, LS_READY, SS_CONFIRMED, LA_PENDING, EV_NONE) == ACT_NONE);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
+	/* SELECT_RESULT phase 1: COMMITTED still waits for the hold and returns
+	 * RELINK. */
+	CHECK(RunQuietLaunch(&flow, 59u, LS_READY, LA_COMMITTED, EV_NONE) == 0);
+	CHECK(flow.relinked == 0u);
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_RELINK);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_START_RACE);
+	/* RACING: PENDING changes nothing; a finish still ends the race. */
+	CHECK(RunQuietLaunch(&flow, 50u, LS_READY, LA_PENDING, EV_NONE) == 0);
+	CHECK(RunQuietLaunch(&flow, 50u, LS_READY, LA_COMMITTED, EV_NONE) == 0);
+	CHECK(NativeArcadeFlow_TicksInScreen(&flow) == 100u);
+	CHECK(Step(&flow, LS_READY, END_NONE, 1u, EV_NONE) == ACT_NONE);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
+	CHECK(NativeArcadeFlow_EndReason(&flow) == END_FINISHED);
+	/* RESULTS: the dwell and the rows are unaffected. */
+	CHECK(RunQuietLaunch(&flow, 15u, LS_READY, LA_COMMITTED, EV_CONFIRM) == 0);
+	CHECK(RunQuietLaunch(&flow, 15u, LS_READY, LA_PENDING, EV_CONFIRM) == 0);
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_CONFIRM) == ACT_BEGIN_REMATCH);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_REMATCH_WAIT);
+	/* REMATCH_WAIT: READY with PENDING still moves to MATCH_FOUND. */
+	CHECK(StepLaunch(&flow, LS_READY, LA_PENDING, EV_NONE) == ACT_NONE);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_MATCH_FOUND);
+	return 0;
+}
+
+/* A READY with COMMITTED on the RELINK tick itself belongs to the old link:
+ * it returns RELINK, not START_RACE, and is not remembered. */
+static int TestLaunchGateRelinkTickCommitIgnored(void)
+{
+	struct NativeArcadeFlow flow;
+
+	CHECK(ToSelectResult(&flow) == 0);
+	CHECK(RunQuietLaunch(&flow, 59u, LS_READY, LA_COMMITTED, EV_NONE) == 0);
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_RELINK);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
+	CHECK(flow.relinked == 1u);
+	CHECK(flow.ticksSinceRelink == 0u);
+	/* Not remembered: READY with PENDING afterwards still waits. */
+	CHECK(RunQuietLaunch(&flow, 3u, LS_READY, LA_PENDING, EV_NONE) == 0);
+	CHECK(RunQuietLaunch(&flow, 2u, LS_CONNECTING, LA_COMMITTED, EV_NONE) == 0);
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_START_RACE);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RACING);
 	return 0;
 }
 
@@ -1038,6 +1313,9 @@ struct FlowScript
 	uint8_t finished;
 	enum NativeArcadeMenuEvent event;
 	uint8_t selectStatus;
+	/* COMMITTED whenever the lobby is READY, as the netplay adapter reports
+	 * until RL-S5. */
+	uint8_t launchStatus;
 };
 
 struct FlowActionAt
@@ -1049,31 +1327,31 @@ struct FlowActionAt
 static int TestHappyPath(void)
 {
 	static const struct FlowScript script[] = {
-		{5u, LS_CONNECTING, END_NONE, 0u, EV_NONE, SS_PENDING},   /* ticks 1-5 */
-		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING},        /* 6: MATCH_FOUND */
-		{45u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING},       /* 7-51: BEGIN_SELECT on 51 */
-		{10u, LS_READY, END_NONE, 0u, EV_NEXT, SS_PENDING},       /* 52-61: selecting */
-		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_CONFIRMED},      /* 62: SELECT_RESULT */
-		{60u, LS_READY, END_NONE, 0u, EV_NONE, SS_CONFIRMED},     /* 63-122: RELINK on 122 */
-		{5u, LS_CONNECTING, END_NONE, 0u, EV_NONE, SS_CONFIRMED}, /* 123-127: relinking */
-		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_CONFIRMED},      /* 128: START_RACE */
-		{100u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING},      /* 129-228: racing */
-		{1u, LS_READY, END_NONE, 1u, EV_NONE, SS_PENDING},        /* 229: RESULTS */
-		{30u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING},       /* 230-259: dwell */
-		{1u, LS_READY, END_NONE, 0u, EV_CONFIRM, SS_PENDING},     /* 260: BEGIN_REMATCH */
-		{10u, LS_CONNECTING, END_NONE, 0u, EV_NONE, SS_PENDING},  /* 261-270 */
-		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING},        /* 271: MATCH_FOUND */
-		{45u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING},       /* 272-316: BEGIN_SELECT on 316 */
-		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_CONFIRMED},      /* 317: SELECT_RESULT */
-		{60u, LS_READY, END_NONE, 0u, EV_BACK, SS_CONFIRMED},     /* 318-377: RELINK on 377 */
-		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_CONFIRMED},      /* 378: START_RACE */
-		{10u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING},       /* 379-388 */
-		{1u, LS_READY, END_NONE, 1u, EV_NONE, SS_PENDING},        /* 389: RESULTS */
-		{30u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING},       /* 390-419: dwell */
-		{1u, LS_READY, END_NONE, 0u, EV_NEXT, SS_PENDING},        /* 420: focus EXIT */
-		{1u, LS_READY, END_NONE, 0u, EV_CONFIRM, SS_PENDING},     /* 421: CLOSE_LINK */
-		{60u, LS_WAITING, END_NONE, 0u, EV_NONE, SS_PENDING},     /* 422-481: RETURN_TO_TITLE on 481 */
-		{10u, LS_READY, END_NONE, 0u, EV_CONFIRM, SS_PENDING},    /* 482-491: OFF, inert */
+		{5u, LS_CONNECTING, END_NONE, 0u, EV_NONE, SS_PENDING, LA_PENDING},   /* ticks 1-5 */
+		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING, LA_COMMITTED},      /* 6: MATCH_FOUND */
+		{45u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING, LA_COMMITTED},     /* 7-51: BEGIN_SELECT on 51 */
+		{10u, LS_READY, END_NONE, 0u, EV_NEXT, SS_PENDING, LA_COMMITTED},     /* 52-61: selecting */
+		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_CONFIRMED, LA_COMMITTED},    /* 62: SELECT_RESULT */
+		{60u, LS_READY, END_NONE, 0u, EV_NONE, SS_CONFIRMED, LA_COMMITTED},   /* 63-122: RELINK on 122 */
+		{5u, LS_CONNECTING, END_NONE, 0u, EV_NONE, SS_CONFIRMED, LA_PENDING}, /* 123-127: relinking */
+		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_CONFIRMED, LA_COMMITTED},    /* 128: START_RACE */
+		{100u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING, LA_COMMITTED},    /* 129-228: racing */
+		{1u, LS_READY, END_NONE, 1u, EV_NONE, SS_PENDING, LA_COMMITTED},      /* 229: RESULTS */
+		{30u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING, LA_COMMITTED},     /* 230-259: dwell */
+		{1u, LS_READY, END_NONE, 0u, EV_CONFIRM, SS_PENDING, LA_COMMITTED},   /* 260: BEGIN_REMATCH */
+		{10u, LS_CONNECTING, END_NONE, 0u, EV_NONE, SS_PENDING, LA_PENDING},  /* 261-270 */
+		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING, LA_COMMITTED},      /* 271: MATCH_FOUND */
+		{45u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING, LA_COMMITTED},     /* 272-316: BEGIN_SELECT on 316 */
+		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_CONFIRMED, LA_COMMITTED},    /* 317: SELECT_RESULT */
+		{60u, LS_READY, END_NONE, 0u, EV_BACK, SS_CONFIRMED, LA_COMMITTED},   /* 318-377: RELINK on 377 */
+		{1u, LS_READY, END_NONE, 0u, EV_NONE, SS_CONFIRMED, LA_COMMITTED},    /* 378: START_RACE */
+		{10u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING, LA_COMMITTED},     /* 379-388 */
+		{1u, LS_READY, END_NONE, 1u, EV_NONE, SS_PENDING, LA_COMMITTED},      /* 389: RESULTS */
+		{30u, LS_READY, END_NONE, 0u, EV_NONE, SS_PENDING, LA_COMMITTED},     /* 390-419: dwell */
+		{1u, LS_READY, END_NONE, 0u, EV_NEXT, SS_PENDING, LA_COMMITTED},      /* 420: focus EXIT */
+		{1u, LS_READY, END_NONE, 0u, EV_CONFIRM, SS_PENDING, LA_COMMITTED},   /* 421: CLOSE_LINK */
+		{60u, LS_WAITING, END_NONE, 0u, EV_NONE, SS_PENDING, LA_PENDING},     /* 422-481: RETURN_TO_TITLE on 481 */
+		{10u, LS_READY, END_NONE, 0u, EV_CONFIRM, SS_PENDING, LA_COMMITTED},  /* 482-491: OFF, inert */
 	};
 	static const struct FlowActionAt expected[] = {
 		{0u, ACT_BEGIN_LOBBY},
@@ -1113,6 +1391,7 @@ static int TestHappyPath(void)
 
 			tick++;
 			observation.selectStatus = script[i].selectStatus;
+			observation.launchStatus = script[i].launchStatus;
 			action = NativeArcadeFlow_Tick(&flow, &observation, script[i].event);
 			if (action != ACT_NONE)
 			{
@@ -1190,7 +1469,7 @@ static int TestCustomTimings(void)
 	/* Result hold of 2: RELINK on tick 2. */
 	CHECK(Step(&flow, LS_READY, END_NONE, 0u, EV_NONE) == ACT_NONE);
 	CHECK(Step(&flow, LS_READY, END_NONE, 0u, EV_NONE) == ACT_RELINK);
-	CHECK(Step(&flow, LS_READY, END_NONE, 0u, EV_NONE) == ACT_START_RACE);
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_START_RACE);
 
 	/* Dwell of 2: CONFIRM on tick 2 ignored, tick 3 accepted. */
 	CHECK(Step(&flow, LS_READY, END_NONE, 1u, EV_NONE) == ACT_NONE);
@@ -1215,7 +1494,7 @@ static int TestCustomTimings(void)
 	CHECK(StepSel(&flow, LS_READY, SS_CONFIRMED, EV_NONE) == ACT_NONE);
 	CHECK(RunQuiet(&flow, 1u, LS_READY, EV_NONE) == 0);
 	CHECK(Step(&flow, LS_READY, END_NONE, 0u, EV_NONE) == ACT_RELINK);
-	CHECK(Step(&flow, LS_READY, END_NONE, 0u, EV_NONE) == ACT_START_RACE);
+	CHECK(StepLaunch(&flow, LS_READY, LA_COMMITTED, EV_NONE) == ACT_START_RACE);
 	CHECK(Step(&flow, LS_READY, END_DESYNC, 0u, EV_NONE) == ACT_NONE);
 	CHECK(RunQuiet(&flow, 4u, LS_READY, EV_NONE) == 0);
 	CHECK(Step(&flow, LS_READY, END_NONE, 0u, EV_NONE) == ACT_CLOSE_LINK);
@@ -1251,6 +1530,13 @@ int main(void)
 	CHECK(TestMatchFound() == 0);
 	CHECK(TestSelect() == 0);
 	CHECK(TestSelectResult() == 0);
+	CHECK(TestLaunchGatePendingWaitsThenCommits() == 0);
+	CHECK(TestLaunchGatePendingTimesOut() == 0);
+	CHECK(TestLaunchGateCommitOnTimeoutTick() == 0);
+	CHECK(TestLaunchGateCommittedNeedsReady() == 0);
+	CHECK(TestLaunchGatePendingResetsRetryPause() == 0);
+	CHECK(TestLaunchGateIgnoredOutsidePhase2() == 0);
+	CHECK(TestLaunchGateRelinkTickCommitIgnored() == 0);
 	CHECK(TestRacing() == 0);
 	CHECK(TestResults() == 0);
 	CHECK(TestRematchWait() == 0);

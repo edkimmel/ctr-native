@@ -583,7 +583,16 @@ MainArcadeLinkSound and OtherFX from the netplay adapter and host glue.
 
 ### RL-S4 -- flow launch gate
 
-Status: planned. Review required. RL-5: observation.launchStatus at
+Status: done; review pending. The flow observation carries launchStatus
+(enum NativeArcadeFlowLaunchStatus, PENDING 0, COMMITTED 1) at offset 10,
+validated on every screen, and SELECT_RESULT phase 2 starts the race only
+on READY with COMMITTED, checked before the timeout; the netplay adapter
+reports COMMITTED exactly when the lobby is READY (the transitional rule
+RL-S5 replaces). Files: include/platform/native_arcade_flow.h,
+platform/native_arcade_flow.c, platform/native_arcade_netplay.c,
+tests/native_arcade_flow_test.c.
+
+Plan: Review required. RL-5: observation.launchStatus at
 offset 10; the observation validation rejects launchStatus above
 COMMITTED; SELECT_RESULT phase 2 needs READY and COMMITTED, checked
 before the timeout. Fixes the phase-2 comment in
