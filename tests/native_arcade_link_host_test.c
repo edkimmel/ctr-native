@@ -42,6 +42,10 @@
 /* The local menu event in LINK mode, against a dead peer. */
 #define TEST_MENU_EVENT_LOCAL_PORT 48509u
 #define TEST_MENU_EVENT_DEAD_PEER_PORT 48510u
+/* The race-launch host API (RL-S6): agreed config, local race failure, and
+ * racing query, the host as CAB1 against a test-owned adapter as CAB2. */
+#define TEST_RACE_FAILURE_HOST_PORT 48511u
+#define TEST_RACE_FAILURE_PEER_PORT 48512u
 
 /* Bounds every loop that waits for the loopback pair; generous, not tuned. */
 #define PAIR_BUDGET 4000u
@@ -56,7 +60,21 @@
 
 #define ACT_NONE ((uint32_t)NATIVE_ARCADE_FLOW_ACTION_NONE)
 
-/* No agreed match: 0, and *out untouched. */
+/* No agreed config (RL-S6): 0, and *out untouched. */
+static int CheckNoAgreedConfig(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeMatchConfigV1 sentinel;
+
+	memset(&config, 0xA5, sizeof(config));
+	memcpy(&sentinel, &config, sizeof(config));
+	CHECK(NativeArcadeLinkHost_GetAgreedConfig(&config) == 0);
+	CHECK(memcmp(&config, &sentinel, sizeof(config)) == 0);
+	CHECK(NativeArcadeLinkHost_GetAgreedConfig(NULL) == 0);
+	return 0;
+}
+
+/* No agreed match (and so no agreed config): 0, and *out untouched. */
 static int CheckNoAgreedMatch(void)
 {
 	struct NativeArcadeLinkHostMatch match;
@@ -67,6 +85,17 @@ static int CheckNoAgreedMatch(void)
 	CHECK(NativeArcadeLinkHost_GetAgreedMatch(&match) == 0);
 	CHECK(memcmp(&match, &sentinel, sizeof(match)) == 0);
 	CHECK(NativeArcadeLinkHost_GetAgreedMatch(NULL) == 0);
+	CHECK(CheckNoAgreedConfig() == 0);
+	return 0;
+}
+
+/* Off RACING (RL-S6): the racing query reads 0 and a local race failure is
+ * ignored. */
+static int CheckNotRacing(void)
+{
+	CHECK(NativeArcadeLinkHost_Racing() == 0u);
+	CHECK(NativeArcadeLinkHost_ReportRaceFailure() == 0);
+	CHECK(NativeArcadeLinkHost_Racing() == 0u);
 	return 0;
 }
 
@@ -76,6 +105,7 @@ static int CheckInert(void)
 	struct NativeArcadeLinkHostView view;
 
 	CHECK(CheckNoAgreedMatch() == 0);
+	CHECK(CheckNotRacing() == 0);
 	CHECK(NativeArcadeLinkHost_InternalSelectEntropy() == 0u);
 	memset(&view, 0xA5, sizeof(view));
 	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF);
@@ -173,6 +203,7 @@ static int CheckPreviewView(const struct PreviewCase *expected, uint32_t ticks)
 	struct NativeArcadeLinkHostView view;
 
 	CHECK(CheckNoAgreedMatch() == 0);
+	CHECK(CheckNotRacing() == 0);
 	CHECK(NativeArcadeLinkHost_InternalSelectEntropy() == 0u);
 	memset(&view, 0xA5, sizeof(view));
 	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
@@ -266,6 +297,7 @@ static int CheckLinkView(uint32_t screen, uint32_t lobbyStatus, uint32_t ticksIn
 	 * agreed. */
 	CHECK(CheckSelectZero(&view.select) == 0);
 	CHECK(CheckNoAgreedMatch() == 0);
+	CHECK(CheckNotRacing() == 0);
 	return 0;
 }
 
@@ -290,8 +322,9 @@ static int EnterAndConnect(uint8_t localCab)
 	CHECK(view.localCab == localCab);
 	CHECK(view.rowsEnabled == 0u);
 	CHECK(CheckSelectZero(&view.select) == 0);
-	/* LINK before any race: no agreed match. */
+	/* LINK before any race: no agreed match, and not racing. */
 	CHECK(CheckNoAgreedMatch() == 0);
+	CHECK(CheckNotRacing() == 0);
 	CHECK(NativeArcadeLinkHost_ScreenActive() == 1);
 	return 0;
 }
@@ -493,6 +526,7 @@ static int CheckSelectPreviewView(uint32_t preview, uint32_t ticks, struct Nativ
 	uint32_t i;
 
 	ExpectedSelectPreview(preview, ticks, &screen, &expected);
+	CHECK(CheckNotRacing() == 0);
 	memset(&view, 0xA5, sizeof(view));
 	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
 	CHECK(view.screen == screen);
@@ -1001,11 +1035,13 @@ static int TestLinkSelectAndAgreedMatch(void)
 	CHECK(NativeArcadeLinkHost_GetView(&view) == 1);
 	CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
 	CHECK(CheckSelectZero(&view.select) == 0);
+	CHECK(NativeArcadeLinkHost_Racing() == 1u);
 
 	/* The game's abort: back to the attract screen, nothing agreed. */
 	NativeArcadeLinkHost_AbortToTitle();
 	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK);
 	CHECK(CheckNoAgreedMatch() == 0);
+	CHECK(CheckNotRacing() == 0);
 
 	NativeArcadeNetplay_Shutdown(&g_peer);
 	NativeArcadeLinkHost_Shutdown();
@@ -1084,6 +1120,292 @@ static int TestLinkLocalMenuEvent(void)
 	return 0;
 }
 
+/* ---- RL-S6: agreed config, local race failure, racing query ---- */
+
+static uint32_t HostScreen(void)
+{
+	struct NativeArcadeLinkHostView view;
+
+	memset(&view, 0xA5, sizeof(view));
+	if (!NativeArcadeLinkHost_GetView(&view))
+	{
+		return 0xFFu;
+	}
+	return view.screen;
+}
+
+static uint32_t HostEndReason(void)
+{
+	struct NativeArcadeLinkHostView view;
+
+	memset(&view, 0xA5, sizeof(view));
+	if (!NativeArcadeLinkHost_GetView(&view))
+	{
+		return 0xFFu;
+	}
+	return view.endReason;
+}
+
+static uint32_t PeerScreen(void)
+{
+	struct NativeArcadeNetplayView view;
+
+	memset(&view, 0xA5, sizeof(view));
+	if (!NativeArcadeNetplay_GetView(&g_peer, &view))
+	{
+		return 0xFFu;
+	}
+	return view.screen;
+}
+
+/*
+ * From the lobby or REMATCH_WAIT: ticks the host and the test-owned peer
+ * until each has returned START_RACE (through the select, confirming each
+ * item with CROSS on alternate ticks, and the RL-S5 launch agreement).
+ * Until the host's START_RACE the host is not racing, ignores a local race
+ * failure, and has no agreed config; from it on, the host is racing.
+ */
+static int DrivePairToRace(void)
+{
+	uint32_t hostAction = ACT_NONE;
+	uint32_t peerAction = ACT_NONE;
+	uint32_t heldHost;
+	uint32_t heldPeer;
+	uint32_t tick;
+	int hostStarted = 0;
+	int peerStarted = 0;
+
+	for (tick = 0u; (tick < PAIR_BUDGET) && !(hostStarted && peerStarted); tick++)
+	{
+		heldHost = ((HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT) && ((tick & 1u) == 0u))
+			? NATIVE_ARCADE_MENU_BUTTON_CROSS
+			: 0u;
+		heldPeer = ((PeerScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT) && ((tick & 1u) == 0u))
+			? NATIVE_ARCADE_MENU_BUTTON_CROSS
+			: 0u;
+		if (!hostStarted)
+		{
+			CHECK(CheckNotRacing() == 0);
+			CHECK(CheckNoAgreedConfig() == 0);
+		}
+		NativeArcadeLinkLoopback_TickPair(&g_peer, heldHost, heldPeer, &hostAction, &peerAction);
+		CHECK(hostAction != (uint32_t)NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK);
+		CHECK(hostAction != (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE);
+		CHECK(peerAction != (uint32_t)NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK);
+		CHECK(peerAction != (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE);
+		hostStarted = hostStarted || (hostAction == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE);
+		peerStarted = peerStarted || (peerAction == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE);
+		if (hostStarted)
+		{
+			CHECK(NativeArcadeLinkHost_Racing() == 1u);
+		}
+	}
+	CHECK(hostStarted && peerStarted);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(PeerScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	return 0;
+}
+
+/* The host's agreed config is the peer's, byte for byte (the handshake and
+ * the launch commit guarantee both hold it), and agrees with the agreed
+ * match; NULL is refused. Copied to *out. */
+static int CheckAgreedConfig(struct NativeMatchConfigV1 *out)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeArcadeLinkHostMatch match;
+	const struct NativeMatchConfigV1 *peerAgreed;
+	uint32_t slot;
+
+	peerAgreed = NativeArcadeNetplay_AgreedConfig(&g_peer);
+	CHECK(peerAgreed != NULL);
+	memset(&config, 0xA5, sizeof(config));
+	CHECK(NativeArcadeLinkHost_GetAgreedConfig(&config) == 1);
+	CHECK(memcmp(&config, peerAgreed, sizeof(config)) == 0);
+	CHECK(NativeArcadeLinkHost_GetAgreedConfig(NULL) == 0);
+	memset(&match, 0xA5, sizeof(match));
+	CHECK(NativeArcadeLinkHost_GetAgreedMatch(&match) == 1);
+	CHECK(match.trackID == config.trackID);
+	CHECK(match.lapCount == config.lapCount);
+	CHECK(match.masterSeed == config.masterSeed);
+	for (slot = 0u; slot < NATIVE_ARCADE_LINK_HOST_MATCH_SLOTS; slot++)
+	{
+		CHECK(match.slotRole[slot] == config.slots[slot].role);
+		CHECK(match.slotCharacter[slot] == config.slots[slot].characterID);
+	}
+	memcpy(out, &config, sizeof(config));
+	return 0;
+}
+
+/* Ticks the pair `ticks` times with no buttons and no finish; the host stays
+ * on RACING and racing, and the peer stays on RACING. (The view's endReason
+ * is not checked: on RACING after a rematch it still holds the previous
+ * race's reason, which the flow only overwrites when the race ends.) */
+static int StayRacing(uint32_t ticks)
+{
+	uint32_t hostAction = ACT_NONE;
+	uint32_t peerAction = ACT_NONE;
+	uint32_t tick;
+
+	for (tick = 0u; tick < ticks; tick++)
+	{
+		NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+		CHECK(hostAction == ACT_NONE);
+		CHECK(peerAction == ACT_NONE);
+		CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+		CHECK(NativeArcadeLinkHost_Racing() == 1u);
+		CHECK(PeerScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	}
+	return 0;
+}
+
+/*
+ * RL-S6 over loopback, three races, the host as CAB1 against a test-owned
+ * adapter as CAB2 with the production timings.
+ * Race 1: GetAgreedConfig and Racing() are 0 until START_RACE, then the
+ * config is the peer's byte for byte; a local race failure reported on
+ * RACING together with a same-tick finish ends the host's race as RESULTS
+ * LINK ERROR on the next Tick; the peer is not told (it keeps RACING on an
+ * open link until it finishes itself); on RESULTS the config stays
+ * readable, Racing() is 0, and a report is ignored; REMATCH then works.
+ * Race 2 (the rematch): no leak (it keeps RACING); a report followed by
+ * AbortToTitle before any Tick. Race 3 (a fresh Enter): no leak again; it
+ * finishes as RACE COMPLETE.
+ */
+static int TestLinkRaceFailureAndRacingQuery(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	struct NativeArcadeNetplayView peerView;
+	struct NativeMatchConfigV1 race1;
+	struct NativeMatchConfigV1 race2;
+	struct NativeMatchConfigV1 race3;
+	struct NativeMatchConfigV1 afterFailure;
+	struct NativeLockstepPeerLink *peerLink;
+	uint32_t hostAction = ACT_NONE;
+	uint32_t peerAction = ACT_NONE;
+	uint32_t tick;
+
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_RACE_FAILURE_HOST_PORT,
+		TEST_RACE_FAILURE_PEER_PORT);
+	options.selectEntropy = UINT64_C(0xFA11FA11FA11FA11);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	/* LINK on screen OFF: not racing, nothing agreed, a report ignored. */
+	CHECK(CheckNotRacing() == 0);
+	CHECK(CheckNoAgreedMatch() == 0);
+	CHECK(NativeArcadeLinkLoopback_PeerInit(&g_peer, &identity, TEST_RACE_FAILURE_HOST_PORT, TEST_RACE_FAILURE_PEER_PORT,
+		UINT64_C(0x0FA11)) == 1);
+
+	/* Race 1. */
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(NativeArcadeNetplay_Enter(&g_peer) == NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY);
+	CHECK(DrivePairToRace() == 0);
+	CHECK(CheckAgreedConfig(&race1) == 0);
+	CHECK(StayRacing(5u) == 0);
+
+	/* The report: latched, still RACING until the next Tick; again 1. */
+	CHECK(NativeArcadeLinkHost_ReportRaceFailure() == 1);
+	CHECK(NativeArcadeLinkHost_Racing() == 1u);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(NativeArcadeLinkHost_ReportRaceFailure() == 1);
+	/* The next Tick, with a same-tick finish: LINK ERROR outranks it. */
+	CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(CheckNotRacing() == 0);
+	/* The raced config stays readable on RESULTS, unchanged. */
+	memset(&afterFailure, 0xA5, sizeof(afterFailure));
+	CHECK(NativeArcadeLinkHost_GetAgreedConfig(&afterFailure) == 1);
+	CHECK(memcmp(&afterFailure, &race1, sizeof(race1)) == 0);
+
+	/* The peer is not told: it keeps RACING on an open, running link while
+	 * the host sits on RESULTS, and the host stays on LINK ERROR. */
+	for (tick = 0u; tick < 60u; tick++)
+	{
+		NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+		CHECK(hostAction == ACT_NONE);
+		CHECK(peerAction == ACT_NONE);
+		CHECK(PeerScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+		CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+		CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+		CHECK(CheckNotRacing() == 0);
+	}
+	CHECK(NativeArcadeNetplay_GetView(&g_peer, &peerView) == 1);
+	CHECK(peerView.lobbyStatus == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	CHECK(peerView.endReason == (uint32_t)NATIVE_ARCADE_FLOW_END_NONE);
+	peerLink = NativeArcadeNetplay_Link(&g_peer);
+	CHECK(peerLink != NULL);
+	CHECK(NativeLockstepPeerLink_Mode(peerLink) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	/* The peer finishes its own race. */
+	CHECK(NativeArcadeNetplay_Tick(&g_peer, 0u, 1u) == NATIVE_ARCADE_FLOW_ACTION_NONE);
+	CHECK(NativeArcadeNetplay_GetView(&g_peer, &peerView) == 1);
+	CHECK(peerView.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(peerView.endReason == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+
+	/* Both past the results dwell with no buttons, then REMATCH on both:
+	 * after LINK ERROR the host's results menu works as after a finish. */
+	for (tick = 0u; tick <= NATIVE_ARCADE_FLOW_DEFAULT_RESULTS_DWELL_TICKS; tick++)
+	{
+		NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+		CHECK(hostAction == ACT_NONE);
+		CHECK(peerAction == ACT_NONE);
+	}
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	NativeArcadeLinkLoopback_TickPair(&g_peer, NATIVE_ARCADE_MENU_BUTTON_CROSS, NATIVE_ARCADE_MENU_BUTTON_CROSS,
+		&hostAction, &peerAction);
+	CHECK(hostAction == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH);
+	CHECK(peerAction == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+	CHECK(CheckNotRacing() == 0);
+	CHECK(CheckNoAgreedConfig() == 0);
+
+	/* Race 2 (the rematch): a new config, and the consumed report does not
+	 * leak into it. */
+	CHECK(DrivePairToRace() == 0);
+	CHECK(CheckAgreedConfig(&race2) == 0);
+	CHECK(race2.masterSeed != race1.masterSeed);
+	CHECK(StayRacing(30u) == 0);
+
+	/* A report followed by a reset before any Tick: the abort re-initializes
+	 * the link, and the latch goes with it. */
+	CHECK(NativeArcadeLinkHost_ReportRaceFailure() == 1);
+	NativeArcadeLinkHost_AbortToTitle();
+	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	CHECK(CheckNotRacing() == 0);
+	CHECK(CheckNoAgreedMatch() == 0);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(CheckNotRacing() == 0);
+	NativeArcadeNetplay_Shutdown(&g_peer);
+	CHECK(NativeArcadeLinkLoopback_PeerInit(&g_peer, &identity, TEST_RACE_FAILURE_HOST_PORT, TEST_RACE_FAILURE_PEER_PORT,
+		UINT64_C(0x0FA12)) == 1);
+
+	/* Race 3 (a fresh Enter): no leak; it finishes as RACE COMPLETE. */
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(NativeArcadeNetplay_Enter(&g_peer) == NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY);
+	CHECK(DrivePairToRace() == 0);
+	CHECK(CheckAgreedConfig(&race3) == 0);
+	CHECK(StayRacing(30u) == 0);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+	CHECK(CheckNotRacing() == 0);
+	memset(&afterFailure, 0xA5, sizeof(afterFailure));
+	CHECK(NativeArcadeLinkHost_GetAgreedConfig(&afterFailure) == 1);
+	CHECK(memcmp(&afterFailure, &race3, sizeof(race3)) == 0);
+	/* A report on RESULTS is ignored and changes nothing on the next Tick. */
+	CHECK(NativeArcadeLinkHost_ReportRaceFailure() == 0);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+
+	NativeArcadeNetplay_Shutdown(&g_peer);
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestInertBeforeConfigure() == 0);
@@ -1097,6 +1419,7 @@ int main(void)
 	CHECK(TestSelectEntropyEpochs() == 0);
 	CHECK(TestLinkSelectAndAgreedMatch() == 0);
 	CHECK(TestLinkLocalMenuEvent() == 0);
+	CHECK(TestLinkRaceFailureAndRacingQuery() == 0);
 	puts("native_arcade_link_host_test: passed");
 	return 0;
 }

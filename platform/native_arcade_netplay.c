@@ -127,6 +127,7 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 	NativeArcadeMenuInput_Reset(&netplay->menuInput);
 	netplay->lastScreenSerial = NativeArcadeFlow_ScreenSerial(&netplay->flow);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+	netplay->localRaceFailure = 0u;
 	netplay->lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE;
 	netplay->localSlot = localSlot;
 	netplay->initialized = 1u;
@@ -218,6 +219,7 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
 	{
 		netplay->currentConfig = netplay->config.fixture;
 		netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+		netplay->localRaceFailure = 0u;
 		netplay->rematchBlocked = 0u;
 		netplay->raceConfigValid = 0u;
 		netplay->lastReadyValid = 0u;
@@ -256,6 +258,7 @@ static void NativeArcadeNetplay_BeginRematch(struct NativeArcadeNetplay *netplay
 	}
 	NativeArcadeNetplay_CloseLobby(netplay);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+	netplay->localRaceFailure = 0u;
 	netplay->raceConfigValid = 0u;
 	NativeArcadeNetplay_ClearSelect(netplay);
 	if (!built)
@@ -342,6 +345,7 @@ static void NativeArcadeNetplay_BeginSelect(struct NativeArcadeNetplay *netplay)
 	NativeArcadeNetplay_ClearSelect(netplay);
 	netplay->outcomeValid = 0u;
 	netplay->raceConfigValid = 0u;
+	netplay->localRaceFailure = 0u;
 	netplay->selectSerial += 1u;
 
 	for (slot = 0u; slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; slot++)
@@ -394,6 +398,7 @@ static void NativeArcadeNetplay_Relink(struct NativeArcadeNetplay *netplay)
 	}
 	NativeArcadeNetplay_CloseLobby(netplay);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+	netplay->localRaceFailure = 0u;
 	netplay->relinked = 1u;
 	if (!built)
 	{
@@ -614,6 +619,7 @@ static void NativeArcadeNetplay_ArmRace(struct NativeArcadeNetplay *netplay)
 	netplay->lastReadyConfig = netplay->currentConfig;
 	netplay->lastReadyValid = 1u;
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+	netplay->localRaceFailure = 0u;
 	netplay->raceArmed = 1u;
 	netplay->raceConfigValid = 1u;
 	netplay->matchCount += 1u;
@@ -704,6 +710,20 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	observation.raceFinished = (uint8_t)((raceFinished != 0u) ? 1u : 0u);
 	observation.selectStatus = (uint8_t)NATIVE_ARCADE_FLOW_SELECT_PENDING;
 
+	/* 5a. The local race-failure input (RL-11), taken on RACING only: LINK
+	 * ERROR, unless a link failure of its own is already pending, which the
+	 * flow shows instead. Either way the flow leaves RACING on this tick, so
+	 * the latch is consumed here. Nothing is sent and the link stays open. */
+	if ((netplay->localRaceFailure != 0u) &&
+		(NativeArcadeFlow_Screen(&netplay->flow) == NATIVE_ARCADE_FLOW_SCREEN_RACING))
+	{
+		if (observation.linkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_NONE)
+		{
+			observation.linkFailure = NATIVE_ARCADE_FLOW_END_LINK_ERROR;
+		}
+		netplay->localRaceFailure = 0u;
+	}
+
 	/* 5b. Select phase: aux inbox into the session, the menu event on
 	 * SELECT, the session tick, and its status for the flow. Otherwise, while
 	 * a launch agreement is active: aux inbox into the agreement (RL-3). */
@@ -727,7 +747,9 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 
 	/* 7. Execute the host-side part of the action. RELINK, RESTART_LOBBY,
 	 * CLOSE_LINK, BEGIN_SELECT, BEGIN_REMATCH, and RETURN_TO_TITLE reset the
-	 * launch agreement (RL-3); START_RACE keeps it lingering. */
+	 * launch agreement (RL-3); START_RACE keeps it lingering. BEGIN_SELECT,
+	 * RELINK, START_RACE, CLOSE_LINK, BEGIN_REMATCH, and RETURN_TO_TITLE
+	 * clear the local race-failure latch (RL-11). */
 	switch (action)
 	{
 	case NATIVE_ARCADE_FLOW_ACTION_BEGIN_SELECT:
@@ -745,6 +767,7 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	case NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK:
 		NativeArcadeLaunch_Reset(&netplay->launch);
 		NativeArcadeNetplay_CloseLobby(netplay);
+		netplay->localRaceFailure = 0u;
 		break;
 	case NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH:
 		NativeArcadeLaunch_Reset(&netplay->launch);
@@ -757,6 +780,7 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 		NativeArcadeLaunch_Reset(&netplay->launch);
 		NativeArcadeNetplay_CloseLobby(netplay);
 		netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+		netplay->localRaceFailure = 0u;
 		netplay->rematchBlocked = 0u;
 		netplay->raceConfigValid = 0u;
 		NativeArcadeNetplay_ClearSelect(netplay);
@@ -780,6 +804,18 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 
 	/* 9. START_RACE and RETURN_TO_TITLE are the caller's cue. */
 	return action;
+}
+
+int NativeArcadeNetplay_ReportLocalRaceFailure(struct NativeArcadeNetplay *netplay)
+{
+	if ((netplay == NULL) || (netplay->initialized == 0u) ||
+		(NativeArcadeFlow_Screen(&netplay->flow) != NATIVE_ARCADE_FLOW_SCREEN_RACING))
+	{
+		return 0;
+	}
+	/* The next Tick shows it (step 5a). */
+	netplay->localRaceFailure = 1u;
+	return 1;
 }
 
 void NativeArcadeNetplay_OnTakeResult(struct NativeArcadeNetplay *netplay, enum NativeLockstepSessionResult result,
@@ -1041,4 +1077,5 @@ void NativeArcadeNetplay_Shutdown(struct NativeArcadeNetplay *netplay)
 	NativeArcadeNetplay_ClearSelect(netplay);
 	NativeArcadeLaunch_Reset(&netplay->launch);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+	netplay->localRaceFailure = 0u;
 }

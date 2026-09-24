@@ -371,6 +371,14 @@ struct NativeArcadeNetplay
 	 * and Shutdown clear it. Presentation only: it feeds nothing, is never sent, and
 	 * stays out of the match config, seeds, and simulation identity. */
 	uint8_t lastMenuEvent;
+	/* 1 once NativeArcadeNetplay_ReportLocalRaceFailure accepted a local race
+	 * failure on RACING (docs/RACE_LAUNCH_MILESTONE.md RL-11). Separate from
+	 * pendingLinkFailure, whose meaning it does not change: the next Tick on
+	 * RACING consumes it. Init, Enter, BEGIN_SELECT, RELINK, START_RACE,
+	 * CLOSE_LINK, BEGIN_REMATCH, RETURN_TO_TITLE, and Shutdown clear it.
+	 * Local only: never sent, and never part of the match config, seeds, or
+	 * simulation identity. */
+	uint8_t localRaceFailure;
 	/* The outcome the last successful RELINK built its config from. */
 	struct NativeMatchSelectOutcome lastOutcome;
 	/* The proposal of the most recent first or rematch lobby that reached
@@ -420,6 +428,19 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
  * START_RACE and RETURN_TO_TITLE are the caller's cue. */
 enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay *netplay, uint32_t heldMenuButtons,
 	uint8_t raceFinished);
+
+/* The local race-failure input (docs/RACE_LAUNCH_MILESTONE.md RL-11): the
+ * race caller could not set up or run the local race. On RACING only:
+ * latches it and returns 1 (again 1, with no further effect, if already
+ * latched). The next Tick then observes linkFailure LINK_ERROR, so the flow
+ * moves to RESULTS with end reason LINK_ERROR (outranking a same-tick
+ * raceFinished, UX-6), and consumes the latch; a link failure already
+ * pending (pendingLinkFailure) is observed instead, and still consumes it.
+ * Otherwise (NULL, uninitialized, or any other screen) returns 0 and
+ * changes nothing. The peer is not told: nothing is sent, the link is not
+ * closed, and the link and any launch linger run on exactly as after a
+ * finished race. */
+int NativeArcadeNetplay_ReportLocalRaceFailure(struct NativeArcadeNetplay *netplay);
 
 /* Platform-side race-time hook for the Task 8 race driver only (it carries
  * a lockstep type; game code must not call it, see the block comment above):

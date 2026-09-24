@@ -663,7 +663,21 @@ point.
 
 ### RL-S6 -- host API
 
-Status: planned. The agreed-config accessor and the local race-failure
+Status: done. The host gains NativeArcadeLinkHost_GetAgreedConfig (the
+exact NativeArcadeNetplay_AgreedConfig bytes; the header only
+forward-declares struct NativeMatchConfigV1),
+NativeArcadeLinkHost_ReportRaceFailure (through a new adapter latch,
+NativeArcadeNetplay_ReportLocalRaceFailure, separate from
+pendingLinkFailure: on RACING the next Tick shows RESULTS LINK ERROR, the
+peer is not told, and every reset point clears it), and
+NativeArcadeLinkHost_Racing. Files:
+include/platform/native_arcade_link_host.h,
+platform/native_arcade_link_host.c,
+include/platform/native_arcade_netplay.h, platform/native_arcade_netplay.c,
+tests/native_arcade_link_host_test.c, tests/native_arcade_netplay_test.c,
+tests/native_arcade_link_host_isolation_test.cmake.
+
+Plan: The agreed-config accessor and the local race-failure
 input (RL-8, RL-11), and a racing query for the RL-8 policy input (the
 host's link screen is private today,
 platform/native_arcade_link_host.c:159), with host tests and isolation.

@@ -23,13 +23,18 @@
  * Preview mode never opens a socket either.
  *
  * This header is safe for game code: it names only this module's own types,
- * the host options, the menu-input button bits and events, and the identity
- * struct.
+ * the host options, the menu-input button bits and events, the identity
+ * struct, and the match config struct, which it only forward-declares (it
+ * does not include the match-config header; the caller that reads the
+ * agreed config includes that itself).
  * Screen, lobby-status, end-reason, and action values use the enums of
  * include/platform/native_arcade_flow.h, carried here as uint32_t.
  *
  * No heap use and no wall clock: every duration is counted in caller ticks.
  */
+
+/* Forward-declared only: NativeArcadeLinkHost_GetAgreedConfig copies one. */
+struct NativeMatchConfigV1;
 
 enum NativeArcadeLinkHostMode
 {
@@ -214,6 +219,29 @@ int NativeArcadeLinkHost_GetView(struct NativeArcadeLinkHostView *view);
  * Otherwise (NULL, OFF, PREVIEW, or no agreed config) returns 0 with *out
  * untouched. */
 int NativeArcadeLinkHost_GetAgreedMatch(struct NativeArcadeLinkHostMatch *out);
+
+/* LINK only (docs/RACE_LAUNCH_MILESTONE.md RL-8): when the link has an
+ * agreed race config (on RACING, and on RESULTS after a race was started),
+ * copies its exact bytes into *out and returns 1: the config the race is
+ * armed with. Otherwise (NULL, OFF, PREVIEW, or no agreed config) returns 0
+ * with *out untouched. */
+int NativeArcadeLinkHost_GetAgreedConfig(struct NativeMatchConfigV1 *out);
+
+/* LINK only (docs/RACE_LAUNCH_MILESTONE.md RL-11): the caller reports that
+ * the local race failed (setup, launch, a bounded wait, or a FAILED setup
+ * status). On RACING it is latched and 1 is returned; the next
+ * NativeArcadeLinkHost_Tick moves the flow to RESULTS with end reason
+ * LINK_ERROR (outranking a same-tick raceFinished; a link failure already
+ * pending is shown instead) and consumes it. Otherwise (OFF, PREVIEW, or any
+ * other screen) it is ignored and 0 is returned. The peer is not told:
+ * nothing is sent and the link stays open, exactly as after a finished race.
+ * A latch never outlives its race: Enter, AbortToTitle, Shutdown, and every
+ * link reset of the flow clear it. */
+int NativeArcadeLinkHost_ReportRaceFailure(void);
+
+/* 1 iff the mode is LINK and the flow is on RACING (docs/RACE_LAUNCH_MILESTONE.md
+ * RL-8); 0 otherwise, including OFF, PREVIEW, and before any Configure. */
+uint8_t NativeArcadeLinkHost_Racing(void);
 
 /* LINK only: closes the link and returns the flow to screen OFF, ready for a
  * new Enter. For when the game cannot honour START_RACE yet. The link is

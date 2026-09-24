@@ -13,7 +13,10 @@
 # view keeps the adapter's layout, field offset for field offset. Since
 # MS-8b the header names the select-view and agreed-match values itself
 # (NATIVE_ARCADE_LINK_HOST_SELECT_*, _ROLE_*, _MAX_*), each static-asserted
-# in the .c against the module value it mirrors.
+# in the .c against the module value it mirrors. Since RL-S6 the header
+# forward-declares struct NativeMatchConfigV1 for the agreed-config copy
+# without including or naming the match-config header, and pins the
+# race-launch host API (agreed config, local race failure, racing query).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -167,6 +170,47 @@ foreach(literal IN ITEMS
         "NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectHumanView, NativeArcadeNetplaySelectHumanView, currentItem);"
         "NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, peerLockedCharacterMask);"
         "NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostSelectView, NativeArcadeNetplaySelectView, humans);")
+    string(FIND "${source}" "${literal}" literal_at)
+    if(literal_at EQUAL -1)
+        message(FATAL_ERROR "arcade link host isolation: required text '${literal}' missing from ${host_source}")
+    endif()
+endforeach()
+
+# 3e. The race-launch host API (docs/RACE_LAUNCH_MILESTONE.md RL-S6): the
+#     header forward-declares struct NativeMatchConfigV1 exactly once and
+#     never defines it or names the match-config header (the include
+#     allowlist in 3 is unchanged), and it declares the agreed-config copy,
+#     the local race-failure input, and the racing query. The .c copies the
+#     agreed config byte for byte from the adapter and reports the failure
+#     through the adapter's own latch.
+#     (The match text holds a ';', so it is located with FIND, not counted
+#     as a CMake list.)
+string(FIND "${header}" "struct NativeMatchConfigV1;" forward_first)
+string(FIND "${header}" "struct NativeMatchConfigV1;" forward_last REVERSE)
+string(REGEX MATCH "(^|[\r\n])struct NativeMatchConfigV1;[ \t]*[\r\n]" forward_line "${header}")
+if(forward_first EQUAL -1 OR NOT forward_first EQUAL forward_last OR forward_line STREQUAL "")
+    message(FATAL_ERROR "arcade link host isolation: ${host_header} must forward-declare 'struct NativeMatchConfigV1;' exactly once, on its own line")
+endif()
+string(REGEX MATCH "struct[ \t\r\n]+NativeMatchConfigV1[ \t\r\n]*\\{" definition "${header}")
+if(NOT definition STREQUAL "")
+    message(FATAL_ERROR "arcade link host isolation: ${host_header} must not define struct NativeMatchConfigV1")
+endif()
+foreach(term IN ITEMS native_match_config NATIVE_MATCH_ NativeMatchConfigV1_)
+    ctr_forbid("${host_header}" "${header}" "${term}")
+endforeach()
+foreach(literal IN ITEMS
+        "int NativeArcadeLinkHost_GetAgreedConfig(struct NativeMatchConfigV1 *out);"
+        "int NativeArcadeLinkHost_ReportRaceFailure(void);"
+        "uint8_t NativeArcadeLinkHost_Racing(void);")
+    string(FIND "${header}" "${literal}" literal_at)
+    if(literal_at EQUAL -1)
+        message(FATAL_ERROR "arcade link host isolation: required text '${literal}' missing from ${host_header}")
+    endif()
+endforeach()
+foreach(literal IN ITEMS
+        "agreed = NativeArcadeNetplay_AgreedConfig(&g_netplay);"
+        "memcpy(out, agreed, sizeof(*out));"
+        "return NativeArcadeNetplay_ReportLocalRaceFailure(&g_netplay);")
     string(FIND "${source}" "${literal}" literal_at)
     if(literal_at EQUAL -1)
         message(FATAL_ERROR "arcade link host isolation: required text '${literal}' missing from ${host_source}")

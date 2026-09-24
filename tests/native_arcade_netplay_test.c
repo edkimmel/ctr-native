@@ -159,6 +159,9 @@
 #define TEST_LAUNCH_STALE_TITLE_B_PORT 48487u
 #define TEST_LAUNCH_FAULT_LINGER_A_PORT 48488u
 #define TEST_LAUNCH_FAULT_LINGER_B_PORT 48489u
+/* RL-S6: the local race-failure input. */
+#define TEST_LOCAL_FAILURE_A_PORT 48490u
+#define TEST_LOCAL_FAILURE_B_PORT 48491u
 
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
@@ -5335,6 +5338,206 @@ static int TestLaunchFaultDuringLinger(void)
 	return 0;
 }
 
+/*
+ * White-box, for the reset points of the local race-failure latch: with
+ * both latches set off RACING (which the API never does, so nothing consumes
+ * them there), ticks both, pressing held until a side has returned target,
+ * until each has. The latch survives every tick before target and is 0
+ * right after the tick that returns it.
+ */
+static int LatchClearedBy(enum NativeArcadeFlowAction target, uint32_t held)
+{
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	int seenA = 0;
+	int seenB = 0;
+	uint32_t tick;
+
+	g_a.localRaceFailure = 1u;
+	g_b.localRaceFailure = 1u;
+	for (tick = 0; (tick < DRIVE_BUDGET) && !(seenA && seenB); tick++)
+	{
+		TickBoth(seenA ? 0u : held, seenB ? 0u : held, 0u, &actionA, &actionB);
+		if (!seenA)
+		{
+			seenA = (actionA == target);
+			CHECK(g_a.localRaceFailure == (seenA ? 0u : 1u));
+		}
+		if (!seenB)
+		{
+			seenB = (actionB == target);
+			CHECK(g_b.localRaceFailure == (seenB ? 0u : 1u));
+		}
+	}
+	CHECK(seenA && seenB);
+	return 0;
+}
+
+/*
+ * 34. RL-S6, RL-11: the local race-failure input. Refused off RACING
+ * (uninitialized, dormant, LOBBY, RESULTS). On RACING it latches, and the
+ * next Tick ends the race as RESULTS LINK ERROR without sending anything or
+ * touching the link, the launch linger, pendingLinkFailure, or the peer; it
+ * outranks a same-tick finish, and a pending link failure outranks it. The
+ * latch is consumed by that Tick and cleared at Init, Enter, BEGIN_REMATCH,
+ * BEGIN_SELECT, RELINK, START_RACE, CLOSE_LINK, RETURN_TO_TITLE, and
+ * Shutdown, so it never reaches a later race.
+ */
+static int TestLocalRaceFailure(void)
+{
+	static const uint32_t downScript[1] = {BTN_DOWN};
+	struct NativeMatchConfigV1 fixture;
+	struct NativeArcadeNetplayConfig config;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	struct NativeLockstepPeerLink *linkA;
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+
+	/* Refused: NULL, a zero (uninitialized) struct, a dormant adapter. Init
+	 * clears the latch. */
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(NULL) == 0);
+	memset(&g_probe, 0, sizeof(g_probe));
+	memset(&g_sentinel, 0, sizeof(g_sentinel));
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(&g_probe) == 0);
+	CHECK(memcmp(&g_probe, &g_sentinel, sizeof(g_probe)) == 0);
+	CHECK(MakeConfig(&config, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_LOCAL_FAILURE_A_PORT,
+		TEST_LOCAL_FAILURE_B_PORT));
+	memset(&g_probe, 0xA5, sizeof(g_probe));
+	CHECK(NativeArcadeNetplay_Init(&g_probe, &config) == 1);
+	CHECK(g_probe.localRaceFailure == 0u);
+	memcpy(&g_sentinel, &g_probe, sizeof(g_probe));
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(&g_probe) == 0);
+	CHECK(memcmp(&g_probe, &g_sentinel, sizeof(g_probe)) == 0);
+	NativeArcadeNetplay_Shutdown(&g_probe);
+
+	/* Enter clears it; LOBBY refuses it. */
+	CHECK(InitPair(&fixture, &fixture, TEST_LOCAL_FAILURE_A_PORT, TEST_LOCAL_FAILURE_B_PORT));
+	g_a.localRaceFailure = 1u;
+	g_b.localRaceFailure = 1u;
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(g_a.localRaceFailure == 0u);
+	CHECK(g_b.localRaceFailure == 0u);
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(&g_a) == 0);
+	CHECK(g_a.localRaceFailure == 0u);
+
+	/* Race 1. */
+	CHECK(DriveBothUntil(ACT_START_RACE));
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(g_a.localRaceFailure == 0u);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+	linkA = NativeArcadeNetplay_Link(&g_a);
+	CHECK(linkA != NULL);
+
+	/* A reports on RACING: latched, still RACING until the next Tick. */
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(&g_a) == 1);
+	CHECK(g_a.localRaceFailure == 1u);
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(&g_a) == 1);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	TickBoth(0u, 0u, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_NONE);
+	CHECK(actionB == ACT_NONE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	/* Consumed; pendingLinkFailure keeps its meaning; the link, the race
+	 * config, and the committed launch agreement (its linger) are kept. */
+	CHECK(g_a.localRaceFailure == 0u);
+	CHECK(g_a.pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_NONE);
+	CHECK(NativeArcadeNetplay_Link(&g_a) == linkA);
+	CHECK(NativeLockstepPeerLink_Mode(linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(g_a.raceArmed == 1u);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) != NULL);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+	/* B was not told. */
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(EndReasonOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_END_NONE);
+	CHECK(LobbyStatusOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	/* RESULTS refuses it. */
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(&g_a) == 0);
+	CHECK(g_a.localRaceFailure == 0u);
+	for (tick = 0; tick < 10u; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+		CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+		CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	}
+
+	/* B reports with a same-tick finish: LINK ERROR outranks it (UX-6). */
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(&g_b) == 1);
+	CHECK(NativeArcadeNetplay_Tick(&g_b, 0u, 1u) == ACT_NONE);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(g_b.localRaceFailure == 0u);
+
+	/* Past the dwell, then BEGIN_REMATCH clears it. */
+	for (tick = 0; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+	}
+	CHECK(LatchClearedBy(ACT_BEGIN_REMATCH, BTN_CROSS) == 0);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+	/* BEGIN_SELECT, RELINK, and START_RACE clear it. */
+	CHECK(LatchClearedBy(ACT_BEGIN_SELECT, 0u) == 0);
+	CHECK(LatchClearedBy(ACT_RELINK, 0u) == 0);
+	CHECK(LatchClearedBy(ACT_START_RACE, 0u) == 0);
+
+	/* Race 2: nothing leaked into it. */
+	for (tick = 0; tick < 10u; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+		CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	}
+
+	/* A pending link failure outranks the local one, which is still
+	 * consumed: 90 stalls latch PEER_TIMEOUT. */
+	for (tick = 0; tick < NATIVE_ARCADE_NETPLAY_DEFAULT_STALL_TIMEOUT_TICKS; tick++)
+	{
+		NativeArcadeNetplay_OnTakeResult(&g_a, NATIVE_LOCKSTEP_SESSION_STALL, 7u);
+	}
+	CHECK(g_a.pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT);
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(&g_a) == 1);
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT);
+	CHECK(g_a.localRaceFailure == 0u);
+	CHECK(g_a.pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT);
+	/* B finishes normally. */
+	CHECK(NativeArcadeNetplay_Tick(&g_b, 0u, 1u) == ACT_NONE);
+	CHECK(EndReasonOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+
+	/* EXIT: CLOSE_LINK, then RETURN_TO_TITLE, each clears it. */
+	for (tick = 0; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+	}
+	CHECK(PressScripts(downScript, downScript, 1u));
+	CHECK(LatchClearedBy(ACT_CLOSE_LINK, BTN_CROSS) == 0);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_EXIT);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_EXIT);
+	CHECK(LatchClearedBy(ACT_RETURN_TO_TITLE, 0u) == 0);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_OFF);
+
+	/* Shutdown clears it. */
+	g_a.localRaceFailure = 1u;
+	g_b.localRaceFailure = 1u;
+	ShutdownBoth();
+	CHECK(g_a.localRaceFailure == 0u);
+	CHECK(g_b.localRaceFailure == 0u);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestPure() == 0);
@@ -5382,6 +5585,7 @@ int main(void)
 	CHECK(TestLaunchStaleAcrossRematchAndSelect() == 0);
 	CHECK(TestLaunchStaleAcrossCloseTitleEnter() == 0);
 	CHECK(TestLaunchFaultDuringLinger() == 0);
+	CHECK(TestLocalRaceFailure() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }

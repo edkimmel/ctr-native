@@ -573,6 +573,42 @@ int NativeArcadeLinkHost_GetAgreedMatch(struct NativeArcadeLinkHostMatch *out)
 	return 1;
 }
 
+int NativeArcadeLinkHost_GetAgreedConfig(struct NativeMatchConfigV1 *out)
+{
+	const struct NativeMatchConfigV1 *agreed;
+
+	if ((out == NULL) || (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK))
+	{
+		return 0;
+	}
+	agreed = NativeArcadeNetplay_AgreedConfig(&g_netplay);
+	if (agreed == NULL)
+	{
+		return 0;
+	}
+	/* The exact bytes the link agreed, padding included. */
+	memcpy(out, agreed, sizeof(*out));
+	return 1;
+}
+
+int NativeArcadeLinkHost_ReportRaceFailure(void)
+{
+	if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK)
+	{
+		return 0;
+	}
+	return NativeArcadeNetplay_ReportLocalRaceFailure(&g_netplay);
+}
+
+uint8_t NativeArcadeLinkHost_Racing(void)
+{
+	if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK)
+	{
+		return 0u;
+	}
+	return (uint8_t)((NativeArcadeLinkHost_LinkScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) ? 1u : 0u);
+}
+
 void NativeArcadeLinkHost_AbortToTitle(void)
 {
 	if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK)
