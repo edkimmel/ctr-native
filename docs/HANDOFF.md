@@ -186,10 +186,11 @@ Integration order:
   must equal A's at race tick 0, differ from A's at every later tick, and
   equal H's at every tick; I (from the attract demo race) and J (37 ticks
   late, an odd launch timer offset from F) must equal F as C and E equal
-  A. The one-cab runs cover the green light, bot driving, and 1P race
-  physics; the retail 1P HUD's uninitialized `pos.y` read
-  (`game/UI/UI_Rank.c`), which once stopped Debug 1P races, was fixed in
-  place (a98dccbe8).
+  A. The one-cab runs go through the green light, bot driving, and 1P race
+  physics, digested through the rng, rcontrol, and topology-free drivers
+  digests (the Physics group itself is not digested, RS-13); the retail
+  1P HUD's uninitialized `pos.y` read (`game/UI/UI_Rank.c`), which once
+  stopped Debug 1P races, was fixed in place (a98dccbe8).
 - **Proof-only VBlank pacing (RS-18).** The proof runs with host-local
   fixed VBlank pacing (`Platform_SetFixedVBlankPacing`), so a late host
   frame emits no catch-up VBlanks. Every other run keeps the default

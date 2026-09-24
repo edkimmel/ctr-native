@@ -67,8 +67,10 @@ param(
 # all its per-run expectations (tick lines, "end ticks N", the tick
 # comparisons) use that count.  The ONE_CAB cap (90 race ticks, which ended
 # before the green light) was lifted once game/UI/UI_Rank.c's uninitialized
-# pos.y read was fixed (commit a98dccbe8), so F-J now cover the green light,
-# bot driving, and 1P race physics.
+# pos.y read was fixed (commit a98dccbe8), so F-J now run through the green
+# light, bot driving, and 1P race physics, and digest them through the rng,
+# rcontrol, and topology-free drivers digests (the Physics group itself is
+# not digested, RS-13).
 #
 # Every report must be format v8 with result PASS, the profile line right
 # after the result line, the expected launch window, both counter lines, a

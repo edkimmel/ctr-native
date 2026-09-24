@@ -12,11 +12,11 @@
 /*
  * Arcade bot rules v1 (docs/ROSTER_MILESTONE.md sections 3.1 and 3.3, with
  * the defaults RS-1..RS-9 of section 4 and the defaults pending owner review
- * RS-19 and RS-20). Defines, versions, and digests the native rule choices
- * an arcade single race is built from, so that
- * NativeMatchConfigV1.botRulesDigest names them. Two profiles are supported
- * (RS-1, decided by the owner: both ARCADE_TWO_CAB and ARCADE_ONE_CAB), each
- * with its own rules, canonical encoding, and digest (RS-19, below).
+ * RS-19 and RS-20). Defines, versions, and digests the native rule choices an
+ * arcade single race is built from, so that NativeMatchConfigV1.botRulesDigest
+ * names them. Two profiles are supported (RS-1, decided by the owner: both
+ * ARCADE_TWO_CAB and ARCADE_ONE_CAB), each with its own rules, canonical
+ * encoding, and digest (RS-19, below).
  *
  * ARCADE_TWO_CAB, the V1 rules (the retail 2P arcade race):
  * - shape: two humans in slots 0 and 1, four bots in slots 2..5, six drivers

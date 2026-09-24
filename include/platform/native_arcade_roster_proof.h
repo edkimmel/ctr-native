@@ -178,12 +178,12 @@ struct NativeCanonicalStateV1;
  *   trackID, lapCount, the tick rate, the CAB1 character, and the bots'
  *   difficulty (the fixture's first BOT slot).
  *   NativeMatchConfigV1_InitArcadeOneCab gives the ONE_CAB roles and
- *   lifecycles; slot 0 (CAB1_HUMAN) holds the CAB1
- *   character at difficulty 0, and slots 1..7 (BOT) hold
- *   NativeArcadeBotRules_ExpectedBots1P(CAB1 character), in ascending slot
- *   order, at the fixture's bot difficulty; masterSeed is the seed option
- *   value itself; botRulesDigest is NativeArcadeBotRules_Digest1PV1. The
- *   result must pass NativeArcadeBotRules_ValidateConfigV1.
+ *   lifecycles; slot 0 (CAB1_HUMAN) holds the CAB1 character at difficulty 0,
+ *   and slots 1..7 (BOT) hold NativeArcadeBotRules_ExpectedBots1P(CAB1
+ *   character), in ascending slot order, at the fixture's bot difficulty;
+ *   masterSeed is the seed option value itself; botRulesDigest is
+ *   NativeArcadeBotRules_Digest1PV1. The result must pass
+ *   NativeArcadeBotRules_ValidateConfigV1.
  *
  * Identity: the proof is single-machine. When the build identity is unknown
  * (a dirty tree), main.c uses the fixed proof build identity

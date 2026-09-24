@@ -152,10 +152,11 @@ OC-5 (section 6) extend items 1-5 to ONE_CAB on one machine. The live
 roster proof (3.4) is the evidence for item 5, for each profile over 900
 race ticks, covering same-seed identity, menu-history independence (runs
 C and E for TWO_CAB, their one-cab counterparts I and J for ONE_CAB),
-and seed divergence. The ONE_CAB runs cover the 1P setup, the green
-light, bot driving, and 1P race physics. Networked launch (Task 7), the
-in-race lockstep drive (Task 8), and real two-cabinet evidence (steps
-6-7) remain.
+and seed divergence. The ONE_CAB runs go through the 1P setup, the green
+light, bot driving, and 1P race physics, digested through the rng,
+rcontrol, and topology-free drivers digests (the Physics group itself is
+not digested, RS-13). Networked launch (Task 7), the in-race lockstep
+drive (Task 8), and real two-cabinet evidence (steps 6-7) remain.
 
 ## 3. Decided design
 
@@ -600,11 +601,11 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
     draw MixRNG) and gGT->frameTimer_Confetti = 0 (particle oscillators).
     The adapter reads both back and the proof checks them (the "seeded"
     line; PIN_MISMATCH); the checker also requires C and E to start race
-    tick 0 with A's timer and frameTimerConfetti. sdata->frameCounter and
-    gGT->frameTimer_VsyncCallback feed only presentation and the platform
-    (the VBlank counter is also not safe to reset: the load queue compares
-    it with a stored timestamp), so they stay boot-relative and the full V1
-    control digest stays informational. The audit of every counter, its
+    tick 0 with A's timer and frameTimerConfetti, and I and J with F's.
+    sdata->frameCounter and gGT->frameTimer_VsyncCallback feed only
+    presentation and the platform (the VBlank counter is also not safe to
+    reset: the load queue compares it with a stored timestamp), so they
+    stay boot-relative and the full V1 control digest stays informational. The audit of every counter, its
     readers, and its verdict is in game/MAIN/MainArcadeRaceSetupCore.h.
 18. RS-18 (R-6b): Fixed VBlank pacing (Platform_SetFixedVBlankPacing,
     include/platform.h; the pure decision NativeVBlankPacing_Plan,
@@ -861,7 +862,8 @@ parallel (C and I about 264 s each, the other eight about 81 s).
   key files. Reviewed: the should-fixes were closed in OC-4b and the
   header-comment nit in OC-5 (228c38e14).
 - OC-4b, 9308fb19f: the OC-4 review should-fixes (ONE_CAB evidence
-  scoped; RS-19..RS-24 marked defaults pending owner review).
+  scoped; RS-19..RS-24 marked defaults pending owner review). Review:
+  none recorded.
 - OC-5 -- ONE_CAB full-race proof. Split into (in commit order):
   - a98dccbe8: game/UI/UI_Rank.c initializes pos.y, which the retail 1P
     rank-icon HUD read uninitialized on the transitioning path (risk 13).
@@ -875,16 +877,28 @@ parallel (C and I about 264 s each, the other eight about 81 s).
     runs, all parallel. Reviewed: no blockers or should-fixes; the nits
     were closed in b024a1814.
   - b024a1814: those checker and CMake comment nits (a CMake comment
-    rewrapped, the R-6c/R-6d citation).
+    rewrapped, the R-6c/R-6d citation). Closes the e491763ed review nits;
+    no re-review (owner process rule: should-fixes and nits go back
+    without re-review).
   - 228c38e14: the code headers call RS-19..RS-24 "defaults pending
-    owner review", closing the OC-4 review nit (risk 15).
-  - This commit: this document (the intro, section 2, 3.4, this
+    owner review", closing the OC-4 review nit (risk 15). Reviewed
+    together with b375e8b86: no blockers; the nits were closed in the
+    follow-up below.
+  - b375e8b86: this document (the intro, section 2, 3.4, this
     subsection, and risks 1, 13, and 15) and docs/HANDOFF.md step 3,
-    Deterministic simulation, and key files. Review: none recorded.
+    Deterministic simulation, and key files. Reviewed: no blockers; the
+    nits were closed in the follow-up below.
+  - This commit: the b375e8b86 and 228c38e14 review nits (the ONE_CAB
+    evidence says the Physics group is not digested, RS-13; review
+    statements and the evidence commits in this subsection; RS-17 names
+    I and J; two header comments rewrapped). Comments and docs only.
 
   Evidence (arcade_roster_determinism, Debug, fixed VBlank pacing, 900
-  race ticks each, ten runs in parallel): every run exits 0; about 265 s
-  wall (C and I about 264 s each, the other eight about 81 s). A = B
+  race ticks each, ten runs in parallel). The live test output is from
+  e491763ed (implementer run); the full suite passed 133/133 on b024a1814
+  (394 s, arcade_roster_determinism 265 s), and b024a1814 and later
+  commits are comment/docs-only. Every run exits 0; about 265 s wall (C
+  and I about 264 s each, the other eight about 81 s). A = B
   byte-identical (160583 bytes) and F = G byte-identical (160666 bytes);
   C = A, E = A, I = F, and J = F over all 900 ticks. The I-F and J-F
   offsets equal the C-A and E-A offsets (launch timer +5329 and +37; race
@@ -893,8 +907,9 @@ parallel (C and I about 264 s each, the other eight about 81 s).
   and equals H's at all 900 ticks. F reaches race tick 0 at frameCounter
   760, A at 763 (informational; comparisons are within a profile). No
   further retail bug (no run-time check dialog) appeared in 900 ticks of
-  the 1P race, so F-J cover the green light, bot driving, and 1P race
-  physics.
+  the 1P race, so F-J run through the green light, bot driving, and 1P
+  race physics, digested through the rng, rcontrol, and topology-free
+  drivers digests (the Physics group itself is not digested, RS-13).
 
 ## 7. Risks and open questions
 
