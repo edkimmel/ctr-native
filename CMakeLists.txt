@@ -1652,15 +1652,16 @@ if(BUILD_TESTING)
             LABELS live)
 
         # The live roster determinism proof (docs/ROSTER_MILESTONE.md section
-        # 3.4, R-6, R-6b, and OC-3): ten internal --arcade-roster-proof runs
-        # of ctr_native, all at once under the proof's fixed VBlank pacing,
-        # five of the two-cabinet profile (A-E) and five of the
-        # single-cabinet profile (F-J), each profile run as: same seed twice,
-        # same seed launched from inside the attract demo race, another seed,
-        # same seed launched an odd number of ticks late; compared tick by
-        # tick, within each profile and across the two.  Needs the
-        # user-supplied assets/ctr-u.bin, a desktop session with a display,
-        # and an internal build; skips (77) otherwise.  Reports and logs are written only under the build tree.
+        # 3.4, R-6, R-6b, R-6c, R-6d, and OC-3): ten internal
+        # --arcade-roster-proof runs of ctr_native, all at once under the
+        # proof's fixed VBlank pacing, five of the two-cabinet profile (A-E)
+        # and five of the single-cabinet profile (F-J), each profile run as:
+        # same seed twice, same seed launched from inside the attract demo
+        # race, another seed, same seed launched an odd number of ticks late;
+        # compared tick by tick, within each profile and across the two.
+        # Needs the user-supplied assets/ctr-u.bin, a desktop session with a
+        # display, and an internal build; skips (77) otherwise.  Reports and
+        # logs are written only under the build tree.
         # Both live tests carry the label "live": `ctest -LE live` leaves them
         # out, and the default full run still includes them.
         add_test(NAME arcade_roster_determinism

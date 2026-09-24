@@ -581,7 +581,8 @@ try {
     $f = $reports['F']
     $g = $reports['G']
     $h = $reports['H']
-    # Not $i and $j: those are the loop counters below.
+    # Not $I: PowerShell variable names are case-insensitive, so $I would be
+    # the $i loop counter below (hence $reportI and, for symmetry, $reportJ).
     $reportI = $reports['I']
     $reportJ = $reports['J']
     $runByName = @{}
