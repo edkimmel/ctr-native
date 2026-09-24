@@ -71,6 +71,30 @@ Integration order:
    and 3-4 human slots in the roster and match config. The match-select
    rules, message, and session are already sized for 4 humans, while
    `NativeMatchConfigV1` has two human roles. It follows step 7.
+9. Stretch goal: Oxide Station in linked races. Not started. Retail
+   offers it in 1P only (SEL-3), so first confirm the disc has a
+   multiplayer level pack for it, or what 1P-only assumption blocks it.
+   Then add it to the match-select track list and the bot rules.
+10. Stretch goal: unlock everything in code and add Turbo Track. Not
+    started. Unlock state must come from the build, not the host-local
+    save, so both cabinets agree. It removes the SEL-3 reason for
+    excluding Turbo Track, and the unlocked characters and tracks must be
+    reflected in match select and the bot rules.
+11. Stretch goal: native 16:9 at 1080p. Not started. `main.c` has an
+    unwired `USE_16BY9` stub (1280x720 window only, no CMake option, no
+    game-side changes). The goal is a proper widescreen projection and
+    HUD/menu layout, including the arcade-link screens (512x216 layout
+    space). It must stay presentation-only: no effect on simulation,
+    replay, canonical state, or lockstep identity, with an isolation test
+    like the texture filter's.
+12. Stretch goal: G29 force feedback. Not started. Today retail pad
+    vibration (`Platform_InputPadVibrate`, `platform/native_input.c:1290`)
+    maps to `SDL_RumbleGamepad` only, and a G29 gets nothing ("direct G29
+    force feedback remains a separate M6 hardware gate"). The goal is
+    wheel effects (for example, collisions, terrain, and a steering
+    self-centering spring) through SDL haptics. It is host-local output,
+    kept out of simulation identity, and needs the CAB1 G29 hardware for
+    validation.
 
 ## Deterministic simulation
 
@@ -502,11 +526,17 @@ the two slow live tests.
    initialized (owner approved: fix retail bugs in place), remove the checker's `-OneCabTicks 90`
    cap so ONE_CAB runs F-H run 900 ticks, and add ONE_CAB variants of
    run C (demo-race launch) and run E (odd offset).
-2. Operator decisions: RS-1..RS-24 (`docs/ROSTER_MILESTONE.md`),
-   SEL-1..SEL-17 (`docs/MATCH_SELECT_MILESTONE.md` section 4), and
-   UX-1..UX-11 (`docs/GAME_LOOP_UI_MILESTONE.md` section 3; UX-8
-   superseded). The operator must also review the five select preview
-   screens.
+2. Arcade-link menu sound effects. The arcade-link and match-select
+   screens are silent today: `game/MAIN/MainArcadeLink.c` plays no sound.
+   Add the retail menu sounds for navigate, confirm, back, and error
+   through the same calls the retail menus use. They are host-local
+   presentation and stay out of simulation identity.
+
+   The owner accepted every open default: RS-1..RS-24
+   (`docs/ROSTER_MILESTONE.md`), SEL-1..SEL-17
+   (`docs/MATCH_SELECT_MILESTONE.md` section 4), and UX-1..UX-11
+   (`docs/GAME_LOOP_UI_MILESTONE.md` section 3). Those docs still say
+   "pending review" and need a status-only update.
 3. Task 7, networked race launch through `MainArcadeRaceSetup`. It covers
    asymmetric relink completion (`docs/MATCH_SELECT_MILESTONE.md`
    section 7), extending the setup isolation test's caller allow-list,
