@@ -1023,11 +1023,13 @@ of any cross-cabinet identity.
 
 ### Task 7 -- networked race launch
 
-Status: not started. Its step-3 prerequisite exists: the live race setup
-seam game/MAIN/MainArcadeRaceSetup (docs/ROSTER_MILESTONE.md section
-3.2). On START_RACE, configure and load the race described by the agreed
-NativeMatchConfigV1 through that seam: MainArcadeRaceSetup_Arm with the
-agreed config, then MainArcadeRaceSetup_Launch (which writes the race
+Status: in progress. Plan: docs/RACE_LAUNCH_MILESTONE.md (slices
+RL-S1..RL-S11, defaults RL-1..RL-15). Its step-3 prerequisite exists: the
+live race setup seam game/MAIN/MainArcadeRaceSetup
+(docs/ROSTER_MILESTONE.md section 3.2). On START_RACE, configure and load
+the race described by the agreed NativeMatchConfigV1 through that seam:
+MainArcadeRaceSetup_Arm with the agreed config, then
+MainArcadeRaceSetup_Launch (which writes the race
 fields and requests the load); poll MainArcadeRaceSetup_Status until
 VALIDATED (or FAILED, whose player-facing response Task 7 decides, RS-10);
 read MainArcadeRaceSetup_Digests and hand MainArcadeRaceSetup_Bank to
@@ -1049,7 +1051,10 @@ stays possible during the title intro before the menu-ready frame, which
 the layer leaves to retail so the intro skip keeps working (section 2.5,
 residual retail window), but Task 7 need not reset the gameMode2 cheat
 bits itself: RS-2 already does, since the setup plan pins every
-non-transient mode bit, cheat bits included.
+non-transient mode bit, cheat bits included. The design, the answer to
+asymmetric relink completion (the launch agreement, RL-1..RL-7), and the
+interim race behaviour until Task 8 (the launch rehearsal, RL-10) live in
+docs/RACE_LAUNCH_MILESTONE.md.
 
 ### Task 8 -- in-race lockstep drive and failure handling
 
