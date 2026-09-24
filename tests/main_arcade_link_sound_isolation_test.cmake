@@ -16,7 +16,10 @@
 # game/MAIN/MainArcadeLink.c, once, after the decision, and never by the
 # decision, the layout, the policy, or any platform/native_arcade_* source or
 # header. The hook resets the decision's snapshot on every frame the layer
-# does not own, after the START_RACE AbortToTitle, and on RETURN_TO_TITLE.
+# does not own, after the START_RACE AbortToTitle, and on RETURN_TO_TITLE;
+# except race frames under RL-8 (tickOnly), which leave the snapshot holding
+# the RACING view stored on the last owned frame, so RESULTS entry keeps its
+# SND-9 cue.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -218,7 +221,9 @@ endforeach()
 # 5. The hook static-asserts every mirror against the flow value, plays the
 #    retail sound exactly once, in its sound helper, after the decision, and
 #    resets the snapshot on every frame the layer does not own, after the
-#    START_RACE AbortToTitle, and on RETURN_TO_TITLE.
+#    START_RACE AbortToTitle, and on RETURN_TO_TITLE; except race frames
+#    under RL-8 (tickOnly), which leave the snapshot holding the RACING view
+#    stored on the last owned frame, so RESULTS entry keeps its SND-9 cue.
 set(hook_path "game/MAIN/MainArcadeLink.c")
 ctr_read_source("${hook_path}" hook)
 foreach(mirror IN LISTS mirror_pairs)

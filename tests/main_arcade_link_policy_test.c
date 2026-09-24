@@ -467,11 +467,25 @@ static int TestRaceFramesTickOnly(void)
 
 	/* The full grid: tickOnly exactly when LINK, hostRacing nonzero (2 and
 	 * 0xFF count as 1, like the policy's other flags), and not the idle
-	 * main-menu level; otherwise the output is byte-for-byte today's. */
+	 * main-menu level; otherwise the output is byte-for-byte today's. The
+	 * previous held word varies between a rising START or CROSS and none. */
 	{
 		static const uint32_t modes[] = {MODE_OFF, MODE_LINK, MODE_PREVIEW, 3u, 0xFFFFFFFFu};
 		static const uint8_t racings[] = {0u, 1u, 2u, 0xFFu};
 		static const uint32_t states[] = {T_INTRO, T_IN_MENU, T_EXITING, T_RETURNING};
+		/* rawHeld holds START and CROSS: whether either rises against each
+		 * previous held word. */
+		static const struct
+		{
+			uint32_t prevRawHeld;
+			int rising;
+		} prevs[] = {
+			{0u, 1},
+			{RAW_START, 1},
+			{RAW_CROSS, 1},
+			{RAW_START | RAW_CROSS, 0},
+			{RAW_START | RAW_CROSS | RAW_SQUARE | RAW_L1, 0},
+		};
 
 		for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++)
 		{
@@ -479,45 +493,61 @@ static int TestRaceFramesTickOnly(void)
 			{
 				for (size_t s = 0; s < sizeof(states) / sizeof(states[0]); s++)
 				{
-					for (uint32_t flags = 0; flags < 64u; flags++)
+					for (size_t p = 0; p < sizeof(prevs) / sizeof(prevs[0]); p++)
 					{
-						int expectTick;
-
-						input = TitleInput(modes[m]);
-						input.titleState = states[s];
-						input.introFrame = ((flags & 32u) != 0u) ? 0 : SKIP_FRAME;
-						input.levelIsMainMenu = (uint8_t)((flags & 1u) == 0u);
-						input.loading = (uint8_t)((flags & 2u) != 0u);
-						input.hostScreenActive = (uint8_t)((flags & 4u) != 0u);
-						input.boxHidden = (uint8_t)((flags & 8u) != 0u);
-						input.mainMenuBoxActive = (uint8_t)((flags & 16u) == 0u);
-						input.rawHeld = rawHeld;
-						input.prevRawHeld = 0u;
-						input.hostRacing = 0u;
-						today = Decide(&input);
-						input.hostRacing = racings[r];
-						output = Decide(&input);
-
-						expectTick = (modes[m] == MODE_LINK) && (racings[r] != 0u) &&
-							((input.levelIsMainMenu == 0u) || (input.loading != 0u));
-						/* hostRacing 0 is today's rule: the title window in LINK
-						 * and PREVIEW, or a LINK screen, on any level or load. */
-						CHECK(today.tickOnly == 0u);
-						CHECK((int)today.owns ==
-							((((modes[m] == MODE_LINK) || (modes[m] == MODE_PREVIEW)) &&
-								 (MainArcadeLinkPolicy_TitleMenuReady(&input) != 0)) ||
-								((modes[m] == MODE_LINK) && (input.hostScreenActive != 0u))));
-						CHECK(today.restoreBox == (uint8_t)((today.owns == 0u) &&
-							((modes[m] == MODE_LINK) || (modes[m] == MODE_PREVIEW)) && (input.boxHidden != 0u)));
-						if (expectTick != 0)
+						for (uint32_t flags = 0; flags < 64u; flags++)
 						{
-							CHECK(TickOnly(&output, today.heldButtons));
-							CHECK(output.heldButtons == held);
-						}
-						else
-						{
-							CHECK(output.tickOnly == 0u);
-							CHECK(memcmp(&output, &today, sizeof(output)) == 0);
+							int expectTick;
+							int expectOwns;
+							int expectEnter;
+							int expectReset;
+
+							input = TitleInput(modes[m]);
+							input.titleState = states[s];
+							input.introFrame = ((flags & 32u) != 0u) ? 0 : SKIP_FRAME;
+							input.levelIsMainMenu = (uint8_t)((flags & 1u) == 0u);
+							input.loading = (uint8_t)((flags & 2u) != 0u);
+							input.hostScreenActive = (uint8_t)((flags & 4u) != 0u);
+							input.boxHidden = (uint8_t)((flags & 8u) != 0u);
+							input.mainMenuBoxActive = (uint8_t)((flags & 16u) == 0u);
+							input.rawHeld = rawHeld;
+							input.prevRawHeld = prevs[p].prevRawHeld;
+							input.hostRacing = 0u;
+							today = Decide(&input);
+							input.hostRacing = racings[r];
+							output = Decide(&input);
+
+							expectTick = (modes[m] == MODE_LINK) && (racings[r] != 0u) &&
+								((input.levelIsMainMenu == 0u) || (input.loading != 0u));
+							/* hostRacing 0 is today's rule: the title window in LINK
+							 * and PREVIEW, or a LINK screen, on any level or load. */
+							expectOwns = (((modes[m] == MODE_LINK) || (modes[m] == MODE_PREVIEW)) &&
+									 (MainArcadeLinkPolicy_TitleMenuReady(&input) != 0)) ||
+								((modes[m] == MODE_LINK) && (input.hostScreenActive != 0u));
+							/* Attract entry: LINK, owned, no link screen, not EXITING,
+							 * and a rising START or CROSS. */
+							expectEnter = expectOwns && (modes[m] == MODE_LINK) && (input.hostScreenActive == 0u) &&
+								(states[s] != T_EXITING) && (prevs[p].rising != 0);
+							/* Demo countdown reset: owned, and PREVIEW, a LINK screen,
+							 * or an attract entry. */
+							expectReset = expectOwns &&
+								((modes[m] == MODE_PREVIEW) || ((modes[m] == MODE_LINK) && (input.hostScreenActive != 0u)) || expectEnter);
+							CHECK(today.tickOnly == 0u);
+							CHECK((int)today.owns == expectOwns);
+							CHECK(today.restoreBox == (uint8_t)((today.owns == 0u) &&
+								((modes[m] == MODE_LINK) || (modes[m] == MODE_PREVIEW)) && (input.boxHidden != 0u)));
+							CHECK((int)today.enterPressed == expectEnter);
+							CHECK((int)today.resetDemoCountdown == expectReset);
+							if (expectTick != 0)
+							{
+								CHECK(TickOnly(&output, today.heldButtons));
+								CHECK(output.heldButtons == held);
+							}
+							else
+							{
+								CHECK(output.tickOnly == 0u);
+								CHECK(memcmp(&output, &today, sizeof(output)) == 0);
+							}
 						}
 					}
 				}

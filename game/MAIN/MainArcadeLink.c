@@ -91,7 +91,10 @@ static uint8_t s_mainArcadeLinkHidMainMenu;
 
 /* The menu sound decision's previous-frame snapshot (MainArcadeLinkSound.h).
  * Host-local presentation state: reset whenever the layer does not own the
- * frame, in PREVIEW, and when a link session ends back at the title. */
+ * frame, in PREVIEW, and when a link session ends back at the title. The
+ * exception is race frames under RL-8 (tickOnly), which leave the snapshot
+ * holding the RACING view stored on the last owned frame, so RESULTS entry
+ * keeps its SND-9 cue. */
 static struct MainArcadeLinkSoundState s_mainArcadeLinkSound;
 
 static void MainArcadeLink_HideMainMenu(void)

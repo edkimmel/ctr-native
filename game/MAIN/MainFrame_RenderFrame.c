@@ -73,9 +73,9 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	 * - MainArcadeLink_Frame sets INVISIBLE on the retail main-menu box, so
 	 *   RECTMENU_ProcessState skips RECTMENU_DrawSelf, and clears it again
 	 *   once the layer no longer owns the frame.
-	 * - While an arcade-link screen is up (not the attract screen), or a
-	 *   preview is shown, it resets the retail title demo countdown every
-	 *   frame, so the demo never fires.
+	 * - On owned frames while a link screen is up (not the attract screen;
+	 *   RL-8 race frames are ticked, not owned) or a preview is shown, it
+	 *   resets the retail title demo countdown, so the demo never fires.
 	 */
 	const int arcadeLinkOwnsMenu = MainArcadeLink_Frame(gGT, gGamepads);
 #endif

@@ -213,7 +213,9 @@ struct MainArcadeRaceLaunchCoreInput
 	/* 1: the host flow is on RACING (NativeArcadeLinkHost_Racing), sampled
 	 * after this frame's host Tick: the Tick that returns START_RACE enters
 	 * RACING first (platform/native_arcade_flow.c), so startRace 1 implies
-	 * hostRacing 1 */
+	 * hostRacing 1. Unlike MainArcadeLinkPolicyInput.hostRacing
+	 * (MainArcadeLinkPolicy.h), which is sampled before that tick: RL-S8b
+	 * must not feed one from the other. */
 	uint8_t hostRacing;
 	/* 1: the title launch window is open (MainArcadeLink_TitleMenuReady) */
 	uint8_t titleWindowOpen;

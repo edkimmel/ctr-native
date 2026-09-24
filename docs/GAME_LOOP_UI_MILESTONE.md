@@ -697,7 +697,10 @@ treat it there like the other three.
     The hook resets the snapshot on every frame the layer does not own, in
     PREVIEW, when GetView fails, after the START_RACE AbortToTitle, and on
     RETURN_TO_TITLE. With the host mode OFF nothing changes: the OFF early
-    return is still the first statement.
+    return is still the first statement. RL-S8a amendment: race frames under
+    RL-8 (tickOnly) are the exception to the not-owned reset; they leave the
+    snapshot holding the RACING view stored on the last owned frame, so
+    RESULTS entry keeps its SND-9 cue.
 11. SND-11: Non-canonical host-local presentation. `OtherFX_Play`
     (game/HOWL/HOWL_OtherFX.c:19) calls OtherFX_Play_LowLevel (:39), which
     reads sdata->boolAudioEnabled, ptrHowlHeader, howl_metaOtherFX,

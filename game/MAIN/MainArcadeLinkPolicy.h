@@ -25,8 +25,9 @@
  * unreachable and hidden. Before the menu-ready frame the box is input-less
  * and undrawn in retail, so the layer leaves the frame alone and the retail
  * intro skip keeps working. In LINK mode the layer also owns every frame on
- * which a link screen is active, on any level; PREVIEW mode never owns
- * outside the title window.
+ * which a link screen is active, on any level, except the RL-8 race frames
+ * below (ticked, not owned); PREVIEW mode never owns outside the title
+ * window.
  *
  * Race frames are ticked, not owned (docs/RACE_LAUNCH_MILESTONE.md RL-8). In
  * LINK mode, with the host flow on RACING and the frame not on the idle
@@ -95,7 +96,10 @@ struct MainArcadeLinkPolicyInput
 	/* 0 or 1: the hook has hidden the retail main-menu box */
 	uint8_t boxHidden;
 	/* 0 or 1: the host flow is on RACING (LINK only; the host's racing query,
-	 * read before this frame's host tick) */
+	 * read before this frame's host tick). Unlike
+	 * MainArcadeRaceLaunchCoreInput.hostRacing (MainArcadeRaceLaunchCore.h),
+	 * which is sampled after that tick: RL-S8b must not feed one from the
+	 * other. */
 	uint8_t hostRacing;
 	uint8_t reserved[1];
 };

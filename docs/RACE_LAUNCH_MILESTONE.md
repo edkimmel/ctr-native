@@ -31,7 +31,7 @@ validation (HANDOFF steps 6-7).
 ## 2. Starting point
 
 - START_RACE logs the agreed match and aborts to the title
-  (game/MAIN/MainArcadeLink.c:276-294). No race reaches RACING today.
+  (game/MAIN/MainArcadeLink.c:279-297). No race reaches RACING today.
 - Each relink handshake completes independently per side
   (include/platform/native_lockstep_peer_link.h:95, :172), so one cabinet
   can reach START_RACE while the other times out to LINK ERROR. The aux
@@ -49,14 +49,14 @@ validation (HANDOFF steps 6-7).
   (platform/native_arcade_flow.c:278-301). Before Task 8 nothing else
   bounds RACING.
 - Frame ownership: in LINK mode the layer owns every frame while a link
-  screen is active, on any level (game/MAIN/MainArcadeLinkPolicy.c:88-92;
+  screen is active, on any level (game/MAIN/MainArcadeLinkPolicy.c:97-101;
   RACING counts as active, platform/native_arcade_link_host.c:248-259).
   The hook (game/MAIN/MainFrame_RenderFrame.c:80) would therefore already
   tick the host on race frames: MainArcadeLink_LinkTick runs only on owned
-  frames (game/MAIN/MainArcadeLink.c:378-398). On those frames it would
-  also clear every pad tap and hide the box (:386-393), reset the demo
-  countdown (:405-410), and return 1 (:413), so the render frame clears
-  the collected menu input with RECTMENU_ClearInput
+  frames (before RL-S8a; game/MAIN/MainArcadeLink.c:391-411). On those
+  frames it would also clear every pad tap and hide the box (:399-406),
+  reset the demo countdown (:418-423), and return 1 (:426), so the render
+  frame clears the collected menu input with RECTMENU_ClearInput
   (MainFrame_RenderFrame.c:96-101). The layout draws nothing on RACING
   (game/MAIN/MainArcadeLinkLayout.c:874).
   MainArcadeLinkPolicy.c:51 is inside MainArcadeLinkPolicy_TitleMenuReady
@@ -247,10 +247,10 @@ a config the peer did not hold.
 RL-8 Launch point, waits, and race frames. Every networked launch starts
 from the title launch window on the idle main-menu level, the same TITLE
 window the roster proof uses: MainArcadeLink_TitleMenuReady
-(game/MAIN/MainArcadeLink.c:339-349, the wrapper the roster proof calls
+(game/MAIN/MainArcadeLink.c:343-353, the wrapper the roster proof calls
 at game/MAIN/MainArcadeRosterProof.c:269) around
 MainArcadeLinkPolicy_TitleMenuReady. The window needs mainMenuState
-MAIN_MENU_TITLE (MainArcadeLink.c:332) and is closed during a load and
+MAIN_MENU_TITLE (MainArcadeLink.c:335) and is closed during a load and
 during the title intro before frame 230 (TITLE_INTRO_MENU_READY_FRAME,
 include/ovr_230.h:48), so after race 1 it opens only once the return load
 and the intro are done.
@@ -301,7 +301,7 @@ bodies make the same calls in the same order.
 
 Return. After the race, finished or failed, the caller loads the
 main-menu level the way the link's return to title does
-(MainArcadeLink.c:300-306): boolDemoMode 0, numPlyrNextGame 1,
+(MainArcadeLink.c:303-309): boolDemoMode 0, numPlyrNextGame 1,
 mainMenuState MAIN_MENU_TITLE, then MainRaceTrack_RequestLoad of the
 main-menu level. The cabinet shows RESULTS, rematch, and select there, as
 the layer does today. RL-10 fixes the frame of the return and of the pad
@@ -311,7 +311,7 @@ A link failure or LOST can take the flow out of RACING during the staged
 race-track load (platform/native_arcade_flow.c:282-293).
 MainRaceTrack_RequestLoad overwrites Loading.stage without checking it
 (game/MAIN/MainRaceTrack.c:27), and the link's return checks only levelID
-(MainArcadeLink.c:300), which LOAD_LevelFile has already set to the race
+(MainArcadeLink.c:303), which LOAD_LevelFile has already set to the race
 level (game/LOAD/LOAD_Level.c:43). So the caller runs the return step
 (numPlyrNextGame 1 and the request) only when Loading.stage is LOAD_IDLE
 or LOAD_REQUESTED; otherwise it defers the step to the first LOAD_IDLE
@@ -321,15 +321,15 @@ the race load's own read of it (game/LOAD/LOAD_TenStages.c:102) intact.
 RL-S7 tests a failure during the race load.
 
 Race frames are ticked, not owned. MainArcadeLink_LinkTick runs only on
-owned frames (MainArcadeLink.c:378-398), so the policy gains one input
+owned frames (MainArcadeLink.c:391-411), so the policy gains one input
 (the host flow is on RACING) and one output, tickOnly, each in a reserved
 byte of its struct. On a LINK frame with the flow on RACING and not on
 the idle main-menu level (a load in progress, or another level),
 MainArcadeLinkPolicy_Decide sets tickOnly and heldButtons only; owns,
 enterPressed, hideBox, restoreBox, resetDemoCountdown, and clearTaps stay
 0. MainArcadeLink_Frame then runs MainArcadeLink_LinkTick and nothing
-else, and returns 0. So no pad tap is cleared (:386-389), the box is not
-hidden (:390-393), the demo countdown is not reset (:405-410), and the
+else, and returns 0. So no pad tap is cleared (:399-402), the box is not
+hidden (:403-406), the demo countdown is not reset (:418-423), and the
 render frame does not call RECTMENU_ClearInput
 (game/MAIN/MainFrame_RenderFrame.c:96-101). Retail race input is
 untouched (the rehearsal pads now, the Task 8 lockstep pads later). An
@@ -476,7 +476,7 @@ after race 2, then exit with a result code. The autopilot never injects
 input through installed pads, which the rehearsal owns and clears
 (RL-10); it feeds the link host's own inputs instead (for example
 NativeArcadeLinkHost_Enter and the held menu buttons passed to
-NativeArcadeLinkHost_Tick, game/MAIN/MainArcadeLink.c:269-274).
+NativeArcadeLinkHost_Tick, game/MAIN/MainArcadeLink.c:272-277).
 tools/arcade-link-launch-check.ps1, run by a new ctest arcade_link_launch
 (Windows, label "live", RUN_SERIAL TRUE like the two existing live tests,
 CMakeLists.txt:1679 and :1705, here also because ports 7001 and 7002 are
@@ -703,7 +703,7 @@ RACE_TICK_TIMEOUT, SETUP_FAILED) runs the return step on the failure frame
 when Loading.stage is LOAD_IDLE or LOAD_REQUESTED, else on the first
 LOAD_IDLE frame; on WINDOW_TIMEOUT it is the recovery when the window stays
 closed (RETURN_TO_TITLE does not reload on the main-menu level,
-game/MAIN/MainArcadeLink.c:300). No pad clear where none were installed
+game/MAIN/MainArcadeLink.c:303). No pad clear where none were installed
 (ARM, LAUNCH, WINDOW_TIMEOUT); an Arm/Launch failure still Disarms at once;
 WINDOW_TIMEOUT has nothing to Disarm. A held race's WINDOW_TIMEOUT owes its
 own return step, merged with one already pending, and the ended race's
@@ -747,7 +747,9 @@ ban.
 
 ### RL-S8a -- race frames ticked, not owned
 
-Status: done; review required. MainArcadeLinkPolicyInput gains hostRacing
+Status: done (74004beb6); reviewed, no BLOCKER; one should-fix and six nits
+closed in the follow-up commit (HANDOFF Next work left to the orchestrator).
+MainArcadeLinkPolicyInput gains hostRacing
 (offset 26) and MainArcadeLinkPolicyOutput gains tickOnly (offset 10), each
 in the first reserved byte (sizes 28 and 12 unchanged); in LINK mode with
 hostRacing nonzero and not the idle main-menu level (levelIsMainMenu 0 or
@@ -756,7 +758,10 @@ MainArcadeLink_Frame (hostRacing gathered from NativeArcadeLinkHost_Racing
 before the host tick) then runs MainArcadeLink_LinkTick alone and returns 0,
 right after the decision. Tests: TestLayout and TestRaceFramesTickOnly in
 tests/main_arcade_link_policy_test.c, and section 5b of
-tests/main_arcade_link_hook_isolation_test.cmake.
+tests/main_arcade_link_hook_isolation_test.cmake. Sound snapshot decision:
+a tickOnly frame does not reset the menu-sound snapshot, so it keeps the
+RACING view stored on the last owned frame and the first owned RESULTS
+frame keeps its SND-9 cue (GAME_LOOP_UI SND-10, RL-S8a amendment).
 
 Plan: Needs RL-S6 (the RACING input reads
 the host racing query; the host's link screen is private today,
@@ -800,7 +805,7 @@ replay options.
 Status: planned. This document, GAME_LOOP_UI Task 7 and risks,
 MATCH_SELECT risks 7 and 12, ROSTER RS-10 and risks 8, 11, and 14, and
 docs/HANDOFF.md sections other than "Next work". This includes the stale
-"Task 7 is not started" text in docs/GAME_LOOP_UI_MILESTONE.md:1079 and
+"Task 7 is not started" text in docs/GAME_LOOP_UI_MILESTONE.md:1082 and
 docs/HANDOFF.md:51.
 
 ## 7. Risks and open questions
@@ -825,7 +830,11 @@ docs/HANDOFF.md:51.
    a Task 8 concern). LOAD_Hub_SwapNow (game/LOAD/LOAD_Hub.c:38-43) is
    the adventure-hub swap and not on the race launch path.
 3. The tap clearing on owned frames must not reach race frames (RL-8,
-   RL-S8a; also a Task 8 input concern).
+   RL-S8a; also a Task 8 input concern). If the flow leaves RACING
+   mid-race (link failure or LOST), the following RESULTS frames on the
+   race level are owned (taps cleared, RECTMENU_ClearInput) while the
+   retail race runs until the return load; RL-10's return step bounds
+   this.
 4. Host timing still feeds the simulation (ROSTER risk 7, Task 8).
 5. Pause under lockstep is undecided (Task 8).
 6. The rehearsal RESULTS says RACE COMPLETE for an undriven race. This is

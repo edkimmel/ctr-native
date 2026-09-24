@@ -279,7 +279,10 @@ endif()
 #     MainArcadeLink_Frame the tickOnly branch comes after the host-mode OFF
 #     check, the gather, and the decision, and before any box restore, tap
 #     clear, box hide, host tick of an owned frame, demo countdown reset, or
-#     draw; its block is exactly the link tick and return 0.
+#     draw; only whitespace (in the comment-stripped code) separates the
+#     decision-failure block's closing brace from the branch, so nothing
+#     (a snapshot reset, a menu call, a pad write) can run in between; its
+#     block is exactly the link tick and return 0.
 ctr_find_block("${hook_source_path}" "${hook_code}"
     "static void MainArcadeLink_Gather(" gather_begin gather_end)
 math(EXPR gather_length "${gather_end} - ${gather_begin} + 1")
@@ -310,6 +313,17 @@ foreach(term IN ITEMS "MainArcadeLink_RestoreMainMenu" "MainArcadeLink_ClearTaps
         message(FATAL_ERROR "arcade link hook isolation: '${term}' runs before the tickOnly branch in MainArcadeLink_Frame")
     endif()
 endforeach()
+ctr_find_block("${hook_source_path} (MainArcadeLink_Frame)" "${frame_block}"
+    "if (!MainArcadeLinkPolicy_Decide(&input, &output))" decide_fail_begin decide_fail_end)
+math(EXPR after_decide_fail "${decide_fail_end} + 1")
+if(after_decide_fail GREATER tick_only_at)
+    message(FATAL_ERROR "arcade link hook isolation: the tickOnly branch in MainArcadeLink_Frame must follow the decision-failure block")
+endif()
+math(EXPR between_length "${tick_only_at} - ${after_decide_fail}")
+string(SUBSTRING "${frame_block}" ${after_decide_fail} ${between_length} decide_to_tick_only)
+if(NOT decide_to_tick_only MATCHES "^[ \t\r\n]*$")
+    message(FATAL_ERROR "arcade link hook isolation: only whitespace may separate the decision-failure block from the tickOnly branch in MainArcadeLink_Frame (found '${decide_to_tick_only}')")
+endif()
 string(REGEX MATCHALL "output\\.tickOnly" tick_only_reads "${hook_code}")
 list(LENGTH tick_only_reads tick_only_read_count)
 if(NOT tick_only_read_count EQUAL 1)
