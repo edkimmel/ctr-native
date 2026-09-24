@@ -520,10 +520,11 @@ static b32 PROCESSINPUTS_MainFreeze_MenuPtrOptions(struct RectMenu *menu, GAMEPA
 					// selecting dualshock row
 					// toggle gamepad vibration
 #if defined(CTR_NATIVE)
-					// Native fix (RL-13, docs/RACE_LAUNCH_MILESTONE.md): while a linked
-					// race setup is not IDLE, gameMode1 must not change under the race,
-					// so the toggle is skipped. The confirm sound above and the analog
-					// controller row below stay retail.
+					// Native fix (RL-13, docs/RACE_LAUNCH_MILESTONE.md): while a race
+					// setup is not IDLE (a linked race, or the internal roster proof),
+					// gameMode1 must not change under the race, so the toggle is skipped.
+					// The confirm sound above and the analog controller row below stay
+					// retail.
 					if (MainArcadeRaceSetup_Status() == MAIN_ARCADE_RACE_SETUP_IDLE)
 #endif
 					{

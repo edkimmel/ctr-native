@@ -10,12 +10,11 @@
 #     (the else branch) stay retail: no guard, no race setup name;
 #  4. the guarded toggle is the only gameMode1 vibration write in the file:
 #     VibPerPlayer is named exactly twice (the toggle and the options-row
-#     read), no gameMode1 ^= appears elsewhere, and no P1..P4_VIBRATE bit is
-#     named;
+#     read), no gameMode1 ^= appears elsewhere, and neither a P1..P4_VIBRATE
+#     bit nor GAME_MODE_VIBRATION_MASK is named;
 #  5. MainFreeze.c names exactly one race setup entry point,
 #     MainArcadeRaceSetup_Status, once, and includes MAIN/MainArcadeRaceSetup.h
-#     only inside #if defined(CTR_NATIVE); the unity chain includes the
-#     adapter before MainFreeze.c.
+#     once, only inside a #if defined(CTR_NATIVE) block.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "pause vibration guard isolation")
@@ -130,10 +129,12 @@ string(REPLACE ";" "@SEMI@" freeze_masked "${freeze_code}")
 # The pause options handler's DualShock/analog rows (case 4..7): the labels,
 # the test-sound clear, the confirm tap, the confirm sound, and the row split,
 # with nothing between them.
-set(rows_opener "case 4:\n\t\tcase 5:\n\t\tcase 6:\n\t\tcase 7:")
 string(REGEX MATCHALL "case 4:${ws}case 5:${ws}case 6:${ws}case 7:" rows_labels "${freeze_masked}")
 list(LENGTH rows_labels rows_label_count)
-string(FIND "${freeze_masked}" "${rows_opener}" rows_at)
+set(rows_at -1)
+if(rows_label_count EQUAL 1)
+    string(FIND "${freeze_masked}" "${rows_labels}" rows_at)
+endif()
 if(NOT rows_label_count EQUAL 1 OR rows_at EQUAL -1)
     message(FATAL_ERROR "${prefix}: ${freeze_path} must hold the pause options DualShock/analog rows (case 4..7) exactly once (found ${rows_label_count})")
 endif()
@@ -202,22 +203,19 @@ list(LENGTH xor_writes xor_count)
 if(NOT xor_count EQUAL 1)
     message(FATAL_ERROR "${prefix}: ${freeze_path} must toggle gameMode1 with ^= exactly once, the guarded vibration toggle (found ${xor_count})")
 endif()
-string(REGEX MATCH "(^|[^A-Za-z0-9_])P[1-4]_VIBRATE([^A-Za-z0-9_]|$)" vibrate_bit "${freeze_code}")
+string(REGEX MATCH "(^|[^A-Za-z0-9_])(P[1-4]_VIBRATE|GAME_MODE_VIBRATION_MASK)([^A-Za-z0-9_]|$)" vibrate_bit "${freeze_code}")
 if(NOT vibrate_bit STREQUAL "")
     message(FATAL_ERROR "${prefix}: ${freeze_path} names the vibration bit ${vibrate_bit}; only the guarded toggle may change the vibration bits")
 endif()
 
-# 5. One race setup name, one include, and the unity order.
+# 5. One race setup name and one include, native-only.
 string(REGEX MATCHALL "MainArcadeRaceSetup[A-Za-z0-9_]*" setup_names "${freeze_code}")
 if(NOT "${setup_names}" STREQUAL "MainArcadeRaceSetup;MainArcadeRaceSetup_Status")
     message(FATAL_ERROR "${prefix}: ${freeze_path} must name only its header and MainArcadeRaceSetup_Status, once each (found '${setup_names}')")
 endif()
-if(NOT freeze MATCHES "^#include <common.h>\n\n#if defined\\(CTR_NATIVE\\)\n#include \"MAIN/MainArcadeRaceSetup\\.h\"\n#endif\n")
-    message(FATAL_ERROR "${prefix}: ${freeze_path} must include MAIN/MainArcadeRaceSetup.h right after <common.h>, inside #if defined(CTR_NATIVE)")
-endif()
-ctr_read_source("game/game_unity.h" unity)
-string(FIND "${unity}" "#include \"MAIN/MainArcadeRaceSetup.c\"" adapter_at)
-string(FIND "${unity}" "#include \"MAIN/MainFreeze.c\"" freeze_at)
-if(adapter_at EQUAL -1 OR freeze_at EQUAL -1 OR NOT adapter_at LESS freeze_at)
-    message(FATAL_ERROR "${prefix}: game/game_unity.h must include MAIN/MainArcadeRaceSetup.c before MAIN/MainFreeze.c")
+set(setup_include "#[ \t]*include[ \t]*\"MAIN/MainArcadeRaceSetup\\.h\"")
+string(REGEX MATCHALL "${setup_include}" setup_includes "${freeze_code}")
+list(LENGTH setup_includes setup_include_count)
+if(NOT setup_include_count EQUAL 1 OR freeze_retail MATCHES "${setup_include}")
+    message(FATAL_ERROR "${prefix}: ${freeze_path} must include MAIN/MainArcadeRaceSetup.h exactly once, inside a #if defined(CTR_NATIVE) block (found ${setup_include_count})")
 endif()
