@@ -378,6 +378,20 @@ set_target_properties(ctr_native_arcade_link_policy PROPERTIES
 )
 target_include_directories(ctr_native_arcade_link_policy PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 
+# Arcade-link menu sound decision (docs/GAME_LOOP_UI_MILESTONE.md section
+# 3.1, SND-1..SND-11): the pure cue choice behind the hook's retail menu
+# sounds, from this cabinet's own host view fields only. Like the policy,
+# ctr_native unity-includes the same source (game/game_unity.h) instead of
+# linking this target; the target exists for the unit test. It links nothing:
+# it uses only the host view and menu-event types and macros.
+add_library(ctr_native_arcade_link_sound STATIC game/MAIN/MainArcadeLinkSound.c)
+set_target_properties(ctr_native_arcade_link_sound PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_link_sound PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+
 # Arcade-link host options and fixed race fixture (docs/GAME_LOOP_UI_MILESTONE.md
 # sections 2.5 and 3, UX-8, Task 6a): pure argv parsing and a pure fixture
 # builder over a caller-supplied identity, valid under the arcade bot rules
@@ -1368,6 +1382,20 @@ if(BUILD_TESTING)
 
     add_test(NAME main_arcade_link_policy_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_policy_isolation_test.cmake")
+
+    # Arcade-link menu sound decision (docs/GAME_LOOP_UI_MILESTONE.md
+    # section 3.1): every SND rule and its negatives, pure.
+    add_executable(main_arcade_link_sound_test tests/main_arcade_link_sound_test.c)
+    set_target_properties(main_arcade_link_sound_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(main_arcade_link_sound_test PRIVATE ctr_native_arcade_link_sound)
+    add_test(NAME main_arcade_link_sound_unit COMMAND $<TARGET_FILE:main_arcade_link_sound_test>)
+
+    add_test(NAME main_arcade_link_sound_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_sound_isolation_test.cmake")
 
     # Arcade-link host options and fixed fixture (docs/GAME_LOOP_UI_MILESTONE.md
     # section 2.5, Task 6a): pure argv parsing and fixture building, no sockets.

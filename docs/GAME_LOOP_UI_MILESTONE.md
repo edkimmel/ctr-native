@@ -632,6 +632,90 @@ OPPONENT FOUND, then the match-select screens (each item auto-locks after
 relink return to the title, because START_RACE logs the agreed match and
 aborts to the title until Task 7.
 
+### 3.1 Arcade-link menu sound defaults
+
+These are new defaults, pending owner review (not yet accepted). The pure
+decision is game/MAIN/MainArcadeLinkSound.{c,h}; the hook
+(game/MAIN/MainArcadeLink.c) calls it on the view the drawer already reads
+and plays the result. A "fresh failure entry" is a screen change onto
+RESULTS with end reason PEER_TIMEOUT, DESYNC, or LINK_ERROR, or onto any
+screen whose failure end reason (those three or OPPONENT_LEFT) differs from
+the previous frame's; RESULTS always sets its reason afresh, while EXIT,
+REMATCH_WAIT, and a rematch's screens can carry an old one.
+
+1. SND-1: Retail IDs, each played as `OtherFX_Play(id, 1)`: MOVE 0
+   (game/RECTMENU.c:799, game/230/MM_Characters.c:1156,
+   game/230/MM_TrackSelect.c:635), CONFIRM 1 (game/RECTMENU.c:845,
+   game/230/MM_Characters.c:1216, game/230/MM_TrackSelect.c:677,
+   game/230/MM_Battle.c:500), BACK 2 (game/RECTMENU.c:817,
+   game/230/MM_Characters.c:1239 and 1246), ERROR 5, the locked-row womp
+   (game/RECTMENU.c:866). At most one cue per frame; a local-input cue
+   beats a transition cue.
+2. SND-2: Local only. Cues come from the host view's localMenuEvent, the
+   policy's enterPressed, and this cabinet's own screen, lobbyStatus,
+   endReason, selectedRow, select status, and
+   select.humans[select.localHuman]. The decision input carries nothing
+   else, so a peer's entry, peerLockedCharacterMask, and peer cursor
+   movement never produce a cue.
+3. SND-3: MOVE on PREV/NEXT when the focus changed on the same screen: the
+   results row, or on SELECT the local cursor value of the item that was
+   current. No change, silent (retail RECTMENU plays nothing when the row
+   does not change).
+4. SND-4: CONFIRM on a local CONFIRM that took effect: the screen changed
+   (not to a fresh failure entry), the local lockMask gained a bit, or the
+   local currentItem advanced. A CONFIRM on a LOBBY showing REJECTED also
+   counts: the flow retries that lobby on CONFIRM without changing screen.
+   Also CONFIRM when enterPressed took the attract screen (OFF) into the
+   lobby.
+5. SND-5: ERROR on a CONFIRM on SELECT (select active, status PICKING) that
+   changed nothing, which is the select refusing a peer-locked character.
+   A no-effect CONFIRM elsewhere is silent: a connecting lobby, the EXIT
+   hold, RESULTS before its rows accept input, MATCH_FOUND, REMATCH_WAIT,
+   SELECT_RESULT, or SELECT once the local picks are done.
+6. SND-6: BACK on a local BACK that took effect: the screen changed (LOBBY
+   or REMATCH_WAIT to EXIT), the RESULTS focus jumped to EXIT, the local
+   lockMask lost a bit, or the local currentItem went back. No effect,
+   silent (SELECT ignores BACK, SEL-7).
+7. SND-7: CONFIRM when the local lockMask gained a bit without an effective
+   local CONFIRM (the item timer auto-locked).
+8. SND-8: The opponent locking a pick is silent.
+9. SND-9: Entering MATCH_FOUND plays CONFIRM. A fresh failure entry, or the
+   lobby status changing to REJECTED, plays ERROR. Lobby LOST is silent.
+   LOST comes only from a READY link that faulted (lobby PEER_LOST); a
+   retry nobody answers reads WAITING or CONNECTING, so LOST does not
+   flicker during retries, though it could recur once per 1 s retry cycle
+   if each new link reached READY and then faulted. REJECTED cannot
+   flicker: it is never retried automatically (UX-5) and ends REMATCH_WAIT
+   and SELECT_RESULT; it recurs only after a local CONFIRM retry is
+   rejected again, which gives CONFIRM and then ERROR each time. Every other
+   peer-driven transition is silent.
+10. SND-10: PREVIEW is silent (scripted, no input). The first frame after the
+    snapshot was reset is silent, including an attract entry on that frame.
+    The hook resets the snapshot on every frame the layer does not own, in
+    PREVIEW, when GetView fails, after the START_RACE AbortToTitle, and on
+    RETURN_TO_TITLE. With the host mode OFF nothing changes: the OFF early
+    return is still the first statement.
+11. SND-11: Non-canonical host-local presentation. `OtherFX_Play`
+    (game/HOWL/HOWL_OtherFX.c:19) calls OtherFX_Play_LowLevel (:39), which
+    reads sdata->boolAudioEnabled, ptrHowlHeader, howl_metaOtherFX,
+    howl_spuAddrs, vol_FX or vol_Voice, boolStereoEnabled, and
+    gGT->frameTimer_MainFrame_ResetDB. It writes sdata->criticalSectionCount
+    (game/HOWL/HOWL_Channel.c:3-31), the channelTaken and channelFree lists,
+    ChannelUpdateFlags, channelAttrNew, and one ChannelStats entry
+    (HOWL_Channel.c:74-146), and sdata->countSounds (CountSounds,
+    HOWL_OtherFX.c:3). With anti-spam flag 1 it may also recycle the same
+    sound's channel if that sound started less than 10 frames ago
+    (Channel_DestroySelf, HOWL_Channel.c:110). It never touches
+    sdata->audioRNG, randomNumber,
+    advRng, or any other replay observation field. These are the fields every
+    retail menu sound already touches (game/RECTMENU.c:799). The channel
+    lists are inside sdata, which checkpoints capture (they are relocated in
+    platform/native_checkpoint.c:1442-1443), but link and preview mode reject
+    every replay option and disable quick states (section 2.5), so no
+    checkpoint or replay is taken there. The arcade-link screens are menus
+    outside any race frame, and audio is presentation (RS-8,
+    docs/ROSTER_MILESTONE.md).
+
 ## 4. Constraints
 
 1. The topology lease is untouched: no acquire, activate, capture, or
@@ -898,6 +982,32 @@ the internal-only preview option, and writes its captures and logs under
 build-msvc-x86\arcade_link_preview_captures\<config>). Checker limits are in
 risk 14. No review required: no frame or render order, input, identity,
 replay, canonical-state, or lease change.
+
+### Task 6b-7 -- arcade-link menu sounds (MainArcadeLinkSound)
+
+Status: done. The arcade-link and match-select screens now play the retail
+menu sounds for navigate, confirm, back, and error under the section 3.1
+defaults (SND-1..SND-11, pending owner review). A pure decision picks at most
+one cue per frame from this cabinet's own view fields, the view's
+localMenuEvent, and the policy's enterPressed. The hook calls it on the view
+the drawer already reads and plays the cue with `OtherFX_Play(id, 1)`, the
+only sound call. Flow, select, netplay, and the wire are unchanged. With no
+arcade-link option nothing changes.
+Landed as game/MAIN/MainArcadeLinkSound.h and
+game/MAIN/MainArcadeLinkSound.c (unity-included from game/game_unity.h
+between the policy and the hook; standalone library
+ctr_native_arcade_link_sound, which links nothing and which ctr_native does
+not link), tests/main_arcade_link_sound_test.c and
+tests/main_arcade_link_sound_isolation_test.cmake (tests
+main_arcade_link_sound_unit and main_arcade_link_sound_isolation), the hook
+wiring in game/MAIN/MainArcadeLink.c (flow-value mirror static asserts, the
+snapshot and its resets, and the sound helper the drawer calls), and a
+minimal extension of tests/main_arcade_link_hook_isolation_test.cmake (the
+sound header in the include allow-list, the drawer's new signature, and the
+file-count floor of the MainArcadeLink* scan). The sound isolation test also
+enforces that the retail sound call appears only in the hook, once, after the
+decision, and in no platform/native_arcade_* source or header, the policy,
+or the layout.
 
 ### Task 7 -- networked race launch
 

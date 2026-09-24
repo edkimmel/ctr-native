@@ -26,7 +26,11 @@
 # the layout input only through the layout's
 # MainArcadeLinkLayout_InputFromHostView (whose header now holds the select
 # value static asserts). The policy's own rules are in
-# main_arcade_link_policy_isolation_test.cmake.
+# main_arcade_link_policy_isolation_test.cmake. Since the menu sounds
+# (section 3.1) the hook may also include MAIN/MainArcadeLinkSound.h, and the
+# drawer takes the host mode and the policy's enterPressed for the sound
+# decision; the sound rules, including the one retail sound call, are in
+# main_arcade_link_sound_isolation_test.cmake.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -186,7 +190,7 @@ endforeach()
 #    prototype header includes nothing.
 string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${hook_source}")
 foreach(include_line IN LISTS include_lines)
-    if(NOT include_line MATCHES "^#[ \t]*include[ \t]*[<\"](common\\.h|platform/native_arcade_link_host\\.h|platform/native_arcade_menu_input\\.h|platform/native_log\\.h|MAIN/MainArcadeLinkLayout\\.h|MAIN/MainArcadeLinkPolicy\\.h|MAIN/MainArcadeLink\\.h)[>\"][ \t]*$")
+    if(NOT include_line MATCHES "^#[ \t]*include[ \t]*[<\"](common\\.h|platform/native_arcade_link_host\\.h|platform/native_arcade_menu_input\\.h|platform/native_log\\.h|MAIN/MainArcadeLinkLayout\\.h|MAIN/MainArcadeLinkPolicy\\.h|MAIN/MainArcadeLinkSound\\.h|MAIN/MainArcadeLink\\.h)[>\"][ \t]*$")
         message(FATAL_ERROR "arcade link hook isolation: disallowed include '${include_line}' in ${hook_source_path}")
     endif()
 endforeach()
@@ -220,7 +224,7 @@ endforeach()
 #     layout input field).
 ctr_strip_comments("${hook_source}" hook_code)
 ctr_find_block("${hook_source_path}" "${hook_code}"
-    "static void MainArcadeLink_BuildAndDraw(struct GameTracker *gGT)" draw_begin draw_end)
+    "static void MainArcadeLink_BuildAndDraw(struct GameTracker *gGT, uint32_t hostMode, uint8_t enterPressed)" draw_begin draw_end)
 math(EXPR draw_length "${draw_end} - ${draw_begin} + 1")
 string(SUBSTRING "${hook_code}" ${draw_begin} ${draw_length} draw_block)
 ctr_require_order("${hook_source_path} (MainArcadeLink_BuildAndDraw)" "${draw_block}"
@@ -562,8 +566,8 @@ endif()
 #     MainCanonicalRuntime) name the match config for unrelated reasons.
 file(GLOB arcade_link_game_paths "${repo}/game/MAIN/MainArcadeLink*.c" "${repo}/game/MAIN/MainArcadeLink*.h")
 list(LENGTH arcade_link_game_paths arcade_link_game_count)
-if(arcade_link_game_count LESS 6)
-    message(FATAL_ERROR "arcade link hook isolation: expected at least the six MainArcadeLink{,Layout,Policy}.{c,h} files, found ${arcade_link_game_count}; the scan is broken")
+if(arcade_link_game_count LESS 8)
+    message(FATAL_ERROR "arcade link hook isolation: expected at least the eight MainArcadeLink{,Layout,Policy,Sound}.{c,h} files, found ${arcade_link_game_count}; the scan is broken")
 endif()
 foreach(path IN LISTS arcade_link_game_paths)
     file(RELATIVE_PATH relative_path "${repo}" "${path}")

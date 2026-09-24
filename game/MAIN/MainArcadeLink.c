@@ -6,9 +6,10 @@
  * an arcade-link host option was given: with the host mode OFF,
  * MainArcadeLink_Frame returns 0 as its first statement and touches nothing.
  *
- * Every decision lives in the pure, unit-tested MAIN/MainArcadeLinkPolicy.c;
- * this file gathers the policy's inputs from the game, applies its outputs,
- * ticks the host, and draws.
+ * Every decision lives in the pure, unit-tested MAIN/MainArcadeLinkPolicy.c
+ * and, for the menu sounds (section 3.1), MAIN/MainArcadeLinkSound.c; this
+ * file gathers their inputs from the game, applies their outputs, ticks the
+ * host, draws, and plays the chosen retail menu sound.
  *
  * Unity-included after the 230 overlay sources, because it reads the title
  * state (MM_TITLE_MENU_STATE, MM_TITLE_INTRO_FRAME) and the retail main-menu
@@ -22,6 +23,7 @@
 #include "platform/native_log.h"
 #include "MAIN/MainArcadeLinkLayout.h"
 #include "MAIN/MainArcadeLinkPolicy.h"
+#include "MAIN/MainArcadeLinkSound.h"
 #include "MAIN/MainArcadeLink.h"
 
 /* The layout builder mirrors these retail values without including game
@@ -60,6 +62,19 @@ _Static_assert((uint32_t)MAIN_ARCADE_LINK_POLICY_BTN_START == (uint32_t)BTN_STAR
 _Static_assert((uint32_t)MAIN_ARCADE_LINK_POLICY_BTN_SELECT == (uint32_t)BTN_SELECT, "MAIN_ARCADE_LINK_POLICY_BTN_SELECT must match BTN_SELECT");
 _Static_assert((uint32_t)MAIN_ARCADE_LINK_POLICY_BTN_TRIANGLE == (uint32_t)BTN_TRIANGLE, "MAIN_ARCADE_LINK_POLICY_BTN_TRIANGLE must match BTN_TRIANGLE");
 
+/* The sound decision mirrors these flow values without including the flow
+ * header; keep the mirrors honest. */
+_Static_assert((uint32_t)MAIN_ARCADE_LINK_SOUND_SCREEN_OFF == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF, "MAIN_ARCADE_LINK_SOUND_SCREEN_OFF must match NATIVE_ARCADE_FLOW_SCREEN_OFF");
+_Static_assert((uint32_t)MAIN_ARCADE_LINK_SOUND_SCREEN_LOBBY == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_LOBBY, "MAIN_ARCADE_LINK_SOUND_SCREEN_LOBBY must match NATIVE_ARCADE_FLOW_SCREEN_LOBBY");
+_Static_assert((uint32_t)MAIN_ARCADE_LINK_SOUND_SCREEN_MATCH_FOUND == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND, "MAIN_ARCADE_LINK_SOUND_SCREEN_MATCH_FOUND must match NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND");
+_Static_assert((uint32_t)MAIN_ARCADE_LINK_SOUND_SCREEN_RESULTS == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS, "MAIN_ARCADE_LINK_SOUND_SCREEN_RESULTS must match NATIVE_ARCADE_FLOW_SCREEN_RESULTS");
+_Static_assert((uint32_t)MAIN_ARCADE_LINK_SOUND_SCREEN_SELECT == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT, "MAIN_ARCADE_LINK_SOUND_SCREEN_SELECT must match NATIVE_ARCADE_FLOW_SCREEN_SELECT");
+_Static_assert((uint32_t)MAIN_ARCADE_LINK_SOUND_LOBBY_REJECTED == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_REJECTED, "MAIN_ARCADE_LINK_SOUND_LOBBY_REJECTED must match NATIVE_ARCADE_FLOW_LOBBY_REJECTED");
+_Static_assert((uint32_t)MAIN_ARCADE_LINK_SOUND_END_PEER_TIMEOUT == (uint32_t)NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT, "MAIN_ARCADE_LINK_SOUND_END_PEER_TIMEOUT must match NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT");
+_Static_assert((uint32_t)MAIN_ARCADE_LINK_SOUND_END_DESYNC == (uint32_t)NATIVE_ARCADE_FLOW_END_DESYNC, "MAIN_ARCADE_LINK_SOUND_END_DESYNC must match NATIVE_ARCADE_FLOW_END_DESYNC");
+_Static_assert((uint32_t)MAIN_ARCADE_LINK_SOUND_END_LINK_ERROR == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR, "MAIN_ARCADE_LINK_SOUND_END_LINK_ERROR must match NATIVE_ARCADE_FLOW_END_LINK_ERROR");
+_Static_assert((uint32_t)MAIN_ARCADE_LINK_SOUND_END_OPPONENT_LEFT == (uint32_t)NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT, "MAIN_ARCADE_LINK_SOUND_END_OPPONENT_LEFT must match NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT");
+
 /* The panel style retail menus pass: RECTMENU_DrawFullRect hands
  * RECTMENU_DrawInnerRect the menu's drawStyle, and the retail main menu's
  * drawStyle is 0 (grey frame, translucent dark fill, drop shadow). */
@@ -73,6 +88,11 @@ static uint32_t s_mainArcadeLinkPrevRawHeld;
 /* 1 while this module has set INVISIBLE on the retail main-menu box. Retail
  * never sets INVISIBLE on that box, so clearing it restores retail state. */
 static uint8_t s_mainArcadeLinkHidMainMenu;
+
+/* The menu sound decision's previous-frame snapshot (MainArcadeLinkSound.h).
+ * Host-local presentation state: reset whenever the layer does not own the
+ * frame, in PREVIEW, and when a link session ends back at the title. */
+static struct MainArcadeLinkSoundState s_mainArcadeLinkSound;
 
 static void MainArcadeLink_HideMainMenu(void)
 {
@@ -144,7 +164,38 @@ static void MainArcadeLink_Draw(struct GameTracker *gGT, struct MainArcadeLinkLa
 	}
 }
 
-static void MainArcadeLink_BuildAndDraw(struct GameTracker *gGT)
+/* The retail menu sounds (docs/GAME_LOOP_UI_MILESTONE.md section 3.1): the
+ * pure MainArcadeLinkSound_Decide picks at most one cue from this cabinet's
+ * own view fields and local menu event, and it is played the way the retail
+ * menus play it (game/RECTMENU.c:799-866). PREVIEW is scripted and silent. */
+static void MainArcadeLink_PlayMenuSound(const struct NativeArcadeLinkHostView *view, uint32_t hostMode, uint8_t enterPressed)
+{
+	struct MainArcadeLinkSoundInput soundInput;
+	uint32_t cue;
+	uint32_t soundID;
+
+	if (hostMode != (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK)
+	{
+		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
+		return;
+	}
+	if (!MainArcadeLinkSound_InputFromHostView(view, hostMode, &soundInput))
+	{
+		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
+		return;
+	}
+	cue = MainArcadeLinkSound_Decide(&s_mainArcadeLinkSound, &soundInput, enterPressed);
+	if (cue == MAIN_ARCADE_LINK_SOUND_CUE_NONE)
+	{
+		return;
+	}
+	if (MainArcadeLinkSound_RetailId(cue, &soundID))
+	{
+		(void)OtherFX_Play(soundID, 1);
+	}
+}
+
+static void MainArcadeLink_BuildAndDraw(struct GameTracker *gGT, uint32_t hostMode, uint8_t enterPressed)
 {
 	struct NativeArcadeLinkHostView view;
 	struct MainArcadeLinkLayoutInput input;
@@ -152,8 +203,11 @@ static void MainArcadeLink_BuildAndDraw(struct GameTracker *gGT)
 
 	if (!NativeArcadeLinkHost_GetView(&view))
 	{
+		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
 		return;
 	}
+	/* The same view the layout draws below: one GetView per frame. */
+	MainArcadeLink_PlayMenuSound(&view, hostMode, enterPressed);
 	/* The layout's own field-for-field mapping, the same one
 	 * tests/main_arcade_link_view_layout_test.c proves every host view
 	 * passes MainArcadeLinkLayout_Build through. */
@@ -228,6 +282,8 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 		}
 		Platform_Log("[CTR Native] arcade link: networked race launch is not wired yet (docs/GAME_LOOP_UI_MILESTONE.md Task 7); returning to title\n");
 		NativeArcadeLinkHost_AbortToTitle();
+		/* A fresh link on the attract screen: no previous view for sounds. */
+		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
 		/* AbortToTitle falls back to mode OFF if the link cannot reopen. The
 		 * next frame's OFF early return touches nothing, so give the box back
 		 * now or it would stay hidden forever. */
@@ -236,13 +292,19 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 			MainArcadeLink_RestoreMainMenu();
 		}
 	}
-	else if ((action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE) && (gGT->levelID != MAIN_MENU_LEVEL))
+	else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)
 	{
-		/* The retail demo-mode exit (MainMain.c): back to the title. */
-		gGT->boolDemoMode = 0;
-		gGT->numPlyrNextGame = 1;
-		sdata->mainMenuState = MAIN_MENU_TITLE;
-		MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL);
+		/* The session ended back on the attract screen: no previous view
+		 * for sounds. */
+		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
+		if (gGT->levelID != MAIN_MENU_LEVEL)
+		{
+			/* The retail demo-mode exit (MainMain.c): back to the title. */
+			gGT->boolDemoMode = 0;
+			gGT->numPlyrNextGame = 1;
+			sdata->mainMenuState = MAIN_MENU_TITLE;
+			MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL);
+		}
 	}
 }
 
@@ -305,6 +367,7 @@ int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 	s_mainArcadeLinkPrevRawHeld = input.rawHeld;
 	if (!MainArcadeLinkPolicy_Decide(&input, &output))
 	{
+		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
 		return 0;
 	}
 
@@ -314,6 +377,9 @@ int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 	}
 	if (output.owns == 0u)
 	{
+		/* No arcade-link screen this frame: the next owned frame has no
+		 * previous view for sounds. */
+		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
 		return 0;
 	}
 
@@ -343,7 +409,7 @@ int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 		gGT->demoCountdownTimer = TITLE_DEMO_IDLE_FRAMES;
 	}
 
-	MainArcadeLink_BuildAndDraw(gGT);
+	MainArcadeLink_BuildAndDraw(gGT, input.hostMode, output.enterPressed);
 	return 1;
 }
 
