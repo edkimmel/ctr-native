@@ -515,9 +515,10 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
 
 ## 4. Owner-accepted defaults
 
-The owner reviewed and accepted every default below, RS-1..RS-24, so each
-is now an owner decision rather than a pending default (RS-1 also records
-the owner's earlier override of the TWO_CAB-only default).
+The owner reviewed and accepted every remaining default below (RS-2..RS-24),
+so each is now an owner decision rather than a pending default. RS-1 was
+never a pending default: it is the owner's own earlier decision, which
+overrode the TWO_CAB-only default.
 
 1. RS-1 (owner decision, which overrode the TWO_CAB-only default): the
    live scope is both profiles. TWO_CAB is the retail 2P arcade single
