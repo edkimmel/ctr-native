@@ -116,11 +116,18 @@
  *   NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS ticks after the commit.
  * - The agreement is reset on RELINK, RESTART_LOBBY, CLOSE_LINK,
  *   BEGIN_SELECT, BEGIN_REMATCH, RETURN_TO_TITLE, Enter, and Shutdown. The
- *   record carries no link epoch; a stale record cannot reach a new
- *   agreement because every reset leaves it inactive until the next relink
- *   READY, every relink link is a fresh one (Close empties the aux inbox and
- *   releases the old socket), and the READY-tick discard drops what arrived
- *   with the handshake completion.
+ *   record carries no link epoch. Every reset leaves the agreement inactive
+ *   until the next relink READY, and every relink link is a fresh one (Close
+ *   empties the aux inbox and releases the old socket). The peer resets its
+ *   agreement before it opens its new link and begins a new one only on the
+ *   new READY, so with in-order delivery every record of its old agreement
+ *   arrives before its new HELLO and is dropped by the HANDSHAKING link or
+ *   goes to a closed socket: in-order delivery rules out stale records. The
+ *   READY-tick discard is defence in depth against reordering within the
+ *   completing poll only: it drops what that one Poll read (at most
+ *   NATIVE_LOCKSTEP_PEER_LINK_POLL_BUDGET datagrams). The residual is a
+ *   reordered or delayed stale record read after that poll
+ *   (docs/RACE_LAUNCH_MILESTONE.md section 7, risk 1).
  *
  * The adapter itself reads the link every Tick, including during RACING:
  * the lobby poll drains arriving bundles into the session, and when that

@@ -532,8 +532,11 @@ static void NativeArcadeNetplay_BeginLaunch(struct NativeArcadeNetplay *netplay)
 /* Before the flow runs, while an agreement is active (RL-3): every aux
  * datagram is taken. It is accepted in SELECT_RESULT phase 2 (where it may
  * commit) or once committed (where only HEARD is watched), and discarded
- * unread otherwise. The agreement ignores and counts anything but a valid
- * launch record from the other role on its own digest; nothing fails. */
+ * unread otherwise. That last branch is defensive only and unreachable
+ * today: it needs an active PENDING agreement outside phase 2, and every
+ * exit from phase 2 either resets the agreement or needs a commit. The
+ * agreement ignores and counts anything but a valid launch record from the
+ * other role on its own digest; nothing fails. */
 static void NativeArcadeNetplay_DriveLaunch(struct NativeArcadeNetplay *netplay)
 {
 	struct NativeLockstepPeerLink *link;

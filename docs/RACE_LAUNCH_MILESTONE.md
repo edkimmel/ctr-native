@@ -612,16 +612,31 @@ completion.
 
 ### RL-S5 -- netplay launch agreement
 
-Status: done; review required. The netplay adapter now runs one launch
+Status: done (7268d1312); reviewed, no BLOCKER; two should-fixes and four
+nits closed in the follow-up commit. The netplay adapter now runs one launch
 agreement per relink lobby and reports launchStatus from it, replacing the
 RL-S4 transitional rule. The change also adds the RL-3 resets, the RL-4 linger,
-RL-6, the RL-2 asserts, and loopback cases 33a-33l (files:
+RL-6, the RL-2 asserts, and loopback cases 33a-33m (files:
 include/platform/native_arcade_netplay.h, platform/native_arcade_netplay.c,
 tests/native_arcade_netplay_test.c, the netplay and launch isolation tests,
 CMakeLists.txt). Deviation: the adapter discards the aux inbox on the relink
-READY tick before it begins the agreement, because otherwise a stale
-same-digest record queued behind the peer's new HELLO committed the new
-agreement at every reset point.
+READY tick before it begins the agreement. In-order delivery rules out stale
+records: a real adapter resets its agreement before it opens its new link
+and begins a new one only on the new READY, so every record of the old
+agreement arrives before its new HELLO and is dropped by the HANDSHAKING
+link or goes to a closed socket. (The loopback test peer sends a stale
+record after its new HELLO, which a real adapter never does; without the
+discard that record committed the new agreement.) The READY-tick discard is
+defence in depth against reordering within the completing poll: it covers
+only what that one Poll read, at most NATIVE_LOCKSTEP_PEER_LINK_POLL_BUDGET
+(16) datagrams. The residual is a reordered or delayed stale record read
+after that poll. In production a same-digest stale record needs a
+RESTART_LOBBY during phase 2 (the only reset that keeps the current config;
+RELINK, a rematch, and Enter change the digest through a new seed or select
+serial) plus network reordering or delay. The peer's new relink then
+proposed the same config byte for byte, held on both sides, and the worst
+case is a one-sided launch, whose rematch is REJECTED and both show
+OPPONENT LEFT, exactly as RL-7 traces.
 
 Plan: Review required. RL-1, RL-3, RL-4, RL-6: begin on relink
 READY, drain aux before the flow, send with linger, report launchStatus
@@ -725,7 +740,14 @@ docs/HANDOFF.md:51.
 1. Two generals (RL-7). A commit on one side with no record reaching the
    other side before its launch timeout (lost, late, or at the timeout
    edge, including a peer whose ticks run slower) launches one cabinet
-   alone. Fail-safe, not prevented.
+   alone. Fail-safe, not prevented. A stale launch record on the same
+   digest reaches the same end: in production it needs a RESTART_LOBBY
+   during phase 2 (the only reset that keeps the current config; RELINK, a
+   rematch, and Enter change the digest through a new seed or select
+   serial) plus network reordering or delay, the peer's new relink then
+   proposed the same config byte for byte, held on both sides, and the
+   worst case is a one-sided launch, whose rematch is REJECTED and both
+   show OPPONENT LEFT, exactly as RL-7 traces.
 2. Level loads delay link ticks. A race-track load is staged over
    rendered frames and the hook ticks the host on them, but ticks pause
    inside each synchronous file read (platform/native_cd.c:380-392) and

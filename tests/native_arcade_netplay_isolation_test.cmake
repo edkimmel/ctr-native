@@ -189,13 +189,19 @@ ctr_require_regex("platform/native_arcade_netplay.c (select record width == aux 
 # 7. A composed launch record fills exactly one peer-link aux datagram
 #    (docs/RACE_LAUNCH_MILESTONE.md RL-2): the launch module includes no
 #    transport header, so the adapter carries that static assert, and the
-#    ones tying the launch roles to the cabinet roles. The launch linger cap
-#    is frozen at 300 ticks (RL-4 launchLingerTicks).
+#    ones tying the launch roles to the cabinet roles, the launch configDigest
+#    width to the SHA-256 digest width, and the adapter's linger to the RL-4
+#    default. The launch linger cap is frozen at 300 ticks (RL-4
+#    launchLingerTicks).
 ctr_require_regex("platform/native_arcade_netplay.c (launch record width == aux width)" "${netplay_source}"
     "_Static_assert\\(NATIVE_ARCADE_LAUNCH_RECORD_V1_ENCODED_BYTES == NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES,")
 ctr_require_regex("platform/native_arcade_netplay.c (launch CAB1 role)" "${netplay_source}"
     "_Static_assert\\(NATIVE_ARCADE_LAUNCH_ROLE_CAB1 == \\(unsigned\\)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,")
 ctr_require_regex("platform/native_arcade_netplay.c (launch CAB2 role)" "${netplay_source}"
     "_Static_assert\\(NATIVE_ARCADE_LAUNCH_ROLE_CAB2 == \\(unsigned\\)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,")
+ctr_require_regex("platform/native_arcade_netplay.c (launch configDigest width == SHA-256 width)" "${netplay_source}"
+    "_Static_assert\\(NATIVE_ARCADE_LAUNCH_CONFIG_DIGEST_BYTES == NATIVE_SHA256_DIGEST_BYTES,")
+ctr_require_regex("platform/native_arcade_netplay.c (adapter linger == RL-4 default)" "${netplay_source}"
+    "_Static_assert\\(NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS == NATIVE_ARCADE_LAUNCH_DEFAULT_LINGER_TICKS,")
 ctr_require_regex("${netplay_header} (LAUNCH_LINGER_TICKS must stay 300u)" "${header}"
     "\n#define NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS 300u\r?\n")

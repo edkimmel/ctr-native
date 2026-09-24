@@ -157,6 +157,8 @@
 #define TEST_LAUNCH_STALE_REMATCH_B_PORT 48485u
 #define TEST_LAUNCH_STALE_TITLE_A_PORT 48486u
 #define TEST_LAUNCH_STALE_TITLE_B_PORT 48487u
+#define TEST_LAUNCH_FAULT_LINGER_A_PORT 48488u
+#define TEST_LAUNCH_FAULT_LINGER_B_PORT 48489u
 
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
@@ -5070,7 +5072,8 @@ static int TestLaunchStaleAcrossRelink(void)
  * digest of the next relink (the rematch select's resolved config). After a
  * symmetric first race, A is primed with a stale COMMITTED agreement on that
  * digest and gets a stale record in its inbox and one in its socket, first
- * on RESULTS before BEGIN_REMATCH, then on MATCH_FOUND before BEGIN_SELECT.
+ * on RESULTS before BEGIN_REMATCH, then on MATCH_FOUND before BEGIN_SELECT
+ * (where the rematch lobby's READY is shown to have begun no agreement).
  * Each resets the agreement (BEGIN_SELECT also empties the inbox; the
  * rematch opened a fresh link). At the next relink, a stale record on the
  * same digest behind the peer's HELLO is discarded on the READY tick, and
@@ -5128,6 +5131,10 @@ static int TestLaunchStaleAcrossRematchAndSelect(void)
 		selectB = selectB || (actionB == ACT_BEGIN_SELECT);
 	}
 	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND);
+	/* The rematch lobby's READY began no agreement: only a relink READY does. */
+	CHECK(g_a.lobbyReadySeen == 1u);
+	CHECK(g_a.relinked == 0u);
+	CHECK(AgreementIsReset(&g_a));
 	CHECK(PrimeAgreement(&g_a, digest));
 	CHECK(InjectAux(&g_a, stale));
 	CHECK(SendTo(&NativeArcadeNetplay_Link(&g_b)->transport, TEST_LAUNCH_STALE_REMATCH_A_PORT, stale, sizeof(stale)));
@@ -5248,6 +5255,86 @@ static int TestLaunchStaleAcrossCloseTitleEnter(void)
 	return 0;
 }
 
+/*
+ * 33m. RL-S5 (f), RL-4: a link fault ends the linger's sends. A commits on a
+ * record without HEARD and races, lingering: one HEARD record per tick. A
+ * junk bundle from the test peer then faults A's link (lobby PEER_LOST, LINK
+ * ERROR on RESULTS, the link kept open). From the tick whose poll faults it
+ * on, the agreement is still COMMITTED and still wants to send, but the link
+ * is not RUNNING, so no launch record is composed or sent.
+ */
+static int TestLaunchFaultDuringLinger(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	struct NativeLockstepPeerLink *link;
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint8_t junk[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	uint32_t sequenceTick;
+	uint32_t sentBeforeFault = 0u;
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &expected));
+	CHECK(NativeMatchConfigV1_Digest(&expected, digest) == 1);
+	CHECK(PairToSelectResult(&fixture, TEST_LAUNCH_FAULT_LINGER_A_PORT, TEST_LAUNCH_FAULT_LINGER_B_PORT));
+	CHECK(RelinkAloneToReady(TEST_LAUNCH_FAULT_LINGER_A_PORT, TEST_LAUNCH_FAULT_LINGER_B_PORT, &expected, NULL));
+	link = NativeArcadeNetplay_Link(&g_a);
+	CHECK(link != NULL);
+
+	/* The commit, then one lingering tick on RACING: two HEARD records. */
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, 0u, 1u));
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_START_RACE);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+	sequenceTick = g_a.launch.sequence;
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(g_a.launch.sequence == sequenceTick + 1u);
+	CHECK(NativeArcadeLaunch_ShouldSend(&g_a.launch) == 1);
+	CHECK(DrainHeardRecords(&g_peer.transport, digest, 2u) == 2u);
+
+	/* The fault: until a poll reads the junk bundle, A keeps sending; the
+	 * tick whose poll faults the link sends nothing. */
+	memset(junk, 0xEE, sizeof(junk));
+	CHECK(SendTo(&g_peer.transport, TEST_LAUNCH_FAULT_LINGER_A_PORT, junk, sizeof(junk)));
+	for (tick = 0; (tick < 10u) && (NativeLockstepPeerLink_Mode(link) != NATIVE_LOCKSTEP_PEER_LINK_FAULTED); tick++)
+	{
+		sequenceTick = g_a.launch.sequence;
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+		if (NativeLockstepPeerLink_Mode(link) == NATIVE_LOCKSTEP_PEER_LINK_FAULTED)
+		{
+			CHECK(g_a.launch.sequence == sequenceTick);
+		}
+		else
+		{
+			CHECK(g_a.launch.sequence == sequenceTick + 1u);
+			sentBeforeFault += 1u;
+		}
+	}
+	CHECK(NativeLockstepPeerLink_Mode(link) == NATIVE_LOCKSTEP_PEER_LINK_FAULTED);
+	CHECK(NativeArcadeNetplay_Link(&g_a) == link);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(DrainSized(&g_peer.transport, LAUNCH_BYTES, sentBeforeFault) == sentBeforeFault);
+
+	/* Still COMMITTED and inside the linger, yet nothing more is sent. */
+	sequenceTick = g_a.launch.sequence;
+	for (tick = 0; tick < 10u; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+		CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+		CHECK(NativeArcadeLaunch_ShouldSend(&g_a.launch) == 1);
+		CHECK(g_a.launch.sequence == sequenceTick);
+	}
+	CHECK(g_a.launch.ticksSinceCommit < NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
+	CHECK(DrainSized(&g_peer.transport, LAUNCH_BYTES, 0u) == 0u);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+
+	ClosePeer();
+	ShutdownBoth();
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestPure() == 0);
@@ -5294,6 +5381,7 @@ int main(void)
 	CHECK(TestLaunchStaleAcrossRelink() == 0);
 	CHECK(TestLaunchStaleAcrossRematchAndSelect() == 0);
 	CHECK(TestLaunchStaleAcrossCloseTitleEnter() == 0);
+	CHECK(TestLaunchFaultDuringLinger() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }
