@@ -172,6 +172,11 @@ void UI_DrawRankedDrivers(void)
 				// placeholder
 				Point pos;
 				pos.x = UI_RANK_ICON_OFFSCREEN_X;
+				// Original left pos.y uninitialized on the transitioning path and
+				// read it into iconPos below; UI_Lerp2D_Angular then overwrites
+				// iconPos fully, so the value was never drawn. This init only
+				// removes the uninitialized read.
+				pos.y = 0;
 
 				// icon not transitioning
 				if (*transitionTimer == 0)
