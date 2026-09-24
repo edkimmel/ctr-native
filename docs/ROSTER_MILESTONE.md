@@ -148,10 +148,15 @@ config. Step 3 must own these states at a defined point.
 
 Status (OC-4): functionally complete for both profiles. R-2 through R-6e
 (section 6) meet items 1-6 for TWO_CAB on one machine, and OC-1 through
-OC-3b (section 6) extend items 1-5 to ONE_CAB. The live roster proof
-(3.4) is the evidence for item 5: for TWO_CAB over 900 race ticks, for
-ONE_CAB only over the first 90 race ticks, which end before the green
-light (risk 13), so the ONE_CAB evidence covers the 1P setup and pre-green
+OC-3b (section 6) extend items 1-4 to ONE_CAB and item 5 in part. The
+live roster proof (3.4) is the evidence for item 5: for TWO_CAB over 900
+race ticks, covering same-seed identity, menu-history independence (runs
+C and E), and seed divergence. For ONE_CAB it covers same-seed identity
+and seed divergence only, over the setup and the first 90 race ticks,
+which end before the green light (risk 13): runs F-H all launch from the
+title at dwell 0, and ONE_CAB has no analogue of run C (demo-race launch)
+or run E (odd timer offset), so menu-history independence is unproven for
+ONE_CAB (risk 1). The ONE_CAB evidence is the 1P setup and pre-green
 determinism, not bot driving or 1P race physics. Networked launch
 (Task 7), the in-race lockstep drive (Task 8), and real two-cabinet
 evidence (steps 6-7) remain.
@@ -608,6 +613,11 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
     for the roster proof, and every other run keeps the retail-faithful
     catch-up pacing. It is not the linked-race answer: Task 8 must adopt
     deterministic VBlanks per tick (risk 7).
+
+RS-19..RS-24 are the implementation defaults chosen to carry out the
+owner's RS-1 decision; they are pending owner review, not owner decisions
+(risk 15).
+
 19. RS-19 (OC-1, eb5ef25ef): Each profile has its own bot-rules encoding
     and digest, and a config's botRulesDigest must be its own profile's:
     NativeArcadeBotRules_DigestV1 (TWO_CAB, 111 bytes, tag "CTRN arcade
@@ -854,7 +864,9 @@ eb5ef25ef, 30d5a1c71, and 164e34d2f: 133 of 133 passed each time. On
    close it only at the seeding point, so anything that consumes retail RNG
    between the seeding hook and the first lockstep tick must be identical
    on both cabinets (runs C and E of the live proof test this on one
-   machine).
+   machine for TWO_CAB). ONE_CAB has no C/E analogue: runs F-H all launch
+   from the title at dwell 0, so ONE_CAB menu-history independence is
+   untested.
 2. Boot-relative control counters are in the canonical control domain; two
    cabinets never share a boot history (RS-12). Run E of the live proof
    showed that gGT->timer parity feeds the simulation RNG: with an odd
@@ -965,4 +977,9 @@ eb5ef25ef, 30d5a1c71, and 164e34d2f: 133 of 133 passed each time. On
     WARPBALL_HELD clear), :482 (MainInit_Drivers), and :568 (the
     boolDemoMode check); and the facts isolation test's rule 7 regex lacks
     a left word boundary. OC-3b re-review: three optional nits in the
-    checker and the proof hook.
+    checker and the proof hook. OC-4 review: the header comments in
+    include/platform/native_arcade_bot_rules.h,
+    game/MAIN/MainArcadeRaceSetupPlan.h, and
+    include/platform/native_arcade_roster_proof.h call RS-19..RS-24
+    "owner decision(s)"; a later code-comment commit should reword them to
+    "defaults pending owner review" (section 4).

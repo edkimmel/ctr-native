@@ -36,7 +36,9 @@ Integration order:
    proven by the live roster proof (`arcade_roster_determinism`) on one
    machine; the single-cabinet runs are capped at 90 race ticks, before
    the green light, by a Debug-only run-time check failure in the retail 1P
-   HUD. See `docs/ROSTER_MILESTONE.md`. Networked launch through its seam
+   HUD, and prove same-seed identity and seed divergence but not
+   menu-history independence (no single-cabinet demo-race or timer-offset
+   run). See `docs/ROSTER_MILESTONE.md`. Networked launch through its seam
    is Task 7.
 4. Native lockstep protocol and virtual-network fault tests — protocol design
    and fault-tolerant session logic complete; a real socket transport,
