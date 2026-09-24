@@ -499,7 +499,7 @@ the two slow live tests.
    `game/UI/UI_Rank.c:173-199` reads `pos.y` uninitialized, and every 1P
    arcade race stops on an MSVC run-time check dialog at the first rank
    change. The value is render-only and not simulation state. Once it is
-   initialized (pending owner OK), remove the checker's `-OneCabTicks 90`
+   initialized (owner approved: fix retail bugs in place), remove the checker's `-OneCabTicks 90`
    cap so ONE_CAB runs F-H run 900 ticks, and add ONE_CAB variants of
    run C (demo-race launch) and run E (odd offset).
 2. Operator decisions: RS-1..RS-24 (`docs/ROSTER_MILESTONE.md`),
