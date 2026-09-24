@@ -522,7 +522,9 @@ The arcade-link and match-select screens play the retail menu sounds
 `docs/GAME_LOOP_UI_MILESTONE.md` section 3.1 await owner review). The owner
 accepted RS-1..RS-24, SEL-1..SEL-17, and UX-1..UX-11.
 
-1. Task 7, networked race launch through `MainArcadeRaceSetup`. It covers
+1. Task 7, networked race launch through `MainArcadeRaceSetup`, planned in
+   `docs/RACE_LAUNCH_MILESTONE.md` as slices RL-S1..RL-S11 (RL-S1, the plan,
+   is done; RL-1..RL-15 are its defaults). It covers
    asymmetric relink completion (`docs/MATCH_SELECT_MILESTONE.md`
    section 7), extending the setup isolation test's caller allow-list,
    disabling the pause-menu vibration toggle in linked races, and keeping
