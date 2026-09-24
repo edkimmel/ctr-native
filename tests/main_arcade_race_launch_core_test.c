@@ -704,14 +704,14 @@ static int TestWindowTimeout(uint32_t stage)
 }
 
 /* Should-fix 1: a WINDOW_TIMEOUT during a running load (stage OTHER) defers
- * the return step to the first stage IDLE frame (not a REQUESTED one); no
- * clear and no Disarm ever; the race is over on the return step's frame. */
+ * the return step to the first stage IDLE or REQUESTED frame (here IDLE; see
+ * TestDeferredReturnOnRequested for REQUESTED); no clear and no Disarm ever;
+ * the race is over on the return step's frame. */
 static int TestWindowTimeoutDeferred(void)
 {
 	struct Harness h;
 	Input start = StartOn(In(LVL_MENU, ST_OTHER, 1u, S_IDLE, 1u));
 	Input loading = In(LVL_MENU, ST_OTHER, 1u, S_IDLE, 1u);
-	Input requested = In(LVL_MENU, ST_REQ, 0u, S_IDLE, 1u);
 	Input levelIdle = In(LVL_OTHER, ST_IDLE, 0u, S_IDLE, 1u);
 	Output out;
 
@@ -723,7 +723,6 @@ static int TestWindowTimeoutDeferred(void)
 	CHECK(out.requestReturn == 0u && out.installPads == 0u && out.disarm == 0u);
 	CHECK(h.core.phase == P_ENDED && h.core.returnPending == 1u && h.core.disarmPending == 0u && h.core.padsInstalled == 0u);
 	RUN(Quiet(&h, &loading, 20u));
-	RUN(Quiet(&h, &requested, 2u));
 	RUN(Frame(&h, &levelIdle, R_NONE, &out));
 	CHECK(out.requestReturn == 1u && out.reportFailure == 0u && out.clearPads == 0u && out.disarm == 0u && out.installPads == 0u);
 	CHECK(h.core.phase == P_IDLE);
@@ -844,13 +843,14 @@ static int TestArmOrLaunchFailure(uint32_t result, uint32_t failure)
 
 /* Should-fix 1: the Arm/Launch failure's return step follows the loading
  * stage of its armAndLaunch frame: at once at REQUESTED, deferred to the
- * first stage IDLE frame at OTHER; the Disarm is at once either way, with
- * no clear. (Synthetic inputs, a window open during a load, so the core is
+ * first stage IDLE or REQUESTED frame at OTHER; the Disarm is at once either
+ * way, with no clear. (Synthetic inputs, a window open during a load, so the core is
  * driven directly rather than through the harness.) */
 static int TestArmOrLaunchFailureStage(uint32_t result, uint32_t stage)
 {
 	struct MainArcadeRaceLaunchCore core;
 	Input start = StartOn(TitleOpen(S_IDLE));
+	Input loading = In(LVL_MENU, ST_OTHER, 1u, S_IDLE, 1u);
 	Input requested = In(LVL_MENU, ST_REQ, 0u, S_IDLE, 1u);
 	Input menuIdle = In(LVL_MENU, ST_IDLE, 0u, S_IDLE, 1u);
 	Output out;
@@ -867,12 +867,18 @@ static int TestArmOrLaunchFailureStage(uint32_t result, uint32_t stage)
 		return 0;
 	}
 	CHECK(out.requestReturn == 0u && core.phase == P_ENDED && core.returnPending == 1u && core.disarmPending == 0u);
-	/* A REQUESTED frame does not release a deferred return step. */
-	CHECK(MainArcadeRaceLaunchCore_Step(&core, &requested, &out) == 1);
+	/* The load still runs: the return step stays owed. */
+	CHECK(MainArcadeRaceLaunchCore_Step(&core, &loading, &out) == 1);
 	CHECK(out.requestReturn == 0u && out.disarm == 0u && out.clearPads == 0u && out.reportFailure == 0u && out.raceNumber == 1u);
-	CHECK(MainArcadeRaceLaunchCore_Step(&core, &menuIdle, &out) == 1);
+	CHECK(core.returnPending == 1u);
+	/* A REQUESTED frame releases the deferred return step (after a
+	 * deferral only a main-menu request, such as the link's return to
+	 * title, sets the stage REQUESTED: race-launch risk 10). */
+	CHECK(MainArcadeRaceLaunchCore_Step(&core, &requested, &out) == 1);
 	CHECK(out.requestReturn == 1u && out.disarm == 0u && out.clearPads == 0u && out.installPads == 0u && out.reportFailure == 0u);
 	CHECK(core.phase == P_IDLE && core.raceNumber == 0u);
+	CHECK(MainArcadeRaceLaunchCore_Step(&core, &requested, &out) == 1);
+	CHECK(AllZero(&out, sizeof(out)));
 	CHECK(MainArcadeRaceLaunchCore_Step(&core, &menuIdle, &out) == 1);
 	CHECK(AllZero(&out, sizeof(out)));
 	return 0;
@@ -881,7 +887,8 @@ static int TestArmOrLaunchFailureStage(uint32_t result, uint32_t stage)
 /* ---- rule 3: VALIDATED and race tick 0 ---- */
 
 /* Rule 3: VALIDATE_TIMEOUT on frame 1800 after Launch, while the race load
- * still runs: the return step is deferred to the first stage IDLE frame. */
+ * still runs: the return step is deferred (to the first stage IDLE or
+ * REQUESTED frame). */
 static int TestValidateTimeout(void)
 {
 	struct Harness h;
@@ -1120,8 +1127,8 @@ static int TestDisarmOnlyOnIdleMainMenu(void)
 
 /* Slice text and rule 6: a FAILED setup during the staged race-track load
  * (stage OTHER) reports at once, defers the return step to the first stage
- * IDLE frame (no numPlyrNextGame or request before it), and clears the pads
- * only on a LOADING frame after that. */
+ * IDLE or REQUESTED frame, here IDLE (no numPlyrNextGame or request before
+ * it), and clears the pads only on a LOADING frame after that. */
 static int TestFailureDuringRaceLoad(void)
 {
 	struct Harness h;
@@ -1153,6 +1160,52 @@ static int TestFailureDuringRaceLoad(void)
 	RUN(Quiet(&h, &returnLoad, 10u));
 	RUN(Frame(&h, &menuIdle, R_NONE, &out));
 	CHECK(out.disarm == 1u);
+	CHECK(h.returns == 1u && h.clears == 1u && h.disarms == 1u);
+	return 0;
+}
+
+/* Race-launch risk 10 follow-up: the flow leaves RACING during the staged
+ * race-track load (stage OTHER), so the return step is owed; the link's own
+ * deferred return then requests the main-menu level on the first IDLE frame
+ * before this Step, so the core first sees the stage REQUESTED. The owed
+ * return step runs on that REQUESTED frame, once (the same request, before
+ * the main-menu load starts), never again during or after that load; then
+ * the clear on the load's first LOADING frame and the Disarm on the idle
+ * main-menu level. */
+static int TestDeferredReturnOnRequested(void)
+{
+	struct Harness h;
+	Input requested = In(LVL_MENU, ST_REQ, 0u, S_LAUNCHED, 1u);
+	Input loading = In(LVL_PLAN, ST_OTHER, 1u, S_SEEDED, 1u);
+	Input loadingLeft = In(LVL_PLAN, ST_OTHER, 1u, S_SEEDED, 0u);
+	Input raceLevelRequested = In(LVL_PLAN, ST_REQ, 0u, S_SEEDED, 0u);
+	Input returnLoad = In(LVL_MENU, ST_OTHER, 1u, S_FAILED, 0u);
+	Input menuIdle = In(LVL_MENU, ST_IDLE, 0u, S_FAILED, 0u);
+	Output out;
+
+	HarnessInit(&h);
+	RUN(LaunchNow(&h, 1u));
+	RUN(Quiet(&h, &requested, 1u));
+	RUN(Quiet(&h, &loading, 3u));
+	/* The end frame: off RACING mid-load, no report, the return step owed. */
+	RUN(Frame(&h, &loadingLeft, R_NONE, &out));
+	CHECK(out.requestReturn == 0u && out.reportFailure == 0u && out.reportFinished == 0u && out.installPads == 1u);
+	CHECK(h.core.phase == P_ENDED && h.core.returnPending == 1u);
+	RUN(QuietOut(&h, &loadingLeft, 10u, &out));
+	CHECK(out.installPads == 1u && h.core.returnPending == 1u);
+	/* The first frame the core sees after that load: REQUESTED. */
+	RUN(Frame(&h, &raceLevelRequested, R_NONE, &out));
+	CHECK(out.requestReturn == 1u && out.installPads == 1u && out.clearPads == 0u && out.disarm == 0u);
+	CHECK(h.core.returnPending == 0u && h.returns == 1u);
+	/* No second request, before or during the main-menu load. */
+	RUN(QuietOut(&h, &raceLevelRequested, 2u, &out));
+	CHECK(out.installPads == 1u);
+	RUN(Frame(&h, &returnLoad, R_NONE, &out));
+	CHECK(out.clearPads == 1u && out.installPads == 0u && out.requestReturn == 0u);
+	RUN(Quiet(&h, &returnLoad, 10u));
+	RUN(Frame(&h, &menuIdle, R_NONE, &out));
+	CHECK(out.disarm == 1u && out.requestReturn == 0u && h.core.phase == P_IDLE);
+	RUN(Quiet(&h, &menuIdle, 5u));
 	CHECK(h.returns == 1u && h.clears == 1u && h.disarms == 1u);
 	return 0;
 }
@@ -1440,8 +1493,8 @@ static int TestHeldStart(void)
  * no race number, and owes its own return step (should-fix 1). mode 0: the
  * Disarm first, the timeout on an idle frame (return at once, then idle).
  * mode 1: the timeout during a load (stage OTHER), before race 1's Disarm:
- * the return step waits for the first stage IDLE frame, and race 1's Disarm
- * follows on a later frame. mode 2: the same at stage REQUESTED: the return
+ * the return step waits for the first stage IDLE or REQUESTED frame (here
+ * IDLE), and race 1's Disarm follows on a later frame. mode 2: the same at stage REQUESTED: the return
  * step on the timeout frame. A Disarm never shares the timeout's frame. */
 static int TestHeldStartTimeout(int mode)
 {
@@ -1708,6 +1761,8 @@ int main(void)
 	if (TestDisarmOnlyOnIdleMainMenu() != 0)
 		return 1;
 	if (TestFailureDuringRaceLoad() != 0)
+		return 1;
+	if (TestDeferredReturnOnRequested() != 0)
 		return 1;
 	if (TestSetupFailedLater(0u) != 0)
 		return 1;

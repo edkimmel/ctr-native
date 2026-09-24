@@ -190,6 +190,15 @@ int MainArcadeLinkPolicy_Decide(const struct MainArcadeLinkPolicyInput *input, s
  * nothing, when pending is NULL. With neither returnAction nor *pending, it
  * returns 0 and *pending stays 0. Otherwise, a step is owed and:
  * - onMainMenuLevel: nothing to return from; *pending is cleared, returns 0.
+ *   Checked before the stage, so this also drops a RETURN_TO_TITLE during
+ *   the flag cover of a race-track load requested from the main menu
+ *   (Loading.stage LOAD_REQUESTED, -4, the race level queued): levelID is
+ *   still the main-menu level until LOAD_LevelFile sets it
+ *   (game/LOAD/LOAD_Level.c:43). That case relies on the race caller's
+ *   return step (MainArcadeRaceLaunchCore, owed because the flow left
+ *   RACING), which on that same frame sees LOAD_REQUESTED and requests the
+ *   main-menu level over the queued race level; without it the cabinet
+ *   would land on the race level.
  * - loadingStage IDLE or REQUESTED: *pending is cleared, returns 1.
  * - any other stage (a level load is running, so the request would overwrite
  *   its stage and numPlyrNextGame would change its read): *pending is set,

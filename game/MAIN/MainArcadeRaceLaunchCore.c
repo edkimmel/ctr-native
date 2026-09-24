@@ -35,9 +35,9 @@ static void MainArcadeRaceLaunchCore_Over(struct MainArcadeRaceLaunchCore *core)
 }
 
 /* A return step owed by an ended race: on this frame when no race-track load
- * is running (the stage IDLE or REQUESTED), else deferred to the first frame
- * with the stage IDLE. A race with no pads to clear and no Disarm due is over
- * on its return step's frame. */
+ * is running (the stage IDLE or REQUESTED), else deferred to the first later
+ * frame with the stage IDLE or REQUESTED. A race with no pads to clear and no
+ * Disarm due is over on its return step's frame. */
 static void MainArcadeRaceLaunchCore_Return(struct MainArcadeRaceLaunchCore *core, uint32_t loadingStage, struct MainArcadeRaceLaunchCoreOutput *output)
 {
 	if ((loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_IDLE) || (loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_REQUESTED))
@@ -140,10 +140,14 @@ static void MainArcadeRaceLaunchCore_StepEnded(struct MainArcadeRaceLaunchCore *
 	}
 	if (core->returnPending != 0u)
 	{
-		if (input->loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_IDLE)
-		{
-			MainArcadeRaceLaunchCore_Return(core, input->loadingStage, output);
-		}
+		/* An owed return step runs on the first frame with the stage IDLE or
+		 * REQUESTED (Return keeps it owed on OTHER). After a deferral the
+		 * stage only comes back to REQUESTED when something queued a new
+		 * load, and every such request on this path is the main-menu level
+		 * (the link's return to title, race-launch risk 10), so this frame's
+		 * request is the same one, before that load starts: one main-menu
+		 * load, never a second after it. */
+		MainArcadeRaceLaunchCore_Return(core, input->loadingStage, output);
 		return;
 	}
 

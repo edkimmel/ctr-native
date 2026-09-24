@@ -1691,6 +1691,19 @@ if(BUILD_TESTING)
     add_test(NAME main_arcade_race_launch_core_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_launch_core_isolation_test.cmake")
 
+    # The link's and the race caller's returns to title, interleaved in the
+    # live hook-then-caller order against a model of the retail load
+    # (race-launch risk 10): exactly one main-menu load per return.
+    add_executable(main_arcade_link_return_interleave_test tests/main_arcade_link_return_interleave_test.c)
+    set_target_properties(main_arcade_link_return_interleave_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(main_arcade_link_return_interleave_test PRIVATE ctr_native_arcade_link_policy
+        ctr_native_arcade_race_launch_core)
+    add_test(NAME main_arcade_link_return_interleave_unit COMMAND $<TARGET_FILE:main_arcade_link_return_interleave_test>)
+
     # R-5a2/R-5c: MainCanonicalDrivers_ExtractRosterInput and its pre-race
     # variant are named only by their own module, the live race setup adapter
     # (which must use the pre-race variant), and tests/.

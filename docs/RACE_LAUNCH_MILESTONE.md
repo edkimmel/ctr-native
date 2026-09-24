@@ -37,8 +37,10 @@ race-launch risk 10 fix (section 7). What Task 7 changed is recorded in
 sections 4 and 6; in particular START_RACE no longer aborts to the title
 (RL-S8b), and the vibration toggle cited last is guarded (RL-S9).
 
-- START_RACE logs the agreed match and aborts to the title
-  (game/MAIN/MainArcadeLink.c:339-351). No race reaches RACING today.
+- START_RACE logs the agreed match and aborts to the title. No race
+  reaches RACING today. (A statement about the code at 894788d2b: the
+  START_RACE branch, now game/MAIN/MainArcadeLink.c:339-351, still logs
+  the match but now hands the launch to the race caller.)
 - Each relink handshake completes independently per side
   (include/platform/native_lockstep_peer_link.h:95, :172), so one cabinet
   can reach START_RACE while the other times out to LINK ERROR. The aux
@@ -60,7 +62,8 @@ sections 4 and 6; in particular START_RACE no longer aborts to the title
   RACING counts as active, platform/native_arcade_link_host.c:248-259).
   The hook (game/MAIN/MainFrame_RenderFrame.c:80) would therefore already
   tick the host on race frames: MainArcadeLink_LinkTick runs only on owned
-  frames (before RL-S8a; game/MAIN/MainArcadeLink.c:447-471). On those
+  frames (before RL-S8a; game/MAIN/MainArcadeLink.c:447-471, and since
+  RL-S8a also on ticked race frames, :437-441). On those
   frames it would also clear every pad tap and hide the box (:455-462),
   reset the demo countdown (:480-483), and return 1 (:486), so the render
   frame clears the collected menu input with RECTMENU_ClearInput
@@ -353,20 +356,27 @@ MainRaceTrack_RequestLoad overwrites Loading.stage without checking it
 LOAD_LevelFile has already set levelID to the race level
 (game/LOAD/LOAD_Level.c:43). So both returns gate on the stage: each
 runs its return step (numPlyrNextGame 1 and the request) only when
-Loading.stage is LOAD_IDLE or LOAD_REQUESTED. Otherwise the caller
-defers the step to the first LOAD_IDLE frame, and the link's return to
-title (which checked only levelID until the race-launch risk 10 fix,
-section 7) defers it to the first LOAD_IDLE or LOAD_REQUESTED frame,
-dropping it if the level is by then the main-menu level
-(MainArcadeLinkPolicy_ReturnStep, applied by MainArcadeLink_ReturnStep,
-MainArcadeLink.c:313-319). The race level then initializes and the setup
+Loading.stage is LOAD_IDLE or LOAD_REQUESTED. Otherwise each defers its
+step to the first later LOAD_IDLE or LOAD_REQUESTED frame. The link's
+return to title (which checked only levelID until the race-launch risk
+10 fix, section 7) also drops it if the level is by then the main-menu
+level (MainArcadeLinkPolicy_ReturnStep, applied by
+MainArcadeLink_ReturnStep, MainArcadeLink.c:313-319); the caller's
+(MainArcadeRaceLaunchCore_StepEnded, MainArcadeRaceLaunchCore.c:141-152)
+does not look at the level. When both are deferred behind one race-track
+load, the link's runs first in the frame and requests the main-menu level
+on the first LOAD_IDLE frame, so the caller sees LOAD_REQUESTED and
+repeats that request on the same frame: one main-menu load, never a
+second one after it (tests/main_arcade_link_return_interleave_test.c).
+The race level then initializes and the setup
 ends VALIDATED or FAILED before the return load runs. Deferring
 numPlyrNextGame too keeps the race load's own read of it
 (game/LOAD/LOAD_TenStages.c:102) intact. RL-S7 tests a failure during
 the race load.
 
-Race frames are ticked, not owned. MainArcadeLink_LinkTick runs only on
-owned frames (MainArcadeLink.c:447-471), so the policy gains one input
+Race frames are ticked, not owned. MainArcadeLink_LinkTick ran only on
+owned frames before RL-S8a (MainArcadeLink.c:447-471; since RL-S8a it
+also runs on ticked race frames, :437-441), so the policy gains one input
 (the host flow is on RACING) and one output, tickOnly, each in a reserved
 byte of its struct. On a LINK frame with the flow on RACING and not on
 the idle main-menu level (a load in progress, or another level),
@@ -752,7 +762,8 @@ while the core keeps waiting. Interpretations:
 (a) every RL-11 path (ARM, LAUNCH, WINDOW_TIMEOUT, VALIDATE_TIMEOUT,
 RACE_TICK_TIMEOUT, SETUP_FAILED) runs the return step on the failure frame
 when Loading.stage is LOAD_IDLE or LOAD_REQUESTED, else on the first
-LOAD_IDLE frame; on WINDOW_TIMEOUT it is the recovery when the window stays
+later LOAD_IDLE or LOAD_REQUESTED frame (LOAD_IDLE only until the
+race-launch risk 10 follow-up, section 7); on WINDOW_TIMEOUT it is the recovery when the window stays
 closed (RETURN_TO_TITLE does not reload on the main-menu level: the
 RETURN_TO_TITLE branch of MainArcadeLink_LinkTick). No pad clear where
 none were installed (ARM, LAUNCH, WINDOW_TIMEOUT); an Arm/Launch failure still Disarms at once;
@@ -790,7 +801,8 @@ Launch frame; on the finish, on every RL-11 path, and when the flow
 leaves RACING otherwise, numPlyrNextGame 1 and the return request on
 that frame, and the clear only on the first later frame with LOADING set
 or the first idle main-menu frame; a failure during the race-track load
-defers the return step to the first LOAD_IDLE frame), the bounded-wait
+defers the return step to the first later LOAD_IDLE or LOAD_REQUESTED
+frame), the bounded-wait
 expiries, race tick 0 only on the plan's level, and the Disarm point
 (deferred to the idle main-menu frame; at once on an Arm or Launch
 failure at the title); a purity isolation test with the section 5 token
@@ -978,7 +990,8 @@ game/MAIN/MainArcadeRaceSetupPlan.h and game/MAIN/MainArcadeRaceSetupCore.h.
    and RECTMENU_ClearInput when the retail collect runs) while the retail
    race keeps running until the return load sets LOADING. The caller's
    return step on the frame it first sees the end (deferred to the first
-   LOAD_IDLE frame behind a race-track load) bounds this, and under the
+   later LOAD_IDLE or LOAD_REQUESTED frame behind a race-track load)
+   bounds this, and under the
    rehearsal the race reads only the neutral pads, so nothing is lost
    today. Task 8 must decide the frames between its real finish and the
    return load.
@@ -1015,3 +1028,30 @@ game/MAIN/MainArcadeRaceSetupPlan.h and game/MAIN/MainArcadeRaceSetupCore.h.
     the pads were cleared earlier or Task 8 changed the input source. The
     suggested fix, now made: request the load only at LOAD_IDLE or
     LOAD_REQUESTED, as the race caller's return step does.
+    Follow-up (review of that fix): when the flow left RACING during a
+    staged race-track load and RETURN_TO_TITLE arrived inside the same
+    load, both returns were deferred. The link's, serviced first in the
+    frame (MainArcadeLink.c:424), requested the main-menu level on the
+    first LOAD_IDLE frame; the caller's deferred step then accepted
+    LOAD_IDLE only, so it waited through that whole main-menu load and
+    requested a second one. The caller's owed step now also runs at
+    LOAD_REQUESTED (MainArcadeRaceLaunchCore_StepEnded,
+    game/MAIN/MainArcadeRaceLaunchCore.c:141-152): after a deferral the
+    stage is LOAD_REQUESTED again only when something queued a new load,
+    and every such request on this path is the main-menu level, so the
+    caller repeats the link's request on the same frame, before its load
+    starts, as the immediate paths already did. Both returns now defer to
+    the first later LOAD_IDLE or LOAD_REQUESTED frame; they differ only in
+    that the link's drops its step on the main-menu level. The
+    cross-module test main_arcade_link_return_interleave_unit
+    (tests/main_arcade_link_return_interleave_test.c) interleaves the two
+    in hook-then-caller order and requires exactly one main-menu load.
+    The drop has one case that relies on the caller: a RETURN_TO_TITLE
+    during the flag cover of a race-track load requested from the main
+    menu (Loading.stage LOAD_REQUESTED, the race level queued) is dropped,
+    because levelID is still the main-menu level until LOAD_LevelFile
+    sets it (game/LOAD/LOAD_Level.c:43). The race caller's return step,
+    owed on that same frame because the flow left RACING, sees
+    LOAD_REQUESTED and requests the main-menu level over the queued race
+    level; without it the cabinet would land on the race level
+    (MainArcadeLinkPolicy.h, MainArcadeLinkPolicy_ReturnStep).

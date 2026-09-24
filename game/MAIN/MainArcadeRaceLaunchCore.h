@@ -109,8 +109,13 @@
  *   mainMenuState MAIN_MENU_TITLE, then requests the main-menu level load):
  *   on the end frame when the loading stage is IDLE or REQUESTED, otherwise
  *   (a race-track load is running) on the first later frame with the stage
- *   IDLE. Exactly once per end. Nothing else of the end steps runs on the
- *   return step's frame.
+ *   IDLE or REQUESTED. After such a deferral the stage is REQUESTED again
+ *   only when something queued a new load, and on this path that is always
+ *   the main-menu level (the link's return to title,
+ *   docs/RACE_LAUNCH_MILESTONE.md race-launch risk 10), so the return step
+ *   then repeats that same-frame request before its load starts rather than
+ *   asking for a second main-menu load after it. Exactly once per end.
+ *   Nothing else of the end steps runs on the return step's frame.
  * - clearPads, only for a launched race (the pads were installed): never on
  *   the end frame and never before the return step's frame. On the first
  *   frame after the return step's frame with the LOADING bit set or that is
@@ -203,7 +208,7 @@ struct MainArcadeRaceLaunchCore
 	uint32_t waitTicks;      /* frames since the current wait's frame 0 */
 	uint32_t heldTicks;      /* frames since the held START_RACE */
 	uint8_t padsInstalled;   /* 1 from the Launch frame until the clear */
-	uint8_t returnPending;   /* 1 while a return step waits for the stage IDLE */
+	uint8_t returnPending;   /* 1 while a return step waits for the stage IDLE or REQUESTED */
 	uint8_t held;            /* 1 while a START_RACE waits for the ended race to be over */
 	uint8_t disarmPending;   /* 1 from the Launch frame until the Disarm */
 	uint8_t launchStage;     /* the loading stage of the last armAndLaunch frame */

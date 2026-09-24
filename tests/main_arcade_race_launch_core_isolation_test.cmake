@@ -18,8 +18,11 @@
 #     is named by exactly one CMake target, the library links nothing, and it
 #     is C17 with extensions off;
 #  5. it is never unity-included, and among the tests only its unit test
-#     links it; since RL-S8b ctr_native links it too (the live race caller,
-#     game/MAIN/MainArcadeRaceLaunch.c, drives it);
+#     links it, plus the pure cross-module return interleave test
+#     (main_arcade_link_return_interleave_test, race-launch risk 10), which
+#     links only it and the link policy; since RL-S8b ctr_native links it
+#     too (the live race caller, game/MAIN/MainArcadeRaceLaunch.c, drives
+#     it);
 #  6. the three RL-8/RL-10 bounds are defined literally, exactly once:
 #     launchWindowTimeoutTicks 900, launchValidateTimeoutTicks 1800, and
 #     launchRehearsalTicks 150; and the setup status mirrors match the order
@@ -200,7 +203,9 @@ if(NOT (properties_at LESS standard_at AND standard_at LESS required_at AND requ
     message(FATAL_ERROR "${prefix}: ${target} C17/no-extensions properties are out of order")
 endif()
 
-# 5. Never unity-included; the unit test links it, and no other test does.
+# 5. Never unity-included; the unit test links it, the pure return
+#    interleave test links it with the link policy and nothing else, and no
+#    other test does.
 ctr_read_source("game/game_unity.h" unity)
 ctr_forbid("game/game_unity.h" "${unity}" "MainArcadeRaceLaunchCore")
 string(REGEX MATCHALL "target_link_libraries\\([ \t\r\n]*[A-Za-z0-9_]+[^)]*\\)" all_link_calls "${cmake}")
@@ -214,8 +219,13 @@ foreach(link_call IN LISTS all_link_calls)
             set(linked_by_test 1)
         elseif(linking_target STREQUAL "ctr_native")
             set(linked_by_game 1)
+        elseif(linking_target STREQUAL "main_arcade_link_return_interleave_test")
+            string(REGEX REPLACE "[ \t\r\n]+" " " interleave_link_flat "${link_call}")
+            if(NOT interleave_link_flat STREQUAL "target_link_libraries(main_arcade_link_return_interleave_test PRIVATE ctr_native_arcade_link_policy ctr_native_arcade_race_launch_core)")
+                message(FATAL_ERROR "${prefix}: main_arcade_link_return_interleave_test must link only ctr_native_arcade_link_policy and ${target} (found '${interleave_link_flat}')")
+            endif()
         else()
-            message(FATAL_ERROR "${prefix}: ${linking_target} links ${target}; only main_arcade_race_launch_core_test (and ctr_native) may")
+            message(FATAL_ERROR "${prefix}: ${linking_target} links ${target}; only main_arcade_race_launch_core_test, main_arcade_link_return_interleave_test (and ctr_native) may")
         endif()
     endif()
 endforeach()

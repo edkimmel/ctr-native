@@ -941,8 +941,9 @@ ctr_require_order("${proof_source_path} (MainArcadeRosterProof_LeaveTitle)" "${p
 #      test) around it; the stage class maps LOAD_IDLE and LOAD_REQUESTED;
 #      the step is asked twice, with the action in the RETURN_TO_TITLE
 #      branch and without it in MainArcadeLink_Frame between the NULL guard
-#      and the gather; and no other game or platform source names the
-#      pending flag.
+#      and the gather; the hook names the pending flag only in its
+#      declaration and the gate call; and no other game or platform source
+#      names it.
 set(hook_helper_signature "static void MainArcadeLink_RequestReturn(struct GameTracker *gGT)")
 ctr_find_block("${hook_source_path}" "${hook_code}" "${hook_helper_signature}" hook_reload_begin hook_reload_end)
 math(EXPR hook_reload_length "${hook_reload_end} - ${hook_reload_begin} + 1")
@@ -990,6 +991,14 @@ ctr_require_order("${hook_source_path} (MainArcadeLink_Frame)" "${frame_block}"
     "${off_check}" "if ((gGT == NULL) || (gGS == NULL))" "MainArcadeLink_ReturnStep(gGT, 0u);"
     "MainArcadeLink_Gather(gGT, gGS, &input);" "MainArcadeLinkPolicy_Decide(&input, &output)")
 ctr_require_literal("${hook_source_path}" "${hook_code}" "static uint8_t s_mainArcadeLinkReturnPending;")
+# Only the gate writes the flag: the hook names it exactly twice, the
+# declaration and the &s_mainArcadeLinkReturnPending argument of the gate call
+# (pinned above), so no direct read or write can bypass the policy.
+string(REGEX MATCHALL "s_mainArcadeLinkReturnPending" hook_pending_names "${hook_code}")
+list(LENGTH hook_pending_names hook_pending_name_count)
+if(NOT hook_pending_name_count EQUAL 2)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must name s_mainArcadeLinkReturnPending exactly twice, its declaration and the MainArcadeLinkPolicy_ReturnStep argument (found ${hook_pending_name_count})")
+endif()
 file(GLOB_RECURSE pending_scan_paths
     "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/platform/*.c" "${repo}/platform/*.h" "${repo}/include/*.h")
 foreach(path IN LISTS pending_scan_paths)
