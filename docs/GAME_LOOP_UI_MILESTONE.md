@@ -485,7 +485,7 @@ GetAgreedMatch (track, laps, seed, and slot roles and characters of the
 agreed race config, for the START_RACE log), and, since Task 7
 (docs/RACE_LAUNCH_MILESTONE.md RL-S6), Racing (LINK mode with the flow on
 RACING), GetAgreedConfig (the exact agreed NativeMatchConfigV1 bytes, for
-Arm), and ReportRaceFailure (a local race failure ends RACING as RESULTS
+Arm), ReportRaceFailure (a local race failure ends RACING as RESULTS
 LINK ERROR), and Shutdown (Configure and Shutdown from main.c). The host
 also has AbortToTitle (close the link and return to screen OFF), which no
 game code calls since Task 7. docs/MATCH_SELECT_MILESTONE.md section 2.7 lists the select view
@@ -1063,7 +1063,9 @@ config, race plan, bot setup plan, and bank digests
 failure, or a bounded-wait expiry as a local RESULTS LINK ERROR through
 NativeArcadeLinkHost_ReportRaceFailure (RL-11, closing RS-10); returns to
 the main-menu level; and Disarms once per race on the first idle main-menu
-frame, so a rematch arms a second race in the same process. The
+frame (at once after an Arm or Launch failure at the title; nothing to
+Disarm after a window timeout), so a rematch arms a second race in the
+same process. The
 tests/main_arcade_race_setup_isolation_test.cmake allow-list names exactly
 this one new caller file, and the adapter still never calls _Disarm.
 Asymmetric relink completion is answered by the launch agreement

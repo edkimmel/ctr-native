@@ -577,8 +577,10 @@ overrode the TWO_CAB-only default.
     expiry ends the linked race locally as RESULTS LINK ERROR through
     NativeArcadeLinkHost_ReportRaceFailure (the peer is not told); the race
     caller logs the failure, returns to the main-menu level, clears the
-    rehearsal pads, and Disarms on the first idle main-menu frame (at once
-    after an Arm or Launch failure at the title).
+    rehearsal pads (no clear where none were installed: an Arm, Launch, or
+    window timeout failure), and Disarms on the first idle main-menu frame
+    (at once after an Arm or Launch failure at the title; nothing to
+    Disarm after a window timeout).
 11. RS-11: Setup state is game-owned static, never checkpointed, replayed,
     or canonical; quick states are disabled in proof mode.
 12. RS-12: Boot-relative control counters are not altered by the setup in
@@ -991,7 +993,7 @@ parallel (C and I about 264 s each, the other eight about 81 s).
    mid-race, and gameMode1 is canonical control state, so one cabinet
    toggling rumble would diverge the control digest. A CTR_NATIVE guard in
    the case 4-7 rows of PROCESSINPUTS_MainFreeze_MenuPtrOptions
-   (game/MAIN/MainFreeze.c, the write at :530) now skips the toggle while
+   (game/MAIN/MainFreeze.c) now skips the toggle while
    MainArcadeRaceSetup_Status() is not IDLE (a linked race, or the
    internal roster proof), pinned by
    main_freeze_vibration_guard_isolation. The confirm sound and the

@@ -363,8 +363,9 @@ the arcade-link screens and host adapter exist and are tested on top of it
   config, logs one line per validated race with the config, race plan,
   bot setup plan, and bank digests, reports an Arm, Launch, setup, or
   bounded-wait failure as a local race failure, returns to the main-menu
-  level after the race, and Disarms there. Until Task 8 the race is the
-  launch rehearsal: it runs on installed neutral pads, nobody drives it,
+  level after the race, and Disarms there (at once after an Arm or Launch
+  failure at the title; nothing to Disarm after a window timeout). Until
+  Task 8 the race is the launch rehearsal: it runs on installed neutral pads, nobody drives it,
   and 150 ticks after race tick 0 the caller reports it finished (RESULTS,
   RACE COMPLETE). While a race setup is not IDLE the pause-menu vibration
   toggle does nothing, and sound IDs stay out of cross-cabinet identity

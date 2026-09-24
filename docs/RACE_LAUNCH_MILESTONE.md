@@ -153,9 +153,13 @@ proven:
    game/MAIN/MainArcadeRaceLaunch.c (Arm, Launch, and Disarm once each),
    and the adapter defines MainArcadeRaceSetup_Disarm and never calls it.
 8. The hook and the race caller return before touching anything with the
-   host mode OFF (pinned by main_arcade_link_hook_isolation); the full
-   suite passed, 144/144, at e5279e31d from a clean tree, with a
-   non-skipped arcade_link_launch PASS (RL-S10).
+   host mode OFF (pinned by main_arcade_link_hook_isolation). Default
+   boot also keeps the RL-13 pause-menu vibration guard retail: the race
+   setup is IDLE, so the toggle runs (pinned by
+   main_freeze_vibration_guard_isolation). The RL-15 autopilot is
+   internal-only (main.c rejects the option outside CTR_INTERNAL builds)
+   and inert unless configured. The full suite passed, 144/144, at
+   e5279e31d from a clean tree, with a non-skipped arcade_link_launch PASS (RL-S10).
 
 Driving the race in lockstep is Task 8. Until Task 8 lands, a linked race
 is the launch rehearsal of RL-10: it loads and starts, but nobody drives
@@ -484,7 +488,7 @@ is the Task 8 V4 digests.
 RL-13 Pause-menu vibration toggle. While a race setup is not IDLE (a
 linked race), confirming a DualShock vibration row in the pause options
 (the case 4-7 rows of PROCESSINPUTS_MainFreeze_MenuPtrOptions in
-game/MAIN/MainFreeze.c, whose gameMode1 write is at :530 behind the guard)
+game/MAIN/MainFreeze.c, whose gameMode1 write sits behind the guard)
 changes nothing: the gameMode1 write is skipped, fixed in place with a
 minimal change and a comment. The
 analog-controller row stays retail (ROSTER risk 9). Pausing itself stays
@@ -512,7 +516,8 @@ after race 2, then exit with a result code. The autopilot never injects
 input through installed pads, which the rehearsal owns and clears
 (RL-10); it feeds the link host's own inputs instead (for example
 NativeArcadeLinkHost_Enter and the held menu buttons passed to
-NativeArcadeLinkHost_Tick, game/MAIN/MainArcadeLink.c:272-277).
+NativeArcadeLinkHost_Tick, in MainArcadeLink_LinkTick,
+game/MAIN/MainArcadeLink.c).
 tools/arcade-link-launch-check.ps1, run by a new ctest arcade_link_launch
 (Windows, label "live", RUN_SERIAL TRUE like the two existing live tests,
 arcade_link_preview_render and arcade_roster_determinism in
@@ -741,9 +746,9 @@ while the core keeps waiting. Interpretations:
 RACE_TICK_TIMEOUT, SETUP_FAILED) runs the return step on the failure frame
 when Loading.stage is LOAD_IDLE or LOAD_REQUESTED, else on the first
 LOAD_IDLE frame; on WINDOW_TIMEOUT it is the recovery when the window stays
-closed (RETURN_TO_TITLE does not reload on the main-menu level,
-game/MAIN/MainArcadeLink.c:303). No pad clear where none were installed
-(ARM, LAUNCH, WINDOW_TIMEOUT); an Arm/Launch failure still Disarms at once;
+closed (RETURN_TO_TITLE does not reload on the main-menu level: the
+RETURN_TO_TITLE branch of MainArcadeLink_LinkTick). No pad clear where
+none were installed (ARM, LAUNCH, WINDOW_TIMEOUT); an Arm/Launch failure still Disarms at once;
 WINDOW_TIMEOUT has nothing to Disarm. A held race's WINDOW_TIMEOUT owes its
 own return step, merged with one already pending, and the ended race's
 clear and Disarm count from it, so a Disarm never shares a frame with a
@@ -900,9 +905,12 @@ the progress bookkeeping, and the report), game/MAIN/MainArcadeLinkAutopilot.{c,
 the two autopilot calls in game/MAIN/MainArcadeLink.c, two read-only RL-12
 evidence getters in game/MAIN/MainArcadeRaceLaunch.{c,h}
 (MainArcadeRaceLaunch_ValidatedRaces and _LastValidated), the option in
-main.c, tools/arcade-link-launch-check.ps1,
-tests/native_arcade_link_autopilot_test.c, and
-tests/native_arcade_link_autopilot_isolation_test.cmake; ctests
+main.c, the unity entry in game/game_unity.h, the library and tests in
+CMakeLists.txt, tools/arcade-link-launch-check.ps1,
+tests/native_arcade_link_autopilot_test.c,
+tests/native_arcade_link_autopilot_isolation_test.cmake, and
+tests/main_arcade_link_hook_isolation_test.cmake (its include allow-list
+names the glue header); ctests
 native_arcade_link_autopilot_unit, native_arcade_link_autopilot_isolation,
 and arcade_link_launch (Windows, label live, RUN_SERIAL, SKIP_RETURN_CODE
 77, TIMEOUT 900). Deviations from RL-15: on owned LINK frames the
