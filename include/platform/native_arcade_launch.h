@@ -246,7 +246,8 @@ int NativeArcadeLaunch_ShouldSend(const struct NativeArcadeLaunchAgreement *agre
  */
 int NativeArcadeLaunch_Compose(struct NativeArcadeLaunchAgreement *agreement, uint8_t *out, size_t capacity, size_t *sizeOut);
 
-/* enum NativeArcadeLaunchStatus; PENDING for a NULL or inactive agreement. */
+/* enum NativeArcadeLaunchStatus; PENDING for a NULL or inactive agreement,
+ * and for any status byte other than COMMITTED. */
 uint32_t NativeArcadeLaunch_Status(const struct NativeArcadeLaunchAgreement *agreement);
 
 /* 1 when the agreement is non-NULL and active, else 0. */

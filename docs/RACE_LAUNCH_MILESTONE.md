@@ -557,8 +557,9 @@ commit.
 
 ### RL-S2 -- launch record codec and agreement state
 
-Status: done; review pending. Review required (wire format). The pure RL-2
-codec and the RL-3 commit state. Files: include/platform/native_arcade_launch.h,
+Status: done (1f28628bc); reviewed, no BLOCKER; two isolation-test
+should-fixes and four nits closed in the follow-up commit. Review required
+(wire format). The pure RL-2 codec and the RL-3 commit state. Files: include/platform/native_arcade_launch.h,
 platform/native_arcade_launch.c, tests/native_arcade_launch_test.c,
 tests/native_arcade_launch_isolation_test.cmake. The isolation test
 applies the section 5 token ban (lease acquire, activate, capture, and
@@ -608,7 +609,11 @@ OPPONENT LEFT); stale select records ignored; a commit at the timeout
 edge; no commit after CLOSE_LINK; a commit and a flow timeout on the same
 tick (the race starts); a lost HEARD running the linger to the cap;
 reordered and duplicated records; each reset point of RL-3; RESTART_LOBBY
-during phase 2.
+during phase 2. The record carries no link epoch, so a stale record with
+the same digest buffered across a reset would commit the new agreement;
+safety rests on RL-S5's reset points plus Close emptying the aux inbox,
+and the loopback tests cover a stale record arriving across each reset
+point.
 
 ### RL-S6 -- host API
 

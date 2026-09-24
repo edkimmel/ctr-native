@@ -8,20 +8,20 @@
 # codec header (platform/native_canonical_codec.h, which provides
 # NativeCodecWriter, NativeCodecReader, and NativeCodecDigest64); the library
 # links exactly ctr_native_canonical_codec; the target stays portable C17
-# with extensions off; ctr_native does not link it in this slice (RL-S5
-# wires it through the netplay adapter).
+# with extensions off; in this slice only the unit test links it, and
+# ctr_native does not (RL-S5 wires it through the netplay adapter).
 #
 # The token bans run twice: on the raw text (so comment prose stays clean
 # too), and, for the section 5 ban, on the code with every // and /* */
-# comment removed (each comment replaced by a space, as the C preprocessor
-# does), so the ban judges the code itself.
+# comment removed in one left-to-right pass (each comment replaced by a
+# space, as the C preprocessor does), so the ban judges the code itself.
 #
 # The structural rule: the wire format is frozen. The header must define the
 # magic 0x314C414E ("NAL1"), version 1, 64 encoded bytes, digest offset 56,
 # 32 config digest bytes, the roles, the HEARD flag, and the 300-tick default
-# linger literally, each exactly once, and the fault-cause enum values must
-# keep their numbers (append-only), so a change to any of them fails this
-# test.
+# linger literally, each exactly once, the fault-cause enum values must
+# keep their numbers (append-only), and the status values stay PENDING 0 and
+# COMMITTED 1, so a change to any of them fails this test.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade launch isolation")
@@ -49,39 +49,35 @@ function(ctr_require relative_path source term)
     endif()
 endfunction()
 
-# Removes every /* */ comment, then every // comment, replacing each with a
-# space. An unterminated /* is an error rather than a silent truncation.
+# Removes every /* */ and // comment in one left-to-right pass, replacing
+# each with a space: whichever comment opens first wins, so a /* inside a //
+# comment opens nothing and a // inside a /* */ comment ends nothing. A /*
+# left over afterwards opened a comment that never closed, which is an error
+# rather than a silent truncation.
 function(ctr_strip_comments label source out_var)
-    set(remaining "${source}")
-    set(stripped "")
-    while(TRUE)
-        string(FIND "${remaining}" "/*" open_at)
-        if(open_at EQUAL -1)
-            string(APPEND stripped "${remaining}")
-            break()
-        endif()
-        string(SUBSTRING "${remaining}" 0 ${open_at} before)
-        string(APPEND stripped "${before} ")
-        math(EXPR body_at "${open_at} + 2")
-        string(SUBSTRING "${remaining}" ${body_at} -1 remaining)
-        string(FIND "${remaining}" "*/" close_at)
-        if(close_at EQUAL -1)
-            message(FATAL_ERROR "${prefix}: unterminated /* comment in ${label}")
-        endif()
-        math(EXPR after_at "${close_at} + 2")
-        string(SUBSTRING "${remaining}" ${after_at} -1 remaining)
-    endwhile()
-    string(REGEX REPLACE "//[^\r\n]*" " " stripped "${stripped}")
+    string(REGEX REPLACE "/\\*[^*]*\\*+([^/*][^*]*\\*+)*/|//[^\r\n]*" " " stripped "${source}")
+    string(FIND "${stripped}" "/*" open_at)
+    if(NOT open_at EQUAL -1)
+        message(FATAL_ERROR "${prefix}: unterminated /* comment in ${label}")
+    endif()
     set(${out_var} "${stripped}" PARENT_SCOPE)
 endfunction()
 
 # 0. The comment stripper itself: comments go, code stays.
-ctr_strip_comments("self-check" "code1 /* Lease\n replay */ code2 // lease\ncode3 /**/code4" self_check)
+ctr_strip_comments("self-check" "code1 /* Lease\n replay */ code2 // lease\ncode3 /**/code4 /** x **/ code5 /* a // b */ code6" self_check)
 foreach(term IN ITEMS Lease lease replay "/*" "*/" "//")
     ctr_forbid("self-check" "${self_check}" "${term}" "stripped code")
 endforeach()
-foreach(term IN ITEMS code1 code2 code3 code4)
+foreach(term IN ITEMS code1 code2 code3 code4 code5 code6)
     ctr_require("self-check" "${self_check}" "${term}")
+endforeach()
+# A /* inside a // comment opens nothing: the code line after it survives.
+ctr_strip_comments("self-check" "a // x /*\nLease\n/* */ b" self_check)
+foreach(term IN ITEMS a Lease b)
+    ctr_require("self-check" "${self_check}" "${term}")
+endforeach()
+foreach(term IN ITEMS x "/*" "*/" "//")
+    ctr_forbid("self-check" "${self_check}" "${term}" "stripped code")
 endforeach()
 
 set(launch_header "include/platform/native_arcade_launch.h")
@@ -104,14 +100,23 @@ set(dependency_tokens
     NativeArcadeNetplay NativeMatchSelect countSounds CountSounds OtherFX)
 
 # 4. No topology lease, checkpoint, replay, or canonical state.
-set(state_tokens TopologyLease LOAD_Hub_ReadFile NativeReplay Checkpoint checkpoint NativeCanonicalState)
+set(state_tokens
+    TopologyLease LOAD_Hub_ReadFile NativeReplay Checkpoint checkpoint NativeCanonicalState
+    REPLAY CHECKPOINT)
 
 # 5. Section 5 ban, judged on the comment-free code: no topology-lease
 #    acquire, activate, capture, or publish token, and no checkpoint,
-#    replay, or NativeCanonical token.
+#    replay, or NativeCanonical token, in any of the three spellings. The
+#    upper-case forms cover the macros the one allowed external header
+#    exports (NATIVE_CANONICAL_REPLAY_FORMAT_VERSION and
+#    NATIVE_CANONICAL_STATE_SCHEMA_VERSION in
+#    platform/native_canonical_codec.h). The checks are case-sensitive, so
+#    the lower-case include path "platform/native_canonical_codec.h" does not
+#    trip NATIVE_CANONICAL.
 set(code_tokens
     TopologyLease topology_lease Lease lease Acquire Activate Capture Publish
-    Checkpoint checkpoint Replay replay NativeCanonical)
+    Checkpoint checkpoint Replay replay NativeCanonical
+    NATIVE_CANONICAL REPLAY CHECKPOINT LEASE ACQUIRE ACTIVATE CAPTURE PUBLISH)
 
 foreach(relative_path IN LISTS launch_files)
     ctr_read_source("${relative_path}" source)
@@ -184,6 +189,17 @@ foreach(cause IN LISTS fault_causes)
     math(EXPR value "${value} + 1")
 endforeach()
 
+# 8b. The agreement status values are frozen: PENDING 0, COMMITTED 1.
+set(value 0)
+foreach(status IN ITEMS PENDING COMMITTED)
+    string(REGEX MATCHALL "NATIVE_ARCADE_LAUNCH_${status} = ${value}[,\r\n]" found "${header}")
+    list(LENGTH found found_count)
+    if(NOT found_count EQUAL 1)
+        message(FATAL_ERROR "${prefix}: NATIVE_ARCADE_LAUNCH_${status} must be declared exactly once as ${value} (frozen status enum)")
+    endif()
+    math(EXPR value "${value} + 1")
+endforeach()
+
 ctr_read_source("CMakeLists.txt" cmake)
 
 # 9. ctr_native_arcade_launch links exactly ctr_native_canonical_codec, in
@@ -236,3 +252,26 @@ foreach(game_link_call IN LISTS game_link_calls)
         message(FATAL_ERROR "${prefix}: ctr_native must not link ${target}")
     endif()
 endforeach()
+
+#     Nothing but the unit test links the module either: the only
+#     target_link_libraries call naming ${target} as a dependency is
+#     native_arcade_launch_test's. RL-S5 relaxes this for the netplay
+#     library (ctr_native_arcade_netplay).
+set(unit_test_target native_arcade_launch_test)
+string(REGEX MATCHALL "target_link_libraries\\([^)]*\\)" all_link_calls "${cmake}")
+set(dependents "")
+foreach(any_link_call IN LISTS all_link_calls)
+    string(REGEX REPLACE "^target_link_libraries\\([ \t\r\n]*" "" any_link_body "${any_link_call}")
+    string(REGEX REPLACE "\\)$" "" any_link_body "${any_link_body}")
+    string(REGEX REPLACE "[ \t\r\n]+" ";" any_link_items "${any_link_body}")
+    list(REMOVE_ITEM any_link_items "")
+    list(GET any_link_items 0 linking_target)
+    list(REMOVE_AT any_link_items 0)
+    list(FIND any_link_items "${target}" dependency_at)
+    if(NOT dependency_at EQUAL -1)
+        list(APPEND dependents "${linking_target}")
+    endif()
+endforeach()
+if(NOT "${dependents}" STREQUAL "${unit_test_target}")
+    message(FATAL_ERROR "${prefix}: only ${unit_test_target} may link ${target} in this slice (found '${dependents}')")
+endif()

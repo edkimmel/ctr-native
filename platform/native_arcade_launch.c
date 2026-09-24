@@ -351,7 +351,9 @@ uint32_t NativeArcadeLaunch_Status(const struct NativeArcadeLaunchAgreement *agr
 	{
 		return NATIVE_ARCADE_LAUNCH_PENDING;
 	}
-	return agreement->status;
+	/* Only an exact COMMITTED byte commits; any other value reads PENDING. */
+	return (agreement->status == NATIVE_ARCADE_LAUNCH_COMMITTED) ? (uint32_t)NATIVE_ARCADE_LAUNCH_COMMITTED
+	                                                             : (uint32_t)NATIVE_ARCADE_LAUNCH_PENDING;
 }
 
 int NativeArcadeLaunch_Active(const struct NativeArcadeLaunchAgreement *agreement)

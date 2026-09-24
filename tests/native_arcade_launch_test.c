@@ -640,6 +640,10 @@ static int TestBegin(void)
 	struct NativeArcadeLaunchAgreement before;
 	uint8_t digest[DIGEST_BYTES];
 
+	/* The status values are frozen. */
+	CHECK(NATIVE_ARCADE_LAUNCH_PENDING == 0);
+	CHECK(NATIVE_ARCADE_LAUNCH_COMMITTED == 1);
+
 	MakeDigest(digest, 0x40u);
 	memset(&agreement, 0xA5, sizeof(agreement));
 	before = agreement;
@@ -843,6 +847,38 @@ static int TestIgnoredRecords(void)
 	CraftRecord(bytes, NATIVE_ARCADE_LAUNCH_ROLE_CAB2, 0u, 1u, digest);
 	CHECK(NativeArcadeLaunch_Accept(&a, bytes, RECORD_BYTES) == NATIVE_ARCADE_LAUNCH_ACCEPT_ACCEPTED);
 	CHECK(a.status == NATIVE_ARCADE_LAUNCH_COMMITTED);
+
+	/* After the commit, a SELF record with HEARD, a MISMATCH record with
+	 * HEARD, and a HEARD record with a bad trailer are still ignored and
+	 * counted: none sets peerHeard or restarts the linger clock. */
+	NativeArcadeLaunch_Tick(&a);
+	NativeArcadeLaunch_Tick(&a);
+	CHECK(a.ticksSinceCommit == 2u);
+	{
+		uint32_t selfBefore = a.selfCount;
+		uint32_t mismatchBefore = a.mismatchCount;
+		uint32_t malformedBefore = a.malformedCount;
+		uint32_t acceptedBefore = a.acceptedCount;
+		uint32_t foreignBefore = a.foreignCount;
+
+		CraftRecord(bytes, NATIVE_ARCADE_LAUNCH_ROLE_CAB1, NATIVE_ARCADE_LAUNCH_FLAG_HEARD, 2u, digest);
+		CHECK(NativeArcadeLaunch_Accept(&a, bytes, RECORD_BYTES) == NATIVE_ARCADE_LAUNCH_ACCEPT_SELF);
+		CraftRecord(bytes, NATIVE_ARCADE_LAUNCH_ROLE_CAB2, NATIVE_ARCADE_LAUNCH_FLAG_HEARD, 2u, other);
+		CHECK(NativeArcadeLaunch_Accept(&a, bytes, RECORD_BYTES) == NATIVE_ARCADE_LAUNCH_ACCEPT_MISMATCH);
+		CraftRecord(bytes, NATIVE_ARCADE_LAUNCH_ROLE_CAB2, NATIVE_ARCADE_LAUNCH_FLAG_HEARD, 2u, digest);
+		bytes[RECORD_BYTES - 1u] ^= 0x01u;
+		CHECK(NativeArcadeLaunch_Accept(&a, bytes, RECORD_BYTES) == NATIVE_ARCADE_LAUNCH_ACCEPT_MALFORMED);
+
+		CHECK(a.status == NATIVE_ARCADE_LAUNCH_COMMITTED);
+		CHECK(a.peerHeard == 0u);
+		CHECK(a.ticksSinceCommit == 2u);
+		CHECK(a.selfCount == selfBefore + 1u);
+		CHECK(a.mismatchCount == mismatchBefore + 1u);
+		CHECK(a.malformedCount == malformedBefore + 1u);
+		CHECK(a.acceptedCount == acceptedBefore);
+		CHECK(a.foreignCount == foreignBefore);
+		CHECK(NativeArcadeLaunch_ShouldSend(&a) == 1);
+	}
 	return 0;
 }
 
@@ -1072,6 +1108,11 @@ static int TestReset(void)
 	NativeArcadeLaunch_Tick(&a);
 	CHECK(a.ticksSinceCommit == 0u);
 	CHECK(NativeArcadeLaunch_ShouldSend(&a) == 0);
+
+	/* An active agreement with a corrupted status byte reports PENDING. */
+	CHECK(NativeArcadeLaunch_Begin(&a, NATIVE_ARCADE_LAUNCH_ROLE_CAB1, digest, 10u));
+	a.status = 7u;
+	CHECK(NativeArcadeLaunch_Status(&a) == NATIVE_ARCADE_LAUNCH_PENDING);
 	return 0;
 }
 
