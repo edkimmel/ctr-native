@@ -15,59 +15,90 @@ static int MainArcadeRaceLaunchCore_IdleMainMenu(const struct MainArcadeRaceLaun
 	return (input->onMainMenuLevel != 0u) && (input->loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_IDLE) && (input->loadingBit == 0u);
 }
 
-/* The end frame of a launched race: the return step now when no race-track
- * load is running, else deferred to the first frame with the stage IDLE. */
-static void MainArcadeRaceLaunchCore_End(struct MainArcadeRaceLaunchCore *core, const struct MainArcadeRaceLaunchCoreInput *input,
-                                         struct MainArcadeRaceLaunchCoreOutput *output)
+/* The race is over: the core is idle again, or a held START_RACE takes over
+ * its window wait, which is checked from the next frame. */
+static void MainArcadeRaceLaunchCore_Over(struct MainArcadeRaceLaunchCore *core)
 {
-	core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_ENDED;
-	core->waitTicks = 0u;
-	if ((input->loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_IDLE) || (input->loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_REQUESTED))
+	core->returnPending = 0u;
+	core->raceNumber = 0u;
+	if (core->held != 0u)
+	{
+		core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_WAIT_WINDOW;
+		core->waitTicks = core->heldTicks;
+		core->held = 0u;
+	}
+	else
+	{
+		core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_IDLE;
+		core->waitTicks = 0u;
+	}
+}
+
+/* A return step owed by an ended race: on this frame when no race-track load
+ * is running (the stage IDLE or REQUESTED), else deferred to the first frame
+ * with the stage IDLE. A race with no pads to clear and no Disarm due is over
+ * on its return step's frame. */
+static void MainArcadeRaceLaunchCore_Return(struct MainArcadeRaceLaunchCore *core, uint32_t loadingStage, struct MainArcadeRaceLaunchCoreOutput *output)
+{
+	if ((loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_IDLE) || (loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_REQUESTED))
 	{
 		output->requestReturn = 1u;
 		core->returnPending = 0u;
-		core->returnDone = 1u;
+		if ((core->padsInstalled == 0u) && (core->disarmPending == 0u))
+		{
+			MainArcadeRaceLaunchCore_Over(core);
+		}
 	}
 	else
 	{
 		core->returnPending = 1u;
-		core->returnDone = 0u;
 	}
 }
 
-/* An RL-11 failure of a launched race. */
-static void MainArcadeRaceLaunchCore_Fail(struct MainArcadeRaceLaunchCore *core, const struct MainArcadeRaceLaunchCoreInput *input,
-                                          struct MainArcadeRaceLaunchCoreOutput *output, uint32_t failure)
+/* The end frame of a race: the return step, then the clear and the Disarm on
+ * later frames (MainArcadeRaceLaunchCore_StepEnded). */
+static void MainArcadeRaceLaunchCore_End(struct MainArcadeRaceLaunchCore *core, uint32_t loadingStage, struct MainArcadeRaceLaunchCoreOutput *output)
+{
+	core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_ENDED;
+	core->waitTicks = 0u;
+	core->returnPending = 0u;
+	MainArcadeRaceLaunchCore_Return(core, loadingStage, output);
+}
+
+/* An RL-11 failure: report it and end the race. */
+static void MainArcadeRaceLaunchCore_Fail(struct MainArcadeRaceLaunchCore *core, uint32_t loadingStage, struct MainArcadeRaceLaunchCoreOutput *output,
+                                          uint32_t failure)
 {
 	output->reportFailure = 1u;
 	output->failure = failure;
-	MainArcadeRaceLaunchCore_End(core, input, output);
+	MainArcadeRaceLaunchCore_End(core, loadingStage, output);
 }
 
-/* The window wait: launch on an open window, else fail on the bound. Nothing
- * was armed yet, so a failure only reports and the core is idle again. */
+/* The window wait: launch on an open window (the launch number is taken
+ * here), else fail on the bound. Nothing is armed or installed before the
+ * launch, so a WINDOW_TIMEOUT owes the return step only. */
 static void MainArcadeRaceLaunchCore_TryWindow(struct MainArcadeRaceLaunchCore *core, const struct MainArcadeRaceLaunchCoreInput *input,
                                                struct MainArcadeRaceLaunchCoreOutput *output)
 {
-	output->raceNumber = core->raceNumber;
 	if (input->titleWindowOpen != 0u)
 	{
+		core->launches++;
+		core->raceNumber = core->launches;
+		core->launchStage = (uint8_t)input->loadingStage;
+		output->raceNumber = core->raceNumber;
 		output->armAndLaunch = 1u;
 		core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_LAUNCH_RESULT;
 		return;
 	}
 	if (core->waitTicks >= MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_WINDOW_TIMEOUT_TICKS)
 	{
-		output->reportFailure = 1u;
-		output->failure = MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_WINDOW_TIMEOUT;
-		core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_IDLE;
-		core->raceNumber = 0u;
-		core->waitTicks = 0u;
+		output->raceNumber = 0u;
+		MainArcadeRaceLaunchCore_Fail(core, input->loadingStage, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_WINDOW_TIMEOUT);
 	}
 }
 
-/* An ended race: the held START_RACE, then the deferred return step, the
- * pad clear, and the Disarm. */
+/* An ended race: the held START_RACE, then the (deferred) return step, the
+ * pad clear, and the Disarm. Nothing else runs on a return step's frame. */
 static void MainArcadeRaceLaunchCore_StepEnded(struct MainArcadeRaceLaunchCore *core, const struct MainArcadeRaceLaunchCoreInput *input,
                                                struct MainArcadeRaceLaunchCoreOutput *output)
 {
@@ -84,28 +115,34 @@ static void MainArcadeRaceLaunchCore_StepEnded(struct MainArcadeRaceLaunchCore *
 			core->heldTicks++;
 			if (core->heldTicks >= MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_WINDOW_TIMEOUT_TICKS)
 			{
+				/* The held race never launched, so it has no number. Its
+				 * return step merges with one already pending. */
 				output->reportFailure = 1u;
 				output->failure = MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_WINDOW_TIMEOUT;
-				output->raceNumber = core->heldRaceNumber;
+				output->raceNumber = 0u;
 				core->held = 0u;
+				if (core->returnPending == 0u)
+				{
+					MainArcadeRaceLaunchCore_Return(core, input->loadingStage, output);
+				}
 			}
 		}
 	}
-	else if ((input->startRace != 0u) && (input->hostRacing != 0u))
+	else if (input->startRace != 0u)
 	{
-		core->startedRaces++;
-		core->heldRaceNumber = core->startedRaces;
 		core->heldTicks = 0u;
 		core->held = 1u;
 	}
 
-	if (core->returnDone == 0u)
+	if (output->requestReturn != 0u)
 	{
-		if ((core->returnPending != 0u) && (input->loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_IDLE))
+		return;
+	}
+	if (core->returnPending != 0u)
+	{
+		if (input->loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_IDLE)
 		{
-			output->requestReturn = 1u;
-			core->returnPending = 0u;
-			core->returnDone = 1u;
+			MainArcadeRaceLaunchCore_Return(core, input->loadingStage, output);
 		}
 		return;
 	}
@@ -116,27 +153,18 @@ static void MainArcadeRaceLaunchCore_StepEnded(struct MainArcadeRaceLaunchCore *
 		output->clearPads = 1u;
 		core->padsInstalled = 0u;
 	}
-	if (idleMainMenu == 0)
+	if (core->disarmPending != 0u)
 	{
-		return;
+		if (idleMainMenu == 0)
+		{
+			return;
+		}
+		output->disarm = 1u;
+		core->disarmPending = 0u;
 	}
-	output->disarm = 1u;
-	core->returnDone = 0u;
-	core->returnPending = 0u;
-	core->waitTicks = 0u;
-	if (core->held != 0u)
+	if (core->padsInstalled == 0u)
 	{
-		/* The held race takes over its window wait; the window is checked
-		 * from the next frame, after this Disarm. */
-		core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_WAIT_WINDOW;
-		core->raceNumber = core->heldRaceNumber;
-		core->waitTicks = core->heldTicks;
-		core->held = 0u;
-	}
-	else
-	{
-		core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_IDLE;
-		core->raceNumber = 0u;
+		MainArcadeRaceLaunchCore_Over(core);
 	}
 }
 
@@ -166,6 +194,17 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 	{
 		return 0;
 	}
+	if ((input->startRace > 1u) || (input->hostRacing > 1u) || (input->titleWindowOpen > 1u) || (input->onMainMenuLevel > 1u) || (input->onPlanLevel > 1u) ||
+	    (input->loadingBit > 1u))
+	{
+		return 0;
+	}
+	/* START_RACE enters RACING on the same host tick, so hostRacing sampled
+	 * after that tick is 1; anything else is a caller error. */
+	if ((input->startRace != 0u) && (input->hostRacing == 0u))
+	{
+		return 0;
+	}
 
 	status = input->setupStatus;
 	output->raceNumber = core->raceNumber;
@@ -173,10 +212,9 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 	{
 	case MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_IDLE:
 	{
-		if ((input->startRace != 0u) && (input->hostRacing != 0u))
+		if (input->startRace != 0u)
 		{
-			core->startedRaces++;
-			core->raceNumber = core->startedRaces;
+			core->raceNumber = 0u;
 			core->waitTicks = 0u;
 			core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_WAIT_WINDOW;
 			MainArcadeRaceLaunchCore_TryWindow(core, input, output);
@@ -187,7 +225,8 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 	{
 		if (input->hostRacing == 0u)
 		{
-			/* Quiet abort: nothing armed, nothing to return from. */
+			/* Quiet abort, checked before the bound: nothing armed, nothing
+			 * to return from. */
 			core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_IDLE;
 			core->raceNumber = 0u;
 			core->waitTicks = 0u;
@@ -201,7 +240,7 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 	{
 		if (input->hostRacing == 0u)
 		{
-			MainArcadeRaceLaunchCore_End(core, input, output);
+			MainArcadeRaceLaunchCore_End(core, input->loadingStage, output);
 			break;
 		}
 		core->waitTicks++;
@@ -213,11 +252,11 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 		}
 		else if ((status != MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_LAUNCHED) && (status != MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_SEEDED))
 		{
-			MainArcadeRaceLaunchCore_Fail(core, input, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_SETUP_FAILED);
+			MainArcadeRaceLaunchCore_Fail(core, input->loadingStage, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_SETUP_FAILED);
 		}
 		else if (core->waitTicks >= MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_VALIDATE_TIMEOUT_TICKS)
 		{
-			MainArcadeRaceLaunchCore_Fail(core, input, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_VALIDATE_TIMEOUT);
+			MainArcadeRaceLaunchCore_Fail(core, input->loadingStage, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_VALIDATE_TIMEOUT);
 		}
 		break;
 	}
@@ -225,13 +264,13 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 	{
 		if (input->hostRacing == 0u)
 		{
-			MainArcadeRaceLaunchCore_End(core, input, output);
+			MainArcadeRaceLaunchCore_End(core, input->loadingStage, output);
 			break;
 		}
 		core->waitTicks++;
 		if (status != MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_VALIDATED)
 		{
-			MainArcadeRaceLaunchCore_Fail(core, input, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_SETUP_FAILED);
+			MainArcadeRaceLaunchCore_Fail(core, input->loadingStage, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_SETUP_FAILED);
 		}
 		else if ((input->onPlanLevel != 0u) && (input->loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_IDLE) && (input->loadingBit == 0u))
 		{
@@ -241,7 +280,7 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 		}
 		else if (core->waitTicks >= MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_VALIDATE_TIMEOUT_TICKS)
 		{
-			MainArcadeRaceLaunchCore_Fail(core, input, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_RACE_TICK_TIMEOUT);
+			MainArcadeRaceLaunchCore_Fail(core, input->loadingStage, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_RACE_TICK_TIMEOUT);
 		}
 		break;
 	}
@@ -249,18 +288,18 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 	{
 		if (input->hostRacing == 0u)
 		{
-			MainArcadeRaceLaunchCore_End(core, input, output);
+			MainArcadeRaceLaunchCore_End(core, input->loadingStage, output);
 			break;
 		}
 		core->waitTicks++;
 		if (status != MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_VALIDATED)
 		{
-			MainArcadeRaceLaunchCore_Fail(core, input, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_SETUP_FAILED);
+			MainArcadeRaceLaunchCore_Fail(core, input->loadingStage, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_SETUP_FAILED);
 		}
 		else if (core->waitTicks >= MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_REHEARSAL_TICKS)
 		{
 			output->reportFinished = 1u;
-			MainArcadeRaceLaunchCore_End(core, input, output);
+			MainArcadeRaceLaunchCore_End(core, input->loadingStage, output);
 		}
 		break;
 	}
@@ -281,6 +320,8 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 
 int MainArcadeRaceLaunchCore_LaunchResult(struct MainArcadeRaceLaunchCore *core, uint32_t result, struct MainArcadeRaceLaunchCoreOutput *output)
 {
+	uint32_t failure;
+
 	if ((core == NULL) || (output == NULL) || (core->phase != MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_LAUNCH_RESULT))
 	{
 		return 0;
@@ -290,24 +331,30 @@ int MainArcadeRaceLaunchCore_LaunchResult(struct MainArcadeRaceLaunchCore *core,
 		output->leaveTitle = 1u;
 		output->installPads = 1u;
 		core->padsInstalled = 1u;
+		core->disarmPending = 1u;
 		core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_WAIT_VALIDATED;
 		core->waitTicks = 0u;
 		return 1;
 	}
-	if ((result != MAIN_ARCADE_RACE_LAUNCH_CORE_RESULT_ARM_FAILED) && (result != MAIN_ARCADE_RACE_LAUNCH_CORE_RESULT_LAUNCH_FAILED))
+	if (result == MAIN_ARCADE_RACE_LAUNCH_CORE_RESULT_ARM_FAILED)
+	{
+		failure = MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_ARM;
+	}
+	else if (result == MAIN_ARCADE_RACE_LAUNCH_CORE_RESULT_LAUNCH_FAILED)
+	{
+		failure = MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_LAUNCH;
+	}
+	else
 	{
 		return 0;
 	}
-	/* The RL-9 exception: Disarm at once at the title. Nothing left the
-	 * title and no pads were installed, so no return and no clear. */
-	output->reportFailure = 1u;
-	output->failure =
-	    (result == MAIN_ARCADE_RACE_LAUNCH_CORE_RESULT_ARM_FAILED) ? MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_ARM : MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_LAUNCH;
+	/* The RL-9 exception: Disarm at once at the title. No pads were
+	 * installed, so no clear. The return step as for every RL-11 failure,
+	 * against the loading stage of this (the armAndLaunch) frame. */
 	output->raceNumber = core->raceNumber;
 	output->disarm = 1u;
-	core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_IDLE;
-	core->raceNumber = 0u;
-	core->waitTicks = 0u;
+	core->disarmPending = 0u;
+	MainArcadeRaceLaunchCore_Fail(core, core->launchStage, output, failure);
 	return 1;
 }
 

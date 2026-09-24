@@ -688,18 +688,48 @@ NativeMatchConfigV1 and the allow-list is unchanged.
 
 ### RL-S7 -- race launch decision core
 
-Status: done; review required. game/MAIN/MainArcadeRaceLaunchCore.{c,h},
+Status: done (3b9e2d1fe); reviewed, no BLOCKER; two should-fixes and the
+nits closed in the follow-up commit. game/MAIN/MainArcadeRaceLaunchCore.{c,h},
 library ctr_native_arcade_race_launch_core (links nothing, not yet linked
 into ctr_native, never unity-included), with ctests
 main_arcade_race_launch_core_unit (tests/main_arcade_race_launch_core_test.c)
 and main_arcade_race_launch_core_isolation (purity, the section 5 ban, the
 three bounds). Arm/Launch results feed back through a second call on the
-same frame (MainArcadeRaceLaunchCore_LaunchResult). Interpretations: an Arm
-or Launch failure at the title, and a WINDOW_TIMEOUT, request no return
-load (nothing left the title); the pad clear counts from the return step's
-frame, so a return deferred behind a race-track load keeps the neutral pads
-until the return load; race tick 0 is strictly after the frame VALIDATED is
-first seen.
+same frame (MainArcadeRaceLaunchCore_LaunchResult); armAndLaunch must be
+followed by a valid result on that frame, and an invalid one is refused
+while the core keeps waiting. Interpretations:
+(a) every RL-11 path (ARM, LAUNCH, WINDOW_TIMEOUT, VALIDATE_TIMEOUT,
+RACE_TICK_TIMEOUT, SETUP_FAILED) runs the return step on the failure frame
+when Loading.stage is LOAD_IDLE or LOAD_REQUESTED, else on the first
+LOAD_IDLE frame; on WINDOW_TIMEOUT it is the recovery when the window stays
+closed (RETURN_TO_TITLE does not reload on the main-menu level,
+game/MAIN/MainArcadeLink.c:300). No pad clear where none were installed
+(ARM, LAUNCH, WINDOW_TIMEOUT); an Arm/Launch failure still Disarms at once;
+WINDOW_TIMEOUT has nothing to Disarm. A held race's WINDOW_TIMEOUT owes its
+own return step, merged with one already pending, and the ended race's
+clear and Disarm count from it, so a Disarm never shares a frame with a
+WINDOW_TIMEOUT report (no separate Disarm race number is kept).
+(b) The pad clear and the Disarm count from the return-request frame, so a
+return deferred behind a race-track load keeps the neutral pads until the
+return load.
+(c) Race tick 0 is strictly after the frame VALIDATED is first seen: one
+frame later than it could be. A Task 8 note: the lockstep drive should
+decide whether that frame may be race tick 0.
+(d) The race number is taken on the armAndLaunch frame, so it counts launch
+attempts on this cabinet; quiet aborts, dropped held START_RACEs, and
+WINDOW_TIMEOUT races consume none, and a WINDOW_TIMEOUT report carries race
+number 0. The RL-12 line's <n> is this launch number, so it may differ
+between cabinets after a local Arm/Launch failure; the RL-S10 checker should
+still compare the k-th validated line of each cabinet, not equal <n>.
+(e) A setup status the race cannot be in (IDLE or ARMED before VALIDATED,
+anything but VALIDATED after it) maps to SETUP_FAILED.
+(f) START_RACE without RACING is a refused step: the host Tick that returns
+START_RACE enters RACING first (platform/native_arcade_flow.c:260-263), so
+the caller must sample NativeArcadeLinkHost_Racing after that Tick. An input
+flag other than 0 or 1 is refused too.
+(g) A success on a wait's last frame (the window on frame 900, VALIDATED on
+frame 1800, race tick 0 on frame 1800) still counts. The host leaving
+RACING on window frame 900 is a quiet abort, not a WINDOW_TIMEOUT.
 
 Plan: Pure, in game/MAIN, a standalone library: launch, the
 bounded waits, race tick 0, the rehearsal, return to the main menu, the
