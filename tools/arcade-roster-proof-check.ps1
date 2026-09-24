@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Executable,
 
-    # Absolute directory for the eight reports and their stdout/stderr logs.
+    # Absolute directory for the ten reports and their stdout/stderr logs.
     # Each run uses it as its working directory; the game itself still writes
     # the gitignored `Crash Team Racing.log` in the repository root.
     [Parameter(Mandatory = $true)]
@@ -16,25 +16,21 @@ param(
     # [CmdletBinding()] script run with -File.
     [string]$AssetsFile,
 
-    # Race ticks each two-cab run (A-E) logs (--arcade-roster-proof-ticks).
+    # Race ticks each run (A-J) logs (--arcade-roster-proof-ticks).
     [int]$Ticks = 900,
 
-    # Race ticks each one-cab run (F-H) logs (--arcade-roster-proof-ticks);
-    # capped below -Ticks for now, see the header.
-    [int]$OneCabTicks = 90,
-
-    # Seconds all eight runs together may take (parallel), or each run
+    # Seconds all ten runs together may take (parallel), or each run
     # (-Sequential).
     [int]$TimeoutSeconds = 600,
 
-    # Run the eight proofs one after another instead of all at once.
+    # Run the ten proofs one after another instead of all at once.
     [switch]$Sequential
 )
 
 # Live roster determinism check (docs/ROSTER_MILESTONE.md section 3.4, R-6,
-# R-6b, R-6c, R-6d, and OC-3).  Runs eight live roster proofs, five of the
-# two-cabinet profile and three of the single-cabinet profile, and compares
-# their reports:
+# R-6b, R-6c, R-6d, and OC-3).  Runs ten live roster proofs, five of the
+# two-cabinet profile (A-E) and five of the single-cabinet profile (F-J), and
+# compares their reports:
 #   A  two-cab, seed 0x5EED, dwell 0     (launches from the title)
 #   B  two-cab, seed 0x5EED, dwell 0     (A again: byte-identical report)
 #   C  two-cab, seed 0x5EED, dwell 5400  (launches from inside the attract
@@ -54,29 +50,25 @@ param(
 #   H  one-cab, seed 0x5EEE, dwell 0     (another seed: a different config
 #                                         digest, bank digest, and race tick 0
 #                                         RNG digest than F)
+#   I  one-cab, seed 0x5EED, dwell 5400  (launches from inside the attract
+#                                         demo race: the one-cab C, measured
+#                                         against F)
+#   J  one-cab, seed 0x5EED, dwell 37    (launches from the title 37 ticks
+#                                         late, so its boot-relative timer is
+#                                         an odd number of ticks off F's at
+#                                         launch: the one-cab E; the check
+#                                         verifies the offset is odd)
 # A-E pass no --arcade-roster-proof-profile, so they run on the default
 # profile (two-cab) with the command lines they had before OC-3, and their
-# reports must say "profile TWO_CAB"; F-H pass --arcade-roster-proof-profile
+# reports must say "profile TWO_CAB"; F-J pass --arcade-roster-proof-profile
 # one-cab and must say "profile ONE_CAB".
 #
-# Tick counts.  A-E log -Ticks race ticks (900 in ctest).  F-H log
-# -OneCabTicks race ticks (default 90), and all their per-run expectations
-# (tick lines, "end ticks N", the tick 0 comparisons) use that count.  The
-# ONE_CAB runs are capped at 90 ticks until the game/UI/UI_Rank.c Debug
-# run-time check failure (uninitialized pos.y in the 1P rank-icon HUD) is
-# resolved.  The failure fires a few seconds after the green light, at the
-# first rank change: a rank icon that is transitioning (UI_Rank.c ~:177-196:
-# a nonzero transition timer, or a desired rank other than the current one)
-# leaves pos.y unset and ~:199 reads it, so the MSVC Debug runtime stops the
-# process with a modal "Run-Time Check Failure #3" dialog and the run never
-# reports.  90 race ticks end before the green light: MainGameStart.c
-# ~:17-20 sets trafficLightsTimer = 0xF00 (3840 ms) together with the
-# START_OF_RACE fly-in, and MainMain.c ~:341-356 counts it down only once
-# START_OF_RACE has cleared; the countdown alone is about 120 race ticks (at
-# about 32 ms a race tick), so the fly-in plus the countdown take well over
-# 115 race ticks.  So F, G, and H prove the 1P race setup and its pre-green
-# determinism, not bot driving or 1P race physics.  Once the UI_Rank failure
-# is resolved, F-H run the full -Ticks.
+# Tick counts.  Every run (A-J) logs -Ticks race ticks (900 in ctest), and
+# all its per-run expectations (tick lines, "end ticks N", the tick
+# comparisons) use that count.  The ONE_CAB cap (90 race ticks, which ended
+# before the green light) was lifted once game/UI/UI_Rank.c's uninitialized
+# pos.y read was fixed (commit a98dccbe8), so F-J now cover the green light,
+# bot driving, and 1P race physics.
 #
 # Every report must be format v8 with result PASS, the profile line right
 # after the result line, the expected launch window, both counter lines, a
@@ -88,7 +80,7 @@ param(
 # and the race plan digest (another profile).  The input digest (the raw pad
 # state only) proves the hook installs the ONE_CAB pads: F matches A at race
 # tick 0 (neutral pads, the same pad layout, RS-24), differs from A at every
-# later tick both logged (A's player 1 holds CROSS, F's is neutral), and
+# later tick (A's player 1 holds CROSS, F's is neutral), and
 # matches H at every tick (the pads do not depend on the seed).
 #
 # C and E must match A in the config, race plan, bot setup plan, and bank
@@ -104,6 +96,12 @@ param(
 # (RS-12).  The report header logs the four counters (those three and
 # frameTimerConfetti) at the launch tick and at race tick 0, and the check
 # prints the C-A and E-A offsets of both and their values mod 8.
+#
+# I and J are measured against F exactly as C and E are against A: J's timer
+# offset from F at launch must be odd, I and J must start the race with F's
+# timer and frameTimerConfetti (RS-17), and they must match F in the same
+# setup evidence and per-tick digests, the full control digest again
+# informational (RS-12).  The check prints the I-F and J-F offsets.
 #
 # Host timing.  The proof runs with the fixed VBlank pacing that main.c turns
 # on for it (Platform_SetFixedVBlankPacing): a slow host frame emits no late
@@ -392,33 +390,34 @@ function Get-CounterOffsets($A, $Other, [switch]$Launch) {
     }
 }
 
-# Compares $Other with A as C and E must match it: the setup evidence and,
-# at every race tick, the rng, input, drivers, and rcontrol digests.  The
-# full control digest is informational.  Returns the failures and the
-# messages to print.
-function Compare-WithA($A, $Other, [string]$Name) {
+# Compares $Other with the reference report $Base (named $BaseName) as C
+# and E must match A, and I and J must match F: the setup evidence and, at
+# every race tick, the rng, input, drivers, and rcontrol digests.  The full
+# control digest is informational.  Returns the failures and the messages
+# to print.
+function Compare-WithBase($Base, [string]$BaseName, $Other, [string]$Name) {
     $found = @()
     $messages = @()
     foreach ($key in @('config digest', 'race plan digest', 'bot setup plan digest', 'bank digest')) {
-        if ($Other.Header[$key] -ne $A.Header[$key]) {
-            $found += "$Name differs from A in the $key (A $($A.Header[$key]), $Name $($Other.Header[$key]))"
+        if ($Other.Header[$key] -ne $Base.Header[$key]) {
+            $found += "$Name differs from $BaseName in the $key ($BaseName $($Base.Header[$key]), $Name $($Other.Header[$key]))"
         }
     }
-    if ($Other.Seeded -ne $A.Seeded) {
-        $found += "$Name differs from A in the seeded line (A '$($A.Seeded)', $Name '$($Other.Seeded)')"
+    if ($Other.Seeded -ne $Base.Seeded) {
+        $found += "$Name differs from $BaseName in the seeded line ($BaseName '$($Base.Seeded)', $Name '$($Other.Seeded)')"
     }
     for ($i = 0; $i -lt 8; $i++) {
-        if ($Other.Slots[$i] -ne $A.Slots[$i]) {
-            $found += "$Name differs from A in slot line $i (A '$($A.Slots[$i])', $Name '$($Other.Slots[$i])')"
+        if ($Other.Slots[$i] -ne $Base.Slots[$i]) {
+            $found += "$Name differs from $BaseName in slot line $i ($BaseName '$($Base.Slots[$i])', $Name '$($Other.Slots[$i])')"
         }
     }
     $controlDifferences = 0
     $firstControl = $null
     $firstSimulation = $null
     for ($i = 0; $i -lt $Ticks; $i++) {
-        $tickA = $A.Ticks[$i]
+        $tickBase = $Base.Ticks[$i]
         $tickOther = $Other.Ticks[$i]
-        if ($tickA.Control -ne $tickOther.Control) {
+        if ($tickBase.Control -ne $tickOther.Control) {
             $controlDifferences++
             if ($null -eq $firstControl) {
                 $firstControl = $i
@@ -426,28 +425,28 @@ function Compare-WithA($A, $Other, [string]$Name) {
         }
         if ($null -eq $firstSimulation) {
             foreach ($domain in @('Rng', 'Input', 'Drivers', 'RaceControl')) {
-                if ($tickA.$domain -ne $tickOther.$domain) {
+                if ($tickBase.$domain -ne $tickOther.$domain) {
                     $label = $domain.ToLowerInvariant()
                     if ($domain -eq 'RaceControl') {
                         $label = 'rcontrol'
                     }
-                    $firstSimulation = "tick $i $label (A $($tickA.$domain), $Name $($tickOther.$domain))"
+                    $firstSimulation = "tick $i $label ($BaseName $($tickBase.$domain), $Name $($tickOther.$domain))"
                     break
                 }
             }
         }
     }
     if ($null -ne $firstSimulation) {
-        $found += "$Name differs from A at $firstSimulation"
+        $found += "$Name differs from $BaseName at $firstSimulation"
     }
     elseif ($found.Count -eq 0) {
-        $messages += "$Name = A: config, race plan, bot setup, and bank digests, the seeded line, 8 slot lines, and the rng, input, drivers, and rcontrol digests of all $Ticks ticks"
+        $messages += "$Name = ${BaseName}: config, race plan, bot setup, and bank digests, the seeded line, 8 slot lines, and the rng, input, drivers, and rcontrol digests of all $Ticks ticks"
     }
     if ($controlDifferences -eq 0) {
-        $messages += "$Name vs A control digests (informational, RS-12): identical at all $Ticks ticks"
+        $messages += "$Name vs $BaseName control digests (informational, RS-12): identical at all $Ticks ticks"
     }
     else {
-        $messages += "$Name vs A control digests (informational, RS-12): $controlDifferences of $Ticks ticks differ (first at tick $firstControl); the unpinned boot-relative counters frameCounter and frameTimer (RS-17)"
+        $messages += "$Name vs $BaseName control digests (informational, RS-12): $controlDifferences of $Ticks ticks differ (first at tick $firstControl); the unpinned boot-relative counters frameCounter and frameTimer (RS-17)"
     }
     return [pscustomobject]@{ Failures = $found; Messages = $messages }
 }
@@ -469,26 +468,24 @@ try {
     if (($Ticks -lt 1) -or ($Ticks -gt 3600)) {
         Exit-Failed "invalid tick count $Ticks (1..3600)"
     }
-    if (($OneCabTicks -lt 1) -or ($OneCabTicks -gt 3600)) {
-        Exit-Failed "invalid one-cab tick count $OneCabTicks (1..3600)"
-    }
     $resolvedExecutable = (Resolve-Path -LiteralPath $Executable -ErrorAction Stop).Path
     $resolvedOutput = [System.IO.Path]::GetFullPath($OutputDirectory)
     [System.IO.Directory]::CreateDirectory($resolvedOutput) | Out-Null
 
     # ProfileOption is the --arcade-roster-proof-profile value, or '' for the
     # default (two-cab); Profile is the report's expected profile line; Ticks
-    # is the run's --arcade-roster-proof-ticks (-Ticks for A-E, -OneCabTicks
-    # for F-H).
+    # is the run's --arcade-roster-proof-ticks (-Ticks for every run).
     $specs = @(
         @{ Name = 'A'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
         @{ Name = 'B'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
         @{ Name = 'C'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 5400; Window = 'demo race'; Ticks = $Ticks },
         @{ Name = 'D'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EEE'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
         @{ Name = 'E'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 37; Window = 'title'; Ticks = $Ticks },
-        @{ Name = 'F'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $OneCabTicks },
-        @{ Name = 'G'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $OneCabTicks },
-        @{ Name = 'H'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EEE'; Dwell = 0; Window = 'title'; Ticks = $OneCabTicks })
+        @{ Name = 'F'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
+        @{ Name = 'G'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
+        @{ Name = 'H'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EEE'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
+        @{ Name = 'I'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 5400; Window = 'demo race'; Ticks = $Ticks },
+        @{ Name = 'J'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 37; Window = 'title'; Ticks = $Ticks })
     foreach ($spec in $specs) {
         $run = [pscustomobject]@{
             Name = $spec.Name
@@ -517,7 +514,7 @@ try {
     if ($Sequential) {
         $mode = 'sequential'
     }
-    Write-Output "arcade roster determinism check: $($runs.Count) runs ($mode, fixed VBlank pacing), $Ticks race ticks each two-cab run (A-E), $OneCabTicks each one-cab run (F-H)"
+    Write-Output "arcade roster determinism check: $($runs.Count) runs ($mode, fixed VBlank pacing), $Ticks race ticks each, five two-cab (A-E) and five one-cab (F-J)"
     Write-Output "executable: $resolvedExecutable"
     Write-Output "output:     $resolvedOutput"
 
@@ -584,6 +581,9 @@ try {
     $f = $reports['F']
     $g = $reports['G']
     $h = $reports['H']
+    # Not $i and $j: those are the loop counters below.
+    $reportI = $reports['I']
+    $reportJ = $reports['J']
     $runByName = @{}
     foreach ($run in $runs) {
         $runByName[$run.Name] = $run
@@ -629,7 +629,7 @@ try {
 
     # C and E against A.
     foreach ($pair in @(@('C', $c), @('E', $e))) {
-        $comparison = Compare-WithA $a $pair[1] $pair[0]
+        $comparison = Compare-WithBase $a 'A' $pair[1] $pair[0]
         foreach ($message in $comparison.Messages) {
             Write-Output $message
         }
@@ -685,31 +685,63 @@ try {
     # so F != A at every later tick; and the pads are a function of (profile,
     # tick) only, so F = H at every tick.
     $inputFailures = @()
-    $sharedTicks = [Math]::Min($Ticks, $OneCabTicks)
     if ($f.Ticks[0].Input -ne $a.Ticks[0].Input) {
         $inputFailures += "F differs from A in the tick 0 input digest (A $($a.Ticks[0].Input), F $($f.Ticks[0].Input)): the neutral pads of the two profiles are not the same pad layout"
     }
-    for ($i = 1; $i -lt $sharedTicks; $i++) {
+    for ($i = 1; $i -lt $Ticks; $i++) {
         if ($f.Ticks[$i].Input -eq $a.Ticks[$i].Input) {
             $inputFailures += "F does not differ from A in the tick $i input digest ($($a.Ticks[$i].Input)): the ONE_CAB pads did not reach the game"
             break
         }
     }
-    for ($i = 0; $i -lt $OneCabTicks; $i++) {
+    for ($i = 0; $i -lt $Ticks; $i++) {
         if ($f.Ticks[$i].Input -ne $h.Ticks[$i].Input) {
             $inputFailures += "F differs from H in the tick $i input digest (F $($f.Ticks[$i].Input), H $($h.Ticks[$i].Input)): the pads depend on the seed"
             break
         }
     }
     if ($inputFailures.Count -eq 0) {
-        Write-Output "F input digests: = A at tick 0 (neutral, same pad layout), != A at ticks 1..$($sharedTicks - 1) (ONE_CAB pads), = H at all $OneCabTicks ticks (seed-independent)"
+        Write-Output "F input digests: = A at tick 0 (neutral, same pad layout), != A at ticks 1..$($Ticks - 1) (ONE_CAB pads), = H at all $Ticks ticks (seed-independent)"
     }
     $failures += $inputFailures
+
+    # I and J against F, as C and E against A: J must bring an odd timer
+    # offset from F at launch, the RS-17 pins must remove it (I and J start
+    # the race with F's timer and frameTimerConfetti), and I and J must match
+    # F in the setup evidence and the per-tick digests.
+    Write-Output "F launch counters: $($f.Header['launch counters'])"
+    Write-Output "F race tick 0 counters: $($f.Header['race tick 0 counters'])"
+    $launchI = Get-CounterOffsets $f $reportI -Launch
+    $launchJ = Get-CounterOffsets $f $reportJ -Launch
+    $offsetsI = Get-CounterOffsets $f $reportI
+    $offsetsJ = Get-CounterOffsets $f $reportJ
+    Write-Output "I - F offsets at launch: $($launchI.Text)"
+    Write-Output "J - F offsets at launch: $($launchJ.Text)"
+    Write-Output "I - F offsets at race tick 0: $($offsetsI.Text)"
+    Write-Output "J - F offsets at race tick 0: $($offsetsJ.Text)"
+    if (($launchJ.Timer % 2) -eq 0) {
+        $failures += "J's timer offset from F at launch is $($launchJ.Timer), not odd: run J no longer covers an odd boot-relative offset (choose another dwell)"
+    }
+    foreach ($pair in @(@('I', $offsetsI), @('J', $offsetsJ))) {
+        if ($pair[1].Timer -ne 0) {
+            $failures += "$($pair[0])'s timer at race tick 0 is $($pair[1].Timer) off F's: the race setup's timer pin (RS-17) did not hold"
+        }
+        if ($pair[1].FrameTimerConfetti -ne 0) {
+            $failures += "$($pair[0])'s frameTimerConfetti at race tick 0 is $($pair[1].FrameTimerConfetti) off F's: the race setup's frameTimer_Confetti pin (RS-17) did not hold"
+        }
+    }
+    foreach ($pair in @(@('I', $reportI), @('J', $reportJ))) {
+        $comparison = Compare-WithBase $f 'F' $pair[1] $pair[0]
+        foreach ($message in $comparison.Messages) {
+            Write-Output $message
+        }
+        $failures += @($comparison.Failures)
+    }
 
     Write-Output "report A first tick: $($a.Ticks[0].Line)"
     Write-Output "report A last tick:  $($a.Ticks[$Ticks - 1].Line)"
     Write-Output "report F first tick: $($f.Ticks[0].Line)"
-    Write-Output "report F last tick:  $($f.Ticks[$OneCabTicks - 1].Line)"
+    Write-Output "report F last tick:  $($f.Ticks[$Ticks - 1].Line)"
     Write-Output ''
     if ($failures.Count -ne 0) {
         foreach ($failure in $failures) {
