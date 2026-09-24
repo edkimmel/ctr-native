@@ -573,8 +573,13 @@ frozen wire constants).
 
 ### RL-S3 -- sound-ID identity isolation test
 
-Status: planned. RL-14. File:
-tests/arcade_sound_identity_isolation_test.cmake.
+Status: done (no review required: test only). RL-14. File:
+tests/arcade_sound_identity_isolation_test.cmake. The ctest
+arcade_sound_identity_isolation scans the comment-free code of the 102
+listed identity-bearing sources (plus any new file in their glob families)
+for sound-ID identifiers, checks that every OtherFX_Play call in
+game/MAIN/MainArcadeLink.c is (void)OtherFX_Play(...), and bans
+MainArcadeLinkSound and OtherFX from the netplay adapter and host glue.
 
 ### RL-S4 -- flow launch gate
 

@@ -1512,6 +1512,11 @@ if(BUILD_TESTING)
     add_test(NAME native_arcade_launch_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_launch_isolation_test.cmake")
 
+    # Sound IDs stay out of cross-cabinet identity (docs/RACE_LAUNCH_MILESTONE.md
+    # RL-14; slice RL-S3): identity-bearing sources name no sound-ID token.
+    add_test(NAME arcade_sound_identity_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/arcade_sound_identity_isolation_test.cmake")
+
     # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6,
     # Task 6b-1): the singleton in every mode, one loopback socket on a dead
     # peer port, every advance tick-counted, never wall-clock.
