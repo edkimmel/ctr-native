@@ -462,6 +462,20 @@ set_target_properties(ctr_native_match_select_session PROPERTIES
 target_include_directories(ctr_native_match_select_session PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_match_select_session PUBLIC ctr_native_match_select_rules ctr_native_match_select_message)
 
+# Race launch agreement (docs/RACE_LAUNCH_MILESTONE.md section 4, RL-2,
+# RL-3, RL-4; slice RL-S2): the pure, transactional 64-byte launch record v1
+# codec with an FNV-1a 64 trailer, and the caller-owned launch agreement
+# state. Not linked into ctr_native yet (the netplay adapter wires it in
+# RL-S5).
+add_library(ctr_native_arcade_launch STATIC platform/native_arcade_launch.c)
+set_target_properties(ctr_native_arcade_launch PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_launch PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_arcade_launch PUBLIC ctr_native_canonical_codec)
+
 # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6, Task
 # 6b-1): a process-wide singleton owning one arcade-link host adapter (link
 # mode) or a scripted screen preview (preview mode), behind a small
@@ -1481,6 +1495,22 @@ if(BUILD_TESTING)
 
     add_test(NAME native_match_select_session_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_match_select_session_isolation_test.cmake")
+
+    # Race launch agreement (docs/RACE_LAUNCH_MILESTONE.md RL-2, RL-3, RL-4;
+    # slice RL-S2): frozen golden bytes, every fault cause in check order,
+    # and the agreement driven in memory (commit, linger, one-direction
+    # loss); the isolation test freezes the wire constants.
+    add_executable(native_arcade_launch_test tests/native_arcade_launch_test.c)
+    set_target_properties(native_arcade_launch_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_launch_test PRIVATE ctr_native_arcade_launch)
+    add_test(NAME native_arcade_launch_unit COMMAND $<TARGET_FILE:native_arcade_launch_test>)
+
+    add_test(NAME native_arcade_launch_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_launch_isolation_test.cmake")
 
     # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6,
     # Task 6b-1): the singleton in every mode, one loopback socket on a dead

@@ -557,12 +557,18 @@ commit.
 
 ### RL-S2 -- launch record codec and agreement state
 
-Status: planned. Review required (wire format). The pure RL-2 codec and
-the RL-3 commit state. Files: include/platform/native_arcade_launch.h,
+Status: done; review pending. Review required (wire format). The pure RL-2
+codec and the RL-3 commit state. Files: include/platform/native_arcade_launch.h,
 platform/native_arcade_launch.c, tests/native_arcade_launch_test.c,
 tests/native_arcade_launch_isolation_test.cmake. The isolation test
 applies the section 5 token ban (lease acquire, activate, capture, and
 publish; checkpoint; replay; NativeCanonical).
+Built as library ctr_native_arcade_launch (links only
+ctr_native_canonical_codec; not linked into ctr_native until RL-S5), with
+tests native_arcade_launch_unit (frozen golden bytes, every fault cause in
+check order, the agreement driven in memory) and
+native_arcade_launch_isolation (the section 5 ban on comment-free code,
+frozen wire constants).
 
 ### RL-S3 -- sound-ID identity isolation test
 
