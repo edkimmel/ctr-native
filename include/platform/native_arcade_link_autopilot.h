@@ -84,8 +84,12 @@
  * only for a recorded match or validation.
  *
  * Process exit codes while the autopilot runs (enum
- * NativeArcadeLinkAutopilotResult, also the report's result):
- *    0  PASS                 the run above, completed
+ * NativeArcadeLinkAutopilotResult, also the report's result). Exit code 0
+ * alone does not prove a pass: a window close or SDL quit while the
+ * autopilot runs can also exit 0, without a report
+ * (platform/native_platform.c; only the roster proof guards those paths). The proof is the report's
+ * "result PASS (0)" line with both races (the checker requires both).
+ *    0  PASS                 the run above, completed (report written)
  *    1  (startup failure)    main.c's generic failure; never a result
  *   40  TIMEOUT              not done within DEADLINE_TICKS observed ticks
  *   41  RACE_FAILED          a RESULTS screen with an end reason other than

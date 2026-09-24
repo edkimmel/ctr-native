@@ -441,6 +441,56 @@ static int RunToExit(struct NativeArcadeLinkAutopilot *autopilot, uint32_t launc
 	return 0;
 }
 
+/* A confirmation lasts one tick only, and only a confirmed row counts. */
+static int TestConfirmations(void)
+{
+	struct NativeArcadeLinkAutopilot autopilot;
+	struct NativeArcadeLinkHostView results;
+	struct NativeArcadeLinkHostView rematchWait;
+	struct NativeArcadeLinkHostView racing;
+
+	ResultsView(&results, NATIVE_ARCADE_FLOW_END_FINISHED, 1u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
+	View(&rematchWait, NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+	View(&racing, NATIVE_ARCADE_FLOW_SCREEN_RACING);
+
+	/* A race frame (Observe with no Decide) clears a pending confirmation. */
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &racing, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+	autopilot.confirmedRow = (uint8_t)(NATIVE_ARCADE_FLOW_ROW_REMATCH + 1u);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &racing, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+	CHECK(autopilot.confirmedRow == 0u);
+	CHECK((autopilot.rematches == 0u) && (autopilot.done == 0u));
+
+	/* The confirming decision's tick changed nothing; the next tick has no
+	 * Decide (a race or tick-only frame): Observe cleared the confirmation,
+	 * so that tick's RESULTS -> REMATCH_WAIT change is not this autopilot's. */
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	CHECK(RunRace(&autopilot, 1u, 1u, 7u) == 0);
+	for (uint32_t i = 0; Held(&autopilot, &results) != NATIVE_ARCADE_MENU_BUTTON_CROSS; i++)
+	{
+		CHECK(i < NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD);
+		CHECK(autopilot.confirmedRow == 0u);
+		CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &results, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+	}
+	CHECK(autopilot.confirmedRow == NATIVE_ARCADE_FLOW_ROW_REMATCH + 1u);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &results, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+	CHECK(autopilot.confirmedRow == 0u);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &rematchWait, NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH) == 0);
+	CHECK(autopilot.rematches == 0u);
+	CHECK(autopilot.done == 0u);
+
+	/* A RESULTS -> REMATCH_WAIT change with no confirmation at all (the
+	 * peer's rematch, or the RESULTS idle timeout) is not a rematch either. */
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	CHECK(RunRace(&autopilot, 1u, 1u, 7u) == 0);
+	CHECK(autopilot.lastScreen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(autopilot.confirmedRow == 0u);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &rematchWait, NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH) == 0);
+	CHECK(autopilot.rematches == 0u);
+	CHECK(autopilot.done == 0u);
+	return 0;
+}
+
 static int TestFullRun(void)
 {
 	struct NativeArcadeLinkAutopilot autopilot;
@@ -730,6 +780,7 @@ int main(void)
 	CHECK(TestDecideEnter() == 0);
 	CHECK(TestDecideSelect() == 0);
 	CHECK(TestDecideResults() == 0);
+	CHECK(TestConfirmations() == 0);
 	CHECK(TestFullRun() == 0);
 	CHECK(TestFailures() == 0);
 	CHECK(TestNames() == 0);

@@ -44,6 +44,9 @@ function(ctr_read_source relative_path out_var)
         message(FATAL_ERROR "${prefix}: missing source ${relative_path}")
     endif()
     file(READ "${path}" source)
+    # Line endings depend on the checkout (and CMake on Windows reads in text
+    # mode, other hosts do not); the checks below assume LF.
+    string(REPLACE "\r\n" "\n" source "${source}")
     set(${out_var} "${source}" PARENT_SCOPE)
 endfunction()
 

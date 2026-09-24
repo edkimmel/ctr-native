@@ -56,6 +56,9 @@ param(
 $skipExitCode = 77
 $noDisplayMarker = 'No displays available'
 $notInternalMarker = '--arcade-link-autopilot is available in internal builds only.'
+# main.c prints this one line both for an unknown build identity (a dirty-tree
+# build) and for a missing content identity, so this skip covers both; the
+# skip reason below names the build identity, the usual cause.
 $unknownIdentityMarker = 'arcade link requires a known build and content identity.'
 $races = 2
 $agreedPattern = '^race ([0-9]+) (agreed match track [0-9]+ laps [0-9]+ seed 0x[0-9A-F]{16} slots( [0-9]+){8} \([12B-]{8}\))$'
@@ -125,9 +128,19 @@ function Start-Run($Run) {
     $arguments = @('--arcade-link', $Run.Cab, '--arcade-link-port', $Run.Port, '--arcade-link-peer', $Run.Peer,
         '--arcade-link-autopilot', $Run.ReportPath)
     $argumentLine = ($arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
-    $process = Start-Process -FilePath $resolvedExecutable -ArgumentList $argumentLine `
-        -WorkingDirectory $resolvedOutput -NoNewWindow -PassThru `
-        -RedirectStandardOutput $Run.StdoutPath -RedirectStandardError $Run.StderrPath
+    # A run that cannot start fails the check at once, not at the timeout.
+    $process = $null
+    try {
+        $process = Start-Process -FilePath $resolvedExecutable -ArgumentList $argumentLine `
+            -WorkingDirectory $resolvedOutput -NoNewWindow -PassThru `
+            -RedirectStandardOutput $Run.StdoutPath -RedirectStandardError $Run.StderrPath -ErrorAction Stop
+    }
+    catch {
+        Exit-Failed "could not start run $($Run.Name): $($_.Exception.Message)"
+    }
+    if ($null -eq $process) {
+        Exit-Failed "could not start run $($Run.Name): Start-Process returned no process"
+    }
     # Touching Handle keeps ExitCode readable after the process exits.
     $null = $process.Handle
     $Run.Process = $process
@@ -135,7 +148,8 @@ function Start-Run($Run) {
 }
 
 # Waits for both runs.  A skip condition is known as soon as one run exits
-# with its marker, so the other is stopped early.
+# with its marker, and a failure as soon as one run exits nonzero without
+# one, so in both cases the other run is stopped early.
 function Wait-Runs($Runs) {
     while ($true) {
         $pending = @($Runs | Where-Object { -not $_.Process.HasExited })
@@ -154,6 +168,18 @@ function Wait-Runs($Runs) {
             if ($null -ne $reason) {
                 Stop-StartedRuns $Runs
                 Exit-Skipped $reason
+            }
+            $run.Process.WaitForExit()
+            if ($run.Process.ExitCode -ne 0) {
+                Stop-StartedRuns $Runs
+                if (Test-Path -LiteralPath $run.ReportPath -PathType Leaf) {
+                    foreach ($line in [System.IO.File]::ReadAllLines($run.ReportPath)) {
+                        if ($line -match '^(result|last screen|ticks) ') {
+                            Write-Output "  $($run.Name) report: $line"
+                        }
+                    }
+                }
+                Exit-Failed "run $($run.Name) exited $($run.Process.ExitCode); the other run was stopped (see $($run.StdoutPath), $($run.StderrPath), and $($run.ReportPath))"
             }
         }
         if ($pending.Count -eq 0) {

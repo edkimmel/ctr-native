@@ -107,8 +107,10 @@ void MainArcadeLinkAutopilot_Input(const struct MainArcadeLinkPolicyInput *input
 	{
 		return;
 	}
-	/* The autopilot owns the link's local menu input for the whole run: no
-	 * local pad or keyboard input reaches the link host. */
+	/* On the owned LINK frames (the only frames this entry runs on) the
+	 * autopilot owns the link host's local menu input: no local pad or
+	 * keyboard input reaches it there. Race and tick-only frames pass pad
+	 * input unchanged; RACING ignores menu events. */
 	output->heldButtons = 0u;
 	output->enterPressed = 0u;
 	if (!NativeArcadeLinkHost_GetView(&view))
