@@ -16,10 +16,12 @@
 # game/MAIN/MainArcadeLink.c, once, after the decision, and never by the
 # decision, the layout, the policy, or any platform/native_arcade_* source or
 # header. The hook resets the decision's snapshot on every frame the layer
-# does not own, after the START_RACE AbortToTitle, and on RETURN_TO_TITLE;
-# except race frames under RL-8 (tickOnly), which leave the snapshot holding
-# the RACING view stored on the last owned frame, so RESULTS entry keeps its
-# SND-9 cue.
+# does not own and on RETURN_TO_TITLE; except race frames under RL-8
+# (tickOnly), which leave the snapshot holding the RACING view stored on the
+# last owned frame, so RESULTS entry keeps its SND-9 cue. Since RL-S8b the
+# START_RACE branch hands the launch to the race caller instead of aborting
+# to the title, so it no longer resets the snapshot either: the flow is on
+# RACING and the snapshot keeps tracking it.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -220,10 +222,11 @@ endforeach()
 
 # 5. The hook static-asserts every mirror against the flow value, plays the
 #    retail sound exactly once, in its sound helper, after the decision, and
-#    resets the snapshot on every frame the layer does not own, after the
-#    START_RACE AbortToTitle, and on RETURN_TO_TITLE; except race frames
-#    under RL-8 (tickOnly), which leave the snapshot holding the RACING view
-#    stored on the last owned frame, so RESULTS entry keeps its SND-9 cue.
+#    resets the snapshot on every frame the layer does not own and on
+#    RETURN_TO_TITLE; except race frames under RL-8 (tickOnly), which leave
+#    the snapshot holding the RACING view stored on the last owned frame, so
+#    RESULTS entry keeps its SND-9 cue. The START_RACE branch (RL-S8b) hands
+#    the launch to the race caller and does not reset it.
 set(hook_path "game/MAIN/MainArcadeLink.c")
 ctr_read_source("${hook_path}" hook)
 foreach(mirror IN LISTS mirror_pairs)
@@ -268,9 +271,10 @@ string(SUBSTRING "${hook_code}" ${not_owned_at} -1 not_owned_tail)
 string(FIND "${not_owned_tail}" "return 0;" not_owned_return)
 string(SUBSTRING "${not_owned_tail}" 0 ${not_owned_return} not_owned_block)
 ctr_require_literal("${hook_path} (not-owned frame)" "${not_owned_block}" "MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);")
-# The START_RACE branch resets after its AbortToTitle, and the
-# RETURN_TO_TITLE branch resets before its retail title request; each check
-# reads only its own branch, so the other branch's reset cannot satisfy it.
+# The START_RACE branch hands the launch to the race caller and does not
+# reset (RL-S8b: no abort, the flow is on RACING), and the RETURN_TO_TITLE
+# branch resets before its retail title request; each check reads only its
+# own branch, so the other branch's reset cannot satisfy it.
 set(start_race_head "if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)")
 set(return_title_head "else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)")
 ctr_require_order("${hook_path}" "${hook_code}" "${start_race_head}" "${return_title_head}")
@@ -278,9 +282,11 @@ string(FIND "${hook_code}" "${start_race_head}" start_race_at)
 string(FIND "${hook_code}" "${return_title_head}" return_title_at)
 math(EXPR start_race_length "${return_title_at} - ${start_race_at}")
 string(SUBSTRING "${hook_code}" ${start_race_at} ${start_race_length} start_race_block)
-ctr_require_order("${hook_path} (START_RACE branch)" "${start_race_block}"
-    "NativeArcadeLinkHost_AbortToTitle();"
-    "MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);")
+ctr_require_literal("${hook_path} (START_RACE branch)" "${start_race_block}" "MainArcadeRaceLaunch_StartRace();")
+string(FIND "${start_race_block}" "MainArcadeLinkSound_Reset" start_race_reset_at)
+if(NOT start_race_reset_at EQUAL -1)
+    message(FATAL_ERROR "arcade link sound isolation: the START_RACE branch of ${hook_path} must not reset the sound snapshot (RL-S8b: the flow is on RACING)")
+endif()
 string(SUBSTRING "${hook_code}" ${return_title_at} -1 return_title_tail)
 set(title_request_head "if (gGT->levelID != MAIN_MENU_LEVEL)")
 ctr_require_order("${hook_path}" "${return_title_tail}" "${return_title_head}" "${title_request_head}")

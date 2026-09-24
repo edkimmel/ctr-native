@@ -33,7 +33,16 @@
 # main_arcade_link_sound_isolation_test.cmake. Since RL-S8a
 # (docs/RACE_LAUNCH_MILESTONE.md RL-8) the gather reads the host racing query
 # and MainArcadeLink_Frame's tickOnly branch, right after the decision, only
-# ticks the link and returns 0.
+# ticks the link and returns 0. Since RL-S8b the START_RACE branch no longer
+# aborts to the title (so the hook names AbortToTitle nowhere, and the old
+# fall-back-to-OFF box restore it needed is gone): it logs the agreed match
+# and hands the launch to the live race caller
+# (game/MAIN/MainArcadeRaceLaunch.{c,h}), whose finish report is the host
+# tick's raceFinished input; MainFrame_RenderFrame steps the caller once per
+# frame right after the hook; and section 16 pins the caller: dormant by
+# default, its own post-tick racing read, the RL-10 pad install and clear
+# frame, its LeaveTitle identical to the roster proof's, the RL-12 line, and
+# its step and apply order.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -193,7 +202,7 @@ endforeach()
 #    prototype header includes nothing.
 string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${hook_source}")
 foreach(include_line IN LISTS include_lines)
-    if(NOT include_line MATCHES "^#[ \t]*include[ \t]*[<\"](common\\.h|platform/native_arcade_link_host\\.h|platform/native_arcade_menu_input\\.h|platform/native_log\\.h|MAIN/MainArcadeLinkLayout\\.h|MAIN/MainArcadeLinkPolicy\\.h|MAIN/MainArcadeLinkSound\\.h|MAIN/MainArcadeLink\\.h)[>\"][ \t]*$")
+    if(NOT include_line MATCHES "^#[ \t]*include[ \t]*[<\"](common\\.h|platform/native_arcade_link_host\\.h|platform/native_arcade_menu_input\\.h|platform/native_log\\.h|MAIN/MainArcadeLinkLayout\\.h|MAIN/MainArcadeLinkPolicy\\.h|MAIN/MainArcadeLinkSound\\.h|MAIN/MainArcadeLink\\.h|MAIN/MainArcadeRaceLaunch\\.h)[>\"][ \t]*$")
         message(FATAL_ERROR "arcade link hook isolation: disallowed include '${include_line}' in ${hook_source_path}")
     endif()
 endforeach()
@@ -346,6 +355,23 @@ ctr_require_native_guard("${render_path}" "${render_source}" "if (arcadeLinkOwns
 ctr_require_order("${render_path}" "${render_source}"
     "MainArcadeLink_Frame(gGT, gGamepads)" "RECTMENU_CollectInput()" "if (arcadeLinkOwnsMenu != 0)"
     "RECTMENU_ClearInput()" "RECTMENU_ProcessState()")
+# 6a. The race caller (RL-S8b) is stepped exactly once per frame, right after
+#     the hook (so after this frame's host tick, on owned, ticked, and other
+#     frames alike), inside the same CTR_NATIVE block, before the retail
+#     menu-input collect; its prototype include is guarded too.
+ctr_require_native_guard("${render_path}" "${render_source}" "#include \"MAIN/MainArcadeRaceLaunch.h\"")
+ctr_require_native_guard("${render_path}" "${render_source}" "MainArcadeRaceLaunch_Frame(gGT, gGamepads)")
+ctr_strip_comments("${render_source}" render_code_6a)
+string(REGEX MATCHALL "MainArcadeRaceLaunch_Frame\\(" launch_frame_calls "${render_code_6a}")
+list(LENGTH launch_frame_calls launch_frame_call_count)
+if(NOT launch_frame_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${render_path} must call MainArcadeRaceLaunch_Frame exactly once (found ${launch_frame_call_count})")
+endif()
+if(NOT render_code_6a MATCHES "const int arcadeLinkOwnsMenu = MainArcadeLink_Frame\\(gGT, gGamepads\\);[ \t\r\n]*MainArcadeRaceLaunch_Frame\\(gGT, gGamepads\\);[ \t\r\n]*#endif")
+    message(FATAL_ERROR "arcade link hook isolation: ${render_path} must call MainArcadeRaceLaunch_Frame(gGT, gGamepads) right after MainArcadeLink_Frame, alone, before the #endif of the same CTR_NATIVE block")
+endif()
+ctr_require_order("${render_path}" "${render_code_6a}"
+    "MainArcadeLink_Frame(gGT, gGamepads)" "MainArcadeRaceLaunch_Frame(gGT, gGamepads)" "RECTMENU_CollectInput()")
 
 # 6b. The input clear sits inside the retail if-block that collects the menu
 #     input, after the collect, so it clears exactly what was collected.
@@ -551,34 +577,55 @@ foreach(path IN LISTS quick_state_scan_paths)
     endif()
 endforeach()
 
-# 11. The START_RACE branch gives the retail main-menu box back when
-#     AbortToTitle falls back to host mode OFF: the only AbortToTitle call is
-#     inside that branch and is followed, inside the branch, by a host-mode
-#     OFF check whose block restores the box.
+# 11. START_RACE is handed to the race caller (RL-S8b). Until RL-S8b the
+#     branch aborted to the title (NativeArcadeLinkHost_AbortToTitle, then a
+#     host-mode OFF check that gave the box back if the link could not
+#     reopen). The new code launches the race instead, so the abort pin
+#     becomes its opposite: neither the hook nor the caller names
+#     AbortToTitle (an abort on START_RACE would close the link under the
+#     race; RL-11 local failures go through ReportRaceFailure instead), and
+#     with no abort there is no fall-back to mode OFF on this path, so the
+#     restore pin is dropped with it. The branch hands the launch over
+#     exactly once, through MainArcadeRaceLaunch_StartRace, which the hook
+#     calls nowhere else; and the host tick's raceFinished input is the
+#     caller's finish report.
 ctr_strip_comments("${hook_source}" hook_code)
-string(REGEX MATCHALL "NativeArcadeLinkHost_AbortToTitle\\(" abort_calls "${hook_code}")
-list(LENGTH abort_calls abort_call_count)
-if(NOT abort_call_count EQUAL 1)
-    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call NativeArcadeLinkHost_AbortToTitle exactly once (found ${abort_call_count})")
-endif()
+set(caller_source_path "game/MAIN/MainArcadeRaceLaunch.c")
+set(caller_header_path "game/MAIN/MainArcadeRaceLaunch.h")
+ctr_read_source("${caller_source_path}" caller_source)
+ctr_read_source("${caller_header_path}" caller_header)
+ctr_strip_comments("${caller_source}" caller_code)
+foreach(pair "${hook_source_path}|hook_code" "${caller_source_path}|caller_code")
+    string(REPLACE "|" ";" pair_items "${pair}")
+    list(GET pair_items 0 relative_path)
+    list(GET pair_items 1 variable)
+    ctr_forbid("${relative_path}" "${${variable}}" "NativeArcadeLinkHost_AbortToTitle")
+endforeach()
+ctr_forbid("${hook_source_path}" "${hook_source}" "networked race launch is not wired yet")
 ctr_find_block("${hook_source_path}" "${hook_code}"
     "if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)" start_begin start_end)
 math(EXPR start_length "${start_end} - ${start_begin} + 1")
 string(SUBSTRING "${hook_code}" ${start_begin} ${start_length} start_block)
-ctr_require_literal("${hook_source_path} (START_RACE branch)" "${start_block}" "NativeArcadeLinkHost_AbortToTitle();")
-string(FIND "${start_block}" "NativeArcadeLinkHost_AbortToTitle();" abort_at)
-string(SUBSTRING "${start_block}" ${abort_at} -1 after_abort)
-ctr_find_block("${hook_source_path} (START_RACE branch)" "${after_abort}"
-    "if (NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF)" restore_begin restore_end)
-math(EXPR restore_length "${restore_end} - ${restore_begin} + 1")
-string(SUBSTRING "${after_abort}" ${restore_begin} ${restore_length} restore_block)
-ctr_require_literal("${hook_source_path} (START_RACE fallback)" "${restore_block}" "MainArcadeLink_RestoreMainMenu();")
+ctr_require_literal("${hook_source_path} (START_RACE branch)" "${start_block}" "MainArcadeRaceLaunch_StartRace();")
+string(REGEX MATCHALL "MainArcadeRaceLaunch_StartRace\\(" handoff_calls "${hook_code}")
+list(LENGTH handoff_calls handoff_call_count)
+if(NOT handoff_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call MainArcadeRaceLaunch_StartRace exactly once, in its START_RACE branch (found ${handoff_call_count})")
+endif()
+ctr_require_literal("${hook_source_path}" "${hook_code}"
+    "action = NativeArcadeLinkHost_Tick(output->heldButtons, MainArcadeRaceLaunch_RaceFinished());")
+string(REGEX MATCHALL "MainArcadeRaceLaunch_[A-Za-z]+" hook_caller_names "${hook_code}")
+list(REMOVE_DUPLICATES hook_caller_names)
+list(SORT hook_caller_names)
+if(NOT "${hook_caller_names}" STREQUAL "MainArcadeRaceLaunch_RaceFinished;MainArcadeRaceLaunch_StartRace")
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} may name only MainArcadeRaceLaunch_StartRace and MainArcadeRaceLaunch_RaceFinished of the race caller (found '${hook_caller_names}')")
+endif()
 
 # 12. The START_RACE branch logs the agreed match (MS-8,
-#     docs/MATCH_SELECT_MILESTONE.md section 2.7) before it aborts to the
-#     title, while the link still holds the agreed config: the only
-#     GetAgreedMatch call is inside that branch, before AbortToTitle, and its
-#     success block logs through the hook's Platform_Log helper.
+#     docs/MATCH_SELECT_MILESTONE.md section 2.7) before it hands the launch
+#     to the race caller, while the link still holds the agreed config: the
+#     only GetAgreedMatch call is inside that branch, before the hand-off, and
+#     its success block logs through the hook's Platform_Log helper.
 string(REGEX MATCHALL "NativeArcadeLinkHost_GetAgreedMatch\\(" agreed_calls "${hook_code}")
 list(LENGTH agreed_calls agreed_call_count)
 if(NOT agreed_call_count EQUAL 1)
@@ -586,8 +633,7 @@ if(NOT agreed_call_count EQUAL 1)
 endif()
 set(agreed_check "if (NativeArcadeLinkHost_GetAgreedMatch(&match))")
 ctr_require_order("${hook_source_path} (START_RACE branch)" "${start_block}"
-    "${agreed_check}" "MainArcadeLink_LogAgreedMatch(&match);"
-    "networked race launch is not wired yet" "NativeArcadeLinkHost_AbortToTitle();")
+    "${agreed_check}" "MainArcadeLink_LogAgreedMatch(&match);" "MainArcadeRaceLaunch_StartRace();")
 ctr_find_block("${hook_source_path} (START_RACE branch)" "${start_block}" "${agreed_check}" agreed_begin agreed_end)
 math(EXPR agreed_length "${agreed_end} - ${agreed_begin} + 1")
 string(SUBSTRING "${start_block}" ${agreed_begin} ${agreed_length} agreed_block)
@@ -646,3 +692,210 @@ endforeach()
 ctr_require_literal("${hook_source_path}" "${hook_code}" "case NATIVE_ARCADE_LINK_HOST_ROLE_CAB1:")
 ctr_require_literal("${hook_source_path}" "${hook_code}" "case NATIVE_ARCADE_LINK_HOST_ROLE_CAB2:")
 ctr_require_literal("${hook_source_path}" "${hook_code}" "case NATIVE_ARCADE_LINK_HOST_ROLE_BOT:")
+
+# 16. The live race caller (game/MAIN/MainArcadeRaceLaunch.{c,h},
+#     docs/RACE_LAUNCH_MILESTONE.md RL-8..RL-12, RL-S8b). The token ban of
+#     section 5 of that document is in main_arcade_race_setup_isolation_test.cmake
+#     (rule 4), next to the setup allow-list that names this caller.
+# 16a. Native only and dormant by default: the whole source is one
+#      #if defined(CTR_NATIVE) block, the header includes only stdint.h, and
+#      in MainArcadeRaceLaunch_Frame nothing but plain declarations precede
+#      the dormant check (host not in LINK mode and the core idle), which
+#      returns at once; so with no arcade-link option nothing is touched.
+string(REGEX MATCHALL "#[ \t]*if" caller_ifs "${caller_source}")
+string(REGEX MATCHALL "#[ \t]*endif" caller_endifs "${caller_source}")
+string(REGEX MATCHALL "#[ \t]*(else|elif)" caller_elses "${caller_source}")
+list(LENGTH caller_ifs caller_if_count)
+list(LENGTH caller_endifs caller_endif_count)
+list(LENGTH caller_elses caller_else_count)
+if(NOT caller_if_count EQUAL 1 OR NOT caller_endif_count EQUAL 1 OR NOT caller_else_count EQUAL 0)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must hold exactly one #if/#endif block and no #else/#elif (found ${caller_if_count} #if, ${caller_endif_count} #endif, ${caller_else_count} #else/#elif)")
+endif()
+string(FIND "${caller_source}" "#if defined(CTR_NATIVE)" caller_guard_at)
+if(caller_guard_at EQUAL -1)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must open with #if defined(CTR_NATIVE)")
+endif()
+string(SUBSTRING "${caller_source}" 0 ${caller_guard_at} caller_before_guard)
+ctr_strip_comments("${caller_before_guard}" caller_before_guard)
+if(NOT caller_before_guard MATCHES "^[ \t\r\n]*$")
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} has code before #if defined(CTR_NATIVE)")
+endif()
+if(NOT caller_source MATCHES "#endif[ \t\r\n]*$")
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must end with the #endif of its CTR_NATIVE block")
+endif()
+string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" caller_header_includes "${caller_header}")
+if(NOT "${caller_header_includes}" STREQUAL "#include <stdint.h>")
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_header_path} must include only <stdint.h> (found '${caller_header_includes}')")
+endif()
+set(caller_frame_signature "void MainArcadeRaceLaunch_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)")
+ctr_require_literal("${caller_header_path}" "${caller_header}" "${caller_frame_signature};")
+ctr_find_block("${caller_source_path}" "${caller_code}" "${caller_frame_signature}" caller_frame_begin caller_frame_end)
+math(EXPR caller_frame_length "${caller_frame_end} - ${caller_frame_begin} + 1")
+string(SUBSTRING "${caller_code}" ${caller_frame_begin} ${caller_frame_length} caller_frame_block)
+if(NOT caller_frame_block MATCHES "^\\{([ \t\r\n]*struct[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*\\*?[ \t]*[A-Za-z_][A-Za-z0-9_]*( = &s_mainArcadeRaceLaunch)?;)*[ \t\r\n]*if \\(\\(NativeArcadeLinkHost_Mode\\(\\) != \\(uint32_t\\)NATIVE_ARCADE_LINK_HOST_MODE_LINK\\) && \\(state->core\\.phase == MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_IDLE\\)\\)[ \t\r\n]*\\{[ \t\r\n]*return;[ \t\r\n]*\\}")
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_Frame must return first, before touching anything, when the host is not in LINK mode and no race is in progress")
+endif()
+
+# 16b. Two separate racing reads (RL-8, and RL-S7 interpretation f): the
+#      hook's gather reads it before the host tick for the policy (section
+#      5b), and the caller reads it exactly once, in its own gather, into the
+#      core's hostRacing, after the tick (the caller is stepped after the
+#      hook, 6a). Neither is fed from the other: the caller never names the
+#      policy, and the hook never names the launch core. The caller gathers,
+#      steps, and applies exactly once per frame.
+ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_Gather(" caller_gather_begin caller_gather_end)
+math(EXPR caller_gather_length "${caller_gather_end} - ${caller_gather_begin} + 1")
+string(SUBSTRING "${caller_code}" ${caller_gather_begin} ${caller_gather_length} caller_gather_block)
+ctr_require_literal("${caller_source_path} (MainArcadeRaceLaunch_Gather)" "${caller_gather_block}"
+    "input->hostRacing = (NativeArcadeLinkHost_Racing() != 0u) ? 1u : 0u;")
+string(REGEX MATCHALL "NativeArcadeLinkHost_Racing\\(" caller_racing_calls "${caller_code}")
+list(LENGTH caller_racing_calls caller_racing_call_count)
+if(NOT caller_racing_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must call NativeArcadeLinkHost_Racing exactly once, in MainArcadeRaceLaunch_Gather (found ${caller_racing_call_count})")
+endif()
+ctr_forbid("${caller_source_path}" "${caller_code}" "MainArcadeLinkPolicy")
+ctr_forbid("${hook_source_path}" "${hook_source}" "MainArcadeRaceLaunchCore")
+ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_Frame)" "${caller_frame_block}"
+    "MainArcadeRaceLaunch_Gather(gGT, gGS, &input);"
+    "MainArcadeRaceLaunchCore_Step(&state->core, &input, &output)"
+    "if (output.armAndLaunch != 0u)" "MainArcadeRaceLaunch_ArmAndLaunch(&output);"
+    "MainArcadeRaceLaunch_Apply(gGT, &output);")
+foreach(call IN ITEMS "MainArcadeRaceLaunchCore_Step\\(" "MainArcadeRaceLaunch_Gather\\(gGT" "MainArcadeRaceLaunch_Apply\\(gGT")
+    string(REGEX MATCHALL "${call}" call_hits "${caller_code}")
+    list(LENGTH call_hits call_hit_count)
+    if(NOT call_hit_count EQUAL 1)
+        message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must call '${call}' exactly once, once per frame (found ${call_hit_count})")
+    endif()
+endforeach()
+
+# 16c. Launch: the agreed config, then Arm, then Launch, then the result fed
+#      back to the core on the same frame with the same output.
+ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_ArmAndLaunch(" arm_begin arm_end)
+math(EXPR arm_length "${arm_end} - ${arm_begin} + 1")
+string(SUBSTRING "${caller_code}" ${arm_begin} ${arm_length} arm_block)
+ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_ArmAndLaunch)" "${arm_block}"
+    "NativeArcadeLinkHost_GetAgreedConfig(&state->config)" "MainArcadeRaceSetup_Arm(" "MainArcadeRaceSetup_Launch()"
+    "MainArcadeRaceLaunchCore_LaunchResult(&state->core, result, output)")
+
+# 16d. The core's decisions are applied in its order, each only when the core
+#      sets it: leave the title, report the failure or the finish, the return
+#      step, the rehearsal pads, the pad clear, and the Disarm.
+ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_Apply(" apply_begin apply_end)
+math(EXPR apply_length "${apply_end} - ${apply_begin} + 1")
+string(SUBSTRING "${caller_code}" ${apply_begin} ${apply_length} apply_block)
+ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_Apply)" "${apply_block}"
+    "if (output->leaveTitle != 0u)" "MainArcadeRaceLaunch_LeaveTitle();"
+    "if (output->reportFailure != 0u)" "NativeArcadeLinkHost_ReportRaceFailure();"
+    "else if (output->reportFinished != 0u)" "state->finishedPending = 1u;"
+    "if (output->requestReturn != 0u)" "MainArcadeRaceLaunch_RequestReturn(gGT);"
+    "if (output->installPads != 0u)" "MainArcadeRaceLaunch_InstallPads();"
+    "if (output->clearPads != 0u)" "Platform_InputClearInstalledPadSnapshots();"
+    "if (output->disarm != 0u)" "MainArcadeRaceSetup_Disarm();")
+foreach(pair
+        "if (output->leaveTitle != 0u)|MainArcadeRaceLaunch_LeaveTitle();"
+        "if (output->requestReturn != 0u)|MainArcadeRaceLaunch_RequestReturn(gGT);"
+        "if (output->installPads != 0u)|MainArcadeRaceLaunch_InstallPads();"
+        "if (output->disarm != 0u)|MainArcadeRaceSetup_Disarm();")
+    string(REPLACE "|" ";" pair_items "${pair}")
+    list(GET pair_items 0 guard)
+    list(GET pair_items 1 call)
+    ctr_find_block("${caller_source_path} (MainArcadeRaceLaunch_Apply)" "${apply_block}" "${guard}" guard_begin guard_end)
+    math(EXPR guard_length "${guard_end} - ${guard_begin} + 1")
+    string(SUBSTRING "${apply_block}" ${guard_begin} ${guard_length} guard_block)
+    ctr_require_literal("${caller_source_path} (${guard})" "${guard_block}" "${call}")
+endforeach()
+foreach(name IN ITEMS MainArcadeRaceLaunch_LeaveTitle MainArcadeRaceLaunch_RequestReturn MainArcadeRaceLaunch_InstallPads
+        MainArcadeRaceSetup_Disarm NativeArcadeLinkHost_ReportRaceFailure Platform_InputInstallPadSnapshots)
+    string(REGEX MATCHALL "${name}\\(" name_hits "${caller_code}")
+    list(LENGTH name_hits name_hit_count)
+    if(name MATCHES "^MainArcadeRaceLaunch_")
+        set(expected 2)
+    else()
+        set(expected 1)
+    endif()
+    if(NOT name_hit_count EQUAL expected)
+        message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must name ${name}( ${expected} time(s), its definition and its one call where it has one (found ${name_hit_count})")
+    endif()
+endforeach()
+
+# 16e. The pad clear frame (RL-10): the installed pads are cleared only when
+#      the core sets clearPads, which it never sets on the end frame or
+#      before the return step's frame (the core's rule, pinned by
+#      tests/main_arcade_race_launch_core_test.c). So the caller makes
+#      exactly one clear call, alone with its log line inside the clearPads
+#      block, and never in the report, return, or install blocks; and no
+#      other game source clears installed pads. The pads installed are the
+#      proof's neutral pads.
+string(REGEX MATCHALL "Platform_InputClearInstalledPadSnapshots\\(" clear_calls "${caller_code}")
+list(LENGTH clear_calls clear_call_count)
+if(NOT clear_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must call Platform_InputClearInstalledPadSnapshots exactly once (found ${clear_call_count})")
+endif()
+ctr_find_block("${caller_source_path} (MainArcadeRaceLaunch_Apply)" "${apply_block}" "if (output->clearPads != 0u)" clear_begin clear_end)
+math(EXPR clear_length "${clear_end} - ${clear_begin} + 1")
+string(SUBSTRING "${apply_block}" ${clear_begin} ${clear_length} clear_block)
+if(NOT clear_block MATCHES "^\\{[ \t\r\n]*Platform_InputClearInstalledPadSnapshots\\(\\);[ \t\r\n]*Platform_Log\\([^;]*\\);[ \t\r\n]*\\}$")
+    message(FATAL_ERROR "arcade link hook isolation: the clearPads block of ${caller_source_path} must be the pad clear and its log line only (found '${clear_block}')")
+endif()
+foreach(guard IN ITEMS "if (output->reportFailure != 0u)" "else if (output->reportFinished != 0u)" "if (output->requestReturn != 0u)"
+        "if (output->installPads != 0u)")
+    ctr_find_block("${caller_source_path} (MainArcadeRaceLaunch_Apply)" "${apply_block}" "${guard}" other_begin other_end)
+    math(EXPR other_length "${other_end} - ${other_begin} + 1")
+    string(SUBSTRING "${apply_block}" ${other_begin} ${other_length} other_block)
+    string(FIND "${other_block}" "Platform_InputClearInstalledPadSnapshots" misplaced_clear_at)
+    if(NOT misplaced_clear_at EQUAL -1)
+        message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} clears the pads inside '${guard}'; only the clearPads block may")
+    endif()
+endforeach()
+file(GLOB_RECURSE clear_scan_paths "${repo}/game/*.c" "${repo}/game/*.h")
+foreach(path IN LISTS clear_scan_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    if(relative_path STREQUAL caller_source_path)
+        continue()
+    endif()
+    file(READ "${path}" source)
+    string(FIND "${source}" "Platform_InputClearInstalledPadSnapshots" clear_hit)
+    if(NOT clear_hit EQUAL -1)
+        ctr_strip_comments("${source}" code)
+        string(FIND "${code}" "Platform_InputClearInstalledPadSnapshots" clear_code_hit)
+        if(NOT clear_code_hit EQUAL -1)
+            message(FATAL_ERROR "arcade link hook isolation: ${relative_path} names Platform_InputClearInstalledPadSnapshots; only ${caller_source_path} clears installed pads")
+        endif()
+    endif()
+endforeach()
+ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_InstallPads(void)" pads_begin pads_end)
+math(EXPR pads_length "${pads_end} - ${pads_begin} + 1")
+string(SUBSTRING "${caller_code}" ${pads_begin} ${pads_length} pads_block)
+ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_InstallPads)" "${pads_block}"
+    "NativeArcadeRosterProof_ScriptedPads(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, pads);"
+    "(void)Platform_InputInstallPadSnapshots(snapshots, PLATFORM_INPUT_PAD_COUNT);")
+
+# 16f. The duplicated LeaveTitle (RL-8): the caller's copy and the roster
+#      proof's MainArcadeRosterProof_LeaveTitle have the same body, so they
+#      make the same calls in the same order (compared on the comment-free
+#      code, whitespace collapsed).
+set(proof_source_path "game/MAIN/MainArcadeRosterProof.c")
+ctr_read_source("${proof_source_path}" proof_source)
+ctr_strip_comments("${proof_source}" proof_code)
+ctr_find_block("${proof_source_path}" "${proof_code}" "static void MainArcadeRosterProof_LeaveTitle(void)" proof_leave_begin proof_leave_end)
+math(EXPR proof_leave_length "${proof_leave_end} - ${proof_leave_begin} + 1")
+string(SUBSTRING "${proof_code}" ${proof_leave_begin} ${proof_leave_length} proof_leave_block)
+ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_LeaveTitle(void)" caller_leave_begin caller_leave_end)
+math(EXPR caller_leave_length "${caller_leave_end} - ${caller_leave_begin} + 1")
+string(SUBSTRING "${caller_code}" ${caller_leave_begin} ${caller_leave_length} caller_leave_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " proof_leave_flat "${proof_leave_block}")
+string(REGEX REPLACE "[ \t\r\n]+" " " caller_leave_flat "${caller_leave_block}")
+if(NOT proof_leave_flat STREQUAL caller_leave_flat)
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_LeaveTitle must make the same calls in the same order as MainArcadeRosterProof_LeaveTitle ('${caller_leave_flat}' vs '${proof_leave_flat}')")
+endif()
+ctr_require_order("${proof_source_path} (MainArcadeRosterProof_LeaveTitle)" "${proof_leave_block}"
+    "MM_Title_CameraReset();" "MM_Title_KillThread();" "RECTMENU_Hide(&MM_MENU_MAIN);" "sdata->ptrDesiredMenu = NULL;"
+    "sdata->ptrActiveMenu = NULL;")
+
+# 16g. The RL-12 line, one per validated race, through the setup's digests.
+ctr_require_literal("${caller_source_path}" "${caller_code}" "#define MAIN_ARCADE_RACE_LAUNCH_LOG \"[CTR Native] arcade link: \"")
+ctr_require_order("${caller_source_path}" "${caller_code}"
+    "static void MainArcadeRaceLaunch_LogDigests(uint32_t raceNumber)"
+    "MainArcadeRaceSetup_Digests(digests[0], digests[1], digests[2], digests[3])"
+    "MAIN_ARCADE_RACE_LAUNCH_LOG \"race %u validated config %s plan %s bots %s bank %s\\n\""
+    "if (output->validated != 0u)" "MainArcadeRaceLaunch_LogDigests(output->raceNumber);")

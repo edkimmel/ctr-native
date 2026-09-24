@@ -9,7 +9,9 @@
  * Every decision lives in the pure, unit-tested MAIN/MainArcadeLinkPolicy.c
  * and, for the menu sounds (section 3.1), MAIN/MainArcadeLinkSound.c; this
  * file gathers their inputs from the game, applies their outputs, ticks the
- * host, draws, and plays the chosen retail menu sound.
+ * host, draws, and plays the chosen retail menu sound. The host's START_RACE
+ * is handed to the race caller (MAIN/MainArcadeRaceLaunch.h,
+ * docs/RACE_LAUNCH_MILESTONE.md RL-S8b), whose finish report feeds the tick.
  *
  * Unity-included after the 230 overlay sources, because it reads the title
  * state (MM_TITLE_MENU_STATE, MM_TITLE_INTRO_FRAME) and the retail main-menu
@@ -25,6 +27,7 @@
 #include "MAIN/MainArcadeLinkPolicy.h"
 #include "MAIN/MainArcadeLinkSound.h"
 #include "MAIN/MainArcadeLink.h"
+#include "MAIN/MainArcadeRaceLaunch.h"
 
 /* The layout builder mirrors these retail values without including game
  * headers; keep the mirrors honest. */
@@ -274,7 +277,9 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 		(void)NativeArcadeLinkHost_Enter();
 	}
 
-	action = NativeArcadeLinkHost_Tick(output->heldButtons, 0u);
+	/* The race caller's finish report is the host's raceFinished input
+	 * (docs/RACE_LAUNCH_MILESTONE.md RL-10). */
+	action = NativeArcadeLinkHost_Tick(output->heldButtons, MainArcadeRaceLaunch_RaceFinished());
 
 	if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)
 	{
@@ -283,17 +288,11 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 		{
 			MainArcadeLink_LogAgreedMatch(&match);
 		}
-		Platform_Log("[CTR Native] arcade link: networked race launch is not wired yet (docs/GAME_LOOP_UI_MILESTONE.md Task 7); returning to title\n");
-		NativeArcadeLinkHost_AbortToTitle();
-		/* A fresh link on the attract screen: no previous view for sounds. */
-		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
-		/* AbortToTitle falls back to mode OFF if the link cannot reopen. The
-		 * next frame's OFF early return touches nothing, so give the box back
-		 * now or it would stay hidden forever. */
-		if (NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF)
-		{
-			MainArcadeLink_RestoreMainMenu();
-		}
+		/* RL-8: the race caller (MAIN/MainArcadeRaceLaunch.c) takes the
+		 * launch from here, on this frame's step right after this hook. No
+		 * abort to the title and no sound snapshot reset: the flow is on
+		 * RACING now and the snapshot keeps tracking it. */
+		MainArcadeRaceLaunch_StartRace();
 	}
 	else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)
 	{

@@ -565,7 +565,10 @@ static int TestFinalizeInitBegin(void)
 
 	LoadedBeginView(&s_plan, &begin);
 
-	/* Verification failures write nothing. */
+	/* Verification failures write nothing. The main-menu level in LAUNCHED is
+	 * also the expected second failure of an abort whose return load replaced
+	 * the queued race level (docs/RACE_LAUNCH_MILESTONE.md RL-9): unlike
+	 * VALIDATED, LAUNCHED has no main-menu no-op. */
 	broken = begin;
 	broken.fields.levelID = LIVE_MAIN_MENU_LEVEL;
 	CHECK(ExpectBeginFails(&broken, MAIN_ARCADE_RACE_SETUP_FAILURE_LEVEL_MISMATCH) == 0);
@@ -804,8 +807,10 @@ static int TestDriversInitialized(void)
 		CHECK(memcmp(again[2], botSetupDigest, sizeof(again[2])) == 0 && memcmp(again[3], bankDigest, sizeof(again[3])) == 0);
 	}
 
-	/* VALIDATED: the drivers hook is a no-op; a new race init latches STATE
-	 * without writing. */
+	/* VALIDATED: the drivers hook is a no-op and does not read its view; the
+	 * pre-drivers hook reads its view (RL-9: the level being initialized). */
+	CHECK(MainArcadeRaceSetupCore_HookReadsView(&s_core, MAIN_ARCADE_RACE_SETUP_CORE_HOOK_FINALIZE_INIT_BEGIN) == 1);
+	CHECK(MainArcadeRaceSetupCore_HookReadsView(&s_core, MAIN_ARCADE_RACE_SETUP_CORE_HOOK_DRIVERS_INITIALIZED) == 0);
 	before = s_core;
 	CHECK(MainArcadeRaceSetupCore_OnDriversInitialized(&s_core, &s_drivers, &s_scratch, &s_outcome) == 0);
 	CHECK(ExpectNoOp(&s_core, &before, &s_outcome) == 0);
@@ -815,6 +820,44 @@ static int TestDriversInitialized(void)
 	{
 		struct MainArcadeRaceSetupCoreBeginView begin;
 
+		/* RL-9: the return load to the main-menu level after the race is a
+		 * no-op in VALIDATED (the owner Disarms on the first idle main-menu
+		 * frame after it): nothing written, nothing changed, and the
+		 * validated results still readable. */
+		LoadedBeginView(&s_plan, &begin);
+		begin.fields.levelID = LIVE_MAIN_MENU_LEVEL;
+		begin.numPlyrCurrGame = 1u;
+		CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_core, &begin, &s_scratch, &s_outcome) == 0);
+		CHECK(ExpectNoOp(&s_core, &before, &s_outcome) == 0);
+		CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_VALIDATED);
+		CHECK(MainArcadeRaceSetupCore_Digests(&s_core, configDigest, racePlanDigest, botSetupDigest, bankDigest) == 1);
+		CHECK(MainArcadeRaceSetupCore_SlotFacts(&s_core, &facts) == 1);
+		/* Again (a second main-menu init before the Disarm): still a no-op. */
+		CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_core, &begin, &s_scratch, &s_outcome) == 0);
+		CHECK(ExpectNoOp(&s_core, &before, &s_outcome) == 0);
+
+		/* VALIDATED with no tracker, even with the main-menu level in the
+		 * view, still latches STATE without writing. */
+		CHECK(ArmLaunchSeedValidate(&s_other) == 1);
+		begin.trackerPresent = 0u;
+		CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_other, &begin, &s_scratch, &s_outcome) == 0);
+		CHECK(ExpectFailed(&s_other, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
+
+		/* SEEDED on the main-menu level still latches STATE: the no-op is
+		 * VALIDATED's only. */
+		CHECK(ArmLaunchSeed(&s_other) == 1);
+		begin.trackerPresent = 1u;
+		CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_other, &begin, &s_scratch, &s_outcome) == 0);
+		CHECK(ExpectFailed(&s_other, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
+
+		/* FAILED stays a no-op on the main-menu level too. */
+		before = s_other;
+		CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_other, &begin, &s_scratch, &s_outcome) == 0);
+		CHECK(ExpectNoOp(&s_other, &before, &s_outcome) == 0);
+		CHECK(MainArcadeRaceSetupCore_HookReadsView(&s_other, MAIN_ARCADE_RACE_SETUP_CORE_HOOK_FINALIZE_INIT_BEGIN) == 0);
+
+		/* VALIDATED with a race level (a new race init over the validated
+		 * setup) latches STATE without writing. */
 		LoadedBeginView(&s_plan, &begin);
 		CHECK(MainArcadeRaceSetupCore_OnFinalizeInitBegin(&s_core, &begin, &s_scratch, &s_outcome) == 0);
 		CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);

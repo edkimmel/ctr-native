@@ -18,7 +18,8 @@
 #     is named by exactly one CMake target, the library links nothing, and it
 #     is C17 with extensions off;
 #  5. it is never unity-included, and among the tests only its unit test
-#     links it (ctr_native may link it from RL-S8b on);
+#     links it; since RL-S8b ctr_native links it too (the live race caller,
+#     game/MAIN/MainArcadeRaceLaunch.c, drives it);
 #  6. the three RL-8/RL-10 bounds are defined literally, exactly once:
 #     launchWindowTimeoutTicks 900, launchValidateTimeoutTicks 1800, and
 #     launchRehearsalTicks 150; and the setup status mirrors match the order
@@ -204,19 +205,25 @@ ctr_read_source("game/game_unity.h" unity)
 ctr_forbid("game/game_unity.h" "${unity}" "MainArcadeRaceLaunchCore")
 string(REGEX MATCHALL "target_link_libraries\\([ \t\r\n]*[A-Za-z0-9_]+[^)]*\\)" all_link_calls "${cmake}")
 set(linked_by_test 0)
+set(linked_by_game 0)
 foreach(link_call IN LISTS all_link_calls)
     string(REGEX REPLACE "^target_link_libraries\\([ \t\r\n]*([A-Za-z0-9_]+).*$" "\\1" linking_target "${link_call}")
     string(REGEX MATCH "[ \t\r\n]${target}[ \t\r\n)]" names_module "${link_call}")
     if(names_module)
         if(linking_target STREQUAL "main_arcade_race_launch_core_test")
             set(linked_by_test 1)
-        elseif(NOT linking_target STREQUAL "ctr_native")
+        elseif(linking_target STREQUAL "ctr_native")
+            set(linked_by_game 1)
+        else()
             message(FATAL_ERROR "${prefix}: ${linking_target} links ${target}; only main_arcade_race_launch_core_test (and ctr_native) may")
         endif()
     endif()
 endforeach()
 if(NOT linked_by_test)
     message(FATAL_ERROR "${prefix}: main_arcade_race_launch_core_test must link ${target}")
+endif()
+if(NOT linked_by_game)
+    message(FATAL_ERROR "${prefix}: ctr_native must link ${target} (the RL-S8b race caller drives it)")
 endif()
 
 # 6. The bounds, literally and once each, and the setup status mirrors.

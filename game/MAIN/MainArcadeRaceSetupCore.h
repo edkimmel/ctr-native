@@ -40,8 +40,12 @@
  * Wrong state (STATE): Arm outside IDLE and Launch outside ARMED return 0;
  * while a setup is in flight (ARMED, LAUNCHED, SEEDED, VALIDATED) the misuse
  * also latches FAILED/STATE, and from IDLE or FAILED nothing changes (the
- * outcome log is REFUSED). OnFinalizeInitBegin in SEEDED or VALIDATED, and
- * OnDriversInitialized in LAUNCHED, latch FAILED/STATE. A hook that should act
+ * outcome log is REFUSED). OnFinalizeInitBegin in SEEDED (any level) or
+ * VALIDATED (any level but the main-menu level, or without a tracker), and
+ * OnDriversInitialized in LAUNCHED, latch FAILED/STATE. OnFinalizeInitBegin in
+ * VALIDATED with a tracker on the main-menu level is the return load after the
+ * race (docs/RACE_LAUNCH_MILESTONE.md RL-9, the owner Disarms only on the
+ * first idle main-menu frame after it): a no-op. A hook that should act
  * (OnFinalizeInitBegin in LAUNCHED, OnDriversInitialized in SEEDED) without a
  * game tracker latches FAILED/NO_TRACKER. Every other hook call is a no-op:
  * no write, no state change.
@@ -322,7 +326,9 @@ struct MainArcadeRaceSetupCoreLaunchView
 };
 
 /* The live values the pre-drivers hook reads. Only trackerPresent is read
- * unless MainArcadeRaceSetupCore_HookReadsView says the hook acts. */
+ * unless MainArcadeRaceSetupCore_HookReadsView says the hook reads the view:
+ * in LAUNCHED (the hook acts) and in VALIDATED (only fields.levelID is read,
+ * to tell the RL-9 return to the main-menu level from a new race init). */
 struct MainArcadeRaceSetupCoreBeginView
 {
 	uint8_t trackerPresent;  /* the hook's game tracker is not NULL */
@@ -426,9 +432,11 @@ int MainArcadeRaceSetupCore_Arm(struct MainArcadeRaceSetupCore *core, const stru
 int MainArcadeRaceSetupCore_Launch(struct MainArcadeRaceSetupCore *core,
 	const struct MainArcadeRaceSetupCoreLaunchView *view, struct MainArcadeRaceSetupCoreOutcome *outcome);
 
-/* 1 when the hook acts in the current state and so reads the whole view
- * (FINALIZE_INIT_BEGIN in LAUNCHED, DRIVERS_INITIALIZED in SEEDED), else 0
- * (also for NULL): the adapter then fills only trackerPresent. */
+/* 1 when the hook reads the whole view in the current state: when it acts
+ * (FINALIZE_INIT_BEGIN in LAUNCHED, DRIVERS_INITIALIZED in SEEDED), and
+ * FINALIZE_INIT_BEGIN in VALIDATED, whose RL-9 main-menu no-op needs the
+ * level being initialized (fields.levelID). Else 0 (also for NULL): the
+ * adapter then fills only trackerPresent. */
 int MainArcadeRaceSetupCore_HookReadsView(const struct MainArcadeRaceSetupCore *core, enum MainArcadeRaceSetupCoreHook hook);
 
 /*
@@ -442,6 +450,12 @@ int MainArcadeRaceSetupCore_HookReadsView(const struct MainArcadeRaceSetupCore *
  * emits its ops (the mode fields, the pinned counters, the seeds), keeps the
  * post-seed bank, and moves to SEEDED. Every failure writes nothing. Returns 1
  * when it moved to SEEDED.
+ * In VALIDATED with a tracker and fields.levelID the main-menu level
+ * (MAIN_ARCADE_RACE_SETUP_CORE_MAIN_MENU_LEVEL) it is a no-op (RL-9: the return
+ * load after the race, before the owner's deferred Disarm): no write, no state
+ * change, log NONE. In SEEDED on any level, and in VALIDATED on any other
+ * level or without a tracker, it latches FAILED/STATE. In FAILED, IDLE, and
+ * ARMED it is a no-op on every level.
  */
 int MainArcadeRaceSetupCore_OnFinalizeInitBegin(struct MainArcadeRaceSetupCore *core,
 	const struct MainArcadeRaceSetupCoreBeginView *view, struct MainArcadeRaceSetupCoreScratch *scratch,

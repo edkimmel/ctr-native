@@ -269,6 +269,13 @@
 #include "MAIN/MainArcadeLinkPolicy.c"
 #include "MAIN/MainArcadeLinkSound.c"
 #include "MAIN/MainArcadeLink.c"
+// Live race caller (docs/RACE_LAUNCH_MILESTONE.md RL-S8b), CTR_NATIVE only:
+// after the arcade-link hook, whose START_RACE it takes and whose title
+// launch window it reuses, and the 230 title it leaves; after
+// MainArcadeRaceSetup above, which it arms, launches, and disarms. Its pure
+// decision core is a linked library, never included here.
+// MainFrame_RenderFrame.c calls it through MAIN/MainArcadeRaceLaunch.h.
+#include "MAIN/MainArcadeRaceLaunch.c"
 // Internal roster proof launcher (docs/ROSTER_MILESTONE.md section 3.4),
 // CTR_NATIVE and CTR_INTERNAL only: after the arcade-link hook, whose
 // menu-ready condition it reuses, and the 230 title it closes; after

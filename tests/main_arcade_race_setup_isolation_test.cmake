@@ -8,8 +8,10 @@
 #     MainInit_Drivers(gGT), each exactly once, each inside a CTR_NATIVE
 #     guard; no other file calls either hook;
 #  2. MainArcadeRaceSetup_Arm, MainArcadeRaceSetup_Launch, and
-#     MainArcadeRaceSetup_Disarm are named only in MainArcadeRaceSetup.{c,h}
-#     and MainArcadeRosterProof.c (Task 7 adds its caller), and
+#     MainArcadeRaceSetup_Disarm are named only in MainArcadeRaceSetup.{c,h},
+#     MainArcadeRosterProof.c, and exactly one Task 7 caller file, the live
+#     race caller MainArcadeRaceLaunch.c (docs/RACE_LAUNCH_MILESTONE.md
+#     RL-S8b), which names each exactly once; and
 #     MainArcadeRosterProof_Frame only in MainArcadeRosterProof.{c,h} and
 #     MainFrame_RenderFrame.c;
 #  3. MainArcadeRaceSetup.c is one CTR_NATIVE block and MainArcadeRosterProof.c
@@ -18,19 +20,22 @@
 #     CTR_NATIVE && CTR_INTERNAL guard between the arcade-link hook and the
 #     retail menu-input collect;
 #  4. no lease, topology capture, checkpoint, replay, lockstep, or
-#     match-select token in the adapter or the proof hook (sources and
-#     headers), and neither they nor the decision core write levelID in any
+#     match-select token in the adapter, the proof hook, or the race caller
+#     (sources and headers; for the race caller also no NativeCanonical
+#     token, section 5 of docs/RACE_LAUNCH_MILESTONE.md), and neither they
+#     nor the decision core write levelID in any
 #     spelling (gGT->levelID, sdata->gGT->levelID, (*gGT).levelID, compound
 #     assignment, increment, or taking its address); the one levelID store
 #     allowed is the adapter's copy into its pointer-free mirror;
 #  5. the adapter state and scratch are file-scope statics, the only objects
 #     of their types, and platform/native_checkpoint.c and every replay
-#     module never name MainArcadeRaceSetup;
+#     module never name MainArcadeRaceSetup or the race caller;
 #  6. LOAD_Hub_ReadFile gains no hook;
 #  7. the unity chain includes the adapter after the MainCanonical* sources
-#     and before the arcade-link sources, and the proof hook after the
-#     arcade-link hook and before the 231 overlay; the pure plan, facts, and
-#     decision core are linked, never unity-included;
+#     and before the arcade-link sources, the race caller right after the
+#     arcade-link hook, and the proof hook after the race caller and before
+#     the 231 overlay; the pure plan, facts, and decision core are linked,
+#     never unity-included;
 #  8. ctr_native links the plan, the facts, the decision core, and the proof
 #     libraries, and neither ctr_native_arcade_setup_v4 nor a V4 projector
 #     directly; the proof library links exactly the link options, the
@@ -78,6 +83,8 @@ set(adapter_source "game/MAIN/MainArcadeRaceSetup.c")
 set(adapter_header "game/MAIN/MainArcadeRaceSetup.h")
 set(proof_source "game/MAIN/MainArcadeRosterProof.c")
 set(proof_header "game/MAIN/MainArcadeRosterProof.h")
+set(caller_source "game/MAIN/MainArcadeRaceLaunch.c")
+set(caller_header "game/MAIN/MainArcadeRaceLaunch.h")
 
 function(ctr_read_source relative_path out_var)
     set(path "${repo}/${relative_path}")
@@ -200,8 +207,11 @@ ctr_read_source("${adapter_source}" adapter)
 ctr_read_source("${adapter_header}" adapter_h)
 ctr_read_source("${proof_source}" proof)
 ctr_read_source("${proof_header}" proof_h)
+ctr_read_source("${caller_source}" caller)
+ctr_read_source("${caller_header}" caller_h)
 ctr_strip_comments("${adapter}" adapter_code)
 ctr_strip_comments("${proof}" proof_code)
+ctr_strip_comments("${caller}" caller_code)
 
 # 1. The hooks in MainInit_FinalizeInit.
 set(init_path "game/MAIN/MainInit.c")
@@ -256,9 +266,10 @@ foreach(path IN LISTS scan_files)
     endforeach()
     foreach(call IN ITEMS MainArcadeRaceSetup_Arm MainArcadeRaceSetup_Launch MainArcadeRaceSetup_Disarm)
         ctr_count_identifier("${code}" "${call}" hits)
+        # The one Task 7 caller file is the live race caller (RL-S8b).
         if(hits GREATER 0 AND NOT relative_path STREQUAL adapter_source AND NOT relative_path STREQUAL adapter_header
-                AND NOT relative_path STREQUAL proof_source)
-            message(FATAL_ERROR "${prefix}: ${relative_path} names ${call}; only ${adapter_source}, ${adapter_header}, and ${proof_source} may")
+                AND NOT relative_path STREQUAL proof_source AND NOT relative_path STREQUAL caller_source)
+            message(FATAL_ERROR "${prefix}: ${relative_path} names ${call}; only ${adapter_source}, ${adapter_header}, ${proof_source}, and ${caller_source} may")
         endif()
     endforeach()
 endforeach()
@@ -299,6 +310,14 @@ foreach(call IN ITEMS MainArcadeRaceSetup_Arm MainArcadeRaceSetup_Launch)
         message(FATAL_ERROR "${prefix}: ${proof_source} must call ${call} exactly once (found ${proof_hits})")
     endif()
 endforeach()
+# The race caller Arms, Launches, and Disarms, each in exactly one place.
+foreach(call IN ITEMS MainArcadeRaceSetup_Arm MainArcadeRaceSetup_Launch MainArcadeRaceSetup_Disarm)
+    ctr_count_identifier("${caller_code}" "${call}" caller_hits)
+    if(NOT caller_hits EQUAL 1)
+        message(FATAL_ERROR "${prefix}: ${caller_source} must call ${call} exactly once (found ${caller_hits})")
+    endif()
+endforeach()
+ctr_require_whole_file_guard("${caller_source}" "${caller}" "#if defined(CTR_NATIVE)")
 
 # 3. Guards, the proof's dormant early return, and its render-frame call.
 ctr_require_whole_file_guard("${adapter_source}" "${adapter}" "#if defined(CTR_NATIVE)")
@@ -334,11 +353,25 @@ set(banned_tokens
     Lockstep lockstep LOCKSTEP NativeMatchSelect native_match_select NATIVE_MATCH_SELECT
     Acquire Activate Publish Retire LOAD_Hub_ReadFile
     malloc calloc realloc "free(" alloca)
-foreach(pair "${adapter_source}|adapter" "${adapter_header}|adapter_h" "${proof_source}|proof" "${proof_header}|proof_h")
+foreach(pair "${adapter_source}|adapter" "${adapter_header}|adapter_h" "${proof_source}|proof" "${proof_header}|proof_h"
+        "${caller_source}|caller" "${caller_header}|caller_h")
     string(REPLACE "|" ";" pair_items "${pair}")
     list(GET pair_items 0 relative_path)
     list(GET pair_items 1 variable)
     foreach(term IN LISTS banned_tokens)
+        ctr_forbid("${relative_path}" "${${variable}}" "${term}")
+    endforeach()
+endforeach()
+# The race caller: the section 5 ban of docs/RACE_LAUNCH_MILESTONE.md (the
+# token list of tests/native_arcade_launch_isolation_test.cmake, as the
+# decision core's isolation applies it) on top of the list above, whole files
+# with comments: no topology-lease acquire, activate, capture, or publish
+# token, and no checkpoint, replay, or NativeCanonical token.
+foreach(pair "${caller_source}|caller" "${caller_header}|caller_h")
+    string(REPLACE "|" ";" pair_items "${pair}")
+    list(GET pair_items 0 relative_path)
+    list(GET pair_items 1 variable)
+    foreach(term IN ITEMS TopologyLease topology_lease NativeCanonical NATIVE_CANONICAL ACQUIRE ACTIVATE CAPTURE PUBLISH)
         ctr_forbid("${relative_path}" "${${variable}}" "${term}")
     endforeach()
 endforeach()
@@ -374,7 +407,7 @@ endforeach()
 set(core_source "game/MAIN/MainArcadeRaceSetupCore.c")
 ctr_read_source("${core_source}" core)
 ctr_strip_comments("${core}" core_code)
-foreach(pair "${adapter_source}|adapter_code" "${proof_source}|proof_code" "${core_source}|core_code")
+foreach(pair "${adapter_source}|adapter_code" "${proof_source}|proof_code" "${caller_source}|caller_code" "${core_source}|core_code")
     string(REPLACE "|" ";" pair_items "${pair}")
     list(GET pair_items 0 relative_path)
     list(GET pair_items 1 variable)
@@ -462,6 +495,7 @@ foreach(path IN LISTS replay_paths)
     ctr_forbid("${relative_path}" "${source}" "MainArcadeRaceSetup")
     ctr_forbid("${relative_path}" "${source}" "MainArcadeRosterProof")
     ctr_forbid("${relative_path}" "${source}" "s_mainArcadeRaceSetup")
+    ctr_forbid("${relative_path}" "${source}" "MainArcadeRaceLaunch")
 endforeach()
 
 # 6. LOAD_Hub_ReadFile gains no hook.
@@ -471,7 +505,7 @@ ctr_strip_comments("${hub}" hub_code)
 ctr_find_block("${hub_path}" "${hub_code}" "void LOAD_Hub_ReadFile(struct BigHeader *bigfile, int levID, int packID)" hub_begin hub_end)
 math(EXPR hub_length "${hub_end} - ${hub_begin} + 1")
 string(SUBSTRING "${hub_code}" ${hub_begin} ${hub_length} hub_body)
-foreach(term IN ITEMS MainArcadeRaceSetup MainArcadeRosterProof NativeArcadeRosterProof)
+foreach(term IN ITEMS MainArcadeRaceSetup MainArcadeRosterProof NativeArcadeRosterProof MainArcadeRaceLaunch)
     ctr_forbid("${hub_path} (LOAD_Hub_ReadFile)" "${hub_body}" "${term}")
 endforeach()
 ctr_forbid("${hub_path}" "${hub}" "MainArcadeRaceSetup")
@@ -483,7 +517,12 @@ ctr_require_order("${unity_path}" "${unity}"
     "#include \"MAIN/MainInit.c\""
     "#include \"MAIN/MainCanonicalTopologyLeaseRuntime.c\"" "#include \"MAIN/MainArcadeRaceSetup.c\""
     "#include \"230.c\"" "#include \"MAIN/MainArcadeLinkLayout.c\"" "#include \"MAIN/MainArcadeLink.c\""
-    "#include \"MAIN/MainArcadeRosterProof.c\"" "#include \"231/R231.c\"")
+    "#include \"MAIN/MainArcadeRaceLaunch.c\"" "#include \"MAIN/MainArcadeRosterProof.c\"" "#include \"231/R231.c\"")
+# The race caller sits right after the arcade-link hook and right before the
+# proof hook: only comments and blank lines between them.
+if(NOT unity MATCHES "#include \"MAIN/MainArcadeLink\\.c\"\n(//[^\n]*\n)*#include \"MAIN/MainArcadeRaceLaunch\\.c\"\n(//[^\n]*\n)*#include \"MAIN/MainArcadeRosterProof\\.c\"")
+    message(FATAL_ERROR "${prefix}: ${unity_path} must include MAIN/MainArcadeRaceLaunch.c right after MAIN/MainArcadeLink.c and right before MAIN/MainArcadeRosterProof.c")
+endif()
 string(REGEX MATCHALL "#include \"MAIN/MainCanonical[A-Za-z]*\\.c\"" canonical_includes "${unity}")
 list(GET canonical_includes -1 last_canonical)
 string(FIND "${unity}" "${last_canonical}" last_canonical_at)
@@ -491,7 +530,7 @@ string(FIND "${unity}" "#include \"MAIN/MainArcadeRaceSetup.c\"" adapter_at)
 if(NOT adapter_at GREATER last_canonical_at)
     message(FATAL_ERROR "${prefix}: ${unity_path} must include the adapter after every MainCanonical* source (last: ${last_canonical})")
 endif()
-foreach(term IN ITEMS "MainArcadeRaceSetup.c\"" "MainArcadeRosterProof.c\"")
+foreach(term IN ITEMS "MainArcadeRaceSetup.c\"" "MainArcadeRosterProof.c\"" "MainArcadeRaceLaunch.c\"")
     string(REGEX MATCHALL "${term}" hits "${unity}")
     list(LENGTH hits count)
     if(NOT count EQUAL 1)

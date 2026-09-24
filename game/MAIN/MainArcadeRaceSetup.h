@@ -64,13 +64,18 @@
  * outside ARMED return 0; while a setup is in flight (ARMED, LAUNCHED,
  * SEEDED, VALIDATED) the misuse also latches FAILED/STATE, since a second
  * owner can no longer be trusted, and from IDLE or FAILED nothing changes.
- * OnFinalizeInitBegin in SEEDED (the drivers hook of the previous race init
- * never ran) or VALIDATED (a new race init over a validated setup, which the
- * owner must Disarm first) latches FAILED/STATE; OnDriversInitialized in
- * LAUNCHED (the seeding hook was skipped) latches FAILED/STATE. A NULL game
- * tracker in a hook that should act (LAUNCHED, SEEDED) latches
- * FAILED/NO_TRACKER. Every other hook call is a no-op, so normal boot and
- * every load not launched here are unchanged.
+ * OnFinalizeInitBegin in SEEDED on any level (the drivers hook of the previous
+ * race init never ran), or in VALIDATED on any level but the main-menu level
+ * or with a NULL game tracker (a new race init over a validated setup, which
+ * the owner must Disarm first), latches FAILED/STATE. OnFinalizeInitBegin in
+ * VALIDATED on the main-menu level is a no-op (docs/RACE_LAUNCH_MILESTONE.md
+ * RL-9): it is the return load after the race, and the race caller Disarms
+ * only on the first idle main-menu frame after it; so in VALIDATED the hook
+ * reads the level being initialized. OnDriversInitialized in LAUNCHED (the
+ * seeding hook was skipped) latches FAILED/STATE. A NULL game tracker in a
+ * hook that should act (LAUNCHED, SEEDED) latches FAILED/NO_TRACKER. Every
+ * other hook call is a no-op, so normal boot and every load not launched here
+ * are unchanged.
  *
  * The state and the scratch are file-scope static in the module: never in a
  * saved state, a recording, or canonical state (RS-11). Every state change and
@@ -86,7 +91,9 @@ int MainArcadeRaceSetup_Arm(const struct NativeMatchConfigV1 *config);
  * failed precondition. Never clears pause itself. */
 int MainArcadeRaceSetup_Launch(void);
 
-/* Hook at the very start of MainInit_FinalizeInit. */
+/* Hook at the very start of MainInit_FinalizeInit. Reads the live fields
+ * only when MainArcadeRaceSetupCore_HookReadsView says so (LAUNCHED, and
+ * VALIDATED for the RL-9 main-menu check). */
 void MainArcadeRaceSetup_OnFinalizeInitBegin(struct GameTracker *gGT);
 
 /* Hook immediately after MainInit_Drivers in MainInit_FinalizeInit. */

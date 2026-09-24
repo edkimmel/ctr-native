@@ -225,7 +225,9 @@ int MainArcadeRaceSetupCore_HookReadsView(const struct MainArcadeRaceSetupCore *
 	}
 	if (hook == MAIN_ARCADE_RACE_SETUP_CORE_HOOK_FINALIZE_INIT_BEGIN)
 	{
-		return core->status == (uint32_t)MAIN_ARCADE_RACE_SETUP_LAUNCHED;
+		/* VALIDATED too (RL-9): the level being initialized decides whether
+		 * the hook is the no-op of a return to the main-menu level. */
+		return (core->status == (uint32_t)MAIN_ARCADE_RACE_SETUP_LAUNCHED) || (core->status == (uint32_t)MAIN_ARCADE_RACE_SETUP_VALIDATED);
 	}
 	if (hook == MAIN_ARCADE_RACE_SETUP_CORE_HOOK_DRIVERS_INITIALIZED)
 	{
@@ -247,6 +249,16 @@ int MainArcadeRaceSetupCore_OnFinalizeInitBegin(struct MainArcadeRaceSetupCore *
 		return 0;
 	}
 	MainArcadeRaceSetupCore_Begin(core, outcome);
+	/* RL-9: the return load to the main-menu level after a validated race
+	 * initializes that level while the owner still holds VALIDATED (its
+	 * Disarm waits for the first idle main-menu frame). That init is not a
+	 * new race init over the setup: a no-op. VALIDATED on any other level,
+	 * or without a tracker, is still one (STATE, below). */
+	if ((core->status == (uint32_t)MAIN_ARCADE_RACE_SETUP_VALIDATED) && (view->trackerPresent != 0u) &&
+	    (view->fields.levelID == MAIN_ARCADE_RACE_SETUP_CORE_MAIN_MENU_LEVEL))
+	{
+		return 0;
+	}
 	if ((core->status == (uint32_t)MAIN_ARCADE_RACE_SETUP_SEEDED) || (core->status == (uint32_t)MAIN_ARCADE_RACE_SETUP_VALIDATED))
 	{
 		MainArcadeRaceSetupCore_Fail(core, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE,

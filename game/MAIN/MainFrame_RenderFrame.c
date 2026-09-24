@@ -2,6 +2,7 @@
 
 #if defined(CTR_NATIVE)
 #include "MAIN/MainArcadeLink.h"
+#include "MAIN/MainArcadeRaceLaunch.h"
 #endif
 
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
@@ -78,6 +79,15 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	 *   resets the retail title demo countdown, so the demo never fires.
 	 */
 	const int arcadeLinkOwnsMenu = MainArcadeLink_Frame(gGT, gGamepads);
+	/*
+	 * Race caller seam (docs/RACE_LAUNCH_MILESTONE.md RL-S8b), stepped once
+	 * per frame right after the arcade-link hook's host tick, on owned,
+	 * ticked, and other frames alike. Dormant unless the host is in LINK
+	 * mode or a race is in progress: MainArcadeRaceLaunch_Frame then returns
+	 * before touching anything. On the launch frame it leaves the title
+	 * itself, so the menu code below sees no active menu.
+	 */
+	MainArcadeRaceLaunch_Frame(gGT, gGamepads);
 #endif
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 	/*
