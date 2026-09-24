@@ -513,7 +513,11 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   once game/UI/UI_Rank.c was fixed in place (a98dccbe8); F-J now run the
   full -Ticks.
 
-## 4. Defaults for owner review
+## 4. Owner-accepted defaults
+
+The owner reviewed and accepted every default below, RS-1..RS-24, so each
+is now an owner decision rather than a pending default (RS-1 also records
+the owner's earlier override of the TWO_CAB-only default).
 
 1. RS-1 (owner decision, which overrode the TWO_CAB-only default): the
    live scope is both profiles. TWO_CAB is the retail 2P arcade single
@@ -559,8 +563,8 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
    repository), section "Decisions intentionally deferred", which leaves
    open whether normalized nav semantics belong in the bot-rules digest or
    are sufficiently diagnosed by content identity plus canonical TOPOLOGY.
-   Bot rules v1 takes the content-identity side; the decision stays with
-   the owner.
+   Bot rules v1 takes the content-identity side, which the owner accepted
+   (section 4 intro).
 10. RS-10: A fact-validation failure latches FAILED and logs; step 3 does
     not abort the race itself. Task 7 decides the player-facing response.
 11. RS-11: Setup state is game-owned static, never checkpointed, replayed,
@@ -615,8 +619,8 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
     deterministic VBlanks per tick (risk 7).
 
 RS-19..RS-24 are the implementation defaults chosen to carry out the
-owner's RS-1 decision; they are pending owner review, not owner decisions
-(risk 15).
+owner's RS-1 decision; the owner has since accepted them with the rest of
+this section, so they are owner decisions.
 
 19. RS-19 (OC-1, eb5ef25ef): Each profile has its own bot-rules encoding
     and digest, and a config's botRulesDigest must be its own profile's:

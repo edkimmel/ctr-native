@@ -477,10 +477,12 @@ header includes no adapter header and names no lockstep, failure-handling,
 or lobby token, which tests/native_arcade_link_host_isolation_test.cmake
 enforces.
 
-## 3. UX defaults for operator review
+## 3. Owner-accepted UX defaults
 
-Each is a default chosen for a two-cabinet, wheel-only kiosk, and is flagged
-for the operator to confirm or change after seeing the built flow.
+Each was chosen as a default for a two-cabinet, wheel-only kiosk and flagged
+for the operator to confirm or change after seeing the built flow. The
+owner has accepted all of them, UX-1..UX-11, as decisions; UX-8 stays
+superseded by match select, as its entry says.
 
 1. UX-1: Confirm is Cross or Start. On the G29 the throttle pedal is also
    Cross (docs/G29_INPUT.md); that is retail behaviour and is kept, made

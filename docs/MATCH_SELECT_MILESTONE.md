@@ -574,10 +574,11 @@ These are decided by the owner, not defaults.
    START_RACE aborts to the title, so the only reachable rematch follows
    a pre-race LINK ERROR and starts from the select base.
 
-## 4. UX defaults for operator review
+## 4. Owner-accepted UX defaults
 
-Each is a default chosen for a two-cabinet, wheel-only kiosk, and is flagged
-for the operator to confirm or change after seeing the built flow.
+Each was chosen as a default for a two-cabinet, wheel-only kiosk and flagged
+for the operator to confirm or change after seeing the built flow. The
+owner has accepted all of them, SEL-1..SEL-17, as decisions.
 
 1. SEL-1: A vote tie resolves by a seeded draw among the tied options only,
    not among all tracks, so a player's vote always counts.
@@ -614,8 +615,7 @@ for the operator to confirm or change after seeing the built flow.
 13. SEL-13: A cabinet can choose its nonce after seeing its peer's (there is
     no commit-reveal). This is acceptable for a trusted kiosk fleet.
 
-Added when the screens were built (MS-9), also flagged for operator
-review:
+Added when the screens were built (MS-9), and also accepted by the owner:
 
 14. SEL-14: With 3-4 humans the cursor markers are coloured digits (1..4)
     instead of "P1".."P4", so four markers fit beside one name.

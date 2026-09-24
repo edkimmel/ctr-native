@@ -11,8 +11,8 @@
 
 /*
  * Arcade bot rules v1 (docs/ROSTER_MILESTONE.md sections 3.1 and 3.3, with
- * the defaults RS-1..RS-9 of section 4 and the defaults pending owner review
- * RS-19 and RS-20). Defines, versions, and digests the native rule choices an
+ * the defaults RS-1..RS-9, RS-19, and RS-20 of section 4, all accepted by the
+ * owner). Defines, versions, and digests the native rule choices an
  * arcade single race is built from, so that NativeMatchConfigV1.botRulesDigest
  * names them. Two profiles are supported (RS-1, decided by the owner: both
  * ARCADE_TWO_CAB and ARCADE_ONE_CAB), each with its own rules, canonical
@@ -56,7 +56,7 @@
  *   reserved and undrawn in v1. MapRetailSeedsV1 and DeriveRetailSeedsV1
  *   serve both profiles unchanged.
  *
- * RS-19 (default pending owner review): each profile has its own canonical
+ * RS-19 (owner-accepted default): each profile has its own canonical
  * encoding and digest, and a config's botRulesDigest must equal the digest
  * of its own profile's rules (DigestForProfileV1). The TWO_CAB encoding (V1
  * below, 111 bytes, tag "CTRN arcade bot rules v1") and DigestV1 are

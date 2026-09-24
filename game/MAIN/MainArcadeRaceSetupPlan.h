@@ -212,13 +212,13 @@
  *   numBotsNextGame (set by the load and bot init, LOAD_TenStages.c:102,
  *   BOTS.c:328).
  *
- * Candidate defaults for review: RS-14, the plan requires the retail 30 Hz
+ * Owner-accepted defaults: RS-14, the plan requires the retail 30 Hz
  * tick rate (tickRateNumerator/tickRateDenominator exactly 30/1); vibration
  * pinned to 0 (rumble enabled for every pad, the retail default without a
  * memory card), so a cabinet's saved rumble preference does not apply to a
  * linked race; boolDemoMode pinned to 0.
  * ---------------------------------------------------------------------------
- * Defaults pending owner review (OC-2; docs/ROSTER_MILESTONE.md section 4
+ * Owner-accepted defaults (OC-2; docs/ROSTER_MILESTONE.md section 4
  * takes them over):
  *
  * RS-21: race setup plan encoding v2, tag "CTRN arcade race setup plan v2"

@@ -172,7 +172,7 @@ struct NativeCanonicalStateV1;
  *   NATIVE_ARCADE_ROSTER_PROOF_NONCE_MIX (CAB2) (NativeMatchSelect_Resolve,
  *   then NativeMatchSelect_BuildConfig). The seed reaches the config only
  *   through the resolved masterSeed.
- * - RS-23 (default pending owner review), ONE_CAB: match select stays
+ * - RS-23 (owner-accepted default), ONE_CAB: match select stays
  *   TWO_CAB-only and is not used. The arcade-link fixture is built for the
  *   identity, and the config takes from it the build and content identity,
  *   trackID, lapCount, the tick rate, the CAB1 character, and the bots'
