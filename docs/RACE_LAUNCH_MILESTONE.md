@@ -40,13 +40,13 @@ validation (HANDOFF steps 6-7).
   is :123-127) and SendAux requires it (:299-306). Close empties the inbox
   (:345-353).
 - SELECT_RESULT phase 2 moves to RACING with START_RACE on the first
-  lobby READY after RELINK (platform/native_arcade_flow.c:232-269), and
+  lobby READY after RELINK (platform/native_arcade_flow.c:236-276), and
   the netplay adapter arms its race on that action
-  (platform/native_arcade_netplay.c:612-614).
+  (platform/native_arcade_netplay.c:617-619).
 - lastReadyConfig, the rematch source, is taken at the first handshake
   READY of every lobby (platform/native_arcade_netplay.c:538-547).
 - The flow leaves RACING only on a link failure, LOST, or raceFinished
-  (platform/native_arcade_flow.c:271-294). Before Task 8 nothing else
+  (platform/native_arcade_flow.c:278-301). Before Task 8 nothing else
   bounds RACING.
 - Frame ownership: in LINK mode the layer owns every frame while a link
   screen is active, on any level (game/MAIN/MainArcadeLinkPolicy.c:88-92;
@@ -177,7 +177,7 @@ Agreement lifecycle. The netplay adapter holds one agreement state and
 resets it on RELINK, RESTART_LOBBY, CLOSE_LINK, BEGIN_SELECT,
 BEGIN_REMATCH, RETURN_TO_TITLE, and Enter. In Tick it drains the aux
 inbox before the flow runs, where DriveSelect reads it today
-(platform/native_arcade_netplay.c:586-589). It commits only while the
+(platform/native_arcade_netplay.c:591-594). It commits only while the
 flow is in SELECT_RESULT phase 2; after the commit it only watches for
 HEARD. HEARD stays latched once seen. sequence is diagnostic only: no
 rule reads it, so a reordered or duplicated record changes nothing. A
@@ -207,14 +207,17 @@ agreement; on expiry the flow shows LINK ERROR with CLOSE_LINK, as today.
 The flow observation gains launchStatus (PENDING 0, COMMITTED 1) in the
 first reserved byte (offset 10). The observation validation rejects a
 launchStatus above COMMITTED (it checks no reserved byte today,
-platform/native_arcade_flow.c:111-133), and an invalid observation is
-ignored, as today (:396-399). SELECT_RESULT phase 2 moves to RACING with
+platform/native_arcade_flow.c:111-137), and an invalid observation is
+ignored, as today (:403-406). SELECT_RESULT phase 2 moves to RACING with
 START_RACE only on READY with COMMITTED, and that check comes before the
 timeout check on the same tick. READY with PENDING waits, still under
-launchTimeoutTicks. Two comments become false: the phase-2 order in
-include/platform/native_arcade_flow.h:33-41 (fixed by RL-S4), and
-"START_RACE only follows READY of the relink" in
-include/platform/native_arcade_netplay.h:389-397 (fixed by RL-S5).
+launchTimeoutTicks. Three comments become false or incomplete: the
+phase-2 order in include/platform/native_arcade_flow.h:33-42 (fixed by
+RL-S4); "START_RACE only follows READY of the relink" in
+include/platform/native_arcade_netplay.h:389-397; and "the flow only
+reaches RACING on READY of the relink" above
+NativeArcadeNetplay_AgreedConfig in platform/native_arcade_netplay.c:741-750
+(both fixed by RL-S5).
 
 RL-6 Rematch source. For a relink lobby, lastReadyConfig is taken in
 ArmRace, on the START_RACE the commit gates, and step 2a of Tick
@@ -237,8 +240,8 @@ the handshake rejects the differing proposal as CONFIG_MISMATCH
 (platform/native_lockstep_handshake.c:328-343, :382-387); the lobby
 reports REJECTED (platform/native_lobby_state.c:128-132); and REMATCH_WAIT
 moves to EXIT with OPPONENT LEFT on REJECTED or on its own wait timeout
-(platform/native_arcade_flow.c:356-363), then holds and returns to the
-title (flow.c:373-385). So both show OPPONENT LEFT. No race ever runs on
+(platform/native_arcade_flow.c:363-370), then holds and returns to the
+title (flow.c:380-392). So both show OPPONENT LEFT. No race ever runs on
 a config the peer did not hold.
 
 RL-8 Launch point, waits, and race frames. Every networked launch starts
@@ -262,7 +265,7 @@ caller bounds its own waits, as the proof does
   must cover the rest of the return load plus the title intro up to frame
   230 (TITLE_INTRO_MENU_READY_FRAME, include/ovr_230.h:48), and the flow
   can reach the next START_RACE soon after RESULTS: its holds are 30 to
-  90 ticks (the flow defaults, include/platform/native_arcade_flow.h:63-71).
+  90 ticks (the flow defaults, include/platform/native_arcade_flow.h:64-72).
   At 300 the intro alone would take 230 ticks, leaving 70 for the load;
   900 leaves 670. The roster proof waits up to 3600 for its window
   (NATIVE_ARCADE_ROSTER_PROOF_LAUNCH_WAIT_TIMEOUT_TICKS,
@@ -305,7 +308,7 @@ the layer does today. RL-10 fixes the frame of the return and of the pad
 clear.
 
 A link failure or LOST can take the flow out of RACING during the staged
-race-track load (platform/native_arcade_flow.c:275-286).
+race-track load (platform/native_arcade_flow.c:282-293).
 MainRaceTrack_RequestLoad overwrites Loading.stage without checking it
 (game/MAIN/MainRaceTrack.c:27), and the link's return checks only levelID
 (MainArcadeLink.c:300), which LOAD_LevelFile has already set to the race
@@ -414,7 +417,7 @@ pads on the first later frame with LOADING set, when GameLogic no longer
 runs, or on the first idle main-menu frame if that comes first. Until
 then RESULTS reads the neutral pads. On the normal path the clear still
 lands well inside the flow's resultsDwellTicks of 30, during which
-RESULTS ignores input (platform/native_arcade_flow.c:300); a return
+RESULTS ignores input (platform/native_arcade_flow.c:307); a return
 deferred behind a race-track load only holds RESULTS on neutral pads
 longer. A decision-core test and a hook-isolation pin enforce the clear
 frame.
@@ -583,7 +586,8 @@ MainArcadeLinkSound and OtherFX from the netplay adapter and host glue.
 
 ### RL-S4 -- flow launch gate
 
-Status: done; review pending. The flow observation carries launchStatus
+Status: done (b7bc0c976); reviewed, no BLOCKER or SHOULD-FIX; three nits
+closed in the follow-up commit. The flow observation carries launchStatus
 (enum NativeArcadeFlowLaunchStatus, PENDING 0, COMMITTED 1) at offset 10,
 validated on every screen, and SELECT_RESULT phase 2 starts the race only
 on READY with COMMITTED, checked before the timeout; the netplay adapter
@@ -596,7 +600,7 @@ Plan: Review required. RL-5: observation.launchStatus at
 offset 10; the observation validation rejects launchStatus above
 COMMITTED; SELECT_RESULT phase 2 needs READY and COMMITTED, checked
 before the timeout. Fixes the phase-2 comment in
-include/platform/native_arcade_flow.h:33-41. Tests in
+include/platform/native_arcade_flow.h:33-42. Tests in
 tests/native_arcade_flow_test.c: the layout pin that holds reserved at
 offset 10 (:226-230) moves to launchStatus at 10 (size still 12); READY
 with PENDING waits, then times out to LINK ERROR; READY with COMMITTED on
@@ -613,7 +617,9 @@ READY, drain aux before the flow, send with linger, report launchStatus
 to the flow, reset the agreement at the RL-3 points, take lastReadyConfig
 in ArmRace for relink lobbies and skip step 2a for them. The size
 static-assert of RL-2 in platform/native_arcade_netplay.c. Fixes the
-AgreedConfig comment in include/platform/native_arcade_netplay.h:389-397.
+AgreedConfig comments in include/platform/native_arcade_netplay.h:389-397
+and platform/native_arcade_netplay.c:741-750 ("the flow only reaches
+RACING on READY of the relink").
 Adds ctr_native_arcade_launch to the exact link allow-list in
 tests/native_arcade_netplay_isolation_test.cmake (:118-137, eight
 libraries become nine). Loopback tests: the symmetric launch; a relink

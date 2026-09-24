@@ -926,10 +926,12 @@ static int TestLaunchGateCommitOnTimeoutTick(void)
 }
 
 /* COMMITTED with a lobby status other than READY never starts the race and
- * follows the existing phase-2 rule for that status. */
+ * follows the existing phase-2 rule for that status; a COMMITTED seen before
+ * READY is not remembered. */
 static int TestLaunchGateCommittedNeedsReady(void)
 {
 	struct NativeArcadeFlow flow;
+	uint32_t serial;
 	uint32_t tick;
 
 	/* CONNECTING stays until the timeout. */
@@ -959,6 +961,21 @@ static int TestLaunchGateCommittedNeedsReady(void)
 	CHECK(StepLaunch(&flow, LS_REJECTED, LA_COMMITTED, EV_NONE) == ACT_CLOSE_LINK);
 	CHECK(NativeArcadeFlow_Screen(&flow) == SC_RESULTS);
 	CHECK(NativeArcadeFlow_EndReason(&flow) == END_LINK_ERROR);
+
+	/* A commit is not remembered across ticks: COMMITTED seen while
+	 * CONNECTING, then READY with PENDING, still waits. */
+	CHECK(ToRelinked(&flow) == 0);
+	serial = NativeArcadeFlow_ScreenSerial(&flow);
+	CHECK(RunQuietLaunch(&flow, 5u, LS_CONNECTING, LA_COMMITTED, EV_NONE) == 0);
+	CHECK(StepLaunch(&flow, LS_READY, LA_PENDING, EV_NONE) == ACT_NONE);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
+	CHECK(NativeArcadeFlow_ScreenSerial(&flow) == serial);
+	CHECK(RunQuietLaunch(&flow, 3u, LS_READY, LA_PENDING, EV_NONE) == 0);
+	CHECK(NativeArcadeFlow_Screen(&flow) == SC_SELECT_RESULT);
+	CHECK(NativeArcadeFlow_ScreenSerial(&flow) == serial);
+	CHECK(flow.relinked == 1u);
+	CHECK(flow.ticksSinceRelink == 9u);
+	CHECK(NativeArcadeFlow_EndReason(&flow) == END_NONE);
 	return 0;
 }
 
