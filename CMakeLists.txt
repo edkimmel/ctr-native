@@ -492,6 +492,21 @@ set_target_properties(ctr_native_arcade_link_host PROPERTIES
 target_include_directories(ctr_native_arcade_link_host PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_arcade_link_host PUBLIC ctr_native_arcade_netplay ctr_native_arcade_link_options)
 
+# Internal two-process gate autopilot (docs/RACE_LAUNCH_MILESTONE.md RL-15,
+# RL-S10): the --arcade-link-autopilot option parser, the pure menu decision
+# and progress bookkeeping over a host view, and the report formatter; the
+# report writer is its only I/O. Uses only the host view and flow headers,
+# so it links nothing. Linked into ctr_native, whose main.c parses it and
+# whose unity-included game glue (game/MAIN/MainArcadeLinkAutopilot.c) runs
+# it in internal builds.
+add_library(ctr_native_arcade_link_autopilot STATIC platform/native_arcade_link_autopilot.c)
+set_target_properties(ctr_native_arcade_link_autopilot PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_link_autopilot PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Dormant M3 stable-slot planner.  It consumes only portable config and the
 # audited pointer-free roster prelude input; no live game path calls it.
 add_library(ctr_native_arcade_roster STATIC game/MAIN/MainArcadeRoster.c)
@@ -1008,7 +1023,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_race_setup_core ctr_native_arcade_race_launch_core ctr_native_arcade_roster_proof ctr_native_vblank_pacing)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_race_setup_core ctr_native_arcade_race_launch_core ctr_native_arcade_roster_proof ctr_native_arcade_link_autopilot ctr_native_vblank_pacing)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -1440,6 +1455,24 @@ if(BUILD_TESTING)
     add_test(NAME native_arcade_link_options_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_link_options_isolation_test.cmake")
 
+    # Internal two-process gate autopilot (docs/RACE_LAUNCH_MILESTONE.md
+    # RL-15, RL-S10): the option parser, the pure menu decision and progress
+    # bookkeeping, and the report format; the isolation test pins its
+    # purity, the hook and main.c wiring (the option is rejected with replay
+    # options), the glue that never touches a pad, and the live gate's
+    # ctest registration.
+    add_executable(native_arcade_link_autopilot_test tests/native_arcade_link_autopilot_test.c)
+    set_target_properties(native_arcade_link_autopilot_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_link_autopilot_test PRIVATE ctr_native_arcade_link_autopilot)
+    add_test(NAME native_arcade_link_autopilot_unit COMMAND $<TARGET_FILE:native_arcade_link_autopilot_test>)
+
+    add_test(NAME native_arcade_link_autopilot_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_link_autopilot_isolation_test.cmake")
+
     # Match-select resolution rules (docs/MATCH_SELECT_MILESTONE.md section
     # 2.1, MS-2): pure; the isolation test checks the retail table mirrors.
     add_executable(native_match_select_rules_test tests/native_match_select_rules_test.c)
@@ -1761,7 +1794,7 @@ if(BUILD_TESTING)
         # Needs the user-supplied assets/ctr-u.bin, a desktop session with a
         # display, and an internal build; skips (77) otherwise.  Reports and
         # logs are written only under the build tree.
-        # Both live tests carry the label "live": `ctest -LE live` leaves them
+        # The live tests carry the label "live": `ctest -LE live` leaves them
         # out, and the default full run still includes them.
         add_test(NAME arcade_roster_determinism
             COMMAND powershell -NoProfile -ExecutionPolicy Bypass
@@ -1771,6 +1804,30 @@ if(BUILD_TESTING)
                 -Ticks 900
                 -TimeoutSeconds 600)
         set_tests_properties(arcade_roster_determinism PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 900
+            RUN_SERIAL TRUE
+            LABELS live)
+
+        # The two-process live launch gate (docs/RACE_LAUNCH_MILESTONE.md
+        # RL-15, RL-S10): two internal ctr_native processes linked over
+        # loopback (127.0.0.1 ports 7001 and 7002, cab1 and cab2), each driven
+        # by --arcade-link-autopilot through START, the select, race 1,
+        # REMATCH, race 2, and EXIT; the check compares the k-th validated
+        # race of each report (the agreed match and the config, plan, bots,
+        # and bank digests) and requires race 2's config to differ from race
+        # 1's. RUN_SERIAL like the other live tests, and because the ports are
+        # fixed. Needs the user-supplied assets/ctr-u.bin, a desktop session
+        # with a display, an internal build, and a known build identity (a
+        # build from a clean tree); skips (77) otherwise, and a skip is not a
+        # pass. Reports and logs are written only under the build tree.
+        add_test(NAME arcade_link_launch
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/arcade-link-launch-check.ps1"
+                -Executable "$<TARGET_FILE:ctr_native>"
+                -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_link_launch/$<CONFIG>"
+                -TimeoutSeconds 600)
+        set_tests_properties(arcade_link_launch PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 900
             RUN_SERIAL TRUE

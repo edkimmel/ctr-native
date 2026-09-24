@@ -281,6 +281,12 @@
 // menu-ready condition it reuses, and the 230 title it closes; after
 // MainArcadeRaceSetup above, which it arms and launches.
 #include "MAIN/MainArcadeRosterProof.c"
+// Internal two-process gate autopilot (docs/RACE_LAUNCH_MILESTONE.md RL-15),
+// CTR_NATIVE only and active only in internal builds: after the arcade-link
+// hook, whose policy it probes for the enter window, and the race caller,
+// whose RL-12 evidence it reads. The hook calls it through
+// MAIN/MainArcadeLinkAutopilot.h; its pure decisions are a linked library.
+#include "MAIN/MainArcadeLinkAutopilot.c"
 
 #include "231/R231.c"
 #include "231/D231.c"

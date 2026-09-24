@@ -12,6 +12,9 @@
  * host, draws, and plays the chosen retail menu sound. The host's START_RACE
  * is handed to the race caller (MAIN/MainArcadeRaceLaunch.h,
  * docs/RACE_LAUNCH_MILESTONE.md RL-S8b), whose finish report feeds the tick.
+ * The internal two-process gate's autopilot (MAIN/MainArcadeLinkAutopilot.h,
+ * RL-15) may replace the enter decision and held menu buttons of a LINK
+ * frame and observes every tick; it is inert unless configured.
  *
  * Unity-included after the 230 overlay sources, because it reads the title
  * state (MM_TITLE_MENU_STATE, MM_TITLE_INTRO_FRAME) and the retail main-menu
@@ -27,6 +30,7 @@
 #include "MAIN/MainArcadeLinkPolicy.h"
 #include "MAIN/MainArcadeLinkSound.h"
 #include "MAIN/MainArcadeLink.h"
+#include "MAIN/MainArcadeLinkAutopilot.h"
 #include "MAIN/MainArcadeRaceLaunch.h"
 
 /* The layout builder mirrors these retail values without including game
@@ -280,6 +284,9 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 	/* The race caller's finish report is the host's raceFinished input
 	 * (docs/RACE_LAUNCH_MILESTONE.md RL-10). */
 	action = NativeArcadeLinkHost_Tick(output->heldButtons, MainArcadeRaceLaunch_RaceFinished());
+	/* The internal RL-15 autopilot observes every tick (inert unless
+	 * configured). */
+	MainArcadeLinkAutopilot_AfterTick(action);
 
 	if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)
 	{
@@ -409,6 +416,10 @@ int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 
 	if (input.hostMode == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK)
 	{
+		/* The internal RL-15 autopilot, when configured, replaces the local
+		 * enter decision and held menu buttons this tick takes (inert
+		 * otherwise; it never touches a pad). */
+		MainArcadeLinkAutopilot_Input(&input, &output);
 		MainArcadeLink_LinkTick(gGT, &output);
 	}
 	else

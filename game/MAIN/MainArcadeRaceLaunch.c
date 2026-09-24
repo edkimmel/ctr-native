@@ -54,6 +54,7 @@ _Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_VALIDATED == (uint32
 _Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_FAILED == (uint32_t)MAIN_ARCADE_RACE_SETUP_FAILED, "MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_FAILED must match MAIN_ARCADE_RACE_SETUP_FAILED");
 _Static_assert(NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT == PLATFORM_INPUT_PAD_COUNT, "the rehearsal pads cover every host pad");
 _Static_assert(MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES == 32u, "the RL-12 line prints 32-byte digests");
+_Static_assert(MAIN_ARCADE_RACE_LAUNCH_DIGEST_BYTES == MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES, "the RL-12 evidence copies the setup digests");
 
 struct MainArcadeRaceLaunchState
 {
@@ -78,6 +79,11 @@ struct MainArcadeRaceLaunchState
 	/* 1 once a refused Step was logged, until the next accepted Step, so a
 	 * core that keeps refusing logs once. */
 	uint8_t refusedLogged;
+	/* RL-15 evidence, read only by the internal autopilot: the races that
+	 * logged the RL-12 line, and the last one's launch number and digests. */
+	uint32_t validatedRaces;
+	uint32_t validatedRace;
+	uint8_t validatedDigests[4u * MAIN_ARCADE_RACE_LAUNCH_DIGEST_BYTES];
 };
 
 static struct MainArcadeRaceLaunchState s_mainArcadeRaceLaunch;
@@ -90,6 +96,24 @@ void MainArcadeRaceLaunch_StartRace(void)
 uint8_t MainArcadeRaceLaunch_RaceFinished(void)
 {
 	return s_mainArcadeRaceLaunch.raceFinishedInput;
+}
+
+uint32_t MainArcadeRaceLaunch_ValidatedRaces(void)
+{
+	return s_mainArcadeRaceLaunch.validatedRaces;
+}
+
+int MainArcadeRaceLaunch_LastValidated(uint32_t *raceNumber, uint8_t digests[4u * MAIN_ARCADE_RACE_LAUNCH_DIGEST_BYTES])
+{
+	const struct MainArcadeRaceLaunchState *state = &s_mainArcadeRaceLaunch;
+
+	if ((raceNumber == NULL) || (digests == NULL) || (state->validatedRaces == 0u))
+	{
+		return 0;
+	}
+	*raceNumber = state->validatedRace;
+	memcpy(digests, state->validatedDigests, sizeof(state->validatedDigests));
+	return 1;
 }
 
 /* The core's class of the retail loading stage. */
@@ -213,6 +237,13 @@ static void MainArcadeRaceLaunch_LogDigests(uint32_t raceNumber)
 	}
 	Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u validated config %s plan %s bots %s bank %s\n", (unsigned)raceNumber, hex[0], hex[1],
 		hex[2], hex[3]);
+	/* The same digests, kept for the RL-15 gate's report. */
+	for (uint32_t i = 0; i < 4u; i++)
+	{
+		memcpy(&s_mainArcadeRaceLaunch.validatedDigests[i * MAIN_ARCADE_RACE_LAUNCH_DIGEST_BYTES], digests[i], MAIN_ARCADE_RACE_LAUNCH_DIGEST_BYTES);
+	}
+	s_mainArcadeRaceLaunch.validatedRace = raceNumber;
+	s_mainArcadeRaceLaunch.validatedRaces++;
 }
 
 /*

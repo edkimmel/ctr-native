@@ -34,6 +34,25 @@ void MainArcadeRaceLaunch_StartRace(void);
  */
 uint8_t MainArcadeRaceLaunch_RaceFinished(void);
 
+/* The size of one RL-12 setup digest (MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES). */
+#define MAIN_ARCADE_RACE_LAUNCH_DIGEST_BYTES 32u
+
+/*
+ * Read-only RL-12 evidence for the internal two-process gate
+ * (docs/RACE_LAUNCH_MILESTONE.md RL-15, the autopilot in
+ * MAIN/MainArcadeLinkAutopilot.c): the number of races that logged the RL-12
+ * "race <n> validated" line since boot, never reset.
+ */
+uint32_t MainArcadeRaceLaunch_ValidatedRaces(void);
+
+/*
+ * The last race that logged the RL-12 line: its launch number and its
+ * config, race plan, bot setup plan, and bank digests, in that order, 32
+ * bytes each. Returns 1 and fills both; returns 0 touching nothing on NULL
+ * or before the first such race.
+ */
+int MainArcadeRaceLaunch_LastValidated(uint32_t *raceNumber, uint8_t digests[4u * MAIN_ARCADE_RACE_LAUNCH_DIGEST_BYTES]);
+
 /*
  * Called once per frame from MainFrame_RenderFrame, right after
  * MainArcadeLink_Frame (so after this frame's host tick) and before the

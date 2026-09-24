@@ -20,6 +20,7 @@
 #define EnterCriticalSection(x)
 #define ExitCriticalSection()
 
+#include "platform/native_arcade_link_autopilot.h"
 #include "platform/native_arcade_link_host.h"
 #include "platform/native_arcade_link_options.h"
 #include "platform/native_arcade_roster_proof.h"
@@ -253,6 +254,38 @@ int main(int argc, char *argv[])
 		return NativeConsole_Return(1);
 	}
 
+	/* Internal two-process gate autopilot (docs/RACE_LAUNCH_MILESTONE.md
+	 * RL-15): evidence plumbing, never match identity. A malformed request is
+	 * fatal, like the other arcade options. It drives a link cabinet, so it
+	 * needs --arcade-link (which already excludes a preview). Like the other
+	 * arcade options it is rejected with every replay option, before any
+	 * replay parser runs; and like the roster proof, whose race setup it would
+	 * contend with, its result is the process exit code, so it is rejected
+	 * with --arcade-roster-proof and with --exit-after-frame, which would end
+	 * the run on a frame count. */
+	struct NativeArcadeLinkAutopilotOptions arcadeLinkAutopilotOptions;
+
+	NativeArcadeLinkAutopilotOptions_SetDefaults(&arcadeLinkAutopilotOptions);
+	if (!NativeArcadeLinkAutopilotOptions_ApplyArgs(argc, argv, &arcadeLinkAutopilotOptions))
+	{
+		fprintf(stderr, "[CTR Native] invalid arcade link autopilot option; expected --arcade-link-autopilot <report path> (once).\n");
+		return NativeConsole_Return(1);
+	}
+#if !defined(CTR_INTERNAL)
+	if (arcadeLinkAutopilotOptions.enabled != 0u)
+	{
+		fprintf(stderr, "[CTR Native] --arcade-link-autopilot is available in internal builds only.\n");
+		return NativeConsole_Return(1);
+	}
+#endif
+	if ((arcadeLinkAutopilotOptions.enabled != 0u) &&
+	    ((arcadeLinkOptions.enabled == 0u) || NativeArg_NamesReplayOption(argc, argv) || (rosterProofOptions.enabled != 0u) ||
+	     NativeArcadeRosterProof_NamesExitOption(argc, argv)))
+	{
+		fprintf(stderr, "[CTR Native] --arcade-link-autopilot needs --arcade-link and cannot be combined with --arcade-roster-proof, --exit-after-frame, or replay record or playback options.\n");
+		return NativeConsole_Return(1);
+	}
+
 	printf("[CTR Native] Starting...\n");
 	printf("[CTR Native] Local render scale: %dx\n", displayConfig.renderScale);
 	printf("[CTR Native] Local window mode: %s\n", displayConfig.fullscreen ? "fullscreen" : "windowed");
@@ -411,6 +444,16 @@ int main(int argc, char *argv[])
 		 * before Platform_Shutdown on those paths too. */
 		(void)atexit(NativeArcadeLinkHost_Shutdown);
 	}
+#if defined(CTR_INTERNAL)
+	/* The autopilot drives the link host configured above (LINK mode: the
+	 * option needs --arcade-link). */
+	if (arcadeLinkAutopilotOptions.enabled != 0u)
+	{
+		MainArcadeLinkAutopilot_Configure(&arcadeLinkAutopilotOptions);
+		printf("[CTR Native] arcade link autopilot: report %s\n", arcadeLinkAutopilotOptions.reportPath);
+		fflush(stdout);
+	}
+#endif
 
 	/* The proof config carries the build and content identity, read once
 	 * here like the link fixture's. The proof is single-machine: a dirty tree

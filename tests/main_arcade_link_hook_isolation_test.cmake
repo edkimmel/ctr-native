@@ -202,10 +202,13 @@ foreach(relative_path IN ITEMS "${hook_source_path}" "${hook_header_path}")
 endforeach()
 
 # 3. Includes: the hook source may include only its allowed headers; the
-#    prototype header includes nothing.
+#    prototype header includes nothing. Since RL-S10 the allowed headers
+#    include the internal autopilot glue's (MAIN/MainArcadeLinkAutopilot.h,
+#    RL-15), whose wiring native_arcade_link_autopilot_isolation_test.cmake
+#    pins.
 string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${hook_source}")
 foreach(include_line IN LISTS include_lines)
-    if(NOT include_line MATCHES "^#[ \t]*include[ \t]*[<\"](common\\.h|platform/native_arcade_link_host\\.h|platform/native_arcade_menu_input\\.h|platform/native_log\\.h|MAIN/MainArcadeLinkLayout\\.h|MAIN/MainArcadeLinkPolicy\\.h|MAIN/MainArcadeLinkSound\\.h|MAIN/MainArcadeLink\\.h|MAIN/MainArcadeRaceLaunch\\.h)[>\"][ \t]*$")
+    if(NOT include_line MATCHES "^#[ \t]*include[ \t]*[<\"](common\\.h|platform/native_arcade_link_host\\.h|platform/native_arcade_menu_input\\.h|platform/native_log\\.h|MAIN/MainArcadeLinkLayout\\.h|MAIN/MainArcadeLinkPolicy\\.h|MAIN/MainArcadeLinkSound\\.h|MAIN/MainArcadeLink\\.h|MAIN/MainArcadeLinkAutopilot\\.h|MAIN/MainArcadeRaceLaunch\\.h)[>\"][ \t]*$")
         message(FATAL_ERROR "arcade link hook isolation: disallowed include '${include_line}' in ${hook_source_path}")
     endif()
 endforeach()
