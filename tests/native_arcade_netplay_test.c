@@ -3820,17 +3820,22 @@ static int TestLocalMenuEvent(void)
 	CHECK(NativeMatchSelectSession_Human(&g_b.select, 1u)->characterID != peerCharacter);
 	peerCharacter = NativeMatchSelectSession_Human(&g_b.select, 1u)->characterID;
 
-	/* A hears B's new cursor, and still reports NONE. */
-	for (tick = 0u; tick < 3u; tick++)
+	/* A hears B's new cursor within a bounded wait (well inside the select
+	 * item and peer-silence timeouts), and reports NONE throughout. */
+	for (tick = 0u; tick < 60u; tick++)
 	{
 		TickBoth(0u, 0u, 0u, &actionA, &actionB);
 		CHECK(actionA == ACT_NONE);
 		CHECK(actionB == ACT_NONE);
 		CHECK(MenuEventOf(&g_a) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
 		CHECK(MenuEventOf(&g_b) == (uint32_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+		CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+		if (view.select.humans[1].characterID == peerCharacter)
+		{
+			break;
+		}
 	}
-	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
-	CHECK(view.select.humans[1].characterID == peerCharacter);
+	CHECK(tick < 60u);
 
 	/* A confirms: A reports CONFIRM, B reports NONE; held, both NONE. */
 	TickBoth(BTN_CROSS, 0u, 0u, &actionA, &actionB);

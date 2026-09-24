@@ -256,10 +256,12 @@ struct NativeArcadeNetplayView
 	uint32_t matchCount;
 	uint8_t localRole;
 	uint8_t menuArmed;
-	/* enum NativeArcadeMenuEvent the most recent Tick consumed for the local
-	 * player (lastMenuEvent below): NONE before the first Tick, on screen
-	 * OFF, and on every tick without a new edge. Local input only: a peer's
-	 * input never appears here. Presentation only (menu sounds). */
+	/* enum NativeArcadeMenuEvent: the event produced from the local buttons
+	 * on the last Tick, whether or not the screen acted on it; consumers must
+	 * gate on a state change (lastMenuEvent below). NONE before the first
+	 * Tick, on every Tick that starts on screen OFF, and on every tick
+	 * without a new edge. Local input only: a peer's input never appears
+	 * here. Presentation only (menu sounds). */
 	uint8_t localMenuEvent;
 	uint8_t reserved;
 	/* The select phase (docs/MATCH_SELECT_MILESTONE.md section 2.7). */
@@ -321,8 +323,8 @@ struct NativeArcadeNetplay
 	/* enum NativeArcadeMenuEvent: the event step 4 of the most recent Tick
 	 * produced and fed to the select session and the flow. Every Tick on an
 	 * initialized adapter sets it to NONE first (the dormant screen-OFF path
-	 * included), so it never outlives its tick; Init, Enter, and Shutdown
-	 * clear it. Presentation only: it feeds nothing, is never sent, and
+	 * included), so it never outlives its tick; Init, a successful Enter,
+	 * and Shutdown clear it. Presentation only: it feeds nothing, is never sent, and
 	 * stays out of the match config, seeds, and simulation identity. */
 	uint8_t lastMenuEvent;
 	/* The outcome the last successful RELINK built its config from. */

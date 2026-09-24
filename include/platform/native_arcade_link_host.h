@@ -155,9 +155,12 @@ struct NativeArcadeLinkHostView
 	uint8_t rowsEnabled;
 	/* 1 when the screen is OFF: the title attract layout applies */
 	uint8_t attract;
-	/* enum NativeArcadeMenuEvent the last NativeArcadeLinkHost_Tick consumed
-	 * for the local player (LINK only; NONE otherwise, in PREVIEW, and before
-	 * the first tick). Local input only: a peer's input never appears here. */
+	/* enum NativeArcadeMenuEvent: the event produced from the local buttons
+	 * on the last NativeArcadeLinkHost_Tick, whether or not the screen acted
+	 * on it; consumers must gate on a state change. LINK only: NONE in
+	 * PREVIEW, before the first tick, on every tick that starts on screen
+	 * OFF, and on every tick without a new edge. Local input only: a peer's
+	 * input never appears here. */
 	uint8_t localMenuEvent;
 	/* The select screens (docs/MATCH_SELECT_MILESTONE.md section 2.7). */
 	struct NativeArcadeLinkHostSelectView select;

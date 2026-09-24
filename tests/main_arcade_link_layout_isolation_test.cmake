@@ -26,6 +26,10 @@
 # the header static-asserts the ten layout select values and capacities
 # against the host names beside the mapping's prototype; and the library
 # still links only ctr_native_arcade_flow (never the host glue).
+#
+# The layout never draws from input events: the host view's localMenuEvent
+# (menu sounds only) is never named in the layout source, and its header may
+# name it only inside a comment.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -432,3 +436,11 @@ foreach(pair
 endforeach()
 ctr_require_literal("game/MAIN/MainArcadeLinkLayout.c" "${layout_code}"
     "int MainArcadeLinkLayout_InputFromHostView(const struct NativeArcadeLinkHostView *view, struct MainArcadeLinkLayoutInput *input)")
+
+# 10. No drawing from input events: the host view's localMenuEvent (for menu
+#     sounds) is never named in the layout source, comments included, and
+#     the header names it only inside a comment (its code, comments removed,
+#     never does).
+ctr_forbid("game/MAIN/MainArcadeLinkLayout.c" "${layout_source}" "localMenuEvent")
+ctr_strip_comments("${header}" header_code)
+ctr_forbid("${layout_header} (outside comments)" "${header_code}" "localMenuEvent")
