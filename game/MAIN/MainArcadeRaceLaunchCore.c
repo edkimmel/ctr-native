@@ -206,6 +206,13 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 		return 0;
 	}
 
+	/* The finish latch: the flow off RACING or a new START_RACE clears it
+	 * before this frame's decisions. */
+	if ((input->hostRacing == 0u) || (input->startRace != 0u))
+	{
+		core->finishedPending = 0u;
+	}
+
 	status = input->setupStatus;
 	output->raceNumber = core->raceNumber;
 	switch (core->phase)
@@ -299,6 +306,7 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 		else if (core->waitTicks >= MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_REHEARSAL_TICKS)
 		{
 			output->reportFinished = 1u;
+			core->finishedPending = 1u;
 			MainArcadeRaceLaunchCore_End(core, input->loadingStage, output);
 		}
 		break;
@@ -315,6 +323,7 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 	}
 
 	output->installPads = core->padsInstalled;
+	output->raceFinishedInput = core->finishedPending;
 	return 1;
 }
 

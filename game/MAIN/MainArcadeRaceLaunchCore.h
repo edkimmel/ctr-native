@@ -72,8 +72,18 @@
  * the window stays closed.
  *
  * Rehearsal (RL-10). Frame 0 is race tick 0; on frame LAUNCH_REHEARSAL_TICKS
- * the core reports the race finished (reportFinished, the host's raceFinished
- * input).
+ * the core reports the race finished (reportFinished, an event on that frame
+ * only).
+ *
+ * The finish latch (raceFinishedInput). The host takes the finish as the
+ * raceFinished input of its next Tick, which runs before the caller's next
+ * Step, so the caller feeds the host the raceFinishedInput of its last
+ * accepted Step. It is 1 from the finish frame (the reportFinished frame)
+ * until the first accepted Step with hostRacing 0 (the flow left RACING: the
+ * finish was taken, or can no longer be) or with startRace 1 (a new race),
+ * which clears it before that Step's decisions. So a finish never survives
+ * into the next START_RACE, and race 2 never finishes on its first RACING
+ * tick. A refused Step changes nothing, the latch included.
  *
  * Setup failure (RL-11). From the frame after Launch until the rehearsal
  * ends (the finish frame included, checked before the finish), a setup status
@@ -138,8 +148,8 @@
  * The caller's order on one frame: the host's Tick; then sample the input
  * (hostRacing after that Tick); Step; if armAndLaunch, Arm, Launch, and
  * LaunchResult; then leaveTitle, reportFailure or reportFinished (the host's
- * inputs for its next Tick), requestReturn, installPads or clearPads, and
- * disarm, as set.
+ * inputs for its next Tick, the finish through raceFinishedInput),
+ * requestReturn, installPads or clearPads, and disarm, as set.
  */
 
 /* RL-8 and RL-10 bounds, in core steps (frames). */
@@ -187,17 +197,18 @@
 /* Caller-owned state. The fields are the core's; the caller only zeroes it. */
 struct MainArcadeRaceLaunchCore
 {
-	uint32_t phase;        /* MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_* */
-	uint32_t launches;     /* armAndLaunch frames so far (the last launch number) */
-	uint32_t raceNumber;   /* the current race's launch number (0 before its launch and while idle) */
-	uint32_t waitTicks;    /* frames since the current wait's frame 0 */
-	uint32_t heldTicks;    /* frames since the held START_RACE */
-	uint8_t padsInstalled; /* 1 from the Launch frame until the clear */
-	uint8_t returnPending; /* 1 while a return step waits for the stage IDLE */
-	uint8_t held;          /* 1 while a START_RACE waits for the ended race to be over */
-	uint8_t disarmPending; /* 1 from the Launch frame until the Disarm */
-	uint8_t launchStage;   /* the loading stage of the last armAndLaunch frame */
-	uint8_t reserved[3];
+	uint32_t phase;          /* MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_* */
+	uint32_t launches;       /* armAndLaunch frames so far (the last launch number) */
+	uint32_t raceNumber;     /* the current race's launch number (0 before its launch and while idle) */
+	uint32_t waitTicks;      /* frames since the current wait's frame 0 */
+	uint32_t heldTicks;      /* frames since the held START_RACE */
+	uint8_t padsInstalled;   /* 1 from the Launch frame until the clear */
+	uint8_t returnPending;   /* 1 while a return step waits for the stage IDLE */
+	uint8_t held;            /* 1 while a START_RACE waits for the ended race to be over */
+	uint8_t disarmPending;   /* 1 from the Launch frame until the Disarm */
+	uint8_t launchStage;     /* the loading stage of the last armAndLaunch frame */
+	uint8_t finishedPending; /* the finish latch (see raceFinishedInput) */
+	uint8_t reserved[2];
 };
 
 /* One frame's facts. Every flag must be 0 or 1: any other value is refused
@@ -260,7 +271,11 @@ struct MainArcadeRaceLaunchCoreOutput
 	uint8_t validated;
 	/* Event: race tick 0. */
 	uint8_t raceTickZero;
-	uint8_t reserved[2];
+	/* The finish latch after this frame: the host's raceFinished input for
+	 * its next Tick (see The finish latch). Unlike the events above it holds
+	 * across frames. */
+	uint8_t raceFinishedInput;
+	uint8_t reserved[1];
 };
 
 /* Zeroes *core (idle, no race started). Does nothing for NULL. */

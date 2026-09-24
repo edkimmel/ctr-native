@@ -92,10 +92,12 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 	/*
 	 * Internal roster proof seam (docs/ROSTER_MILESTONE.md section 3.4),
-	 * called once per frame the same way as the arcade-link hook above; the
-	 * two are never active together. Dormant unless --arcade-roster-proof was
-	 * given: MainArcadeRosterProof_Frame then returns before touching
-	 * anything. When it launches the race it closes the retail main-menu box
+	 * called once per frame the same way as the arcade-link hook above. The
+	 * proof is never active together with the arcade-link hook or the race
+	 * caller: main.c rejects --arcade-roster-proof with any arcade-link
+	 * option, so the host stays OFF and both the hook and the race caller
+	 * stay dormant. Dormant unless --arcade-roster-proof was given:
+	 * MainArcadeRosterProof_Frame then returns before touching anything. When it launches the race it closes the retail main-menu box
 	 * itself, so the menu code below sees no active menu.
 	 */
 	MainArcadeRosterProof_Frame(gGT, gGamepads);

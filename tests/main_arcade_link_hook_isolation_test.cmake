@@ -42,7 +42,10 @@
 # frame right after the hook; and section 16 pins the caller: dormant by
 # default, its own post-tick racing read, the RL-10 pad install and clear
 # frame, its LeaveTitle identical to the roster proof's, the RL-12 line, and
-# its step and apply order.
+# its step and apply order. Since the RL-S8b review, section 16 also pins
+# the finish latch as the core's (16b2), the caller's return step identical
+# to the link's return to title (16f2), and the caller's plan level tied to
+# the race setup plan's level rule (16h).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -758,6 +761,7 @@ ctr_forbid("${hook_source_path}" "${hook_source}" "MainArcadeRaceLaunchCore")
 ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_Frame)" "${caller_frame_block}"
     "MainArcadeRaceLaunch_Gather(gGT, gGS, &input);"
     "MainArcadeRaceLaunchCore_Step(&state->core, &input, &output)"
+    "state->raceFinishedInput = output.raceFinishedInput;"
     "if (output.armAndLaunch != 0u)" "MainArcadeRaceLaunch_ArmAndLaunch(&output);"
     "MainArcadeRaceLaunch_Apply(gGT, &output);")
 foreach(call IN ITEMS "MainArcadeRaceLaunchCore_Step\\(" "MainArcadeRaceLaunch_Gather\\(gGT" "MainArcadeRaceLaunch_Apply\\(gGT")
@@ -767,6 +771,30 @@ foreach(call IN ITEMS "MainArcadeRaceLaunchCore_Step\\(" "MainArcadeRaceLaunch_G
         message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must call '${call}' exactly once, once per frame (found ${call_hit_count})")
     endif()
 endforeach()
+
+# 16b2. The finish latch is the core's (RL-S8b review S1): the host's
+#      raceFinished input is the core's raceFinishedInput of its last
+#      accepted Step (held from the finish frame, cleared by the core on its
+#      first step off RACING or on a new START_RACE; pinned by
+#      tests/main_arcade_race_launch_core_test.c). So the caller keeps no
+#      latch of its own (no finishedPending), writes raceFinishedInput only by
+#      copying it from the core's output right after an accepted Step (order
+#      pinned above; a refused Step returns before the copy), and
+#      MainArcadeRaceLaunch_RaceFinished returns that copy.
+ctr_forbid("${caller_source_path}" "${caller_code}" "finishedPending")
+string(REGEX MATCHALL "raceFinishedInput[ \t]*=[^=]" finish_writes "${caller_code}")
+list(LENGTH finish_writes finish_write_count)
+if(NOT finish_write_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must write raceFinishedInput exactly once, from the core's output after the Step (found ${finish_write_count})")
+endif()
+ctr_require_literal("${caller_source_path} (MainArcadeRaceLaunch_Frame)" "${caller_frame_block}"
+    "state->raceFinishedInput = output.raceFinishedInput;")
+ctr_find_block("${caller_source_path}" "${caller_code}" "uint8_t MainArcadeRaceLaunch_RaceFinished(void)" finished_begin finished_end)
+math(EXPR finished_length "${finished_end} - ${finished_begin} + 1")
+string(SUBSTRING "${caller_code}" ${finished_begin} ${finished_length} finished_block)
+if(NOT finished_block MATCHES "^\\{[ \t\r\n]*return s_mainArcadeRaceLaunch\\.raceFinishedInput;[ \t\r\n]*\\}$")
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_RaceFinished must return the core's latch copy only (found '${finished_block}')")
+endif()
 
 # 16c. Launch: the agreed config, then Arm, then Launch, then the result fed
 #      back to the core on the same frame with the same output.
@@ -786,15 +814,15 @@ string(SUBSTRING "${caller_code}" ${apply_begin} ${apply_length} apply_block)
 ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_Apply)" "${apply_block}"
     "if (output->leaveTitle != 0u)" "MainArcadeRaceLaunch_LeaveTitle();"
     "if (output->reportFailure != 0u)" "NativeArcadeLinkHost_ReportRaceFailure();"
-    "else if (output->reportFinished != 0u)" "state->finishedPending = 1u;"
+    "else if (output->reportFinished != 0u)"
     "if (output->requestReturn != 0u)" "MainArcadeRaceLaunch_RequestReturn(gGT);"
-    "if (output->installPads != 0u)" "MainArcadeRaceLaunch_InstallPads();"
+    "if (output->installPads != 0u)" "MainArcadeRaceLaunch_InstallPads(output->raceNumber);"
     "if (output->clearPads != 0u)" "Platform_InputClearInstalledPadSnapshots();"
     "if (output->disarm != 0u)" "MainArcadeRaceSetup_Disarm();")
 foreach(pair
         "if (output->leaveTitle != 0u)|MainArcadeRaceLaunch_LeaveTitle();"
         "if (output->requestReturn != 0u)|MainArcadeRaceLaunch_RequestReturn(gGT);"
-        "if (output->installPads != 0u)|MainArcadeRaceLaunch_InstallPads();"
+        "if (output->installPads != 0u)|MainArcadeRaceLaunch_InstallPads(output->raceNumber);"
         "if (output->disarm != 0u)|MainArcadeRaceSetup_Disarm();")
     string(REPLACE "|" ";" pair_items "${pair}")
     list(GET pair_items 0 guard)
@@ -863,12 +891,12 @@ foreach(path IN LISTS clear_scan_paths)
         endif()
     endif()
 endforeach()
-ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_InstallPads(void)" pads_begin pads_end)
+ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_InstallPads(uint32_t raceNumber)" pads_begin pads_end)
 math(EXPR pads_length "${pads_end} - ${pads_begin} + 1")
 string(SUBSTRING "${caller_code}" ${pads_begin} ${pads_length} pads_block)
 ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_InstallPads)" "${pads_block}"
     "NativeArcadeRosterProof_ScriptedPads(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, pads);"
-    "(void)Platform_InputInstallPadSnapshots(snapshots, PLATFORM_INPUT_PAD_COUNT);")
+    "if ((Platform_InputInstallPadSnapshots(snapshots, PLATFORM_INPUT_PAD_COUNT) != PLATFORM_INPUT_PAD_COUNT) && (state->padFailureRace != raceNumber))")
 
 # 16f. The duplicated LeaveTitle (RL-8): the caller's copy and the roster
 #      proof's MainArcadeRosterProof_LeaveTitle have the same body, so they
@@ -892,10 +920,70 @@ ctr_require_order("${proof_source_path} (MainArcadeRosterProof_LeaveTitle)" "${p
     "MM_Title_CameraReset();" "MM_Title_KillThread();" "RECTMENU_Hide(&MM_MENU_MAIN);" "sdata->ptrDesiredMenu = NULL;"
     "sdata->ptrActiveMenu = NULL;")
 
+# 16f2. The duplicated return step (RL-8): MainArcadeRaceLaunch_RequestReturn
+#      makes the same steps as the link's return to title (the
+#      RETURN_TO_TITLE branch's off-main-menu block in MainArcadeLink.c), so
+#      the two bodies are identical (comment-free code, whitespace
+#      collapsed), and they are boolDemoMode 0, numPlyrNextGame 1,
+#      mainMenuState MAIN_MENU_TITLE, then the main-menu level load.
+ctr_find_block("${hook_source_path}" "${hook_code}"
+    "else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)" hook_return_begin hook_return_end)
+math(EXPR hook_return_length "${hook_return_end} - ${hook_return_begin} + 1")
+string(SUBSTRING "${hook_code}" ${hook_return_begin} ${hook_return_length} hook_return_branch)
+ctr_find_block("${hook_source_path} (RETURN_TO_TITLE branch)" "${hook_return_branch}" "if (gGT->levelID != MAIN_MENU_LEVEL)"
+    hook_reload_begin hook_reload_end)
+math(EXPR hook_reload_length "${hook_reload_end} - ${hook_reload_begin} + 1")
+string(SUBSTRING "${hook_return_branch}" ${hook_reload_begin} ${hook_reload_length} hook_reload_block)
+ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_RequestReturn(struct GameTracker *gGT)"
+    caller_return_begin caller_return_end)
+math(EXPR caller_return_length "${caller_return_end} - ${caller_return_begin} + 1")
+string(SUBSTRING "${caller_code}" ${caller_return_begin} ${caller_return_length} caller_return_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " hook_reload_flat "${hook_reload_block}")
+string(REGEX REPLACE "[ \t\r\n]+" " " caller_return_flat "${caller_return_block}")
+if(NOT hook_reload_flat STREQUAL caller_return_flat)
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_RequestReturn must make the same steps in the same order as the link's return to title in ${hook_source_path} ('${caller_return_flat}' vs '${hook_reload_flat}')")
+endif()
+ctr_require_order("${hook_source_path} (return to title)" "${hook_reload_block}"
+    "gGT->boolDemoMode = 0;" "gGT->numPlyrNextGame = 1;" "sdata->mainMenuState = MAIN_MENU_TITLE;" "MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL);")
+
 # 16g. The RL-12 line, one per validated race, through the setup's digests.
+#      No other caller line starts like it (RL-S8b review N2): the fallback
+#      without digests reads "race <n>: validated without setup digests".
+string(REGEX MATCHALL "\"race %u validated" rl12_prefixes "${caller_code}")
+list(LENGTH rl12_prefixes rl12_prefix_count)
+if(NOT rl12_prefix_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: only the RL-12 line of ${caller_source_path} may start with \"race %u validated\" (found ${rl12_prefix_count})")
+endif()
+ctr_require_literal("${caller_source_path}" "${caller_code}" "MAIN_ARCADE_RACE_LAUNCH_LOG \"race %u: validated without setup digests\\n\"")
 ctr_require_literal("${caller_source_path}" "${caller_code}" "#define MAIN_ARCADE_RACE_LAUNCH_LOG \"[CTR Native] arcade link: \"")
 ctr_require_order("${caller_source_path}" "${caller_code}"
     "static void MainArcadeRaceLaunch_LogDigests(uint32_t raceNumber)"
     "MainArcadeRaceSetup_Digests(digests[0], digests[1], digests[2], digests[3])"
     "MAIN_ARCADE_RACE_LAUNCH_LOG \"race %u validated config %s plan %s bots %s bank %s\\n\""
     "if (output->validated != 0u)" "MainArcadeRaceLaunch_LogDigests(output->raceNumber);")
+
+# 16h. The plan level (RL-8 race tick 0, RL-S8b review S2): the caller's
+#      planLevel copies the race setup plan's level rule, which it may not
+#      name or call (main_arcade_race_setup_plan_isolation_test.cmake rule 7):
+#      the plan takes its levelID from the config's trackID, and the plan's
+#      Apply writes that levelID to the retail level. The two must change
+#      together: if the plan ever took its level from anything else, race
+#      tick 0 would wait on the wrong level. So this pin requires the plan's
+#      lines and the caller's copy word for word, and that the caller writes
+#      planLevel only there and in its Disarm reset (RL-S8b review N5).
+set(plan_source_path "game/MAIN/MainArcadeRaceSetupPlan.c")
+ctr_read_source("${plan_source_path}" plan_source)
+ctr_strip_comments("${plan_source}" plan_code)
+ctr_require_literal("${plan_source_path}" "${plan_code}" "candidate.levelID = (int32_t)config->trackID;")
+ctr_require_literal("${plan_source_path}" "${plan_code}" "candidate.levelID = plan->levelID;")
+ctr_require_literal("${caller_source_path}" "${caller_code}" "state->planLevel = (int32_t)state->config.trackID;")
+string(REGEX MATCHALL "planLevel[ \t]*=[^=]" plan_level_writes "${caller_code}")
+list(LENGTH plan_level_writes plan_level_write_count)
+if(NOT plan_level_write_count EQUAL 2)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must write planLevel only from the config's trackID on Launch and in the Disarm reset (found ${plan_level_write_count} writes)")
+endif()
+ctr_find_block("${caller_source_path} (MainArcadeRaceLaunch_Apply)" "${apply_block}" "if (output->disarm != 0u)" disarm_begin disarm_end)
+math(EXPR disarm_length "${disarm_end} - ${disarm_begin} + 1")
+string(SUBSTRING "${apply_block}" ${disarm_begin} ${disarm_length} disarm_block)
+ctr_require_order("${caller_source_path} (disarm block)" "${disarm_block}"
+    "MainArcadeRaceSetup_Disarm();" "state->planLevel = 0;" "state->planLevelValid = 0u;")

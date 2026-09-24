@@ -334,7 +334,10 @@ static void MainArcadeLink_Gather(const struct GameTracker *gGT, const struct Ga
 	input->mainMenuBoxActive = ((MainArcadeLink_MenuThisFrame() == &MM_MENU_MAIN) && (sdata->mainMenuState == MAIN_MENU_TITLE)) ? 1u : 0u;
 	input->submenuOpen = ((MM_MENU_MAIN.state & DRAW_NEXT_MENU_IN_HIERARCHY) != 0) ? 1u : 0u;
 	input->boxHidden = s_mainArcadeLinkHidMainMenu;
-	/* Before this frame's host tick: the flow the frame starts on (RL-8). */
+	/* The flow at the time of the gather: from MainArcadeLink_Frame, before
+	 * this frame's host tick, the flow the frame starts on (RL-8). The race
+	 * caller and the roster proof call MainArcadeLink_TitleMenuReady after
+	 * the tick, but the title window ignores hostRacing. */
 	input->hostRacing = (NativeArcadeLinkHost_Racing() != 0u) ? 1u : 0u;
 	input->reserved[0] = 0u;
 }

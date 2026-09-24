@@ -27,9 +27,10 @@ struct GamepadSystem;
 void MainArcadeRaceLaunch_StartRace(void);
 
 /*
- * The host's raceFinished input for the arcade-link hook's host tick: 1 from
- * the frame the rehearsal reported the race finished until the caller first
- * sees the flow off RACING, else 0.
+ * The host's raceFinished input for the arcade-link hook's host tick: the
+ * launch core's finish latch (raceFinishedInput) as of its last accepted
+ * step, 1 from the frame the rehearsal reported the race finished until the
+ * core first sees the flow off RACING or a new START_RACE, else 0.
  */
 uint8_t MainArcadeRaceLaunch_RaceFinished(void);
 

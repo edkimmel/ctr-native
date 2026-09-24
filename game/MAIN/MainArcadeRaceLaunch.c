@@ -65,14 +65,19 @@ struct MainArcadeRaceLaunchState
 	/* The race plan's level of the launched race: the setup's plan takes
 	 * its levelID from the config's trackID. */
 	int32_t planLevel;
-	/* 1 once planLevel holds a launched race's level. */
+	/* The launch number whose rehearsal pad install failure was logged (0:
+	 * none), so a failing install logs once per race. */
+	uint32_t padFailureRace;
+	/* 1 once planLevel holds a launched race's level, until the Disarm. */
 	uint8_t planLevelValid;
 	/* 1 when the arcade-link hook handed START_RACE over this frame. */
 	uint8_t startRace;
-	/* The host's raceFinished input: 1 from the finish frame until the flow
-	 * is first seen off RACING. */
-	uint8_t finishedPending;
-	uint8_t reserved[1];
+	/* The host's raceFinished input: the core's raceFinishedInput of its
+	 * last accepted Step (the core owns the finish latch). */
+	uint8_t raceFinishedInput;
+	/* 1 once a refused Step was logged, until the next accepted Step, so a
+	 * core that keeps refusing logs once. */
+	uint8_t refusedLogged;
 };
 
 static struct MainArcadeRaceLaunchState s_mainArcadeRaceLaunch;
@@ -84,7 +89,7 @@ void MainArcadeRaceLaunch_StartRace(void)
 
 uint8_t MainArcadeRaceLaunch_RaceFinished(void)
 {
-	return s_mainArcadeRaceLaunch.finishedPending;
+	return s_mainArcadeRaceLaunch.raceFinishedInput;
 }
 
 /* The core's class of the retail loading stage. */
@@ -148,9 +153,11 @@ static void MainArcadeRaceLaunch_LeaveTitle(void)
 /* The RL-10 rehearsal pads, the proof's neutral pads: pads 0 and 1 connected
  * neutral digital pads, pads 2 and 3 disconnected. Install writes the pad bus
  * at once, and the host input keeps them until the clear, so no local input
- * reaches the race and no pad reads as unplugged. */
-static void MainArcadeRaceLaunch_InstallPads(void)
+ * reaches the race and no pad reads as unplugged. A failed install is logged
+ * once per race. */
+static void MainArcadeRaceLaunch_InstallPads(uint32_t raceNumber)
 {
+	struct MainArcadeRaceLaunchState *state = &s_mainArcadeRaceLaunch;
 	struct NativeArcadeRosterProofPad pads[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT];
 	struct PlatformInputPadSnapshot snapshots[PLATFORM_INPUT_PAD_COUNT];
 
@@ -168,7 +175,11 @@ static void MainArcadeRaceLaunch_InstallPads(void)
 		}
 		snapshots[pad].connected = pads[pad].connected;
 	}
-	(void)Platform_InputInstallPadSnapshots(snapshots, PLATFORM_INPUT_PAD_COUNT);
+	if ((Platform_InputInstallPadSnapshots(snapshots, PLATFORM_INPUT_PAD_COUNT) != PLATFORM_INPUT_PAD_COUNT) && (state->padFailureRace != raceNumber))
+	{
+		state->padFailureRace = raceNumber;
+		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u: the rehearsal pads could not be installed\n", (unsigned)raceNumber);
+	}
 }
 
 /* Lower-case hex of one setup digest. */
@@ -193,7 +204,7 @@ static void MainArcadeRaceLaunch_LogDigests(uint32_t raceNumber)
 
 	if (!MainArcadeRaceSetup_Digests(digests[0], digests[1], digests[2], digests[3]))
 	{
-		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u validated; the setup digests are unavailable\n", (unsigned)raceNumber);
+		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u: validated without setup digests\n", (unsigned)raceNumber);
 		return;
 	}
 	for (uint32_t i = 0; i < 4u; i++)
@@ -232,6 +243,12 @@ static void MainArcadeRaceLaunch_ArmAndLaunch(struct MainArcadeRaceLaunchCoreOut
 	else
 	{
 		result = MAIN_ARCADE_RACE_LAUNCH_CORE_RESULT_LAUNCHED;
+		/* A copy of the race setup plan's level rule,
+		 * `candidate.levelID = (int32_t)config->trackID;` in the setup's plan
+		 * module (which this file may not name or call; see
+		 * tests/main_arcade_race_setup_plan_isolation_test.cmake rule 7). The
+		 * two must change together: tests/main_arcade_link_hook_isolation_test.cmake
+		 * (16h) requires both lines. */
 		state->planLevel = (int32_t)state->config.trackID;
 		state->planLevelValid = 1u;
 		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u launched (track %u laps %u)\n", (unsigned)output->raceNumber,
@@ -286,8 +303,8 @@ static void MainArcadeRaceLaunch_Apply(struct GameTracker *gGT, const struct Mai
 	}
 	else if (output->reportFinished != 0u)
 	{
+		/* The host takes it through the core's raceFinishedInput latch. */
 		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u rehearsal finished\n", (unsigned)output->raceNumber);
-		state->finishedPending = 1u;
 	}
 	if (output->requestReturn != 0u)
 	{
@@ -300,7 +317,7 @@ static void MainArcadeRaceLaunch_Apply(struct GameTracker *gGT, const struct Mai
 	 * main-menu frame, whichever is first. */
 	if (output->installPads != 0u)
 	{
-		MainArcadeRaceLaunch_InstallPads();
+		MainArcadeRaceLaunch_InstallPads(output->raceNumber);
 	}
 	if (output->clearPads != 0u)
 	{
@@ -312,6 +329,8 @@ static void MainArcadeRaceLaunch_Apply(struct GameTracker *gGT, const struct Mai
 	if (output->disarm != 0u)
 	{
 		MainArcadeRaceSetup_Disarm();
+		state->planLevel = 0;
+		state->planLevelValid = 0u;
 	}
 }
 
@@ -332,17 +351,22 @@ void MainArcadeRaceLaunch_Frame(struct GameTracker *gGT, struct GamepadSystem *g
 	}
 
 	MainArcadeRaceLaunch_Gather(gGT, gGS, &input);
-	if (input.hostRacing == 0u)
-	{
-		/* The flow left RACING: the finish was taken (or no longer can be). */
-		state->finishedPending = 0u;
-	}
 	if (!MainArcadeRaceLaunchCore_Step(&state->core, &input, &output))
 	{
-		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "the launch core refused a frame (phase %u, start %u, racing %u)\n", (unsigned)state->core.phase,
-			(unsigned)input.startRace, (unsigned)input.hostRacing);
+		/* A refused Step changes nothing, so the finish latch is kept too. */
+		if (state->refusedLogged == 0u)
+		{
+			state->refusedLogged = 1u;
+			Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "the launch core refused a frame (phase %u, start %u, racing %u)\n", (unsigned)state->core.phase,
+				(unsigned)input.startRace, (unsigned)input.hostRacing);
+		}
 		return;
 	}
+	state->refusedLogged = 0u;
+	/* The host's raceFinished input for its next Tick: the core's finish
+	 * latch, held from the finish frame until the core first sees the flow
+	 * off RACING (or a new START_RACE). */
+	state->raceFinishedInput = output.raceFinishedInput;
 	if (output.armAndLaunch != 0u)
 	{
 		MainArcadeRaceLaunch_ArmAndLaunch(&output);

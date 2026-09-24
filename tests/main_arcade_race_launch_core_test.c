@@ -20,8 +20,9 @@
  * latest return step on a LOADING or idle main-menu frame; the Disarm once per
  * launched race on an idle main-menu frame strictly after the latest return
  * step, naming that race, never with a report, or at once with the return
- * step on an Arm/Launch failure; and an idle core owing nothing. Each test
- * then pins its own frames.
+ * step on an Arm/Launch failure; the finish latch (raceFinishedInput) cleared
+ * by a frame off RACING or a START_RACE, set by a finish, and held otherwise;
+ * and an idle core owing nothing. Each test then pins its own frames.
  */
 
 #define CHECK(expression)                                            \
@@ -143,6 +144,7 @@ struct Harness
 	uint8_t padsLive;     /* installed and not yet cleared */
 	uint8_t disarmDue;    /* a launched race awaits its Disarm */
 	uint8_t returnDue;    /* an ended race awaits its return step */
+	uint8_t finishLatch;  /* the expected raceFinishedInput */
 	uint32_t disarmRace;  /* the launch number of the race awaiting its Disarm */
 	uint32_t returnFrame; /* the frame of the last return step */
 	uint32_t disarmFrame; /* the frame of the last Disarm */
@@ -176,7 +178,8 @@ static int Frame(struct Harness *h, const Input *input, uint32_t result, Output 
 		CHECK(result != R_NONE);
 		/* Only armAndLaunch (and the race number) before the result. */
 		CHECK(out->leaveTitle == 0u && out->installPads == 0u && out->clearPads == 0u && out->reportFinished == 0u && out->reportFailure == 0u &&
-		      out->requestReturn == 0u && out->disarm == 0u && out->validated == 0u && out->raceTickZero == 0u && out->failure == F_NONE);
+		      out->requestReturn == 0u && out->disarm == 0u && out->validated == 0u && out->raceTickZero == 0u && out->failure == F_NONE &&
+		      out->raceFinishedInput == 0u);
 		CHECK(h->core.phase == P_LAUNCH_RESULT);
 		CHECK(MainArcadeRaceLaunchCore_LaunchResult(&h->core, result, out) == 1);
 		CHECK(out->armAndLaunch == 1u);
@@ -186,7 +189,8 @@ static int Frame(struct Harness *h, const Input *input, uint32_t result, Output 
 	/* Well-formed. */
 	CHECK(Bit(out->armAndLaunch) && Bit(out->leaveTitle) && Bit(out->installPads) && Bit(out->clearPads) && Bit(out->reportFinished) &&
 	      Bit(out->reportFailure) && Bit(out->requestReturn) && Bit(out->disarm) && Bit(out->validated) && Bit(out->raceTickZero));
-	CHECK(out->reserved[0] == 0u && out->reserved[1] == 0u);
+	CHECK(Bit(out->raceFinishedInput));
+	CHECK(out->reserved[0] == 0u);
 	CHECK((out->reportFailure != 0u) == (out->failure != F_NONE));
 	CHECK(out->raceNumber < 16u);
 
@@ -210,6 +214,20 @@ static int Frame(struct Harness *h, const Input *input, uint32_t result, Output 
 			h->reported[out->raceNumber] = 1u;
 		}
 	}
+
+	/* The finish latch: cleared by a frame off RACING or a START_RACE, then
+	 * set by a finish, and held on every other frame; the core's own field
+	 * is the output's. */
+	if ((input->hostRacing == 0u) || (input->startRace != 0u))
+	{
+		h->finishLatch = 0u;
+	}
+	if (out->reportFinished != 0u)
+	{
+		h->finishLatch = 1u;
+	}
+	CHECK(out->raceFinishedInput == h->finishLatch);
+	CHECK(h->core.finishedPending == h->finishLatch);
 
 	/* Rule 8: armAndLaunch never while an ended race awaits its return step
 	 * or Disarm (so never on either's frame); it takes the next launch
@@ -436,7 +454,8 @@ static int TestLayout(void)
 	CHECK(offsetof(struct MainArcadeRaceLaunchCore, held) == 22u);
 	CHECK(offsetof(struct MainArcadeRaceLaunchCore, disarmPending) == 23u);
 	CHECK(offsetof(struct MainArcadeRaceLaunchCore, launchStage) == 24u);
-	CHECK(offsetof(struct MainArcadeRaceLaunchCore, reserved) == 25u);
+	CHECK(offsetof(struct MainArcadeRaceLaunchCore, finishedPending) == 25u);
+	CHECK(offsetof(struct MainArcadeRaceLaunchCore, reserved) == 26u);
 	CHECK(sizeof(struct MainArcadeRaceLaunchCore) == 28u);
 
 	CHECK(offsetof(Input, setupStatus) == 0u);
@@ -462,7 +481,8 @@ static int TestLayout(void)
 	CHECK(offsetof(Output, disarm) == 15u);
 	CHECK(offsetof(Output, validated) == 16u);
 	CHECK(offsetof(Output, raceTickZero) == 17u);
-	CHECK(offsetof(Output, reserved) == 18u);
+	CHECK(offsetof(Output, raceFinishedInput) == 18u);
+	CHECK(offsetof(Output, reserved) == 19u);
 	CHECK(sizeof(Output) == 20u);
 	return 0;
 }
@@ -1547,6 +1567,84 @@ static int TestStartDuringRaceIgnored(void)
 	return 0;
 }
 
+/* ---- the finish latch (raceFinishedInput, the host's raceFinished input) ---- */
+
+/* RL-S8b review S1: the finish is held from the finish frame while the flow
+ * stays on RACING (the return step and the pad clear included) and survives a
+ * refused Step; the first frame off RACING clears it; RACING coming back does
+ * not set it again; and race 2 carries none of it before its own finish. */
+static int TestFinishLatch(void)
+{
+	struct Harness h;
+	Input stillRacing = In(LVL_PLAN, ST_REQ, 0u, S_VALIDATED, 1u);
+	Input returnLoadRacing = In(LVL_MENU, ST_OTHER, 1u, S_VALIDATED, 1u);
+	Input refusedStart = StartOn(In(LVL_MENU, ST_OTHER, 1u, S_VALIDATED, 0u));
+	Input returnLoadResults = In(LVL_MENU, ST_OTHER, 1u, S_VALIDATED, 0u);
+	Input menuIdle = In(LVL_MENU, ST_IDLE, 0u, S_VALIDATED, 0u);
+	Input results = In(LVL_MENU, ST_IDLE, 0u, S_IDLE, 0u);
+	Output out;
+
+	HarnessInit(&h);
+	RUN(LaunchNow(&h, 1u));
+	RUN(LoadToValidated(&h, 1u));
+	RUN(ToRaceTickZero(&h, 1u));
+	CHECK(h.core.finishedPending == 0u);
+	RUN(RehearseToFinish(&h, 1u));
+	CHECK(h.core.finishedPending == 1u);
+	/* Held while the flow is still on RACING. */
+	RUN(Frame(&h, &stillRacing, R_NONE, &out));
+	CHECK(out.raceFinishedInput == 1u && out.reportFinished == 0u);
+	RUN(Frame(&h, &returnLoadRacing, R_NONE, &out));
+	CHECK(out.clearPads == 1u && out.raceFinishedInput == 1u);
+	/* A refused Step keeps it. */
+	RUN(Refused(&h.core, &refusedStart));
+	CHECK(h.core.finishedPending == 1u);
+	/* The first frame off RACING clears it. */
+	RUN(Frame(&h, &returnLoadResults, R_NONE, &out));
+	CHECK(out.raceFinishedInput == 0u && h.core.finishedPending == 0u);
+	/* RACING again without a finish does not bring it back. */
+	RUN(Frame(&h, &returnLoadRacing, R_NONE, &out));
+	CHECK(out.raceFinishedInput == 0u);
+	RUN(Frame(&h, &menuIdle, R_NONE, &out));
+	CHECK(out.disarm == 1u && out.raceFinishedInput == 0u && h.core.phase == P_IDLE);
+	RUN(Quiet(&h, &results, 30u));
+	/* Race 2: 0 on every frame (Frame checks each) until its own finish. */
+	RUN(LaunchNow(&h, 2u));
+	RUN(LoadToValidated(&h, 2u));
+	RUN(ToRaceTickZero(&h, 2u));
+	CHECK(h.core.finishedPending == 0u);
+	RUN(RehearseToFinish(&h, 2u));
+	CHECK(h.core.finishedPending == 1u);
+	return 0;
+}
+
+/* A START_RACE clears the latch even with no frame seen off RACING before it
+ * (the Tick that returns START_RACE entered a new RACING), so the held race 2
+ * launches with no finish pending and cannot finish on its first RACING
+ * tick. */
+static int TestFinishLatchClearedByStart(void)
+{
+	struct Harness h;
+	Input returnLoadStart = StartOn(In(LVL_MENU, ST_OTHER, 1u, S_VALIDATED, 1u));
+	Input menuIdleOpen = TitleOpen(S_VALIDATED);
+	Input open = TitleOpen(S_IDLE);
+	Output out;
+
+	HarnessInit(&h);
+	RUN(LaunchNow(&h, 1u));
+	RUN(LoadToValidated(&h, 1u));
+	RUN(ToRaceTickZero(&h, 1u));
+	RUN(RehearseToFinish(&h, 1u));
+	CHECK(h.core.finishedPending == 1u);
+	RUN(Frame(&h, &returnLoadStart, R_NONE, &out));
+	CHECK(out.clearPads == 1u && out.raceFinishedInput == 0u && h.core.held == 1u && h.core.finishedPending == 0u);
+	RUN(Frame(&h, &menuIdleOpen, R_NONE, &out));
+	CHECK(out.disarm == 1u && out.raceFinishedInput == 0u);
+	RUN(Frame(&h, &open, R_LAUNCHED, &out));
+	CHECK(out.armAndLaunch == 1u && out.raceNumber == 2u && out.raceFinishedInput == 0u);
+	return 0;
+}
+
 int main(void)
 {
 	if (TestLayout() != 0)
@@ -1648,6 +1746,10 @@ int main(void)
 	if (TestStartOnDisarmFrame() != 0)
 		return 1;
 	if (TestStartDuringRaceIgnored() != 0)
+		return 1;
+	if (TestFinishLatch() != 0)
+		return 1;
+	if (TestFinishLatchClearedByStart() != 0)
 		return 1;
 	printf("main_arcade_race_launch_core_test: ok\n");
 	return 0;
