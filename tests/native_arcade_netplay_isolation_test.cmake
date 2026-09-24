@@ -7,10 +7,11 @@
 # never touches the virtual-datagram test harness, includes only its allowed
 # headers, exposes a public API whose own names stay free of every token the
 # lockstep and failure-handling isolation rules forbid under the engine
-# sources (so engine code can call it), links exactly its eight composed
+# sources (so engine code can call it), links exactly its nine composed
 # libraries and never the transport directly, static-asserts that a select
-# record fills exactly one peer-link aux datagram, stays portable C17 with
-# extensions off, and keeps its four defaults frozen.
+# record and a launch record each fill exactly one peer-link aux datagram,
+# stays portable C17 with extensions off, and keeps its four defaults and
+# its launch linger cap frozen.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -64,11 +65,12 @@ foreach(relative_path IN LISTS netplay_files)
 
     # 2. #include lines may only name the C headers string.h, stdint.h, and
     #    stddef.h, the module's own header, the seven original composed
-    #    platform headers, the three match-select headers, and native_sha256.h
-    #    (the select nonce hash).
+    #    platform headers, the three match-select headers, native_sha256.h
+    #    (the select nonce hash), and native_arcade_launch.h (the race launch
+    #    agreement, docs/RACE_LAUNCH_MILESTONE.md RL-S5).
     string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${source}")
     foreach(include_line IN LISTS include_lines)
-        if(NOT include_line MATCHES "^#[ \t]*include[ \t]*(<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_lobby_state\\.h\"|\"platform/native_lockstep_match_outcome\\.h\"|\"platform/native_lockstep_match_roster\\.h\"|\"platform/native_lockstep_rematch\\.h\"|\"platform/native_match_config\\.h\"|\"platform/native_match_select_message\\.h\"|\"platform/native_match_select_rules\\.h\"|\"platform/native_match_select_session\\.h\"|\"platform/native_sha256\\.h\")[ \t]*$")
+        if(NOT include_line MATCHES "^#[ \t]*include[ \t]*(<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_launch\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_lobby_state\\.h\"|\"platform/native_lockstep_match_outcome\\.h\"|\"platform/native_lockstep_match_roster\\.h\"|\"platform/native_lockstep_rematch\\.h\"|\"platform/native_match_config\\.h\"|\"platform/native_match_select_message\\.h\"|\"platform/native_match_select_rules\\.h\"|\"platform/native_match_select_session\\.h\"|\"platform/native_sha256\\.h\")[ \t]*$")
             message(FATAL_ERROR "arcade netplay isolation: disallowed include '${include_line}' in ${relative_path}")
         endif()
     endforeach()
@@ -98,8 +100,9 @@ foreach(public_name IN LISTS public_names)
     endforeach()
 endforeach()
 
-# 4. ctr_native_arcade_netplay links exactly its eight composed libraries
-#    (the seven of Task 4 and ctr_native_match_select_session) and nothing
+# 4. ctr_native_arcade_netplay links exactly its nine composed libraries
+#    (the seven of Task 4, ctr_native_match_select_session, and
+#    ctr_native_arcade_launch from RL-S5) and nothing
 #    else, in exactly one target_link_libraries call, and reaches the
 #    transport only through the lobby layer: never ctr_native_udp_transport
 #    or the virtual-datagram harness directly.
@@ -118,7 +121,7 @@ list(REMOVE_ITEM link_items "" PUBLIC PRIVATE INTERFACE)
 set(expected_link_items
     ctr_native_arcade_flow ctr_native_arcade_menu_input ctr_native_lobby_state
     ctr_native_lockstep_match_outcome ctr_native_lockstep_match_roster ctr_native_lockstep_rematch
-    ctr_native_match_config ctr_native_match_select_session)
+    ctr_native_match_config ctr_native_match_select_session ctr_native_arcade_launch)
 foreach(expected IN LISTS expected_link_items)
     list(FIND link_items "${expected}" expected_index)
     if(expected_index EQUAL -1)
@@ -128,12 +131,12 @@ endforeach()
 foreach(item IN LISTS link_items)
     list(FIND expected_link_items "${item}" item_index)
     if(item_index EQUAL -1)
-        message(FATAL_ERROR "arcade netplay isolation: ${target} links unexpected item '${item}'; only the eight composed libraries are allowed")
+        message(FATAL_ERROR "arcade netplay isolation: ${target} links unexpected item '${item}'; only the nine composed libraries are allowed")
     endif()
 endforeach()
 list(LENGTH link_items link_item_count)
-if(NOT link_item_count EQUAL 8)
-    message(FATAL_ERROR "arcade netplay isolation: ${target} must link exactly eight libraries, found ${link_item_count} ('${link_items}')")
+if(NOT link_item_count EQUAL 9)
+    message(FATAL_ERROR "arcade netplay isolation: ${target} must link exactly nine libraries, found ${link_item_count} ('${link_items}')")
 endif()
 foreach(forbidden IN ITEMS ctr_native_virtual_datagram ctr_native_udp_transport)
     string(FIND "${link_call}" "${forbidden}" leak)
@@ -182,3 +185,17 @@ ctr_require_regex("${netplay_header} (STALL_TIMEOUT_TICKS must stay 90u)" "${hea
 ctr_read_source("platform/native_arcade_netplay.c" netplay_source)
 ctr_require_regex("platform/native_arcade_netplay.c (select record width == aux width)" "${netplay_source}"
     "_Static_assert\\(NATIVE_MATCH_SELECT_MESSAGE_V1_ENCODED_BYTES == NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES,")
+
+# 7. A composed launch record fills exactly one peer-link aux datagram
+#    (docs/RACE_LAUNCH_MILESTONE.md RL-2): the launch module includes no
+#    transport header, so the adapter carries that static assert, and the
+#    ones tying the launch roles to the cabinet roles. The launch linger cap
+#    is frozen at 300 ticks (RL-4 launchLingerTicks).
+ctr_require_regex("platform/native_arcade_netplay.c (launch record width == aux width)" "${netplay_source}"
+    "_Static_assert\\(NATIVE_ARCADE_LAUNCH_RECORD_V1_ENCODED_BYTES == NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES,")
+ctr_require_regex("platform/native_arcade_netplay.c (launch CAB1 role)" "${netplay_source}"
+    "_Static_assert\\(NATIVE_ARCADE_LAUNCH_ROLE_CAB1 == \\(unsigned\\)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,")
+ctr_require_regex("platform/native_arcade_netplay.c (launch CAB2 role)" "${netplay_source}"
+    "_Static_assert\\(NATIVE_ARCADE_LAUNCH_ROLE_CAB2 == \\(unsigned\\)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,")
+ctr_require_regex("${netplay_header} (LAUNCH_LINGER_TICKS must stay 300u)" "${header}"
+    "\n#define NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS 300u\r?\n")

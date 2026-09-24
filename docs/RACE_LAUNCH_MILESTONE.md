@@ -612,7 +612,18 @@ completion.
 
 ### RL-S5 -- netplay launch agreement
 
-Status: planned. Review required. RL-1, RL-3, RL-4, RL-6: begin on relink
+Status: done; review required. The netplay adapter now runs one launch
+agreement per relink lobby and reports launchStatus from it, replacing the
+RL-S4 transitional rule. The change also adds the RL-3 resets, the RL-4 linger,
+RL-6, the RL-2 asserts, and loopback cases 33a-33l (files:
+include/platform/native_arcade_netplay.h, platform/native_arcade_netplay.c,
+tests/native_arcade_netplay_test.c, the netplay and launch isolation tests,
+CMakeLists.txt). Deviation: the adapter discards the aux inbox on the relink
+READY tick before it begins the agreement, because otherwise a stale
+same-digest record queued behind the peer's new HELLO committed the new
+agreement at every reset point.
+
+Plan: Review required. RL-1, RL-3, RL-4, RL-6: begin on relink
 READY, drain aux before the flow, send with linger, report launchStatus
 to the flow, reset the agreement at the RL-3 points, take lastReadyConfig
 in ArmRace for relink lobbies and skip step 2a for them. The size

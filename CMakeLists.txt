@@ -337,7 +337,9 @@ target_link_libraries(ctr_native_arcade_flow PUBLIC ctr_native_arcade_menu_input
 # only production module that composes the lobby layer with the
 # failure-handling layer and the match-select session
 # (docs/MATCH_SELECT_MILESTONE.md section 2.6) and drives the pure arcade
-# screen flow. It reaches the transport only through ctr_native_lobby_state.
+# screen flow, with the race launch agreement (ctr_native_arcade_launch,
+# docs/RACE_LAUNCH_MILESTONE.md RL-S5). It reaches the transport only through
+# ctr_native_lobby_state.
 # Reaches ctr_native through the host glue.
 add_library(ctr_native_arcade_netplay STATIC platform/native_arcade_netplay.c)
 set_target_properties(ctr_native_arcade_netplay PROPERTIES
@@ -349,7 +351,7 @@ target_include_directories(ctr_native_arcade_netplay PUBLIC ${CMAKE_SOURCE_DIR}/
 target_link_libraries(ctr_native_arcade_netplay PUBLIC
     ctr_native_arcade_flow ctr_native_arcade_menu_input ctr_native_lobby_state
     ctr_native_lockstep_match_outcome ctr_native_lockstep_match_roster ctr_native_lockstep_rematch
-    ctr_native_match_config ctr_native_match_select_session)
+    ctr_native_match_config ctr_native_match_select_session ctr_native_arcade_launch)
 
 # Arcade-link screen layout builder (docs/GAME_LOOP_UI_MILESTONE.md section
 # 2.4, Task 5): a pure draw-list builder under game/MAIN with no game globals
@@ -465,8 +467,8 @@ target_link_libraries(ctr_native_match_select_session PUBLIC ctr_native_match_se
 # Race launch agreement (docs/RACE_LAUNCH_MILESTONE.md section 4, RL-2,
 # RL-3, RL-4; slice RL-S2): the pure, transactional 64-byte launch record v1
 # codec with an FNV-1a 64 trailer, and the caller-owned launch agreement
-# state. Not linked into ctr_native yet (the netplay adapter wires it in
-# RL-S5).
+# state. Linked only by the netplay adapter (ctr_native_arcade_netplay,
+# RL-S5), which reaches ctr_native through the host glue.
 add_library(ctr_native_arcade_launch STATIC platform/native_arcade_launch.c)
 set_target_properties(ctr_native_arcade_launch PROPERTIES
     C_STANDARD 17

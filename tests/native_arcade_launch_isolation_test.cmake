@@ -8,8 +8,8 @@
 # codec header (platform/native_canonical_codec.h, which provides
 # NativeCodecWriter, NativeCodecReader, and NativeCodecDigest64); the library
 # links exactly ctr_native_canonical_codec; the target stays portable C17
-# with extensions off; in this slice only the unit test links it, and
-# ctr_native does not (RL-S5 wires it through the netplay adapter).
+# with extensions off; only the netplay adapter library (RL-S5) and the unit
+# test link it, and ctr_native does not link it directly.
 #
 # The token bans run twice: on the raw text (so comment prose stays clean
 # too), and, for the section 5 ban, on the code with every // and /* */
@@ -240,7 +240,8 @@ if(NOT (properties_at LESS standard_at AND standard_at LESS required_at AND requ
     message(FATAL_ERROR "${prefix}: ${target} C17/no-extensions properties are out of order")
 endif()
 
-# 11. The game executable does not link the module in this slice.
+# 11. The game executable does not link the module directly: it reaches it
+#     only through the host glue and the netplay adapter (RL-S5).
 string(REGEX MATCHALL "target_link_libraries\\([ \t\r\n]*ctr_native[ \t\r\n][^)]*\\)" game_link_calls "${cmake}")
 list(LENGTH game_link_calls game_link_call_count)
 if(game_link_call_count EQUAL 0)
@@ -253,11 +254,12 @@ foreach(game_link_call IN LISTS game_link_calls)
     endif()
 endforeach()
 
-#     Nothing but the unit test links the module either: the only
-#     target_link_libraries call naming ${target} as a dependency is
-#     native_arcade_launch_test's. RL-S5 relaxes this for the netplay
-#     library (ctr_native_arcade_netplay).
-set(unit_test_target native_arcade_launch_test)
+#     Nothing but the netplay adapter library (ctr_native_arcade_netplay,
+#     since RL-S5) and the unit test links the module either: those are
+#     exactly the target_link_libraries calls naming ${target} as a
+#     dependency.
+set(allowed_dependents ctr_native_arcade_netplay native_arcade_launch_test)
+list(SORT allowed_dependents)
 string(REGEX MATCHALL "target_link_libraries\\([^)]*\\)" all_link_calls "${cmake}")
 set(dependents "")
 foreach(any_link_call IN LISTS all_link_calls)
@@ -272,6 +274,7 @@ foreach(any_link_call IN LISTS all_link_calls)
         list(APPEND dependents "${linking_target}")
     endif()
 endforeach()
-if(NOT "${dependents}" STREQUAL "${unit_test_target}")
-    message(FATAL_ERROR "${prefix}: only ${unit_test_target} may link ${target} in this slice (found '${dependents}')")
+list(SORT dependents)
+if(NOT "${dependents}" STREQUAL "${allowed_dependents}")
+    message(FATAL_ERROR "${prefix}: exactly ${allowed_dependents} may link ${target} (found '${dependents}')")
 endif()

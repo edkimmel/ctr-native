@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "platform/native_arcade_flow.h"
+#include "platform/native_arcade_launch.h"
 #include "platform/native_arcade_menu_input.h"
 #include "platform/native_lobby_state.h"
 #include "platform/native_lockstep_match_outcome.h"
@@ -19,6 +20,22 @@
 /* A composed select record travels as exactly one aux datagram. */
 _Static_assert(NATIVE_MATCH_SELECT_MESSAGE_V1_ENCODED_BYTES == NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES,
 	"the select record must fill exactly one peer-link aux datagram");
+
+/* A composed launch record travels as exactly one aux datagram (RL-2); the
+ * launch module includes no transport header, so the adapter ties the two
+ * widths together. */
+_Static_assert(NATIVE_ARCADE_LAUNCH_RECORD_V1_ENCODED_BYTES == NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES,
+	"the launch record must fill exactly one peer-link aux datagram");
+/* The launch roles mirror the cabinet roles, and the launch configDigest is
+ * the full match-config digest; the launch module names neither. */
+_Static_assert(NATIVE_ARCADE_LAUNCH_ROLE_CAB1 == (unsigned)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+	"the launch CAB1 role must be the CAB1 human role");
+_Static_assert(NATIVE_ARCADE_LAUNCH_ROLE_CAB2 == (unsigned)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,
+	"the launch CAB2 role must be the CAB2 human role");
+_Static_assert(NATIVE_ARCADE_LAUNCH_CONFIG_DIGEST_BYTES == NATIVE_SHA256_DIGEST_BYTES,
+	"the launch configDigest must hold a full match-config digest");
+_Static_assert(NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS == NATIVE_ARCADE_LAUNCH_DEFAULT_LINGER_TICKS,
+	"the adapter's launch linger is the RL-4 default");
 
 /* Every menu event fits the uint8_t lastMenuEvent and view localMenuEvent. */
 _Static_assert((unsigned)NATIVE_ARCADE_MENU_EVENT_BACK <= 0xFFu, "a menu event must fit in one byte");
@@ -206,6 +223,7 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
 		netplay->lastReadyValid = 0u;
 		netplay->lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE;
 		NativeArcadeNetplay_ClearSelect(netplay);
+		NativeArcadeLaunch_Reset(&netplay->launch);
 		NativeArcadeNetplay_BeginLobby(netplay);
 	}
 	return action;
@@ -480,6 +498,89 @@ static void NativeArcadeNetplay_SendSelect(struct NativeArcadeNetplay *netplay)
 	}
 }
 
+/* 1 while the flow is in SELECT_RESULT phase 2: RELINK has run for this
+ * select. The only phase in which a launch agreement may commit (RL-3). */
+static int NativeArcadeNetplay_LaunchPhase(const struct NativeArcadeNetplay *netplay)
+{
+	return (NativeArcadeFlow_Screen(&netplay->flow) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT) &&
+		(netplay->relinked != 0u);
+}
+
+/*
+ * The first READY of a relink lobby (RL-1, RL-4): a fresh agreement on the
+ * digest of this cabinet's relink proposal. The aux inbox is emptied first:
+ * it holds only what arrived in the poll that found this new link RUNNING,
+ * and the agreement accepts records from the next poll on, so nothing that
+ * reached this socket before or together with the handshake completion can
+ * commit it. If the digest cannot be taken (a defensive path only: the
+ * proposal was validated when it was proposed), the agreement stays inactive
+ * and the flow times out to LINK ERROR.
+ */
+static void NativeArcadeNetplay_BeginLaunch(struct NativeArcadeNetplay *netplay)
+{
+	uint8_t digest[NATIVE_SHA256_DIGEST_BYTES];
+
+	NativeArcadeLaunch_Reset(&netplay->launch);
+	NativeArcadeNetplay_DiscardAux(netplay);
+	if (NativeMatchConfigV1_Digest(&netplay->currentConfig, digest))
+	{
+		(void)NativeArcadeLaunch_Begin(&netplay->launch, netplay->config.localRole, digest,
+			NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
+	}
+}
+
+/* Before the flow runs, while an agreement is active (RL-3): every aux
+ * datagram is taken. It is accepted in SELECT_RESULT phase 2 (where it may
+ * commit) or once committed (where only HEARD is watched), and discarded
+ * unread otherwise. The agreement ignores and counts anything but a valid
+ * launch record from the other role on its own digest; nothing fails. */
+static void NativeArcadeNetplay_DriveLaunch(struct NativeArcadeNetplay *netplay)
+{
+	struct NativeLockstepPeerLink *link;
+	uint8_t bytes[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	size_t size = 0u;
+	int accepting;
+
+	if ((netplay->lobbyBegun == 0u) || !NativeArcadeLaunch_Active(&netplay->launch))
+	{
+		return;
+	}
+	accepting = NativeArcadeNetplay_LaunchPhase(netplay) ||
+		(NativeArcadeLaunch_Status(&netplay->launch) == (uint32_t)NATIVE_ARCADE_LAUNCH_COMMITTED);
+	link = NativeLobbyState_Link(&netplay->lobby);
+	while (NativeLockstepPeerLink_TakeAux(link, bytes, sizeof(bytes), &size))
+	{
+		if (accepting)
+		{
+			(void)NativeArcadeLaunch_Accept(&netplay->launch, bytes, size);
+		}
+	}
+}
+
+/* After the flow's action (RL-4): one launch record per tick while the
+ * agreement wants to send and the link is RUNNING (the aux route carries
+ * nothing otherwise, so nothing is composed), then one tick of the linger.
+ * A failed compose or send is simply lossy. */
+static void NativeArcadeNetplay_SendLaunch(struct NativeArcadeNetplay *netplay)
+{
+	struct NativeLockstepPeerLink *link;
+	uint8_t bytes[NATIVE_ARCADE_LAUNCH_RECORD_V1_ENCODED_BYTES];
+	size_t size = 0u;
+
+	if ((netplay->lobbyBegun == 0u) || !NativeArcadeLaunch_Active(&netplay->launch))
+	{
+		return;
+	}
+	link = NativeLobbyState_Link(&netplay->lobby);
+	if (NativeArcadeLaunch_ShouldSend(&netplay->launch) &&
+		(NativeLockstepPeerLink_Mode(link) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING) &&
+		NativeArcadeLaunch_Compose(&netplay->launch, bytes, sizeof(bytes), &size))
+	{
+		(void)NativeLockstepPeerLink_SendAux(link, bytes, size);
+	}
+	NativeArcadeLaunch_Tick(&netplay->launch);
+}
+
 /* Applies a latched outcome, if any: drops the remote human in the roster
  * and records the flow's link-failure reason for its next observation.
  * Shared by OnTakeResult and Tick's own PEER_LOST read. */
@@ -495,11 +596,15 @@ static void NativeArcadeNetplay_ApplyLatchedOutcome(struct NativeArcadeNetplay *
 	}
 }
 
-/* START_RACE: a fresh outcome tracker and roster for this match. */
+/* START_RACE: a fresh outcome tracker and roster for this match. The race's
+ * relink proposal, which the launch commit proved the peer holds, becomes
+ * the rematch source (RL-6). */
 static void NativeArcadeNetplay_ArmRace(struct NativeArcadeNetplay *netplay)
 {
 	(void)NativeLockstepMatchOutcome_Init(&netplay->outcome, netplay->config.stallTimeoutTicks);
 	(void)NativeLockstepMatchRoster_Init(&netplay->roster, &netplay->currentConfig);
+	netplay->lastReadyConfig = netplay->currentConfig;
+	netplay->lastReadyValid = 1u;
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 	netplay->raceArmed = 1u;
 	netplay->raceConfigValid = 1u;
@@ -535,15 +640,25 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 		NativeLobbyState_Poll(&netplay->lobby);
 	}
 
-	/* 2a. The first READY of this lobby: its proposal (the current config,
-	 * which is what BeginLobby proposed) is now held byte-identically by the
-	 * peer. Kept as the rematch source. */
+	/* 2a. The first READY of this lobby. A first or rematch lobby: its
+	 * proposal (the current config, which is what BeginLobby proposed) is
+	 * now held byte-identically by the peer, and is kept as the rematch
+	 * source. A relink lobby (RL-6): lastReadyConfig waits for the
+	 * START_RACE the launch commit gates, since the peer's relink may not
+	 * have completed; the launch agreement begins instead (RL-1). */
 	if ((netplay->lobbyBegun != 0u) && (netplay->lobbyReadySeen == 0u) &&
 		(NativeLobbyState_Mode(&netplay->lobby) == NATIVE_LOBBY_STATE_READY))
 	{
-		netplay->lastReadyConfig = netplay->currentConfig;
-		netplay->lastReadyValid = 1u;
 		netplay->lobbyReadySeen = 1u;
+		if (netplay->relinked != 0u)
+		{
+			NativeArcadeNetplay_BeginLaunch(netplay);
+		}
+		else
+		{
+			netplay->lastReadyConfig = netplay->currentConfig;
+			netplay->lastReadyValid = 1u;
+		}
 	}
 
 	/* 2b. That poll drains bundles into the session. If it found the link
@@ -577,47 +692,61 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	/* 5. Observation. */
 	memset(&observation, 0, sizeof(observation));
 	observation.lobbyStatus = NativeArcadeNetplay_LobbyStatus(netplay);
-	/* RL-S4 transitional rule; RL-S5 replaces it with the launch agreement
-	 * (docs/RACE_LAUNCH_MILESTONE.md RL-1..RL-6), and until then READY
-	 * implies COMMITTED, so behaviour is unchanged. */
-	observation.launchStatus = (uint8_t)((observation.lobbyStatus == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY)
-			? NATIVE_ARCADE_FLOW_LAUNCH_COMMITTED : NATIVE_ARCADE_FLOW_LAUNCH_PENDING);
 	observation.linkFailure = netplay->pendingLinkFailure;
 	observation.raceFinished = (uint8_t)((raceFinished != 0u) ? 1u : 0u);
 	observation.selectStatus = (uint8_t)NATIVE_ARCADE_FLOW_SELECT_PENDING;
 
 	/* 5b. Select phase: aux inbox into the session, the menu event on
-	 * SELECT, the session tick, and its status for the flow. */
+	 * SELECT, the session tick, and its status for the flow. Otherwise, while
+	 * a launch agreement is active: aux inbox into the agreement (RL-3). */
 	if (NativeArcadeNetplay_Selecting(netplay))
 	{
 		observation.selectStatus = NativeArcadeNetplay_DriveSelect(netplay, event);
 	}
+	else
+	{
+		NativeArcadeNetplay_DriveLaunch(netplay);
+	}
+
+	/* 5c. The launch commit (RL-1): COMMITTED exactly when the agreement has
+	 * committed; handshake READY alone never is. */
+	observation.launchStatus = (uint8_t)((NativeArcadeLaunch_Status(&netplay->launch) ==
+											 (uint32_t)NATIVE_ARCADE_LAUNCH_COMMITTED)
+			? NATIVE_ARCADE_FLOW_LAUNCH_COMMITTED : NATIVE_ARCADE_FLOW_LAUNCH_PENDING);
 
 	/* 6. Run the flow. */
 	action = NativeArcadeFlow_Tick(&netplay->flow, &observation, event);
 
-	/* 7. Execute the host-side part of the action. */
+	/* 7. Execute the host-side part of the action. RELINK, RESTART_LOBBY,
+	 * CLOSE_LINK, BEGIN_SELECT, BEGIN_REMATCH, and RETURN_TO_TITLE reset the
+	 * launch agreement (RL-3); START_RACE keeps it lingering. */
 	switch (action)
 	{
 	case NATIVE_ARCADE_FLOW_ACTION_BEGIN_SELECT:
+		NativeArcadeLaunch_Reset(&netplay->launch);
 		NativeArcadeNetplay_BeginSelect(netplay);
 		break;
 	case NATIVE_ARCADE_FLOW_ACTION_RELINK:
+		NativeArcadeLaunch_Reset(&netplay->launch);
 		NativeArcadeNetplay_Relink(netplay);
 		break;
 	case NATIVE_ARCADE_FLOW_ACTION_RESTART_LOBBY:
+		NativeArcadeLaunch_Reset(&netplay->launch);
 		NativeArcadeNetplay_RestartLobby(netplay);
 		break;
 	case NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK:
+		NativeArcadeLaunch_Reset(&netplay->launch);
 		NativeArcadeNetplay_CloseLobby(netplay);
 		break;
 	case NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH:
+		NativeArcadeLaunch_Reset(&netplay->launch);
 		NativeArcadeNetplay_BeginRematch(netplay);
 		break;
 	case NATIVE_ARCADE_FLOW_ACTION_START_RACE:
 		NativeArcadeNetplay_ArmRace(netplay);
 		break;
 	case NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE:
+		NativeArcadeLaunch_Reset(&netplay->launch);
 		NativeArcadeNetplay_CloseLobby(netplay);
 		netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 		netplay->rematchBlocked = 0u;
@@ -636,6 +765,10 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	{
 		NativeArcadeNetplay_SendSelect(netplay);
 	}
+
+	/* 8b. While a launch agreement is active (after the action, so a reset
+	 * sends nothing): this tick's launch record and linger tick (RL-4). */
+	NativeArcadeNetplay_SendLaunch(netplay);
 
 	/* 9. START_RACE and RETURN_TO_TITLE are the caller's cue. */
 	return action;
@@ -742,11 +875,13 @@ int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struc
  * The current proposal is the agreed config once a race was armed on it: the
  * handshake only reaches COMPLETE when both proposals are byte-identical
  * (docs/LOBBY_MILESTONE.md section 2.2; validate-and-reject, not
- * negotiation), and the flow only reaches RACING on READY of the relink,
- * whose proposal is the resolved config. MATCH_FOUND and the select screens
- * hold only the select base, and RESULTS reached without START_RACE (a
- * select failure, a blocked relink, a launch timeout) holds a config no
- * race ran on, so all of those read NULL.
+ * negotiation), and the flow only reaches RACING on READY of the relink plus
+ * a launch commit (RL-1, RL-3): a record from the peer carrying the digest of
+ * this same relink proposal, which the peer sends only while its own relink
+ * link is RUNNING. That proposal is the resolved config. MATCH_FOUND and the
+ * select screens hold only the select base, and RESULTS reached without
+ * START_RACE (a select failure, a blocked relink, a launch timeout) holds a
+ * config no race ran on, so all of those read NULL.
  */
 const struct NativeMatchConfigV1 *NativeArcadeNetplay_AgreedConfig(const struct NativeArcadeNetplay *netplay)
 {
@@ -896,5 +1031,6 @@ void NativeArcadeNetplay_Shutdown(struct NativeArcadeNetplay *netplay)
 	netplay->lastReadyValid = 0u;
 	netplay->lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE;
 	NativeArcadeNetplay_ClearSelect(netplay);
+	NativeArcadeLaunch_Reset(&netplay->launch);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 }

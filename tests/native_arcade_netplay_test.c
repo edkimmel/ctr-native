@@ -14,7 +14,9 @@
  * docs/GAME_LOOP_UI_MILESTONE.md section 2.3, Tasks 4, 4b, and 4c, and the
  * select phase of docs/MATCH_SELECT_MILESTONE.md section 2.6, MS-7: every
  * path to START_RACE now goes MATCH_FOUND -> SELECT -> SELECT_RESULT ->
- * RELINK -> READY, and the race runs on the resolved config). The socket
+ * RELINK -> READY, and the race runs on the resolved config; since RL-S5 of
+ * docs/RACE_LAUNCH_MILESTONE.md, READY of the relink also needs a launch
+ * commit, tested from case 33a on). The socket
  * tests run two adapters in this one process -- A as CAB1_HUMAN and B as
  * CAB2_HUMAN -- over real loopback UDP sockets through the real, unmodified
  * lobby layer,
@@ -130,6 +132,31 @@
 #define TEST_MENU_EVENT_DEAD_PORT 48461u
 #define TEST_MENU_EVENT_PAIR_A_PORT 48462u
 #define TEST_MENU_EVENT_PAIR_B_PORT 48463u
+/* RL-S5: the launch agreement (docs/RACE_LAUNCH_MILESTONE.md). */
+#define TEST_LAUNCH_SYM_A_PORT 48464u
+#define TEST_LAUNCH_SYM_B_PORT 48465u
+#define TEST_LAUNCH_ONE_SIDED_A_PORT 48466u
+#define TEST_LAUNCH_ONE_SIDED_B_PORT 48467u
+#define TEST_LAUNCH_LOST_A_PORT 48468u
+#define TEST_LAUNCH_LOST_B_PORT 48469u
+#define TEST_LAUNCH_SELECT_STALE_A_PORT 48470u
+#define TEST_LAUNCH_SELECT_STALE_B_PORT 48471u
+#define TEST_LAUNCH_EDGE_A_PORT 48472u
+#define TEST_LAUNCH_EDGE_B_PORT 48473u
+#define TEST_LAUNCH_CLOSE_A_PORT 48474u
+#define TEST_LAUNCH_CLOSE_B_PORT 48475u
+#define TEST_LAUNCH_LINGER_A_PORT 48476u
+#define TEST_LAUNCH_LINGER_B_PORT 48477u
+#define TEST_LAUNCH_REORDER_A_PORT 48478u
+#define TEST_LAUNCH_REORDER_B_PORT 48479u
+#define TEST_LAUNCH_STALE_RESTART_A_PORT 48480u
+#define TEST_LAUNCH_STALE_RESTART_B_PORT 48481u
+#define TEST_LAUNCH_STALE_RELINK_A_PORT 48482u
+#define TEST_LAUNCH_STALE_RELINK_B_PORT 48483u
+#define TEST_LAUNCH_STALE_REMATCH_A_PORT 48484u
+#define TEST_LAUNCH_STALE_REMATCH_B_PORT 48485u
+#define TEST_LAUNCH_STALE_TITLE_A_PORT 48486u
+#define TEST_LAUNCH_STALE_TITLE_B_PORT 48487u
 
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
@@ -158,6 +185,9 @@
 
 /* Bounds every outer test-driving loop; generous, not tuned. */
 #define DRIVE_BUDGET 2000u
+/* Bounds every non-blocking receive spin that waits for a loopback datagram
+ * already sent (a count of calls, not a timeout). */
+#define RECEIVE_SPIN_BUDGET 2000000u
 /* How long a rejected lobby is watched for an automatic restart. */
 #define REJECT_WATCH_TICKS 200u
 
@@ -3851,6 +3881,1373 @@ static int TestLocalMenuEvent(void)
 	return 0;
 }
 
+/*
+ * RL-S5: the launch agreement (docs/RACE_LAUNCH_MILESTONE.md RL-1, RL-3,
+ * RL-4, RL-6, RL-7). START_RACE needs the relink READY plus a launch commit:
+ * a launch record from the other role on the digest of this cabinet's own
+ * relink proposal, taken while the flow is in SELECT_RESULT phase 2.
+ *
+ * Most cases run A against a hand-driven test peer: once both cabinets have
+ * confirmed the select, B is shut down (its socket closes) and g_peer, a
+ * real peer link bound to B's port, proposes A's relink config as CAB2. Its
+ * HELLO goes out at Open and it is never polled, so its own handshake never
+ * completes: every launch record A sees is one the test chose to send or
+ * inject. Records that must land on an exact tick are put straight into A's
+ * aux inbox (InjectAux), as the link's Poll would while RUNNING.
+ */
+#define ROLE_CAB1 ((uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN)
+#define ROLE_CAB2 ((uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN)
+#define LAUNCH_BYTES NATIVE_ARCADE_LAUNCH_RECORD_V1_ENCODED_BYTES
+#define LAUNCH_DIGEST_BYTES NATIVE_ARCADE_LAUNCH_CONFIG_DIGEST_BYTES
+#define FLAG_HEARD ((uint8_t)NATIVE_ARCADE_LAUNCH_FLAG_HEARD)
+#define LAUNCH_PENDING ((uint32_t)NATIVE_ARCADE_LAUNCH_PENDING)
+#define LAUNCH_COMMITTED ((uint32_t)NATIVE_ARCADE_LAUNCH_COMMITTED)
+/* Large enough for every datagram these tests receive (284 at most). */
+#define RECEIVE_BYTES 512u
+/* Ticks a stale record is given to (wrongly) commit before the positive
+ * control. */
+#define STALE_WATCH_TICKS 5u
+
+static struct NativeLockstepPeerLink g_peer;
+/* A bare socket on B's port, for sends while neither B nor the peer holds it. */
+static struct NativeUdpTransport g_raw;
+
+static int ComposeLaunchRecord(uint8_t role, const uint8_t *digest, uint8_t flags, uint32_t sequence,
+	uint8_t out[LAUNCH_BYTES])
+{
+	struct NativeArcadeLaunchRecordV1 record;
+	struct NativeCodecWriter writer;
+
+	memset(&record, 0, sizeof(record));
+	record.senderRole = role;
+	record.flags = flags;
+	record.sequence = sequence;
+	memcpy(record.configDigest, digest, sizeof(record.configDigest));
+	NativeCodecWriter_Init(&writer, out, LAUNCH_BYTES, NULL);
+	return NativeArcadeLaunchRecordV1_Encode(&writer, &record) && (NativeCodecWriter_Size(&writer) == LAUNCH_BYTES);
+}
+
+static int SendTo(struct NativeUdpTransport *via, uint32_t toPort, const uint8_t *bytes, size_t size)
+{
+	struct NativeUdpTransportAddress to;
+
+	return NativeUdpTransport_MakeAddress(&to, "127.0.0.1", (uint16_t)toPort) &&
+		(NativeUdpTransport_Send(via, &to, bytes, size) != 0);
+}
+
+/* One CAB2 launch record on digest, from the test peer's socket to toPort. */
+static int PeerSendLaunch(uint32_t toPort, const uint8_t *digest, uint8_t flags, uint32_t sequence)
+{
+	uint8_t bytes[LAUNCH_BYTES];
+
+	return ComposeLaunchRecord(ROLE_CAB2, digest, flags, sequence, bytes) &&
+		SendTo(&g_peer.transport, toPort, bytes, sizeof(bytes));
+}
+
+/* Appends one datagram to the back of netplay's open aux inbox, as the
+ * link's Poll does while RUNNING; 0 when no link is open or it is full. */
+static int InjectAux(struct NativeArcadeNetplay *netplay, const uint8_t *bytes)
+{
+	struct NativeLockstepPeerLink *link = NativeArcadeNetplay_Link(netplay);
+	uint32_t tail;
+
+	if ((link == NULL) || (link->auxCount >= NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY))
+	{
+		return 0;
+	}
+	tail = (link->auxHead + link->auxCount) % NATIVE_LOCKSTEP_PEER_LINK_AUX_CAPACITY;
+	memcpy(link->auxBytes[tail], bytes, NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES);
+	link->auxCount += 1u;
+	return 1;
+}
+
+static int InjectLaunch(struct NativeArcadeNetplay *netplay, uint8_t role, const uint8_t *digest, uint8_t flags,
+	uint32_t sequence)
+{
+	uint8_t bytes[LAUNCH_BYTES];
+
+	return ComposeLaunchRecord(role, digest, flags, sequence, bytes) && InjectAux(netplay, bytes);
+}
+
+/* Makes netplay's agreement an active, COMMITTED one on digest (a stale
+ * agreement left behind), for the reset-point cases. */
+static int PrimeAgreement(struct NativeArcadeNetplay *netplay, const uint8_t *digest)
+{
+	uint8_t bytes[LAUNCH_BYTES];
+	uint8_t other = (netplay->config.localRole == ROLE_CAB1) ? ROLE_CAB2 : ROLE_CAB1;
+
+	return NativeArcadeLaunch_Begin(&netplay->launch, netplay->config.localRole, digest,
+			   NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS) &&
+		ComposeLaunchRecord(other, digest, FLAG_HEARD, 1u, bytes) &&
+		(NativeArcadeLaunch_Accept(&netplay->launch, bytes, sizeof(bytes)) == NATIVE_ARCADE_LAUNCH_ACCEPT_ACCEPTED) &&
+		(NativeArcadeLaunch_Status(&netplay->launch) == LAUNCH_COMMITTED);
+}
+
+/* The agreement is inactive and all zero (NativeArcadeLaunch_Reset). */
+static int AgreementIsReset(const struct NativeArcadeNetplay *netplay)
+{
+	struct NativeArcadeLaunchAgreement zero;
+
+	memset(&zero, 0, sizeof(zero));
+	return (NativeArcadeLaunch_Active(&netplay->launch) == 0) && (memcmp(&netplay->launch, &zero, sizeof(zero)) == 0);
+}
+
+static uint32_t AuxCountOf(struct NativeArcadeNetplay *netplay)
+{
+	return NativeLockstepPeerLink_AuxCount(NativeArcadeNetplay_Link(netplay));
+}
+
+/* Takes every datagram waiting on transport, spinning until at least want of
+ * exactly size bytes were taken (datagrams already sent over loopback), then
+ * until it reads empty. Everything taken is discarded; returns how many were
+ * size bytes. */
+static uint32_t DrainSized(struct NativeUdpTransport *transport, size_t size, uint32_t want)
+{
+	uint8_t bytes[RECEIVE_BYTES];
+	size_t byteCount = 0u;
+	uint32_t taken = 0u;
+	uint32_t spins;
+	enum NativeUdpTransportReceiveResult result;
+
+	for (spins = 0u; spins < RECEIVE_SPIN_BUDGET; spins++)
+	{
+		result = NativeUdpTransport_Receive(transport, bytes, sizeof(bytes), &byteCount, NULL);
+		if (result == NATIVE_UDP_TRANSPORT_RECEIVE_OK)
+		{
+			taken += (byteCount == size) ? 1u : 0u;
+		}
+		else if ((result == NATIVE_UDP_TRANSPORT_RECEIVE_EMPTY) && (taken >= want))
+		{
+			break;
+		}
+	}
+	return taken;
+}
+
+/* Takes every datagram waiting on transport like DrainSized, counting the
+ * launch records from CAB1 on digest that carry HEARD. */
+static uint32_t DrainHeardRecords(struct NativeUdpTransport *transport, const uint8_t *digest, uint32_t want)
+{
+	struct NativeArcadeLaunchRecordV1 record;
+	struct NativeCodecReader reader;
+	uint8_t bytes[RECEIVE_BYTES];
+	size_t byteCount = 0u;
+	uint32_t heard = 0u;
+	uint32_t spins;
+	enum NativeUdpTransportReceiveResult result;
+
+	for (spins = 0u; spins < RECEIVE_SPIN_BUDGET; spins++)
+	{
+		result = NativeUdpTransport_Receive(transport, bytes, sizeof(bytes), &byteCount, NULL);
+		if ((result == NATIVE_UDP_TRANSPORT_RECEIVE_OK) && (byteCount == LAUNCH_BYTES))
+		{
+			NativeCodecReader_Init(&reader, bytes, byteCount);
+			if (NativeArcadeLaunchRecordV1_Decode(&reader, &record, NULL) && (record.senderRole == ROLE_CAB1) &&
+				((record.flags & FLAG_HEARD) != 0u) &&
+				(memcmp(record.configDigest, digest, sizeof(record.configDigest)) == 0))
+			{
+				heard += 1u;
+			}
+		}
+		else if ((result == NATIVE_UDP_TRANSPORT_RECEIVE_EMPTY) && (heard >= want))
+		{
+			break;
+		}
+	}
+	return heard;
+}
+
+/* The drop filter: takes every datagram waiting on to's link socket,
+ * spinning until at least dropCount launch-width datagrams were taken, drops
+ * those, and sends every other one (a handshake message) again from from's
+ * link socket, so to still receives it, in order. */
+static int DropLaunchRecordsTo(struct NativeArcadeNetplay *to, uint32_t toPort, struct NativeArcadeNetplay *from,
+	uint32_t dropCount)
+{
+	struct NativeLockstepPeerLink *toLink = NativeArcadeNetplay_Link(to);
+	struct NativeLockstepPeerLink *fromLink = NativeArcadeNetplay_Link(from);
+	uint8_t kept[4][RECEIVE_BYTES];
+	size_t keptSize[4];
+	uint8_t bytes[RECEIVE_BYTES];
+	size_t byteCount = 0u;
+	uint32_t keptCount = 0u;
+	uint32_t dropped = 0u;
+	uint32_t spins;
+	uint32_t i;
+	enum NativeUdpTransportReceiveResult result;
+
+	if ((toLink == NULL) || (fromLink == NULL))
+	{
+		return 0;
+	}
+	for (spins = 0u; spins < RECEIVE_SPIN_BUDGET; spins++)
+	{
+		result = NativeUdpTransport_Receive(&toLink->transport, bytes, sizeof(bytes), &byteCount, NULL);
+		if (result == NATIVE_UDP_TRANSPORT_RECEIVE_OK)
+		{
+			if (byteCount == NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES)
+			{
+				dropped += 1u;
+			}
+			else
+			{
+				if (keptCount >= 4u)
+				{
+					return 0;
+				}
+				memcpy(kept[keptCount], bytes, byteCount);
+				keptSize[keptCount] = byteCount;
+				keptCount += 1u;
+			}
+		}
+		else if ((result == NATIVE_UDP_TRANSPORT_RECEIVE_EMPTY) && (dropped >= dropCount))
+		{
+			break;
+		}
+	}
+	if (dropped < dropCount)
+	{
+		return 0;
+	}
+	for (i = 0u; i < keptCount; i++)
+	{
+		if (!SendTo(&fromLink->transport, toPort, kept[i], keptSize[i]))
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+/* Ticks A alone to RELINK (NONE before it): the relink is on expected, the
+ * agreement is reset, and A's fresh link is HANDSHAKING with an empty inbox. */
+static int AloneToRelink(const struct NativeMatchConfigV1 *expected)
+{
+	enum NativeArcadeFlowAction action = ACT_NONE;
+	struct NativeLockstepPeerLink *link;
+	uint32_t tick;
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && (action != ACT_RELINK); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		if ((action != ACT_NONE) && (action != ACT_RELINK))
+		{
+			return 0;
+		}
+	}
+	link = NativeArcadeNetplay_Link(&g_a);
+	return (action == ACT_RELINK) && (memcmp(&g_a.currentConfig, expected, sizeof(*expected)) == 0) &&
+		AgreementIsReset(&g_a) && (link != NULL) &&
+		(NativeLockstepPeerLink_Mode(link) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING) &&
+		(NativeLockstepPeerLink_AuxCount(link) == 0u);
+}
+
+/*
+ * A is HANDSHAKING in phase 2 on expected. The test peer opens on portB
+ * proposing expected as CAB2 (its HELLO goes out at Open). With staleDigest,
+ * the peer then sends a stale HEARD launch record on it, queued behind that
+ * HELLO: a record still in the transport when A's new link comes up. A's
+ * link is polled directly until it is RUNNING (and, with a stale record,
+ * until the record is in its inbox), so the record is taken with the
+ * handshake completion deterministically; A's next Tick observes the relink
+ * READY. On success A is READY in phase 2 with a fresh, active, PENDING
+ * agreement on the digest of expected that has accepted nothing, and an
+ * empty inbox.
+ */
+static int PeerUpToReady(uint32_t portA, uint32_t portB, const struct NativeMatchConfigV1 *expected,
+	const uint8_t *staleDigest)
+{
+	struct NativeUdpTransportAddress aAddress;
+	struct NativeLockstepPeerLink *link = NativeArcadeNetplay_Link(&g_a);
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint32_t spins;
+
+	if ((link == NULL) || !NativeMatchConfigV1_Digest(expected, digest) ||
+		!NativeUdpTransport_MakeAddress(&aAddress, "127.0.0.1", (uint16_t)portA) ||
+		!NativeLockstepPeerLink_Open(&g_peer, (uint16_t)portB, &aAddress, expected, ROLE_CAB2,
+			NATIVE_ARCADE_NETPLAY_DEFAULT_INPUT_DELAY))
+	{
+		return 0;
+	}
+	if ((staleDigest != NULL) && !PeerSendLaunch(portA, staleDigest, FLAG_HEARD, 7u))
+	{
+		return 0;
+	}
+	for (spins = 0u; spins < RECEIVE_SPIN_BUDGET; spins++)
+	{
+		if ((NativeLockstepPeerLink_Mode(link) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING) &&
+			((staleDigest == NULL) || (NativeLockstepPeerLink_AuxCount(link) >= 1u)))
+		{
+			break;
+		}
+		NativeLockstepPeerLink_Poll(link);
+	}
+	if ((NativeLockstepPeerLink_Mode(link) != NATIVE_LOCKSTEP_PEER_LINK_RUNNING) ||
+		((staleDigest != NULL) && (NativeLockstepPeerLink_AuxCount(link) < 1u)) || NativeArcadeLaunch_Active(&g_a.launch))
+	{
+		return 0;
+	}
+	if (NativeArcadeNetplay_Tick(&g_a, 0u, 0u) != ACT_NONE)
+	{
+		return 0;
+	}
+	return (LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY) &&
+		(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT) && (g_a.relinked == 1u) &&
+		NativeArcadeLaunch_Active(&g_a.launch) && (NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_PENDING) &&
+		(g_a.launch.acceptedCount == 0u) && (g_a.launch.localRole == ROLE_CAB1) &&
+		(g_a.launch.lingerTicks == NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS) &&
+		(memcmp(g_a.launch.configDigest, digest, sizeof(digest)) == 0) && (NativeLockstepPeerLink_AuxCount(link) == 0u);
+}
+
+/* From both on SELECT_RESULT phase 1 with the select confirmed: B shuts
+ * down, A relinks alone on expected, and the test peer brings A's relink
+ * lobby to READY (PeerUpToReady). */
+static int RelinkAloneToReady(uint32_t portA, uint32_t portB, const struct NativeMatchConfigV1 *expected,
+	const uint8_t *staleDigest)
+{
+	NativeArcadeNetplay_Shutdown(&g_b);
+	return AloneToRelink(expected) && PeerUpToReady(portA, portB, expected, staleDigest);
+}
+
+/* A, READY in phase 2 with nothing from the peer, stays PENDING: NONE,
+ * nothing accepted, still on SELECT_RESULT. */
+static int ExpectPendingTicks(uint32_t ticks)
+{
+	uint32_t tick;
+
+	for (tick = 0; tick < ticks; tick++)
+	{
+		if ((NativeArcadeNetplay_Tick(&g_a, 0u, 0u) != ACT_NONE) || !NativeArcadeLaunch_Active(&g_a.launch) ||
+			(NativeArcadeLaunch_Status(&g_a.launch) != LAUNCH_PENDING) || (g_a.launch.acceptedCount != 0u) ||
+			(ScreenOf(&g_a) != NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT) ||
+			(LobbyStatusOf(&g_a) != (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY))
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+/* The positive control: the test peer sends one PENDING launch record on
+ * digest, and A commits and starts the race on expected within a few ticks. */
+static int CommitFromPeer(uint32_t portA, const uint8_t *digest, const struct NativeMatchConfigV1 *expected)
+{
+	enum NativeArcadeFlowAction action = ACT_NONE;
+	const struct NativeMatchConfigV1 *agreed;
+	uint32_t tick;
+
+	if (!PeerSendLaunch(portA, digest, 0u, 1u))
+	{
+		return 0;
+	}
+	for (tick = 0; (tick < 10u) && (action != ACT_START_RACE); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		if ((action != ACT_NONE) && (action != ACT_START_RACE))
+		{
+			return 0;
+		}
+	}
+	agreed = NativeArcadeNetplay_AgreedConfig(&g_a);
+	return (action == ACT_START_RACE) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING) &&
+		(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED) && (agreed != NULL) &&
+		(memcmp(agreed, expected, sizeof(*expected)) == 0) &&
+		(memcmp(&g_a.lastReadyConfig, expected, sizeof(*expected)) == 0);
+}
+
+static void ClosePeer(void)
+{
+	NativeLockstepPeerLink_Close(&g_peer);
+}
+
+/* The idle select's resolved config on base for select serial. */
+static int IdleResolved(const struct NativeMatchConfigV1 *base, uint32_t selectSerial, struct NativeMatchConfigV1 *out)
+{
+	static const uint8_t characters[2] = {0u, 1u};
+	static const uint8_t tracks[2] = {FIXTURE_TRACK_CURSOR, FIXTURE_TRACK_CURSOR};
+	static const uint8_t laps[2] = {FIXTURE_LAP_CURSOR, FIXTURE_LAP_CURSOR};
+
+	return ExpectedResolvedConfig(base, characters, tracks, laps, selectSerial, NULL, out);
+}
+
+/* Init, Enter, and an idle select up to SELECT_RESULT phase 1 on both. */
+static int PairToSelectResult(const struct NativeMatchConfigV1 *fixture, uint32_t portA, uint32_t portB)
+{
+	return InitPair(fixture, fixture, portA, portB) && (NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY) &&
+		(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY) && DriveBothIntoSelect() && DriveBothToSelectResult();
+}
+
+/* Ticks one adapter alone until it returns RELINK; NONE before it. */
+static int TickAloneToRelink(struct NativeArcadeNetplay *netplay)
+{
+	enum NativeArcadeFlowAction action = ACT_NONE;
+	uint32_t tick;
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && (action != ACT_RELINK); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(netplay, 0u, 0u);
+		if ((action != ACT_NONE) && (action != ACT_RELINK))
+		{
+			return 0;
+		}
+	}
+	return action == ACT_RELINK;
+}
+
+/*
+ * 33a. RL-S5 (a): the symmetric launch. Neither cabinet starts on its relink
+ * READY alone: each has at least one tick READY with the agreement PENDING
+ * (the READY tick itself, whose inbox is discarded), a relink READY never
+ * takes lastReadyConfig (RL-6), and each START_RACE comes with a commit on
+ * the digest of the resolved config. Both agreed configs are byte-equal, and
+ * the linger stops once each side has sent a HEARD record and received one.
+ */
+static int TestLaunchSymmetric(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	struct NativeArcadeNetplay *sides[2] = {&g_a, &g_b};
+	enum NativeArcadeFlowAction actions[2];
+	const struct NativeMatchConfigV1 *agreedA;
+	const struct NativeMatchConfigV1 *agreedB;
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	int started[2] = {0, 0};
+	int readyPending[2] = {0, 0};
+	uint32_t sequences[2];
+	uint32_t tick;
+	uint32_t s;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &expected));
+	CHECK(NativeMatchConfigV1_Digest(&expected, digest) == 1);
+	CHECK(InitPair(&fixture, &fixture, TEST_LAUNCH_SYM_A_PORT, TEST_LAUNCH_SYM_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && !(started[0] && started[1]); tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actions[0], &actions[1]);
+		for (s = 0; s < 2u; s++)
+		{
+			struct NativeArcadeNetplay *side = sides[s];
+
+			CHECK((actions[s] != ACT_CLOSE_LINK) && (actions[s] != ACT_RETURN_TO_TITLE));
+			if (started[s])
+			{
+				continue;
+			}
+			if (actions[s] == ACT_START_RACE)
+			{
+				CHECK(readyPending[s]);
+				CHECK(ScreenOf(side) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+				CHECK(NativeArcadeLaunch_Status(&side->launch) == LAUNCH_COMMITTED);
+				CHECK(side->launch.acceptedCount >= 1u);
+				CHECK(memcmp(side->launch.configDigest, digest, sizeof(digest)) == 0);
+				/* RL-6: taken on the START_RACE the commit gates. */
+				CHECK(memcmp(&side->lastReadyConfig, &expected, sizeof(expected)) == 0);
+				started[s] = 1;
+				continue;
+			}
+			CHECK(memcmp(&side->lastReadyConfig, &fixture, sizeof(fixture)) == 0);
+			CHECK(NativeArcadeLaunch_Status(&side->launch) == LAUNCH_PENDING);
+			/* The relink lobby has been READY (the flow's own lobby status on
+			 * the RELINK tick is still the old link's). */
+			if ((ScreenOf(side) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT) && (side->relinked != 0u) &&
+				(side->lobbyReadySeen != 0u))
+			{
+				CHECK(LobbyStatusOf(side) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+				CHECK(NativeArcadeLaunch_Active(&side->launch));
+				CHECK(memcmp(side->launch.configDigest, digest, sizeof(digest)) == 0);
+				readyPending[s] = 1;
+			}
+			else
+			{
+				/* Only a relink READY begins an agreement. */
+				CHECK(!NativeArcadeLaunch_Active(&side->launch));
+			}
+		}
+	}
+	CHECK(started[0] && started[1]);
+	agreedA = NativeArcadeNetplay_AgreedConfig(&g_a);
+	agreedB = NativeArcadeNetplay_AgreedConfig(&g_b);
+	CHECK((agreedA != NULL) && (agreedB != NULL));
+	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
+	CHECK(memcmp(agreedA, &expected, sizeof(expected)) == 0);
+
+	/* The linger ends once each has sent and received a HEARD record. */
+	for (tick = 0; tick < 10u; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actions[0], &actions[1]);
+		CHECK((actions[0] == ACT_NONE) && (actions[1] == ACT_NONE));
+	}
+	for (s = 0; s < 2u; s++)
+	{
+		CHECK(sides[s]->launch.peerHeard == 1u);
+		CHECK(sides[s]->launch.heardSent == 1u);
+		CHECK(NativeArcadeLaunch_ShouldSend(&sides[s]->launch) == 0);
+		CHECK(sides[s]->launch.mismatchCount == 0u);
+		CHECK(sides[s]->launch.selfCount == 0u);
+		CHECK(sides[s]->launch.malformedCount == 0u);
+		sequences[s] = sides[s]->launch.sequence;
+	}
+	for (tick = 0; tick < 3u; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actions[0], &actions[1]);
+	}
+	CHECK(g_a.launch.sequence == sequences[0]);
+	CHECK(g_b.launch.sequence == sequences[1]);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+
+	ShutdownBoth();
+	CHECK(AgreementIsReset(&g_a));
+	CHECK(AgreementIsReset(&g_b));
+	return 0;
+}
+
+/*
+ * 33b. RL-S5 (b), RL-6: a relink that completes on one side only. A relinks
+ * first (its HELLO reaches B's old, already complete link: a no-op), then B;
+ * one tick of A sends its HELLO toward B's new link and completes A on B's
+ * HELLO. That HELLO is taken out of B's socket, and A, now RUNNING, never
+ * sends another, so B's relink never completes. A sits READY and PENDING, B
+ * never begins an agreement, and neither launches: both show LINK ERROR
+ * with CLOSE_LINK. The relink READY on A took no lastReadyConfig, so both
+ * rematch from the select base, agree, and race.
+ */
+static int TestLaunchOneSidedRelink(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 resolved;
+	struct NativeMatchConfigV1 rematchBase;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint64_t rematchSeed = 0u;
+	uint32_t tick;
+	int closedA = 0;
+	int closedB = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &resolved));
+	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&fixture, &rematchSeed) == 1);
+	CHECK(NativeLockstepRematch_BuildConfig(&fixture, rematchSeed, &rematchBase) == 1);
+	CHECK(PairToSelectResult(&fixture, TEST_LAUNCH_ONE_SIDED_A_PORT, TEST_LAUNCH_ONE_SIDED_B_PORT));
+
+	CHECK(TickAloneToRelink(&g_a));
+	CHECK(TickAloneToRelink(&g_b));
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	CHECK(NativeArcadeLaunch_Active(&g_a.launch));
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_PENDING);
+	CHECK(DrainSized(&NativeArcadeNetplay_Link(&g_b)->transport, NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES, 1u) >= 1u);
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && ((ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT) ||
+												(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT));
+		 tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK((actionA == ACT_NONE) || (actionA == ACT_CLOSE_LINK));
+		CHECK((actionB == ACT_NONE) || (actionB == ACT_RESTART_LOBBY) || (actionB == ACT_CLOSE_LINK));
+		closedA = closedA || (actionA == ACT_CLOSE_LINK);
+		closedB = closedB || (actionB == ACT_CLOSE_LINK);
+		if (!closedA)
+		{
+			/* A's lobby stays READY, its agreement PENDING: no record arrives. */
+			CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+			CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_PENDING);
+			CHECK(g_a.launch.acceptedCount == 0u);
+		}
+		/* B's relink lobby never reaches READY and never begins an agreement. */
+		CHECK(g_b.lobbyReadySeen == 0u);
+		CHECK(!NativeArcadeLaunch_Active(&g_b.launch));
+	}
+	CHECK(closedA && closedB);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(EndReasonOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(AgreementIsReset(&g_a));
+	CHECK(AgreementIsReset(&g_b));
+	CHECK(g_a.matchCount == 0u);
+	CHECK(g_b.matchCount == 0u);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_b) == NULL);
+	/* RL-6: both still hold the select base. */
+	CHECK(memcmp(&g_a.currentConfig, &resolved, sizeof(resolved)) == 0);
+	CHECK(memcmp(&g_a.lastReadyConfig, &fixture, sizeof(fixture)) == 0);
+	CHECK(memcmp(&g_b.lastReadyConfig, &fixture, sizeof(fixture)) == 0);
+
+	for (tick = 0; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK((actionA == ACT_NONE) && (actionB == ACT_NONE));
+	}
+	TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_BEGIN_REMATCH);
+	CHECK(actionB == ACT_BEGIN_REMATCH);
+	CHECK(memcmp(&g_a.currentConfig, &rematchBase, sizeof(rematchBase)) == 0);
+	CHECK(memcmp(&g_b.currentConfig, &rematchBase, sizeof(rematchBase)) == 0);
+	CHECK(DriveBothIntoSelect());
+	CHECK(memcmp(&g_a.lastReadyConfig, &rematchBase, sizeof(rematchBase)) == 0);
+	CHECK(memcmp(&g_b.lastReadyConfig, &rematchBase, sizeof(rematchBase)) == 0);
+	CHECK(DriveBothToRaceChecked());
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), NativeArcadeNetplay_AgreedConfig(&g_b),
+			  sizeof(struct NativeMatchConfigV1)) == 0);
+	CHECK(g_a.matchCount == 1u);
+	CHECK(g_b.matchCount == 1u);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * 33c. RL-S5 (c), RL-7: a lost last record. Both relinks complete; A's first
+ * launch record is dropped before B's completing poll, and every later one
+ * before B's next tick, so B never hears A. B's records reach A, which
+ * commits and races alone (its lastReadyConfig becomes the resolved config,
+ * RL-6); B stays PENDING and times out to LINK ERROR. The rematch fails as
+ * RL-7 traces it: A proposes from the resolved config and B from the select
+ * base, the handshake rejects the differing proposals, and both show
+ * OPPONENT LEFT, then return to the title.
+ */
+static int TestLaunchLostLastRecord(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 resolved;
+	struct NativeMatchConfigV1 rematchA;
+	struct NativeMatchConfigV1 rematchB;
+	enum NativeArcadeFlowAction actionA = ACT_NONE;
+	enum NativeArcadeFlowAction actionB = ACT_NONE;
+	uint64_t seed = 0u;
+	uint32_t lastSequenceA;
+	uint32_t tick;
+	int startedA = 0;
+	int closedB = 0;
+	int exitedA = 0;
+	int exitedB = 0;
+	int rejectedA = 0;
+	int rejectedB = 0;
+	int titleA = 0;
+	int titleB = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &resolved));
+	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&resolved, &seed) == 1);
+	CHECK(NativeLockstepRematch_BuildConfig(&resolved, seed, &rematchA) == 1);
+	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&fixture, &seed) == 1);
+	CHECK(NativeLockstepRematch_BuildConfig(&fixture, seed, &rematchB) == 1);
+	CHECK(memcmp(&rematchA, &rematchB, sizeof(rematchA)) != 0);
+	CHECK(PairToSelectResult(&fixture, TEST_LAUNCH_LOST_A_PORT, TEST_LAUNCH_LOST_B_PORT));
+
+	CHECK(TickAloneToRelink(&g_a));
+	CHECK(TickAloneToRelink(&g_b));
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	CHECK(g_a.launch.sequence == 1u);
+	/* B's socket holds A's HELLO and A's first record: keep the HELLO only. */
+	CHECK(DropLaunchRecordsTo(&g_b, TEST_LAUNCH_LOST_B_PORT, &g_a, 1u));
+	lastSequenceA = g_a.launch.sequence;
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT); tick++)
+	{
+		actionB = NativeArcadeNetplay_Tick(&g_b, 0u, 0u);
+		CHECK((actionB == ACT_NONE) || (actionB == ACT_CLOSE_LINK));
+		closedB = closedB || (actionB == ACT_CLOSE_LINK);
+		if (!closedB)
+		{
+			CHECK(LobbyStatusOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+			CHECK(NativeArcadeLaunch_Status(&g_b.launch) == LAUNCH_PENDING);
+			CHECK(g_b.launch.acceptedCount == 0u);
+		}
+		actionA = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		if (actionA == ACT_START_RACE)
+		{
+			CHECK(!startedA);
+			CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+			CHECK(memcmp(&g_a.lastReadyConfig, &resolved, sizeof(resolved)) == 0);
+			startedA = 1;
+		}
+		else
+		{
+			CHECK(actionA == ACT_NONE);
+		}
+		/* Every record A sent this tick is dropped before B's next tick. */
+		if (g_b.lobbyBegun != 0u)
+		{
+			CHECK(DropLaunchRecordsTo(&g_b, TEST_LAUNCH_LOST_B_PORT, &g_a, g_a.launch.sequence - lastSequenceA));
+		}
+		lastSequenceA = g_a.launch.sequence;
+	}
+	CHECK(startedA);
+	CHECK(closedB);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(AgreementIsReset(&g_b));
+	CHECK(g_a.matchCount == 1u);
+	CHECK(g_b.matchCount == 0u);
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), &resolved, sizeof(resolved)) == 0);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_b) == NULL);
+	/* B never committed, so A never hears HEARD and is still lingering. */
+	CHECK(g_a.launch.peerHeard == 0u);
+	CHECK(memcmp(&g_a.lastReadyConfig, &resolved, sizeof(resolved)) == 0);
+	CHECK(memcmp(&g_b.lastReadyConfig, &fixture, sizeof(fixture)) == 0);
+
+	/* A's rehearsal race finishes; both dwell, then both choose REMATCH. */
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 1u) == ACT_NONE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+	for (tick = 0; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK((actionA == ACT_NONE) && (actionB == ACT_NONE));
+	}
+	TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_BEGIN_REMATCH);
+	CHECK(actionB == ACT_BEGIN_REMATCH);
+	CHECK(AgreementIsReset(&g_a));
+	CHECK(memcmp(&g_a.currentConfig, &rematchA, sizeof(rematchA)) == 0);
+	CHECK(memcmp(&g_b.currentConfig, &rematchB, sizeof(rematchB)) == 0);
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && !(titleA && titleB); tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(ScreenOf(&g_a) != NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND);
+		CHECK(ScreenOf(&g_b) != NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND);
+		if (!exitedA && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_EXIT))
+		{
+			CHECK(actionA == ACT_CLOSE_LINK);
+			CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT);
+			rejectedA = LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_REJECTED;
+			exitedA = 1;
+		}
+		if (!exitedB && (ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_EXIT))
+		{
+			CHECK(actionB == ACT_CLOSE_LINK);
+			CHECK(EndReasonOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT);
+			rejectedB = LobbyStatusOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_REJECTED;
+			exitedB = 1;
+		}
+		titleA = titleA || (actionA == ACT_RETURN_TO_TITLE);
+		titleB = titleB || (actionB == ACT_RETURN_TO_TITLE);
+	}
+	CHECK(exitedA && exitedB);
+	/* The config mismatch rejects the rematch (RL-7); A at least sees it,
+	 * since B's HELLO reaches A's open rematch link. */
+	CHECK(rejectedA);
+	(void)rejectedB;
+	CHECK(titleA && titleB);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	CHECK(g_a.matchCount == 1u);
+	CHECK(g_b.matchCount == 0u);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * 33d. RL-S5 (d): late select records in phase 2 are FOREIGN to the
+ * agreement: ignored and counted, never a commit, never a failure. Three of
+ * B's confirmed-select records (the linger it sends through its hold) arrive
+ * over the socket and two sit in A's inbox; the agreement counts five
+ * FOREIGN, stays PENDING, the flow stays on SELECT_RESULT, and the select
+ * session, no longer driven, is untouched. A launch record still commits.
+ */
+static int TestLaunchStaleSelectRecordsIgnored(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	struct NativeMatchSelectSession selectBefore;
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint8_t records[3][NATIVE_MATCH_SELECT_MESSAGE_V1_ENCODED_BYTES];
+	size_t size = 0u;
+	uint32_t i;
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &expected));
+	CHECK(NativeMatchConfigV1_Digest(&expected, digest) == 1);
+	CHECK(PairToSelectResult(&fixture, TEST_LAUNCH_SELECT_STALE_A_PORT, TEST_LAUNCH_SELECT_STALE_B_PORT));
+	for (i = 0; i < 3u; i++)
+	{
+		CHECK(NativeMatchSelectSession_Compose(&g_b.select, records[i], sizeof(records[i]), &size) == 1);
+		CHECK(size == NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES);
+	}
+	CHECK(RelinkAloneToReady(TEST_LAUNCH_SELECT_STALE_A_PORT, TEST_LAUNCH_SELECT_STALE_B_PORT, &expected, NULL));
+	memcpy(&selectBefore, &g_a.select, sizeof(selectBefore));
+
+	CHECK(InjectAux(&g_a, records[0]));
+	CHECK(InjectAux(&g_a, records[1]));
+	for (i = 0; i < 3u; i++)
+	{
+		CHECK(SendTo(&g_peer.transport, TEST_LAUNCH_SELECT_STALE_A_PORT, records[i], sizeof(records[i])));
+	}
+	for (tick = 0; (tick < 10u) && (g_a.launch.foreignCount < 5u); tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+		CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_PENDING);
+	}
+	CHECK(g_a.launch.foreignCount == 5u);
+	CHECK(g_a.launch.acceptedCount == 0u);
+	CHECK(g_a.launch.malformedCount == 0u);
+	CHECK(g_a.launch.selfCount == 0u);
+	CHECK(g_a.launch.mismatchCount == 0u);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	CHECK(g_a.pendingLinkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_NONE);
+	CHECK(memcmp(&selectBefore, &g_a.select, sizeof(selectBefore)) == 0);
+	CHECK(NativeMatchSelectSession_Status(&g_a.select) == (uint32_t)NATIVE_MATCH_SELECT_STATUS_CONFIRMED);
+
+	CHECK(CommitFromPeer(TEST_LAUNCH_SELECT_STALE_A_PORT, digest, &expected));
+	ClosePeer();
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * 33e. RL-S5 (f): a commit at the timeout edge, and a commit on the timeout
+ * tick itself. The commit is checked before the timeout (RL-5), so a record
+ * read on the tick before the launch timeout starts the race, and so does
+ * one read on the very tick ticksSinceRelink reaches launchTimeoutTicks: the
+ * race starts, not LINK ERROR. The record is put straight into A's inbox so
+ * it is read on exactly that tick.
+ */
+static int TestLaunchCommitAtTimeoutEdge(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint32_t offset;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &expected));
+	CHECK(NativeMatchConfigV1_Digest(&expected, digest) == 1);
+	for (offset = 2u; offset >= 1u; offset--)
+	{
+		CHECK(PairToSelectResult(&fixture, TEST_LAUNCH_EDGE_A_PORT, TEST_LAUNCH_EDGE_B_PORT));
+		CHECK(RelinkAloneToReady(TEST_LAUNCH_EDGE_A_PORT, TEST_LAUNCH_EDGE_B_PORT, &expected, NULL));
+		while (g_a.flow.ticksSinceRelink + offset < LAUNCH_TIMEOUT_TICKS)
+		{
+			CHECK(ExpectPendingTicks(1u));
+		}
+		CHECK(g_a.flow.ticksSinceRelink == LAUNCH_TIMEOUT_TICKS - offset);
+		CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, 0u, 1u));
+		/* This tick takes ticksSinceRelink to launchTimeoutTicks - offset + 1:
+		 * the tick before the timeout (offset 2) or the timeout tick (1). */
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_START_RACE);
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+		CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+		CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), &expected, sizeof(expected)) == 0);
+		CHECK(g_a.matchCount == 1u);
+		ClosePeer();
+		ShutdownBoth();
+	}
+	return 0;
+}
+
+/*
+ * 33f. RL-S5 (f): no commit after CLOSE_LINK. With nothing from the peer, A
+ * shows LINK ERROR with CLOSE_LINK exactly launchTimeoutTicks after RELINK,
+ * and the agreement is reset on that tick. Launch records sent afterwards
+ * (PENDING and HEARD, on the relink digest) reach no socket and no
+ * agreement: A stays on RESULTS with nothing agreed.
+ */
+static int TestLaunchNoCommitAfterCloseLink(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	enum NativeArcadeFlowAction action = ACT_NONE;
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint32_t ticks = 1u; /* the READY tick */
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &expected));
+	CHECK(NativeMatchConfigV1_Digest(&expected, digest) == 1);
+	CHECK(PairToSelectResult(&fixture, TEST_LAUNCH_CLOSE_A_PORT, TEST_LAUNCH_CLOSE_B_PORT));
+	CHECK(RelinkAloneToReady(TEST_LAUNCH_CLOSE_A_PORT, TEST_LAUNCH_CLOSE_B_PORT, &expected, NULL));
+	for (tick = 0; (tick < DRIVE_BUDGET) && (action == ACT_NONE); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		ticks += 1u;
+		if (action == ACT_NONE)
+		{
+			CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_PENDING);
+		}
+	}
+	CHECK(action == ACT_CLOSE_LINK);
+	CHECK(ticks == LAUNCH_TIMEOUT_TICKS);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(AgreementIsReset(&g_a));
+	CHECK(NativeArcadeNetplay_Link(&g_a) == NULL);
+
+	CHECK(PeerSendLaunch(TEST_LAUNCH_CLOSE_A_PORT, digest, 0u, 50u));
+	CHECK(PeerSendLaunch(TEST_LAUNCH_CLOSE_A_PORT, digest, FLAG_HEARD, 51u));
+	for (tick = 0; tick < RESULTS_DWELL_TICKS + 10u; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+		CHECK(AgreementIsReset(&g_a));
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	}
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(g_a.matchCount == 0u);
+	CHECK(g_a.raceArmed == 0u);
+	CHECK(memcmp(&g_a.lastReadyConfig, &fixture, sizeof(fixture)) == 0);
+
+	ClosePeer();
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * 33g. RL-S5 (f), RL-4: a lost HEARD runs the linger to the cap. The peer's
+ * one record carries no HEARD (its HEARD records are the ones lost), so A
+ * commits and races but never sees peerHeard: it sends exactly
+ * NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS (300) HEARD records, one per
+ * tick from the commit tick on RACING, all received by the peer's socket,
+ * and then stops.
+ */
+static int TestLaunchLostHeardLingerCap(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint32_t sequenceBefore;
+	uint32_t sequenceTick;
+	uint32_t lingerTicks;
+	uint32_t received;
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &expected));
+	CHECK(NativeMatchConfigV1_Digest(&expected, digest) == 1);
+	CHECK(PairToSelectResult(&fixture, TEST_LAUNCH_LINGER_A_PORT, TEST_LAUNCH_LINGER_B_PORT));
+	CHECK(RelinkAloneToReady(TEST_LAUNCH_LINGER_A_PORT, TEST_LAUNCH_LINGER_B_PORT, &expected, NULL));
+	/* What A sent so far (HELLOs and PENDING records) is not counted. */
+	(void)DrainSized(&g_peer.transport, LAUNCH_BYTES, g_a.launch.sequence);
+
+	sequenceBefore = g_a.launch.sequence;
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, 0u, 1u));
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_START_RACE);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+	CHECK(g_a.launch.sequence == sequenceBefore + 1u);
+	received = DrainHeardRecords(&g_peer.transport, digest, 1u);
+	lingerTicks = 1u;
+	for (tick = 0; (tick < DRIVE_BUDGET) && NativeArcadeLaunch_ShouldSend(&g_a.launch); tick++)
+	{
+		sequenceTick = g_a.launch.sequence;
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+		CHECK(g_a.launch.sequence == sequenceTick + 1u);
+		received += DrainHeardRecords(&g_peer.transport, digest, 1u);
+		lingerTicks += 1u;
+	}
+	CHECK(lingerTicks == NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
+	CHECK(g_a.launch.sequence - sequenceBefore == NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
+	CHECK(g_a.launch.ticksSinceCommit == NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
+	CHECK(received == NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
+	CHECK(g_a.launch.peerHeard == 0u);
+	CHECK(g_a.launch.heardSent == 1u);
+
+	/* The cap holds: nothing more is sent, and the race goes on. */
+	sequenceTick = g_a.launch.sequence;
+	for (tick = 0; tick < 20u; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	}
+	CHECK(g_a.launch.sequence == sequenceTick);
+	CHECK(DrainHeardRecords(&g_peer.transport, digest, 0u) == 0u);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+
+	ClosePeer();
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * 33h. RL-S5 (f), RL-3: reordered and duplicated records change nothing.
+ * A different digest, an own-role echo, and a malformed record (each
+ * duplicated where it can be) are ignored and counted. Then valid records
+ * out of sequence order and duplicated: the first commits, sequence is never
+ * read, HEARD latches from the one record carrying it, and older records
+ * without HEARD after the commit neither unlatch it nor restart the linger;
+ * A, having sent its HEARD record and seen one, stops sending.
+ */
+static int TestLaunchReorderedDuplicated(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint8_t otherDigest[LAUNCH_DIGEST_BYTES];
+	uint8_t malformed[LAUNCH_BYTES];
+	uint32_t sequence;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &expected));
+	CHECK(NativeMatchConfigV1_Digest(&expected, digest) == 1);
+	memcpy(otherDigest, digest, sizeof(otherDigest));
+	otherDigest[0] ^= 0x01u;
+	CHECK(PairToSelectResult(&fixture, TEST_LAUNCH_REORDER_A_PORT, TEST_LAUNCH_REORDER_B_PORT));
+	CHECK(RelinkAloneToReady(TEST_LAUNCH_REORDER_A_PORT, TEST_LAUNCH_REORDER_B_PORT, &expected, NULL));
+
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, otherDigest, FLAG_HEARD, 3u));
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, otherDigest, FLAG_HEARD, 3u));
+	CHECK(InjectLaunch(&g_a, ROLE_CAB1, digest, FLAG_HEARD, 2u));
+	CHECK(InjectLaunch(&g_a, ROLE_CAB1, digest, FLAG_HEARD, 2u));
+	CHECK(ComposeLaunchRecord(ROLE_CAB2, digest, FLAG_HEARD, 4u, malformed));
+	malformed[20] ^= 0x01u; /* a configDigest byte; the trailer digest goes stale */
+	CHECK(InjectAux(&g_a, malformed));
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_PENDING);
+	CHECK(g_a.launch.mismatchCount == 2u);
+	CHECK(g_a.launch.selfCount == 2u);
+	CHECK(g_a.launch.malformedCount == 1u);
+	CHECK(g_a.launch.acceptedCount == 0u);
+	CHECK(g_a.launch.peerHeard == 0u);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, 0u, 9u));
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, FLAG_HEARD, 4u));
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, 0u, 9u));
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, 0u, 1u));
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_START_RACE);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+	CHECK(g_a.launch.acceptedCount == 4u);
+	CHECK(g_a.launch.peerHeard == 1u);
+	CHECK(g_a.launch.heardSent == 1u);
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), &expected, sizeof(expected)) == 0);
+
+	sequence = g_a.launch.sequence;
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, 0u, 2u));
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, 0u, 2u));
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, 0u, 2u));
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(g_a.launch.acceptedCount == 7u);
+	CHECK(g_a.launch.peerHeard == 1u);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+	CHECK(NativeArcadeLaunch_ShouldSend(&g_a.launch) == 0);
+	CHECK(g_a.launch.sequence == sequence);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(g_a.launch.mismatchCount == 2u);
+	CHECK(g_a.launch.selfCount == 2u);
+	CHECK(g_a.launch.malformedCount == 1u);
+
+	ClosePeer();
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * 33i. RL-S5 (e): RESTART_LOBBY during phase 2, on the same resolved config
+ * (so the same digest). A is READY and PENDING against the test peer. A junk
+ * bundle faults A's relink link (lobby LOST), and a stale record on the
+ * digest queued right behind it stays in the transport unread (a faulted
+ * link polls nothing). A stale record already in the lost link's inbox is
+ * taken by the old agreement (still phase 2), but the lobby is LOST, so no
+ * race starts. RESTART_LOBBY resets the agreement and reopens the link empty
+ * (Close released the old socket and inbox). The peer restarts too: a new
+ * HELLO, and a stale record on the same digest queued behind it, still in
+ * the transport when A's new link comes up. The new agreement discards it
+ * on its READY tick and stays PENDING until a record sent after that READY.
+ */
+static int TestLaunchStaleAcrossRestartLobby(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	struct NativeLockstepPeerLink *oldLink;
+	struct NativeLockstepPeerLink *link;
+	enum NativeArcadeFlowAction action = ACT_NONE;
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint8_t junk[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &expected));
+	CHECK(NativeMatchConfigV1_Digest(&expected, digest) == 1);
+	CHECK(PairToSelectResult(&fixture, TEST_LAUNCH_STALE_RESTART_A_PORT, TEST_LAUNCH_STALE_RESTART_B_PORT));
+	CHECK(RelinkAloneToReady(TEST_LAUNCH_STALE_RESTART_A_PORT, TEST_LAUNCH_STALE_RESTART_B_PORT, &expected, NULL));
+	oldLink = NativeArcadeNetplay_Link(&g_a);
+
+	memset(junk, 0xEE, sizeof(junk));
+	CHECK(SendTo(&g_peer.transport, TEST_LAUNCH_STALE_RESTART_A_PORT, junk, sizeof(junk)));
+	CHECK(PeerSendLaunch(TEST_LAUNCH_STALE_RESTART_A_PORT, digest, FLAG_HEARD, 20u));
+	for (tick = 0; (tick < 10u) && (LobbyStatusOf(&g_a) != (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_LOST); tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	}
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_LOST);
+	CHECK(NativeLockstepPeerLink_Mode(oldLink) == NATIVE_LOCKSTEP_PEER_LINK_FAULTED);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_PENDING);
+	CHECK(g_a.launch.acceptedCount == 0u);
+
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, FLAG_HEARD, 21u));
+	for (tick = 0; (tick < DRIVE_BUDGET) && (action != ACT_RESTART_LOBBY); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK((action == ACT_NONE) || (action == ACT_RESTART_LOBBY));
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+		if (action == ACT_NONE)
+		{
+			/* The old agreement took the inbox record, but LOST never starts. */
+			CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+			CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_LOST);
+		}
+	}
+	CHECK(action == ACT_RESTART_LOBBY);
+	CHECK(AgreementIsReset(&g_a));
+	link = NativeArcadeNetplay_Link(&g_a);
+	CHECK(link != NULL);
+	CHECK(NativeLockstepPeerLink_Mode(link) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+	CHECK(NativeLockstepPeerLink_AuxCount(link) == 0u);
+	CHECK(g_a.lobbyReadySeen == 0u);
+	CHECK(memcmp(&g_a.currentConfig, &expected, sizeof(expected)) == 0);
+
+	/* The peer restarts: a new HELLO, then the stale record behind it. */
+	ClosePeer();
+	CHECK(PeerUpToReady(TEST_LAUNCH_STALE_RESTART_A_PORT, TEST_LAUNCH_STALE_RESTART_B_PORT, &expected, digest));
+	CHECK(ExpectPendingTicks(STALE_WATCH_TICKS));
+	CHECK(CommitFromPeer(TEST_LAUNCH_STALE_RESTART_A_PORT, digest, &expected));
+
+	ClosePeer();
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * 33j. RL-S5 (e): RELINK. On the tick before RELINK, A is primed with a
+ * stale COMMITTED agreement on the upcoming relink digest, a stale record on
+ * it sits in the old link's inbox, and another is sent to the old socket.
+ * RELINK resets the agreement and opens a fresh link with an empty inbox
+ * (the old records went to the select session or were released with the old
+ * socket). A stale record queued behind the peer's HELLO on the new link is
+ * discarded on the READY tick; the new agreement stays PENDING until a
+ * record sent after that READY.
+ */
+static int TestLaunchStaleAcrossRelink(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 expected;
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint8_t stale[LAUNCH_BYTES];
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &expected));
+	CHECK(NativeMatchConfigV1_Digest(&expected, digest) == 1);
+	CHECK(PairToSelectResult(&fixture, TEST_LAUNCH_STALE_RELINK_A_PORT, TEST_LAUNCH_STALE_RELINK_B_PORT));
+	NativeArcadeNetplay_Shutdown(&g_b);
+	while (g_a.flow.ticksInScreen + 1u < SELECT_RESULT_HOLD_TICKS)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	}
+
+	CHECK(PrimeAgreement(&g_a, digest));
+	CHECK(InjectLaunch(&g_a, ROLE_CAB2, digest, FLAG_HEARD, 30u));
+	CHECK(ComposeLaunchRecord(ROLE_CAB2, digest, FLAG_HEARD, 31u, stale));
+	CHECK(NativeUdpTransport_GlobalInit() == 1);
+	CHECK(NativeUdpTransport_Open(&g_raw, (uint16_t)TEST_LAUNCH_STALE_RELINK_B_PORT) == 1);
+	CHECK(SendTo(&g_raw, TEST_LAUNCH_STALE_RELINK_A_PORT, stale, sizeof(stale)));
+	NativeUdpTransport_Close(&g_raw);
+	NativeUdpTransport_GlobalShutdown();
+
+	/* One tick: RELINK, which resets the primed agreement. */
+	CHECK(AloneToRelink(&expected));
+	CHECK(g_a.flow.relinked == 1u);
+	CHECK(PeerUpToReady(TEST_LAUNCH_STALE_RELINK_A_PORT, TEST_LAUNCH_STALE_RELINK_B_PORT, &expected, digest));
+	CHECK(ExpectPendingTicks(STALE_WATCH_TICKS));
+	CHECK(CommitFromPeer(TEST_LAUNCH_STALE_RELINK_A_PORT, digest, &expected));
+
+	ClosePeer();
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * 33k. RL-S5 (e): BEGIN_REMATCH and BEGIN_SELECT, with stale records on the
+ * digest of the next relink (the rematch select's resolved config). After a
+ * symmetric first race, A is primed with a stale COMMITTED agreement on that
+ * digest and gets a stale record in its inbox and one in its socket, first
+ * on RESULTS before BEGIN_REMATCH, then on MATCH_FOUND before BEGIN_SELECT.
+ * Each resets the agreement (BEGIN_SELECT also empties the inbox; the
+ * rematch opened a fresh link). At the next relink, a stale record on the
+ * same digest behind the peer's HELLO is discarded on the READY tick, and
+ * the agreement stays PENDING until a record sent after that READY.
+ */
+static int TestLaunchStaleAcrossRematchAndSelect(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 first;
+	struct NativeMatchConfigV1 rematchBase;
+	struct NativeMatchConfigV1 second;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint8_t stale[LAUNCH_BYTES];
+	uint64_t seed = 0u;
+	uint32_t tick;
+	int selectA = 0;
+	int selectB = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &first));
+	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&first, &seed) == 1);
+	CHECK(NativeLockstepRematch_BuildConfig(&first, seed, &rematchBase) == 1);
+	CHECK(IdleResolved(&rematchBase, 2u, &second));
+	CHECK(NativeMatchConfigV1_Digest(&second, digest) == 1);
+	CHECK(ComposeLaunchRecord(ROLE_CAB2, digest, FLAG_HEARD, 40u, stale));
+
+	CHECK(InitPair(&fixture, &fixture, TEST_LAUNCH_STALE_REMATCH_A_PORT, TEST_LAUNCH_STALE_REMATCH_B_PORT));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	CHECK(DriveBothToRaceChecked());
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), &first, sizeof(first)) == 0);
+	CHECK(FinishAndDwell());
+
+	/* BEGIN_REMATCH, on RESULTS with the race link still open. */
+	CHECK(PrimeAgreement(&g_a, digest));
+	CHECK(InjectAux(&g_a, stale));
+	CHECK(SendTo(&NativeArcadeNetplay_Link(&g_b)->transport, TEST_LAUNCH_STALE_REMATCH_A_PORT, stale, sizeof(stale)));
+	TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_BEGIN_REMATCH);
+	CHECK(actionB == ACT_BEGIN_REMATCH);
+	CHECK(AgreementIsReset(&g_a));
+	CHECK(AgreementIsReset(&g_b));
+	CHECK(AuxCountOf(&g_a) == 0u);
+	CHECK(memcmp(&g_a.currentConfig, &rematchBase, sizeof(rematchBase)) == 0);
+
+	/* BEGIN_SELECT, from MATCH_FOUND. */
+	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) != NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND); tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK((actionB == ACT_NONE) || (actionB == ACT_BEGIN_SELECT));
+		selectB = selectB || (actionB == ACT_BEGIN_SELECT);
+	}
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND);
+	CHECK(PrimeAgreement(&g_a, digest));
+	CHECK(InjectAux(&g_a, stale));
+	CHECK(SendTo(&NativeArcadeNetplay_Link(&g_b)->transport, TEST_LAUNCH_STALE_REMATCH_A_PORT, stale, sizeof(stale)));
+	for (tick = 0; (tick < DRIVE_BUDGET) && !(selectA && selectB); tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK((actionA == ACT_NONE) || (actionA == ACT_BEGIN_SELECT));
+		CHECK((actionB == ACT_NONE) || (actionB == ACT_BEGIN_SELECT));
+		if (actionA == ACT_BEGIN_SELECT)
+		{
+			selectA = 1;
+			CHECK(AgreementIsReset(&g_a));
+			CHECK(AuxCountOf(&g_a) == 0u);
+		}
+		selectB = selectB || (actionB == ACT_BEGIN_SELECT);
+	}
+	CHECK(selectA && selectB);
+	TickBoth(0u, 0u, 0u, &actionA, &actionB);
+	CHECK((actionA == ACT_NONE) && (actionB == ACT_NONE));
+	CHECK(AgreementIsReset(&g_a));
+	CHECK(DriveBothToSelectResult());
+
+	CHECK(RelinkAloneToReady(TEST_LAUNCH_STALE_REMATCH_A_PORT, TEST_LAUNCH_STALE_REMATCH_B_PORT, &second, digest));
+	CHECK(ExpectPendingTicks(STALE_WATCH_TICKS));
+	CHECK(CommitFromPeer(TEST_LAUNCH_STALE_REMATCH_A_PORT, digest, &second));
+	CHECK(g_a.matchCount == 2u);
+
+	ClosePeer();
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * 33l. RL-S5 (e): CLOSE_LINK, RETURN_TO_TITLE, and Enter, with stale
+ * records on the digest of the next relink (the next select's resolved
+ * config after a return to the title). A times out to LINK ERROR against
+ * the silent peer (CLOSE_LINK resets the agreement), stale records then sent
+ * reach no socket, and RESULTS idles out through EXIT to the title. Before
+ * every one of those ticks A is primed with a stale COMMITTED agreement on
+ * the next relink digest: CLOSE_LINK and RETURN_TO_TITLE each reset it, a
+ * screen-OFF tick leaves it untouched, and Enter resets it and opens a fresh
+ * link. At the next relink, a stale record on the same digest behind the
+ * peer's HELLO is discarded on the READY tick, and the agreement stays
+ * PENDING until a record sent after that READY.
+ */
+static int TestLaunchStaleAcrossCloseTitleEnter(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 first;
+	struct NativeMatchConfigV1 next;
+	enum NativeArcadeFlowAction action = ACT_NONE;
+	uint8_t firstDigest[LAUNCH_DIGEST_BYTES];
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint32_t tick;
+	int closes = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &first));
+	CHECK(IdleResolved(&fixture, 2u, &next));
+	CHECK(memcmp(&first, &next, sizeof(first)) != 0);
+	CHECK(NativeMatchConfigV1_Digest(&first, firstDigest) == 1);
+	CHECK(NativeMatchConfigV1_Digest(&next, digest) == 1);
+	CHECK(PairToSelectResult(&fixture, TEST_LAUNCH_STALE_TITLE_A_PORT, TEST_LAUNCH_STALE_TITLE_B_PORT));
+	CHECK(RelinkAloneToReady(TEST_LAUNCH_STALE_TITLE_A_PORT, TEST_LAUNCH_STALE_TITLE_B_PORT, &first, NULL));
+
+	/* CLOSE_LINK at the launch timeout. */
+	for (tick = 0; (tick < DRIVE_BUDGET) && (action == ACT_NONE); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+	}
+	CHECK(action == ACT_CLOSE_LINK);
+	CHECK(AgreementIsReset(&g_a));
+	CHECK(PeerSendLaunch(TEST_LAUNCH_STALE_TITLE_A_PORT, firstDigest, FLAG_HEARD, 60u));
+	CHECK(PeerSendLaunch(TEST_LAUNCH_STALE_TITLE_A_PORT, digest, FLAG_HEARD, 61u));
+	ClosePeer();
+
+	/* RESULTS idles out: EXIT (CLOSE_LINK), then RETURN_TO_TITLE. */
+	action = ACT_NONE;
+	for (tick = 0; (tick < DRIVE_BUDGET) && (action != ACT_RETURN_TO_TITLE); tick++)
+	{
+		CHECK(PrimeAgreement(&g_a, digest));
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK((action == ACT_NONE) || (action == ACT_CLOSE_LINK) || (action == ACT_RETURN_TO_TITLE));
+		if (action == ACT_NONE)
+		{
+			/* Not a reset point: the primed agreement is left as it was. */
+			CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+		}
+		else
+		{
+			CHECK(AgreementIsReset(&g_a));
+			closes += (action == ACT_CLOSE_LINK) ? 1 : 0;
+		}
+	}
+	CHECK(action == ACT_RETURN_TO_TITLE);
+	CHECK(closes == 1);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_OFF);
+
+	/* Screen OFF changes nothing; Enter resets. */
+	CHECK(PrimeAgreement(&g_a, digest));
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(AgreementIsReset(&g_a));
+	CHECK(AuxCountOf(&g_a) == 0u);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	CHECK(g_a.selectSerial == 2u);
+	CHECK(g_b.selectSerial == 2u);
+	CHECK(DriveBothToSelectResult());
+
+	CHECK(RelinkAloneToReady(TEST_LAUNCH_STALE_TITLE_A_PORT, TEST_LAUNCH_STALE_TITLE_B_PORT, &next, digest));
+	CHECK(ExpectPendingTicks(STALE_WATCH_TICKS));
+	CHECK(CommitFromPeer(TEST_LAUNCH_STALE_TITLE_A_PORT, digest, &next));
+
+	ClosePeer();
+	ShutdownBoth();
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestPure() == 0);
@@ -3885,6 +5282,18 @@ int main(void)
 	CHECK(TestSelectView() == 0);
 	CHECK(TestSelectLinkErrorClosesLink() == 0);
 	CHECK(TestLocalMenuEvent() == 0);
+	CHECK(TestLaunchSymmetric() == 0);
+	CHECK(TestLaunchOneSidedRelink() == 0);
+	CHECK(TestLaunchLostLastRecord() == 0);
+	CHECK(TestLaunchStaleSelectRecordsIgnored() == 0);
+	CHECK(TestLaunchCommitAtTimeoutEdge() == 0);
+	CHECK(TestLaunchNoCommitAfterCloseLink() == 0);
+	CHECK(TestLaunchLostHeardLingerCap() == 0);
+	CHECK(TestLaunchReorderedDuplicated() == 0);
+	CHECK(TestLaunchStaleAcrossRestartLobby() == 0);
+	CHECK(TestLaunchStaleAcrossRelink() == 0);
+	CHECK(TestLaunchStaleAcrossRematchAndSelect() == 0);
+	CHECK(TestLaunchStaleAcrossCloseTitleEnter() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }

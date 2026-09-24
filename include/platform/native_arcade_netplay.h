@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "platform/native_arcade_flow.h"
+#include "platform/native_arcade_launch.h"
 #include "platform/native_arcade_menu_input.h"
 #include "platform/native_lobby_state.h"
 #include "platform/native_lockstep_match_outcome.h"
@@ -85,12 +86,41 @@
  *   the flow ends in LINK ERROR at its launch timeout and never races on
  *   the base config.
  * - START_RACE arms the race on the current config, which is then the
- *   resolved config.
+ *   resolved config, and takes it as lastReadyConfig (RL-6, below).
  * - Every pre-race LINK ERROR (from SELECT, or from SELECT_RESULT before or
  *   after RELINK) comes with CLOSE_LINK, so the lobby is closed on RESULTS:
- *   a relink handshake the peer completes later cannot reach READY here and
- *   so cannot replace lastReadyConfig behind the results screen (MS-8b).
- *   The in-race path to RESULTS keeps the link open.
+ *   a relink handshake the peer completes later cannot reach READY here, and
+ *   no launch record can arrive for an agreement (MS-8b, RL-3). The in-race
+ *   path to RESULTS keeps the link open.
+ *
+ * Launch agreement (docs/RACE_LAUNCH_MILESTONE.md RL-1, RL-3, RL-4, RL-6):
+ * handshake completion alone never starts a race.
+ * - On the tick a relink lobby is first observed READY, the adapter
+ *   discards whatever is waiting in the aux inbox (datagrams that arrived
+ *   in the poll that found the new link RUNNING) and begins one launch
+ *   agreement (native_arcade_launch) for its local role, on the SHA-256
+ *   NativeMatchConfigV1_Digest of its relink proposal (the current config),
+ *   with a linger cap of NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS. The
+ *   first lobby and rematch lobbies run no agreement.
+ * - Each tick after the lobby poll and before the flow runs, while the
+ *   agreement is active, every aux datagram is taken into it (a late select
+ *   record or any other magic is FOREIGN: ignored and counted). Records are
+ *   accepted only while the flow is in SELECT_RESULT phase 2 or once the
+ *   agreement has committed (then only HEARD is watched); otherwise they are
+ *   discarded unread. The flow's launchStatus is COMMITTED exactly when the
+ *   agreement has committed, so START_RACE needs READY and a commit.
+ * - After the flow's action, one launch record is sent per tick on the aux
+ *   route while the agreement wants to send and the link is RUNNING: from
+ *   the relink READY tick, through the commit, and after it (RACING
+ *   included) until a HEARD record was sent and one received, or
+ *   NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS ticks after the commit.
+ * - The agreement is reset on RELINK, RESTART_LOBBY, CLOSE_LINK,
+ *   BEGIN_SELECT, BEGIN_REMATCH, RETURN_TO_TITLE, Enter, and Shutdown. The
+ *   record carries no link epoch; a stale record cannot reach a new
+ *   agreement because every reset leaves it inactive until the next relink
+ *   READY, every relink link is a fresh one (Close empties the aux inbox and
+ *   releases the old socket), and the READY-tick discard drops what arrived
+ *   with the handshake completion.
  *
  * The adapter itself reads the link every Tick, including during RACING:
  * the lobby poll drains arriving bundles into the session, and when that
@@ -100,12 +130,15 @@
  * cause. The Task 8 race driver is therefore not the link's only reader.
  *
  * Rematch rule (UX-7): agreement is implicit, not a new wire message. The
- * rematch derives from lastReadyConfig, the proposal of the most recent
- * lobby that reached READY: the handshake only completes on byte-identical
- * proposals, so both cabinets hold it byte-identically whatever happened
- * after it. After a finished race it is the resolved config; after a select
- * failure or a launch timeout it is the select base both held at
- * MATCH_FOUND, even when one side relinked and the other did not. Both
+ * rematch derives from lastReadyConfig: the proposal of the most recent
+ * first or rematch lobby that reached READY, or of the relink lobby whose
+ * launch commit started a race (RL-6: a relink lobby's READY alone does not
+ * take it). The handshake only completes on byte-identical proposals, so
+ * both cabinets hold it byte-identically whatever happened after it. After
+ * a finished race it is the resolved config; after a select failure, a
+ * launch timeout, or a relink that completed on one side only, it is the
+ * select base both held at MATCH_FOUND, even when one side relinked and the
+ * other did not. Both
  * derive the same rematch masterSeed from it
  * (NativeArcadeNetplay_DeriveRematchSeed), build the same rematch config,
  * and re-run the ordinary handshake on it.
@@ -147,6 +180,9 @@
 /* Every tick: the peer-link Retransmit-before-Poll contract, UX-5. */
 #define NATIVE_ARCADE_NETPLAY_DEFAULT_RETRANSMIT_INTERVAL_TICKS 1u
 #define NATIVE_ARCADE_NETPLAY_DEFAULT_STALL_TIMEOUT_TICKS 90u   /* 3 s at the 30 Hz loop, UX-9 */
+/* RL-4 launchLingerTicks: the launch-record linger cap after a commit, 10 s
+ * at the 30 Hz loop. */
+#define NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS 300u
 
 struct NativeArcadeNetplayConfig
 {
@@ -313,9 +349,10 @@ struct NativeArcadeNetplay
 	 * BEGIN_SELECT, BEGIN_REMATCH, Enter, RETURN_TO_TITLE, and Shutdown.
 	 * AgreedConfig reads it on RESULTS. */
 	uint8_t raceConfigValid;
-	/* 1 once the open lobby has been observed READY (and lastReadyConfig
-	 * taken from it); cleared whenever a lobby is begun, restarted, or
-	 * closed. */
+	/* 1 once the open lobby has been observed READY (and, for a first or
+	 * rematch lobby, lastReadyConfig taken from it; for a relink lobby, the
+	 * launch agreement begun); cleared whenever a lobby is begun, restarted,
+	 * or closed. */
 	uint8_t lobbyReadySeen;
 	/* 1 once lastReadyConfig holds a READY proposal; cleared by Enter and
 	 * Shutdown. */
@@ -329,12 +366,19 @@ struct NativeArcadeNetplay
 	uint8_t lastMenuEvent;
 	/* The outcome the last successful RELINK built its config from. */
 	struct NativeMatchSelectOutcome lastOutcome;
-	/* The proposal of the most recent lobby that reached READY, taken on the
-	 * tick it is first observed READY after a Begin or restart. The
-	 * handshake guarantees the peer holds it byte-identically, so
-	 * BEGIN_REMATCH derives from it (the rematch rule above). */
+	/* The proposal of the most recent first or rematch lobby that reached
+	 * READY, taken on the tick it is first observed READY after a Begin or
+	 * restart, or of the relink lobby a race started on, taken on that
+	 * START_RACE (RL-6). The handshake guarantees the peer holds it
+	 * byte-identically, so BEGIN_REMATCH derives from it (the rematch rule
+	 * above). */
 	struct NativeMatchConfigV1 lastReadyConfig;
 	struct NativeMatchSelectSession select;
+	/* The launch agreement of the current relink lobby (the launch agreement
+	 * block above): inactive (all zero) except from the first READY of a
+	 * relink lobby until the next reset point. Never sent whole, never part
+	 * of the match config, seeds, or simulation identity. */
+	struct NativeArcadeLaunchAgreement launch;
 };
 
 /* memset 0, then the four NATIVE_ARCADE_NETPLAY_DEFAULT_* values, the flow's
@@ -390,7 +434,10 @@ int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struc
  * RACING, and on RESULTS when START_RACE armed a race on it. This proposal
  * is the agreement: the handshake only completes when both proposals are
  * byte-identical (docs/LOBBY_MILESTONE.md section 2.2), and START_RACE only
- * follows READY of the relink, so the peer holds exactly this config. On
+ * follows READY of the relink plus a launch commit, a record from the peer
+ * carrying the digest of this same proposal, sent only while the peer's
+ * relink link was RUNNING (RL-1, RL-3), so the peer holds exactly this
+ * config. On
  * RACING, and on RESULTS after that race (finished or failed), it is the
  * resolved select config the relink handshake validated. On RESULTS reached
  * without a race (a select failure, a relink that could not be built, or a
