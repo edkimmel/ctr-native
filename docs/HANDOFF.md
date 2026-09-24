@@ -34,12 +34,10 @@ Integration order:
    complete for both match profiles, the two-cabinet (two humans, four
    bots) and the single-cabinet (one human, seven bots) retail arcade race,
    proven by the live roster proof (`arcade_roster_determinism`) on one
-   machine; the single-cabinet runs are capped at 90 race ticks, before
-   the green light, by a Debug-only run-time check failure in the retail 1P
-   HUD, and prove same-seed identity and seed divergence but not
-   menu-history independence (no single-cabinet demo-race or timer-offset
-   run). See `docs/ROSTER_MILESTONE.md`. Networked launch through its seam
-   is Task 7.
+   machine: both profiles over 900 race ticks, covering same-seed
+   identity, seed divergence, and menu-history independence (demo-race
+   launch and odd-timer-offset runs). See `docs/ROSTER_MILESTONE.md`.
+   Networked launch through its seam is Task 7.
 4. Native lockstep protocol and virtual-network fault tests — protocol design
    and fault-tolerant session logic complete; a real socket transport,
    connect/handshake protocol, and a lobby data/state layer exist and are
@@ -174,7 +172,7 @@ Integration order:
   CAB1 character, and bot difficulty, with the retail 1P bots and the seed
   as its masterSeed (match select is not used). The report (format v8)
   names the profile. `tools/arcade-roster-proof-check.ps1` (ctest
-  `arcade_roster_determinism`) runs eight proofs. Two-cab, 900 race ticks
+  `arcade_roster_determinism`) runs ten proofs. Two-cab, 900 race ticks
   each: A and B (one seed, from the title) must be byte-identical; C (from
   the attract demo race) and E (37 ticks late; its launch timer offset
   from A must be odd) must equal A in the setup digests, the seeded and
@@ -182,17 +180,16 @@ Integration order:
   digests, and start race tick 0 with A's pinned counters (the full
   control digest is informational only); D (another seed) must differ from
   A in the config digest, the bank digest, and the tick 0 rng digest.
-  One-cab, 90 race ticks each: F and G (one seed) must be byte-identical;
+  One-cab, 900 race ticks each: F and G (one seed) must be byte-identical;
   H (another seed) must differ from F in the same three digests; F must
   differ from A in the config and race plan digests, and its input digests
   must equal A's at race tick 0, differ from A's at every later tick, and
-  equal H's at every tick. The one-cab runs stop before the green light,
-  so they prove the 1P setup and pre-green determinism only: any 1P race
-  in a Debug build stops a few seconds after the green light at a
-  run-time check failure in the retail 1P rank-icon HUD
-  (`game/UI/UI_Rank.c`, an uninitialized but dead `pos.y`). Fixing it
-  means editing that upstream-owned retail file, which is an owner
-  decision (`docs/ROSTER_MILESTONE.md` risk 13).
+  equal H's at every tick; I (from the attract demo race) and J (37 ticks
+  late, an odd launch timer offset from F) must equal F as C and E equal
+  A. The one-cab runs cover the green light, bot driving, and 1P race
+  physics; the retail 1P HUD's uninitialized `pos.y` read
+  (`game/UI/UI_Rank.c`), which once stopped Debug 1P races, was fixed in
+  place (a98dccbe8).
 - **Proof-only VBlank pacing (RS-18).** The proof runs with host-local
   fixed VBlank pacing (`Platform_SetFixedVBlankPacing`), so a late host
   frame emits no catch-up VBlanks. Every other run keeps the default
@@ -465,8 +462,8 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `game/MAIN/MainArcadeRosterProof.{c,h}` (game hook);
   `platform/native_vblank_pacing.c`, `include/platform/native_vblank_pacing.h`
   (the pure pacing decision behind proof-only fixed VBlank pacing);
-  `tools/arcade-roster-proof-check.ps1` (the eight-run checker, five
-  two-cab and three one-cab runs).
+  `tools/arcade-roster-proof-check.ps1` (the ten-run checker, five
+  two-cab and five one-cab runs).
 - Presentation options (host-local): `platform/native_display_config.c`,
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`

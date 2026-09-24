@@ -9,7 +9,7 @@ updated to record status as tasks land.
 The owner decided RS-1 (section 4): the setup supports both match
 profiles, ARCADE_TWO_CAB (the retail 2P arcade race, two humans and four
 bots) and ARCADE_ONE_CAB (the retail 1P arcade race, one human and seven
-bots). The single-cabinet tasks OC-1..OC-4 (section 6) added ONE_CAB to
+bots). The single-cabinet tasks OC-1..OC-5 (section 6) added ONE_CAB to
 the bot rules, the race setup plan, facts, and core, and the live roster
 proof; it gives one machine a path to launch a real race without a peer.
 The fixture, the arcade-link lobby, and match select remain TWO_CAB-only.
@@ -146,20 +146,16 @@ config. Step 3 must own these states at a defined point.
 6. Everything is dormant unless armed; normal retail boot is unchanged; no
    canonical-state schema or replay format changes.
 
-Status (OC-4): functionally complete for both profiles. R-2 through R-6e
+Status (OC-5): functionally complete for both profiles. R-2 through R-6e
 (section 6) meet items 1-6 for TWO_CAB on one machine, and OC-1 through
-OC-3b (section 6) extend items 1-4 to ONE_CAB and item 5 in part. The
-live roster proof (3.4) is the evidence for item 5: for TWO_CAB over 900
+OC-5 (section 6) extend items 1-5 to ONE_CAB on one machine. The live
+roster proof (3.4) is the evidence for item 5, for each profile over 900
 race ticks, covering same-seed identity, menu-history independence (runs
-C and E), and seed divergence. For ONE_CAB it covers same-seed identity
-and seed divergence only, over the setup and the first 90 race ticks,
-which end before the green light (risk 13): runs F-H all launch from the
-title at dwell 0, and ONE_CAB has no analogue of run C (demo-race launch)
-or run E (odd timer offset), so menu-history independence is unproven for
-ONE_CAB (risk 1). The ONE_CAB evidence is the 1P setup and pre-green
-determinism, not bot driving or 1P race physics. Networked launch
-(Task 7), the in-race lockstep drive (Task 8), and real two-cabinet
-evidence (steps 6-7) remain.
+C and E for TWO_CAB, their one-cab counterparts I and J for ONE_CAB),
+and seed divergence. The ONE_CAB runs cover the 1P setup, the green
+light, bot driving, and 1P race physics. Networked launch (Task 7), the
+in-race lockstep drive (Task 8), and real two-cabinet evidence (steps
+6-7) remain.
 
 ## 3. Decided design
 
@@ -453,9 +449,9 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   report header (format v7 and later) logs those three counters and
   frameTimerConfetti at the launch tick and at race tick 0.
 - The checker, tools/arcade-roster-proof-check.ps1, run by the ctest
-  arcade_roster_determinism (Windows only, label "live"), starts eight
-  proofs, five two-cab (A-E, 900 race ticks each, -Ticks) and three
-  one-cab (F-H, 90 race ticks each, -OneCabTicks; the cap is below):
+  arcade_roster_determinism (Windows only, label "live"), starts ten
+  proofs, five two-cab (A-E) and five one-cab (F-J), each logging -Ticks
+  race ticks (900 in ctest):
   - A: seed 0x5EED, dwell 0 (launches from the title);
   - B: A again;
   - C: seed 0x5EED, dwell 5400 (launches from inside the attract demo
@@ -464,10 +460,14 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   - E: seed 0x5EED, dwell 37 (launches from the title 37 ticks late);
   - F: one-cab, seed 0x5EED, dwell 0 (launches from the title);
   - G: F again;
-  - H: one-cab, seed 0x5EEE, dwell 0.
+  - H: one-cab, seed 0x5EEE, dwell 0;
+  - I: one-cab, seed 0x5EED, dwell 5400 (launches from inside the attract
+    demo race; the one-cab C);
+  - J: one-cab, seed 0x5EED, dwell 37 (launches from the title 37 ticks
+    late; the one-cab E).
 
   A-E pass no profile option, so they run the default two-cab profile with
-  the command lines they had before OC-3. The checker runs all eight in
+  the command lines they had before OC-3. The checker runs all ten in
   parallel by default (-Sequential runs them one after another) and fails
   unless:
   - every run exits 0, and its report is format v8 with result PASS, the
@@ -486,6 +486,10 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
     before the RS-17 pin; after it every run reads 0);
   - C's and E's race tick 0 timer and frameTimerConfetti equal A's (the
     RS-17 pins held);
+  - I and J are measured against F exactly as C and E are against A: they
+    equal F in the same setup digests, seeded and slot lines, and per-tick
+    digests; J's timer offset from F at launch is odd; and I's and J's
+    race tick 0 timer and frameTimerConfetti equal F's;
   - D differs from A in the config digest, the bank digest, and the tick 0
     rng digest, and H differs from F in the same three;
   - F differs from A in the config digest and the race plan digest
@@ -498,20 +502,15 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
 
   The full control digest is informational only: it still differs in the
   unpinned boot-relative counters frameCounter and frameTimer. The checker
-  prints the C-A and E-A offsets of all four counters at launch and at
-  race tick 0, with their values mod 8. It skips (77) when
+  prints the C-A, E-A, I-F, and J-F offsets of all four counters at launch
+  and at race tick 0, with their values mod 8. It skips (77) when
   assets/ctr-u.bin is absent, no display is available, or the build
   rejects the internal option.
-- The one-cab cap (risk 13). F-H log only 90 race ticks, which end before
-  the green light: race init sets trafficLightsTimer = 0xF00 (3840 ms)
-  together with the START_OF_RACE fly-in (game/MAIN/MainGameStart.c:17-20),
-  and the main loop counts it down only once START_OF_RACE has cleared
-  (game/MAIN/MainMain.c:341-356). So F-H prove the 1P race setup and its
-  pre-green determinism, not bot driving or 1P race physics. The reason is
-  a pre-existing MSVC Debug run-time check failure in the retail 1P
-  rank-icon HUD (game/UI/UI_Rank.c:173-199), which stops any 1P race a few
-  seconds after the green light; once it is resolved, F-H are meant to run
-  the full -Ticks (the checker header says so).
+- The one-cab runs were first capped at 90 race ticks (-OneCabTicks),
+  before the green light, by an MSVC Debug run-time check failure in the
+  retail 1P rank-icon HUD (risk 13). The cap and -OneCabTicks were removed
+  once game/UI/UI_Rank.c was fixed in place (a98dccbe8); F-J now run the
+  full -Ticks.
 
 ## 4. Defaults for owner review
 
@@ -821,7 +820,10 @@ The full suite, both live tests included, was verified independently on
 eb5ef25ef, 30d5a1c71, and 164e34d2f: 133 of 133 passed each time. On
 164e34d2f the suite took about 367 s, arcade_roster_determinism about
 265 s with its eight runs in parallel (A-E about 80 s each except C, about
-264 s; F-H about 53 s each).
+264 s; F-H, then capped at 90 race ticks, about 53 s each). After OC-5
+the suite is still 133 tests; on b024a1814 it passed 133 of 133 in about
+394 s, arcade_roster_determinism about 265 s with its ten runs in
+parallel (C and I about 264 s each, the other eight about 81 s).
 
 - OC-1, eb5ef25ef: the retail 1P arcade bot rule. The 1P V1 encoding and
   Digest1PV1, DigestForProfileV1, ExpectedBots1P, and ValidateConfigV1
@@ -852,11 +854,47 @@ eb5ef25ef, 30d5a1c71, and 164e34d2f: 133 of 133 passed each time. On
   naming the profile, and the proof test finding the first bot slot the
   way the builder does. Re-review clean, with three optional nits (risk
   15).
-- OC-4 (this commit): this document (the intro, sections 1-3, RS-1,
+- OC-4, 51c964c9c: this document (the intro, sections 1-3, RS-1,
   RS-4, RS-19..RS-24, this subsection, and risks 13-15, plus the
   MainArcadeRaceSetupPlan.c and MainArcadeRaceSetupCore.c line citations
   OC-2 moved) and docs/HANDOFF.md step 3, Deterministic simulation, and
-  key files. Review: none recorded.
+  key files. Reviewed: the should-fixes were closed in OC-4b and the
+  header-comment nit in OC-5 (228c38e14).
+- OC-4b, 9308fb19f: the OC-4 review should-fixes (ONE_CAB evidence
+  scoped; RS-19..RS-24 marked defaults pending owner review).
+- OC-5 -- ONE_CAB full-race proof. Split into (in commit order):
+  - a98dccbe8: game/UI/UI_Rank.c initializes pos.y, which the retail 1P
+    rank-icon HUD read uninitialized on the transitioning path (risk 13).
+    Fixed in place under the owner's standing directive to fix retail
+    bugs in place; render-only, no simulation change. Reviewed: no
+    blockers or should-fixes on the code (one wording nit, left as is).
+  - e491763ed: the checker's -OneCabTicks parameter and 90-tick cap are
+    removed, so every run logs -Ticks (900 in ctest), and the new one-cab
+    runs I (dwell 5400, the one-cab C) and J (dwell 37, the one-cab E)
+    are checked against F exactly as C and E are against A (3.4). Ten
+    runs, all parallel. Reviewed: no blockers or should-fixes; the nits
+    were closed in b024a1814.
+  - b024a1814: those checker and CMake comment nits (a CMake comment
+    rewrapped, the R-6c/R-6d citation).
+  - 228c38e14: the code headers call RS-19..RS-24 "defaults pending
+    owner review", closing the OC-4 review nit (risk 15).
+  - This commit: this document (the intro, section 2, 3.4, this
+    subsection, and risks 1, 13, and 15) and docs/HANDOFF.md step 3,
+    Deterministic simulation, and key files. Review: none recorded.
+
+  Evidence (arcade_roster_determinism, Debug, fixed VBlank pacing, 900
+  race ticks each, ten runs in parallel): every run exits 0; about 265 s
+  wall (C and I about 264 s each, the other eight about 81 s). A = B
+  byte-identical (160583 bytes) and F = G byte-identical (160666 bytes);
+  C = A, E = A, I = F, and J = F over all 900 ticks. The I-F and J-F
+  offsets equal the C-A and E-A offsets (launch timer +5329 and +37; race
+  tick 0 timer and frameTimerConfetti 0). D != A, H != F, and F != A as
+  before; F's input digest equals A's at tick 0, differs at ticks 1..899,
+  and equals H's at all 900 ticks. F reaches race tick 0 at frameCounter
+  760, A at 763 (informational; comparisons are within a profile). No
+  further retail bug (no run-time check dialog) appeared in 900 ticks of
+  the 1P race, so F-J cover the green light, bot driving, and 1P race
+  physics.
 
 ## 7. Risks and open questions
 
@@ -864,9 +902,9 @@ eb5ef25ef, 30d5a1c71, and 164e34d2f: 133 of 133 passed each time. On
    close it only at the seeding point, so anything that consumes retail RNG
    between the seeding hook and the first lockstep tick must be identical
    on both cabinets (runs C and E of the live proof test this on one
-   machine for TWO_CAB). ONE_CAB has no C/E analogue: runs F-H all launch
-   from the title at dwell 0, so ONE_CAB menu-history independence is
-   untested.
+   machine for TWO_CAB, and their one-cab counterparts I and J for
+   ONE_CAB). Both are single-machine evidence; the cross-cabinet case
+   stays untested (risk 6).
 2. Boot-relative control counters are in the canonical control domain; two
    cabinets never share a boot history (RS-12). Run E of the live proof
    showed that gGT->timer parity feeds the simulation RNG: with an odd
@@ -946,24 +984,16 @@ eb5ef25ef, 30d5a1c71, and 164e34d2f: 133 of 133 passed each time. On
     the race tick 0 timer pin and frameTimerConfetti have no offline
     fixture-report test; only the live test runs them, and only on the pass
     path.
-13. The one-cab evidence is capped at 90 race ticks, and any 1P race in a
-    Debug build stops. game/UI/UI_Rank.c:173-199, the retail 1P rank-icon
-    HUD (UI_DrawRankedDrivers, whose 1P branch only a 1-human race takes),
-    declares `Point pos`, sets only pos.x while an icon is transitioning,
-    and then reads pos.y into iconPos (:199). The value is dead:
-    UI_Lerp2D_Angular (game/UI/UI_Lerp2D.c:14) overwrites both coordinates
-    before they are drawn. The MSVC Debug runtime still stops the process
-    with a modal "Run-Time Check Failure #3 - The variable 'pos' is being
-    used without being initialized" at the first rank change, a few
-    seconds after the green light. It is presentation only, was introduced
-    upstream by c6a2a67ff (the iconPos copy), and 2P races take a different
-    branch. So runs F-H stop at race tick 89, before the green light
-    (3.4), and prove the 1P setup and pre-green determinism only, not bot
-    driving or 1P race physics; and any 1P arcade race in a Debug build,
-    normal menus included, currently stops at that dialog. A one-line
-    `pos.y = 0;` (optionally under `#ifdef CTR_NATIVE`) would preserve
-    behaviour, but it edits an upstream-owned retail file, so it is an
-    owner decision. Until then F-H stay capped (-OneCabTicks 90).
+13. Resolved (OC-5). The retail 1P rank-icon HUD in game/UI/UI_Rank.c
+    (UI_DrawRankedDrivers, whose 1P branch only a 1-human race takes) set
+    only pos.x while an icon was transitioning and then read pos.y into
+    iconPos. The value was dead (UI_Lerp2D_Angular overwrites it), but
+    the MSVC Debug runtime stopped any 1P race at the first rank change
+    with "Run-Time Check Failure #3", so the one-cab runs were capped at
+    90 race ticks, before the green light. It came from upstream
+    c6a2a67ff. a98dccbe8 fixed it in place under the owner's standing
+    directive to fix retail bugs in place (render-only, no simulation
+    change), and F-J now run 900 race ticks (3.4).
 14. ONE_CAB has no lobby or UI flow. The fixture, the arcade-link lobby,
     and match select remain TWO_CAB-only (RS-1); the only path that
     launches a race through the ONE_CAB setup is the internal roster proof
@@ -977,9 +1007,4 @@ eb5ef25ef, 30d5a1c71, and 164e34d2f: 133 of 133 passed each time. On
     WARPBALL_HELD clear), :482 (MainInit_Drivers), and :568 (the
     boolDemoMode check); and the facts isolation test's rule 7 regex lacks
     a left word boundary. OC-3b re-review: three optional nits in the
-    checker and the proof hook. OC-4 review: the header comments in
-    include/platform/native_arcade_bot_rules.h,
-    game/MAIN/MainArcadeRaceSetupPlan.h, and
-    include/platform/native_arcade_roster_proof.h call RS-19..RS-24
-    "owner decision(s)"; a later code-comment commit should reword them to
-    "defaults pending owner review" (section 4).
+    checker and the proof hook.
