@@ -343,10 +343,22 @@ order:
     (game/MAIN/MainCanonicalTopology.h:37-48). This is not the topology
     lease (MainCanonicalTopologyLeaseAdapter_Capture is a separate API)
     (:270-293).
-  - It extracts the complete drivers (:294-307).
+  - It extracts the complete drivers (:294-307). That extraction reads
+    NavHeader.last for every bot. :296 calls
+    MainCanonicalDrivers_ExtractCompleteFromPreludeInPlace
+    (game/MAIN/MainCanonicalDrivers.c:927), which calls
+    MainCanonicalDrivers_ExtractMetaAndBot for every present driver
+    (:953-954). For a bot that calls MainCanonicalDrivers_BotNavIndex
+    (:834), which reads sourceData->NavPath_ptrHeader, the level's
+    LevNavTable, and the NavFrame array (:720-725) and dereferences
+    header->last (:726). It does so to prove the bot's botNavFrame lies in
+    its path's frame array and to turn it into an index. A TWO_CAB race has
+    four bots (slots 2 to 5: MainArcadeRaceSetupPlan.c:58-64,
+    include/platform/native_arcade_bot_rules.h:152-153).
   - It takes the world and topology domains from the caller (:309-314). It
-    never dereferences NavHeader.last or touches a lease
-    (MainCanonicalRuntime.h:137-140).
+    touches no lease API. Its comments at MainCanonicalRuntime.h:137-140
+    and MainCanonicalRuntime.c:309-311 say it never dereferences
+    NavHeader.last; the bot read above makes that false (LR-17).
   - It builds a fresh bank from the config's masterSeed instead of the
     post-setup bank (:316-317).
   - Any failure poisons the workspace until Reset
@@ -366,9 +378,16 @@ order:
   exists.
 - A live topology reader is a topology capture, and captures belong to the
   lease:
-  - MainCanonicalTopologyLease_ObservePostInit is the sole API that
-    observes NavHeader.last
-    (game/MAIN/MainCanonicalTopologyLeaseAuthority.h:72-75);
+  - MainCanonicalTopologyLease_ObservePostInit is documented as the sole
+    API that observes NavHeader.last
+    (game/MAIN/MainCanonicalTopologyLeaseAuthority.h:72-75). The drivers
+    extraction's bot read above contradicts that comment, and the
+    CTR_INTERNAL roster proof already makes the same read live:
+    MainArcadeRosterProof.c:579 calls
+    MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta,
+    which reaches BotNavIndex through ExtractMetaAndBot
+    (MainCanonicalDrivers.c:860, :834). That is a precedent, not a ruling
+    (LR-17);
   - the fact reader's one live consumer is the lease adapter, behind
     Acquire, ObservePostInit, and the residency checks
     (tests/main_canonical_topology_lease_adapter_isolation_test.cmake:43),
@@ -382,8 +401,9 @@ order:
   NativeCanonicalTopologyV1_Validate accepts it (:64-66).
 - RS-13 left Physics, WORLD, TOPOLOGY, and live V4 projection to Task 8
   (docs/ROSTER_MILESTONE.md:589-591). The roster proof digests only V1
-  control, RNG, and input, plus a topology-free drivers candidate whose
-  Physics groups are zero.
+  control, RNG, and input, plus a drivers candidate without the
+  MainCanonicalTopology context, whose Physics groups are zero. That
+  candidate still makes the bot nav-index read above (LR-17).
 
 ### 2.6 Race end, loads, presentation, and builds
 
@@ -445,7 +465,8 @@ order:
    on both cabinets, and RESULTS shows RACE COMPLETE.
 6. Pause cannot happen in a linked race, and no pad reads as unplugged.
 7. Default boot and replay are unchanged. Nothing new enters checkpoints,
-   replay, or canonical-state formats, and the topology lease is untouched.
+   replay, or canonical-state formats, and the topology lease is untouched
+   (subject to the owner's LR-17 ruling on the bot nav-index read).
    A bundle from an earlier match never faults a rematch (LR-14).
 8. The full ctest suite passes. The extended live gate (LR-16) has a
    recorded, non-skipped PASS from a build made from a clean tree. A skip
@@ -468,7 +489,8 @@ How each will be proven:
 3. The live gate's forced-desync race ends in RACE OUT OF SYNC with the
    divergence frame named. The per-tick V4 lines are equal in the races
    without a fault, and race 1's freeze leaves one cabinet leading without
-   a desync (LR-S5's lead cases prove every lead up to the bound).
+   a desync (LR-S5's lead cases prove every lead up to the bound, for D
+   from 1 to 3).
 4. The live gate's injected freeze, the peer kill, and the drive core
    tests of every bound. The hold spike (LR-S2) shows no extra VBlank
    across a hold.
@@ -485,7 +507,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-16)
+## 4. Decided design (defaults LR-1..LR-16, and the owner ruling LR-17)
 
 Each default below is a default pending owner review. The plan review
 changed several of them; "Review changes" at the end of this section
@@ -517,7 +539,9 @@ pointer-free values.
 Two new game modules have neutral names:
 
 - MainArcadeRaceDigest projects V4 (LR-10). It is read-only and lease-free
-  (isolation test main_arcade_race_digest_isolation, LR-S4).
+  (isolation test main_arcade_race_digest_isolation, LR-S4). The drivers
+  extraction it calls reads NavHeader.last for each bot, which is the
+  owner's ruling, LR-17.
 - MainArcadeRaceHold runs the hold loop and its banner (LR-9). It never
   calls VSync and never writes simulation state (isolation test
   main_arcade_race_hold_isolation, LR-S2).
@@ -571,7 +595,14 @@ The peer can still be consuming frame k - D - 1: our take of frame k - 1
 needed its frame k - 1, which it composed on its tick k - 1 - D. While
 held, the drive resends at most once per tick period, so a long hold does
 not flood a peer that is still loading. The resend needs one new peer-link
-call, a verbatim 128-byte bundle send that requires RUNNING (LR-S9).
+call, a verbatim 128-byte bundle send (LR-S9). It requires both the link
+mode and the session mode to be RUNNING. The link mode alone is not
+enough: the link copies the session mode only in Poll and in the
+staged-record replay (platform/native_lockstep_peer_link.c:108-120,
+:140-141, :215-216), so a divergence that RecordLocalDigests latches
+(LR-11) leaves the link RUNNING until the next poll.
+ComposeAndSendBundle already sends nothing then, because the session's
+ComposeBundle requires a RUNNING session (native_lockstep_session.c:354-358).
 
 The window bounds D. A cabinet can lead the peer's consumed frame by
 2D + 1:
@@ -778,7 +809,15 @@ used.
 
 Classifying a take. The drive always calls OnTakeResult first, so the
 tracker, which checks DIVERGED and then FAULTED before any stall logic
-(section 2.4), latches the real cause. After DIVERGED or FAULTED,
+(section 2.4), latches the real cause. A divergence can also latch
+inside RecordLocalDigests, at step 1 of the tick (LR-11). The adapter's
+own latch cannot see it on that tick: it acts only when the lobby is
+PEER_LOST (native_arcade_netplay.c:683-691), and the lobby takes
+PEER_LOST only from the link mode after a poll
+(native_lobby_state.c:173-178). So when a record leaves the session
+non-RUNNING, the drive calls OnTakeResult at once, sends and takes
+nothing more, and ends the step; the outcome latches END_DESYNC on that
+tick. After DIVERGED or FAULTED,
 TakeFrameInputs returns REJECTED (native_lockstep_session.h:288-291); that
 REJECTED is the latched outcome, not a local failure. A REJECTED take, or
 a failed submit, record, or compose, is a local drive failure (LR-12) only
@@ -827,8 +866,11 @@ a level that can reuse addresses. The domains:
   Platform_InputCapturePadSnapshots before this tick's install and frozen
   as V1 input.
 - Drivers. The runtime's complete extraction, Physics included (RS-13).
-  It uses the MainCanonicalTopology context (Capture and Validate) and
-  never the lease.
+  It uses the MainCanonicalTopology context (Capture and Validate) and no
+  lease API. It does read NavHeader.last once per bot, in
+  MainCanonicalDrivers_BotNavIndex (section 2.5). Whether that read may
+  go live is the owner's ruling, LR-17; until it is made this domain
+  cannot go live.
 - World. MainCanonicalWorldCounters_ExtractV1 and
   MainCanonicalWorldMineRegistry_ExtractV1, newly linked into ctr_native.
 - Topology. Not compared in Task 8. MainArcadeRaceDigest supplies the
@@ -836,12 +878,31 @@ a level that can reuse addresses. The domains:
   2.5), on every tick. Its domain digest is the same constant on both
   cabinets and detects nothing (risk 17). A live summary would be a
   topology capture outside the lease (section 2.5), so MainArcadeRaceDigest
-  names no topology fact reader, no NavHeader, and no lease API. Live
-  TOPOLOGY is deferred to a future lease-activation milestone that meets
-  the AGENTS.md gate: a new live-cabinet gate, deterministic capture
-  evidence, and review. It is not a Task 8 slice.
+  itself names no topology fact reader, no NavHeader, and no lease API
+  (the drivers extraction's bot read is inside MainCanonicalDrivers, and
+  LR-17 rules on it). Live TOPOLOGY is deferred to a future
+  lease-activation milestone that meets the AGENTS.md gate: a new
+  live-cabinet gate, deterministic capture evidence, and review. It is
+  not a Task 8 slice.
 - Identity and frame. The build and content identity (the link requires a
   known identity), the agreed config's digest, and frameNumber = k.
+
+The per-tick runtime lifecycle is fixed by the runtime:
+
+1. MainCanonicalRuntime_BeginFrame. It is refused while a prepared state
+   is outstanding or a frame is already active
+   (MainCanonicalRuntime.c:95-101).
+2. MainCanonicalRuntime_PrepareV4. Without an active frame it poisons the
+   workspace with FRAME_STATE (MainCanonicalRuntime.c:236-240).
+3. MainCanonicalRuntime_ViewV4 (MainCanonicalRuntime.h:149-151). The
+   digests are recorded, or the state copied, from this view.
+4. MainCanonicalRuntime_ReleaseV4 (MainCanonicalRuntime.c:381-391). It
+   zeroes the workspace's state and ends the frame, so nothing may read
+   the view after it. The header's rule is that a prepared state is
+   released before another lifecycle mutation (MainCanonicalRuntime.h:109).
+
+MainArcadeRaceDigest runs all four on every race tick, and a projection
+failure at any step is a local drive failure (LR-12).
 
 The per-tick cost is measured with NativePerf in LR-S4 (risk 3).
 Review required: this touches canonical state and the runtime's
@@ -851,7 +912,10 @@ LR-11 Digest exchange and desync. RecordLocalDigests gets the frame k
 state on every race tick. The bundle for frame k + D + 1, composed on race
 tick k + 1, carries it (section 2.4). A mismatch latches DIVERGED, with the
 frame and the domain mask. OnTakeResult or the adapter's own poll (section
-2.4) turns it into END_DESYNC. The glue logs the divergence report once:
+2.4) turns it into END_DESYNC. A divergence latched by RecordLocalDigests
+(a parked digest, below) reaches neither the link mode nor the adapter's
+poll on that tick, so the drive calls OnTakeResult right after that
+record (LR-9). The glue logs the divergence report once:
 
     arcade link: race <n> out of sync at race tick <v> domains <mask> local <hex16> remote <hex16>
 
@@ -883,12 +947,26 @@ leader's ticks; the parked digests are one fewer because a bundle composed
 on tick t carries frame t - 1.) The park holds
 NATIVE_LOCKSTEP_MAX_INPUT_DELAY entries per peer.
 
+The window caps that bound. The digest of frame r + j travels in the
+bundle for frame r + j + D + 1, and the receiver's window accepts only
+[c, c + 8), where c, its consumed frame, is r before its take of r and
+r + 1 after it (native_lockstep_input_window.c:30-34; above the window
+is a WINDOW_OVERRUN fault, :73-80). So the leader's newest bundle at
+the full lead, for frame r + 2D + 1, is accepted only for D up to 3.
+For D from 4 to 6, which the session accepts but the drive refuses
+(LR-3), at most 7 - D digests can be parked after the take of r
+(6 - D before it), and the full lead faults the receiver with
+WINDOW_OVERRUN. So "at most D" holds, and is reached, only for D up to
+3.
+
 A digest beyond the bound, for a frame after r + D, is impossible from a
 conforming peer: the decoder already pins the peer's D and the digest lag
 (native_lockstep_protocol.c:293-295, :308-312). The window can still
-accept such a record: it carries frame r + 2D + 2 or later, which is
-inside the window of 8 for every D the drive allows (up to 3), at least
-once the take of r has moved it. The session latches it as a protocol
+accept such a record (a forged one). The first such digest, for frame
+r + D + 1, travels in the bundle for frame r + 2D + 2. That is inside
+the window for D up to 2 at either consumed frame, and for D = 3 only
+after the take of r (r + 8 is below r + 1 + 8); for D of 4 or more it
+is a WINDOW_OVERRUN instead. The session latches it as a protocol
 FAULT with a new, appended local cause,
 NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD. The cause
 is not on the wire, and the bundle does not change. This replaces the
@@ -915,6 +993,11 @@ return step, RL-8):
     desync                        detected by D + 1 ticks
                                   after the frame, else the
                                   stall timeout               RACE OUT OF SYNC (DESYNC)
+    desync only in F - 1 or F     may go undetected in        RACE COMPLETE on the side that
+                                  band (below)                finishes on F (RACE OUT OF SYNC
+                                                              if the other leads); RACE
+                                                              COMPLETE or OPPONENT
+                                                              DISCONNECTED on the other
     protocol fault                the record that faults      LINK ERROR (LINK_ERROR)
     local drive failure           the tick it happens         LINK ERROR (RL-11 path)
     race-length bound             18000 ticks (600 s)         RACE COMPLETE (FINISHED)
@@ -940,6 +1023,36 @@ The rows in detail:
   the frame is recorded (LR-11). Either way it is before the detecting
   cabinet takes frame x + D + 1, because that take needs the bundle that
   carries frame x.
+- A divergence visible only in frames F - 1 or F. A cabinet that
+  finishes on F never sends its digests of F - 1 and F (LR-11, "The
+  finish"). The outcomes:
+  - Both cabinets see END_OF_RACE on F. Both show RACE COMPLETE. Nothing
+    in band detects it; only the live gate's offline per-tick comparison
+    does (LR-16).
+  - Only cabinet A finishes on F. A shows RACE COMPLETE, unless the next
+    case applies. A's last bundle,
+    composed on its tick F - 1, is for frame F + D - 1 and carries A's
+    digest of F - 2, so B never sees A's digests of F - 1 or F and never
+    detects the divergence. B takes up to frame F + D - 1. If B's own
+    END_OF_RACE comes by its tick F + D, B also shows RACE COMPLETE;
+    otherwise B stalls on frame F + D and shows OPPONENT DISCONNECTED
+    after the stall timeout.
+  - B, which did not finish on F, does send its own digest of F - 1, in
+    the bundle it composes on its tick F. If B leads A, that bundle can
+    reach A before A's finish is on the flow: parked and compared at A's
+    record of F - 1, compared on arrival, or drained by the adapter Tick
+    of pass F + 1. That Tick is the one that sees A's finish (the race
+    caller reports it after pass F's Tick, section 2.1), and there a link
+    failure outranks a same-tick finish (native_arcade_flow.c:278-301).
+    In each case A shows RACE OUT OF SYNC. Once A's flow is on RESULTS a
+    later latch changes nothing: the adapter turns a latched cause into
+    the flow's end only while RACING (native_arcade_netplay.c:683-686).
+  So the in-band result of such a divergence is RACE COMPLETE on the side
+  that finishes on F, or RACE OUT OF SYNC there when the other side leads,
+  and RACE COMPLETE or OPPONENT DISCONNECTED on the other side. With the
+  cabinets in step and B's finish more than D ticks after F, it is RACE
+  COMPLETE on one side and OPPONENT DISCONNECTED on the other. It is
+  fail-safe, as risk 6 is.
 - Peer drop. It ends the race for the survivor straight to RESULTS; the
   survivor does not race on against bots. The peer-drop roster is still
   applied for the record (native_arcade_netplay.c:600-610).
@@ -967,8 +1080,11 @@ compared.
 
 After the finish the drive keeps resending its kept bundles for
 finishLingerTicks = 15 ticks (0.5 s), so a peer that lost our last bundles
-can still reach F. It stops earlier when the link closes or the flow
-leaves RESULTS. It sends nothing after a failure end. The linger overlaps
+can still reach F. It stops earlier when the link closes, the session
+leaves RUNNING, or the flow leaves RESULTS. It sends nothing after a
+failure end, including a divergence latched inside RecordLocalDigests:
+the drive ends on that tick (LR-9), and the verbatim send checks the
+session mode, not only the link mode (LR-3). The linger overlaps
 the return load, whose synchronous reads pause ticks, so 15 ticks is not a
 wall-time bound; LR-14 does not rely on it.
 
@@ -992,18 +1108,32 @@ overlaps the return load (LR-13), so even the clean finish has no
 wall-time bound. The live gate's race 2 to race 3 transition, a DESYNC
 followed by REMATCH, reaches this.
 
+After a pre-race failure the timings rarely meet in practice. The held
+peer's start wait is 900 periods (30 s, LR-12), longer than the rematch
+wait's rematchWaitTimeoutTicks = 300 (10 s, section 2.4). So in real
+timings the side that confirms REMATCH usually times out to OPPONENT
+LEFT before the held peer reaches RESULTS and can confirm. That is
+bounded and fail-safe. The drop still covers the case in which the held
+peer does confirm within the other side's rematch wait, and
+TestRematchAfterPreRaceFailureDropsStaleBundles schedules exactly that
+case (below).
+
 Decision. The peer link drops and counts any 128-byte record whose match
 identity is not the current session's, both when it replays staged
 records and while RUNNING, instead of handing it to the session (LR-S6,
 Review required):
 
 - The link decodes each record against the session's identity, protocol
-  version, and D. A record whose only failure is MATCH_IDENTITY is
-  dropped and counted in a new foreign-bundle drop counter, exposed like
-  NativeLockstepPeerLink_DroppedEarlyBundleCount. The decoder reports
-  that cause only after the size, magic, version, and the record's own
-  digest have passed (section 2.4), so a corrupt record still reaches the
-  session and still faults.
+  version, and D. A record whose first decode failure is MATCH_IDENTITY
+  is dropped and counted in a new foreign-bundle drop counter, exposed
+  like NativeLockstepPeerLink_DroppedEarlyBundleCount. The decoder
+  returns only the first failure. It checks the record's own digest
+  (native_lockstep_protocol.c:281-283) before the identity (:285-287), so
+  a corrupt record, of either identity, is a BAD_DIGEST fault, reaches the
+  session, and still faults. The checks after the identity (:289-312:
+  protocol version, D, the record's slots and pads, the digest lag) never
+  run on a foreign record; that is harmless, because it is dropped and
+  never reaches the session.
 - Every other record goes to AcceptBundle unchanged, so every other fault
   still latches.
 
@@ -1025,9 +1155,16 @@ Tests:
 
 - tests/native_lockstep_peer_link_test.c (native_lockstep_peer_link_unit):
   TestForeignIdentityDroppedWhileStaging,
-  TestForeignIdentityDroppedWhileRunning, and
-  TestForeignIdentityCorruptStillFaults (a corrupt record with the current
-  identity still faults).
+  TestForeignIdentityDroppedWhileRunning,
+  TestForeignIdentityCorruptStillFaults, and
+  TestCurrentIdentityBadDelayOrSlotStillFaults.
+  TestForeignIdentityCorruptStillFaults exercises the drop path's edge: a
+  foreign-identity record with one corrupted byte, and a record whose
+  identity bytes are flipped without recomputing its digest, must each
+  fault BAD_DIGEST, not be dropped.
+  TestCurrentIdentityBadDelayOrSlotStillFaults: a current-identity record
+  with a wrong D (INPUT_DELAY, native_lockstep_protocol.c:293-295) and
+  one with a wrong sender slot (BAD_SLOT) must still fault.
 - tests/native_arcade_netplay_test.c (native_arcade_netplay_unit), each a
   loopback pair where one side keeps sending the old match's bundles while
   the other confirms REMATCH, then both must reach READY on the new match
@@ -1035,6 +1172,11 @@ Tests:
   TestRematchAfterDesyncDropsStaleBundles,
   TestRematchAfterPreRaceFailureDropsStaleBundles, and
   TestRematchDuringFinishLingerDropsStaleBundles.
+  TestRematchAfterPreRaceFailureDropsStaleBundles cannot use the real
+  900-period start wait, which outlasts the 300-tick rematch wait (above).
+  It ends the held side's stale sending and moves it to RESULTS and
+  REMATCH well inside the other side's 300 ticks, and asserts that the
+  other side's rematch wait has not expired when both reach READY.
 - A drive core case (native_arcade_race_drive_unit): nothing is sent after
   the linger or off RESULTS.
 - The live gate's race 1 to race 2 and race 2 to race 3 transitions.
@@ -1045,8 +1187,9 @@ are host-local. None of them is in a checkpoint, in replay, or in
 canonical state, and none touches the topology lease: no acquire,
 activate, capture, or publish, no lease owner anywhere new, and no hook on
 LOAD_Hub_ReadFile. MainArcadeRaceDigest reads no topology facts: it
-supplies the unavailable summary (LR-10). The V4 state is projected and
-digested, never serialized or replayed.
+supplies the unavailable summary (LR-10). The one lease question, the
+Drivers extraction's NavHeader.last read, is the owner's ruling (LR-17).
+The V4 state is projected and digested, never serialized or replayed.
 
 Default boot and replay are unchanged unless the host is in LINK mode with
 a launched race. The link and replay options already exclude each other
@@ -1113,6 +1256,16 @@ Instead, in CTR_INTERNAL builds the autopilot drives closed-loop:
 - It holds CROSS and steers toward the next restart point ahead of its own
   kart. The restart points are the checkpoint loop the lap logic walks
   (gGT->level1->ptr_restart_points, MainFrame_RenderFrame.c:241).
+- Reading them is reading level topology, by risk 17's own definition.
+  The read is non-canonical and internal-only, and it is not a lease
+  capture: the race caller reads gGT->level1->ptr_restart_points only
+  inside its CTR_INTERNAL guards, and only to form the autopilot's
+  steering facts. No restart-point value enters the V4 state, a digest,
+  or the wire; only the autopilot's pad does, as the local sample.
+  MainArcadeRaceDigest never names ptr_restart_points. Both rules are
+  pinned: main_arcade_race_digest_isolation (LR-S4) bans the token from
+  the digest module, and main_arcade_link_hook_isolation (LR-S10) allows
+  it in the race caller only inside the CTR_INTERNAL block.
 - The steering decision is pure (platform/native_arcade_link_autopilot.c),
   over pointer-free facts. Platform code cannot read gGT (LR-1), so the
   game-side race caller reads the facts (its kart's position and heading,
@@ -1141,6 +1294,85 @@ LR-S13:
 That puts the gate near 270 s, so it adds about 190 s. The full suite
 goes from about 450 s to about 640 s. `ctest -LE live` does not change.
 
+LR-17 Lease ruling on the bot nav-index read (OWNER DECISION REQUIRED).
+This is not a default the plan can decide. AGENTS.md holds the topology
+lease retire-only and requires a new live-cabinet gate, deterministic
+capture evidence, and review before any acquire, activate, capture, or
+publish. Whether this read is one of those is therefore the owner's
+call, and it is recorded here as an open ruling with a recommended
+option. LR-S4, and every slice that consumes live Drivers digests
+(LR-S10, LR-S12, LR-S13), is BLOCKED until the owner rules.
+
+The fact. The live Drivers extraction reads NavHeader.last outside the
+lease. MainCanonicalRuntime_PrepareV4 calls
+MainCanonicalDrivers_ExtractCompleteFromPreludeInPlace
+(MainCanonicalRuntime.c:296), which calls
+MainCanonicalDrivers_ExtractMetaAndBot for every present driver
+(game/MAIN/MainCanonicalDrivers.c:953-954), which calls
+MainCanonicalDrivers_BotNavIndex for every bot (:834). BotNavIndex reads
+sourceData->NavPath_ptrHeader, gGT->level1->LevNavTable, and the NavFrame
+array (:720-725) and dereferences header->last (:726). A TWO_CAB race has
+four bots (section 2.5), so the live projection would make this read on
+every race tick. It contradicts
+MainCanonicalTopologyLeaseAuthority.h:72-75, which calls ObservePostInit
+"the sole API that observes NavHeader.last". The CTR_INTERNAL roster
+proof already makes the same read live (MainArcadeRosterProof.c:579):
+that is a precedent, not a ruling. What
+is not in question: the MainCanonicalTopology context the extraction
+validates is not the lease (it reads the level's mesh and quad-block
+array, MainCanonicalTopology.c:57-64, and the runtime may not name the
+lease, tests/main_canonical_runtime_isolation_test.cmake:18-47), and the
+unavailable TOPOLOGY summary (LR-10) is sound either way.
+
+The options:
+
+- (a) The owner rules that MainCanonicalDrivers_BotNavIndex's read is a
+  validation-only read of a driver's own nav pointer, not an acquire,
+  activate, capture, or publish of the topology lease. It checks that the
+  bot's botNavFrame lies inside its own path's frame array and turns it
+  into an index; it copies no topology fact out. The design is kept, and
+  LR-S4 also:
+  - corrects the "sole API" comment
+    (MainCanonicalTopologyLeaseAuthority.h:72-75) and the runtime's
+    comments (MainCanonicalRuntime.h:137-140,
+    MainCanonicalRuntime.c:309-311) to name both readers;
+  - adds an isolation pin that the only readers of a NavHeader's last
+    among the first-party game/MAIN/MainCanonical* and
+    game/MAIN/MainArcade* sources are
+    MainCanonicalTopologyLease_ObservePostInit
+    (MainCanonicalTopologyLeaseAuthority.c:190, :196) and
+    MainCanonicalDrivers_BotNavIndex (MainCanonicalDrivers.c:726). The
+    retail bot code's own reads (for example game/BOTS.c:643) are
+    simulation and outside the pin, and the layout contract's
+    offsetof(struct NavHeader, last) assert
+    (MainCanonicalTopologyLayoutContract.h:108) is not a read. LR-S4
+    settles the mechanics; one workable form checks every function body
+    in those .c files that names struct NavHeader and allows ->last only
+    in those two.
+- (b) Any NavHeader.last read is lease-only. Then the Drivers domain
+  cannot go live in Task 8 unless its projection leaves out the bot nav
+  index: a V4 path that never calls BotNavIndex, with the roster proof's
+  precedent read ruled on as well. That loses desync coverage. A
+  divergence in a bot's botNavFrame (its place on its nav path) is no
+  longer compared directly; it shows only later, through the bot's
+  position, velocity, and estimate fields in DRIVERS, so the report names
+  a later frame. The projector also stops proving that each bot's nav
+  pointer lies inside its path. Whether an omitted index fits the
+  unchanged V4 schema (section 5) is itself unproven. This is a design
+  change: LR-10, LR-S4, and the roster proof's V4 lines would be
+  re-planned, and the plan returns for review.
+
+Recommended: (a). It keeps the design and matches the roster proof's
+existing read. But it is the owner's call, not this plan's, and nothing
+in LR-S4 or later that needs live Drivers digests starts until the owner
+has ruled. LR-S5 and LR-S6 do not depend on it.
+
+Either way, main_arcade_race_digest_isolation (LR-S4) must not be able to
+pass while the ruling is broken. Under (a) it carries the reader pin
+above and requires the corrected comments, so it fails on today's tree
+(the "sole API" text). Under (b) it pins that ObservePostInit is the only
+such reader and that the V4 path reaches no BotNavIndex call.
+
 Review changes. The plan review (on befa152a9) changed these defaults:
 
 - LR-11 no longer treats a lead as a desync. A peer digest for a frame
@@ -1167,6 +1399,15 @@ Review changes. The plan review (on befa152a9) changed these defaults:
   frameTimer_MainFrame_ResetDB.
 - Section 6 splits the drive glue, renumbers the slices, groups them
   explicitly, and adds the missing isolation tests.
+
+The re-review (on bbc6c55c7) added LR-17, the owner's still-open ruling
+on the Drivers extraction's NavHeader.last read, which blocks LR-S4 and
+the live-digest slices, corrected the claims that the live V4 path never
+reads NavHeader.last, and tightened LR-11's window bound and LR-S5's
+tests, the same-tick surfacing of a divergence latched at record (LR-3,
+LR-9, LR-13, LR-S5, LR-S8, LR-S9), LR-14's drop tests and rematch timing,
+LR-16's restart-point read, LR-10's runtime lifecycle, LR-12's
+finish-frame desync row, and LR-S2's review marker.
 
 ### 4.1 Per-tick simulation inputs
 
@@ -1239,9 +1480,13 @@ cabinet-local (docs/REPLAYS.md, render-scale sweep).
   or canonical state, and no retire hook on LOAD_Hub_ReadFile. The live V4
   path uses the MainCanonicalTopology context only, for the drivers
   extraction, and supplies the unavailable TOPOLOGY summary: no topology
-  fact reader, no NavHeader.last, and no lease API (LR-10). The runtime's
-  lease and replay bans (tests/main_canonical_runtime_isolation_test.cmake:19-47)
-  stay.
+  fact reader and no lease API (LR-10). It does read NavHeader.last: the
+  drivers extraction's MainCanonicalDrivers_BotNavIndex dereferences
+  header->last for every bot (game/MAIN/MainCanonicalDrivers.c:726,
+  reached from MainCanonicalRuntime.c:296 through :953-954 and :834).
+  Whether that read is allowed is the owner's ruling, LR-17, and LR-S4
+  is blocked until it is made. The runtime's lease and replay bans
+  (tests/main_canonical_runtime_isolation_test.cmake:18-47) stay.
 - No change to the canonical-state schema, the replay format, the bundle,
   the handshake, NativeMatchConfigV1, or the launch record. Three reviewed
   changes land below that level:
@@ -1263,7 +1508,11 @@ cabinet-local (docs/REPLAYS.md, render-scale sweep).
     step), and only the hold module calls it (LR-S2);
   - a new tests/main_arcade_race_digest_isolation_test.cmake: the digest
     module is read-only (const game state only) and lease-free (no lease,
-    topology fact reader, NavHeader, replay, or MainMain token) (LR-S4);
+    topology fact reader, NavHeader, ptr_restart_points, replay, or
+    MainMain token), and it carries the LR-17 pin for the owner's ruling,
+    so it cannot pass while that rule is broken (under (a): the only
+    NavHeader last readers are ObservePostInit and BotNavIndex, and the
+    corrected comments say so) (LR-S4);
   - updates to the pacing, runtime, hook, race setup, peer link, and
     sound-identity isolation tests.
 - No heap. Portable C17 with compiler extensions off.
@@ -1299,15 +1548,23 @@ or the proof changes, from a clean tree (RACE_LAUNCH risk 7):
   recorded PASS (LR-S13).
 - Run 6: LR-S14, docs only.
 
+LR-S4 is BLOCKED until the owner rules on LR-17, and so are LR-S10,
+LR-S12, and LR-S13, which consume its live digests. Run 2's LR-S5 and
+LR-S6 do not depend on the ruling.
+
 ### LR-S1 -- this document
 
 Status: done. docs/LOCKSTEP_RACE_MILESTONE.md and the Task 8 pointer in
 docs/GAME_LOOP_UI_MILESTONE.md. The plan review is closed in the commit
-after befa152a9 (section 4, "Review changes").
+after befa152a9 (section 4, "Review changes"). The re-review of
+bbc6c55c7 is closed in the commit after it, except LR-17, which waits
+for the owner.
 
 ### LR-S2 -- spikes: the hold and the autopilot finish
 
-Status: planned. Internal only. Run 1.
+Status: planned. Internal only. Review required (it introduces the hold
+module, MainArcadeRaceHold, and the host-local platform wait, both of
+which later ship). Run 1.
 
 Plan: two spikes on the roster proof, which already runs a real race on
 installed pads under fixed pacing.
@@ -1376,18 +1633,25 @@ Tests:
 
 ### LR-S4 -- live V4 projection
 
-Status: planned. Review required (canonical state, the runtime's
-authorization). This is the slice docs/GAME_LOOP_UI_MILESTONE.md Task 8
-points to. Run 2.
+Status: planned, BLOCKED on the owner's LR-17 ruling. Review required
+(canonical state, the runtime's authorization). This is the slice
+docs/GAME_LOOP_UI_MILESTONE.md Task 8 points to. Run 2.
 
-Plan: LR-10.
+Plan: LR-10, and LR-17 as the owner rules it.
 
 - game/MAIN/MainArcadeRaceDigest.{c,h}, in the unity chain.
+- The per-tick runtime lifecycle of LR-10: BeginFrame, PrepareV4,
+  ViewV4, ReleaseV4.
 - The PrepareV4 request carries the bank.
 - The unavailable TOPOLOGY summary on every tick; no topology reader.
 - The world extractors are linked into ctr_native.
 - The race-relative control base is captured, and the runtime reset, on
   race tick 0.
+- Under ruling (a): the corrected "sole API" comment
+  (MainCanonicalTopologyLeaseAuthority.h:72-75) and runtime comments
+  (MainCanonicalRuntime.h:137-140, MainCanonicalRuntime.c:309-311), and
+  the NavHeader last reader pin. Under ruling (b): the re-planned Drivers
+  projection instead, after its own review.
 
 The roster proof also projects V4 each proof tick, through
 MainArcadeRaceDigest, and logs its combined and domain digests (report
@@ -1401,7 +1665,9 @@ Tests:
 - main_canonical_runtime_isolation: one live caller file,
   MainArcadeRaceDigest.c, still lease-, replay-, and MainMain-free. Its
   callers are the roster proof now and the race caller from LR-S10.
-- main_arcade_race_digest_isolation (section 5).
+- main_arcade_race_digest_isolation (section 5), including the LR-17 pin
+  and the ptr_restart_points ban (LR-16). Under (a) it must fail on the
+  tree before this slice, whose lease header still says "sole API".
 - main_canonical_runtime_stack_budget_v4 still holds.
 - A new main_arcade_race_digest_unit: the race-relative control
   projection, the unavailable topology summary, and a clean race 2 after
@@ -1420,22 +1686,49 @@ Plan: LR-11's park, in platform/native_lockstep_session.{c,h}:
   frame, sender, domain and combined digests);
 - AcceptBundle parks an ACCEPTED record whose verified frame is after the
   last recorded frame r and at most r + D (none while nothing is
-  recorded), and compares the rest on arrival as today;
+  recorded), and compares frames <= r on arrival as today;
 - RecordLocalDigests compares a parked entry for the frame it records
-  and latches the same divergence the on-arrival path would;
+  and latches the same divergence the on-arrival path would. A record
+  whose parked comparison diverges still records the frame and returns
+  1; the divergence is a latch, not a failed record, and the caller reads
+  it from the session mode (the drive does so after every record, LR-9);
 - a verified frame after r + D latches FAULT with the appended local
-  cause NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD;
+  cause NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD. Its fault report holds the
+  bundle's frameIndex and senderSlot, as every decoded fault does, and
+  detail holds the number of frames recorded locally (r + 1; 0 while
+  nothing is recorded), the bound the digest broke;
 - a retired frame, or a parked frame that recording skips, stays
   FRAME_UNAVAILABLE.
 
+The session header comments that this contradicts are updated in the
+same slice (include/platform/native_lockstep_session.h):
+
+- :64-71, FRAME_UNAVAILABLE: "never simulated" becomes a parked frame
+  that recording skipped; a frame never simulated beyond the bound is now
+  the VERIFY_AHEAD fault;
+- :245-283, AcceptBundle: an ACCEPTED record is compared on arrival only
+  for frames <= r, parked for r + 1 to r + D, and a FAULT beyond that;
+- :215-224, RecordLocalDigests: it can now latch a divergence, returns 1
+  when it does, and the caller must read the mode;
+- the fault report comment (:102-110) documents VERIFY_AHEAD's detail.
+
 Tests, in native_lockstep_session_unit:
 
-- for every D from 1 to 6, a peer leading by 1 to D + 1 ticks, parking 0
-  to D digests, compares clean at each record;
+- for every D from 1 to 3, a peer leading by 1 to D + 1 ticks, parking 0
+  to D digests, compares clean at each record, with the receiver's
+  consumed frame both at r and at r + 1;
+- for every D from 4 to 6, which the session accepts and the drive
+  refuses, only the leads the window admits: up to 7 - D parked digests
+  after the take of r and 6 - D before it compare clean, and the next
+  lead's bundle is asserted WINDOW_OVERRUN (LR-11);
 - the same leads with one digest flipped latch DIVERGED at the record of
-  that frame, with the frame, sender, and masks the on-arrival path gives;
+  that frame, with the frame, sender, and masks the on-arrival path gives,
+  and RecordLocalDigests returns 1 with the mode DIVERGED;
 - a digest for frame r + D + 1 (a forged bundle the window accepts)
-  latches FAULT VERIFY_AHEAD;
+  latches FAULT VERIFY_AHEAD with the detail above. The test pins D and
+  the consumed frame: D = 2 at consumed frame r, and D = 3 at consumed
+  frame r + 1 (after the take of r). D = 3 at consumed frame r is a
+  WINDOW_OVERRUN instead, and so asserted;
 - TestFrameUnavailableNeverSimulated
   (tests/native_lockstep_session_test.c:449) becomes that FAULT case, and
   TestFrameUnavailableRetired stays;
@@ -1492,6 +1785,8 @@ ctr_native_arcade_race_drive. It covers:
 - pad mapping by role, and normalization;
 - hold accounting in periods, the start grace, and the hold grace;
 - OnTakeResult first, and REJECTED as a local failure only while RUNNING;
+- a record that leaves the session non-RUNNING: OnTakeResult at once,
+  then END with nothing sent or taken (LR-9);
 - finish detection, the linger, the race-length bound (with an internal
   override that lowers it), and end mapping.
 
@@ -1503,6 +1798,9 @@ through the real session library in memory. It covers:
 - a lead of 1 to D + 1 ticks with no divergence;
 - a peer drop and a forced desync on both sides, and a REJECTED take
   after each classified as the outcome, not a local failure;
+- a parked digest that mismatches at the record: END_DESYNC on that tick,
+  and nothing sent afterwards, neither a new bundle nor a resend nor the
+  finish linger;
 - WINDOW_OVERRUN impossible at D = 2 and refused at D = 4;
 - no send after the linger or off RESULTS.
 
@@ -1519,21 +1817,29 @@ Plan: LR-1, LR-3, LR-9 host work.
 - The glue over the netplay adapter: the kept-bundle ring, OnTakeResult,
   ReportRaceFailure, and the one new adapter call the hold uses for the
   launch intake and linger (LR-9).
-- The peer-link verbatim bundle send.
+- The peer-link verbatim bundle send. It sends only while both the link
+  mode and the session mode are RUNNING (LR-3).
+- The glue calls OnTakeResult right after a record that leaves the
+  session non-RUNNING, as the drive core directs (LR-9).
 - Nothing in game/ calls the new API yet.
 
 Tests:
 
 - native_arcade_link_host_unit: step, hold, and end over a loopback
-  pair, the hold's launch-linger send, and the take classification.
-- native_lockstep_peer_link_unit, for the new send.
+  pair, the hold's launch-linger send, and the take classification; and
+  a parked digest that mismatches inside RecordLocalDigests: the outcome
+  is END_DESYNC on that tick, and the peer receives nothing from this
+  side afterwards.
+- native_lockstep_peer_link_unit, for the new send, including a refused
+  send when the session is DIVERGED while the link mode is still RUNNING.
 - native_arcade_netplay_unit, for the new adapter call.
 - native_arcade_link_host_isolation: the include allow-list is unchanged.
 
 ### LR-S10 -- the caller: the rehearsal's replacement
 
-Status: planned. Review required (simulation identity, the launch and race
-path). Run 4.
+Status: planned, BLOCKED on the owner's LR-17 ruling (it projects through
+LR-S4). Review required (simulation identity, the launch and race path).
+Run 4.
 
 Plan:
 
@@ -1555,7 +1861,8 @@ Tests:
 
 - main_arcade_race_launch_core_unit and its isolation.
 - main_arcade_link_hook_isolation: the install only through the mapping,
-  and the dormant return.
+  the dormant return, and ptr_restart_points named in the race caller
+  only inside its CTR_INTERNAL block (LR-16).
 - main_canonical_runtime_isolation: the race caller reaches the runtime
   only through MainArcadeRaceDigest.
 - arcade_sound_identity_isolation, which lists the new files.
@@ -1573,7 +1880,8 @@ and are never committed.
 
 ### LR-S12 -- failure wiring to RESULTS
 
-Status: planned. Review required. Run 5.
+Status: planned, BLOCKED on the owner's LR-17 ruling (it needs live Drivers
+digests). Review required. Run 5.
 
 Plan: LR-11 to LR-14 end to end:
 
@@ -1590,7 +1898,8 @@ start wait whose peer commits only from our lingering launch records.
 
 ### LR-S13 -- one-machine race gate
 
-Status: planned. Review required. Run 5.
+Status: planned, BLOCKED on the owner's LR-17 ruling (it compares live
+Drivers digests). Review required. Run 5.
 
 Plan: LR-16.
 
@@ -1693,6 +2002,9 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
     The ring capacity is frozen at 8 by tests/native_lockstep_isolation_test.cmake,
     and raising it is out of scope.
 16. Open for the owner:
+    - The lease ruling on the bot nav-index read, LR-17: (a) or (b). It
+      blocks LR-S4 and the slices after it that need live Drivers
+      digests (risk 19).
     - Should the race-length bound end as RACE COMPLETE (LR-12) or as
       another reason? Another reason would change the flow.
     - Does RESULTS show standings, as the GAME_LOOP_UI Task 8 sketch said?
@@ -1720,3 +2032,14 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
     MainInit.c:247). It would change the HUD's rand() draw count
     (section 4.1), which is harmless only while nothing in the
     simulation reads psxRandSeed; the follow-up re-checks that.
+19. The bot nav-index read and the lease rule (LR-17, OWNER DECISION
+    REQUIRED). The live Drivers extraction dereferences NavHeader.last for
+    every bot (MainCanonicalDrivers.c:726), against the lease authority's
+    "sole API" comment (MainCanonicalTopologyLeaseAuthority.h:72-75), and
+    the roster proof already does so live (MainArcadeRosterProof.c:579).
+    AGENTS.md makes the lease the owner's call. Until the owner rules,
+    LR-S4, LR-S10, LR-S12, and LR-S13 are blocked, and with them the live
+    gate and Task 8's done criteria 2, 3, and 8. Ruling (a), the
+    recommended one, costs a comment fix and an isolation pin. Ruling (b)
+    re-plans the Drivers projection without the bot nav index and loses
+    direct detection of a bot's nav-path divergence.
