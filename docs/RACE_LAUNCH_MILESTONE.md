@@ -688,7 +688,20 @@ NativeMatchConfigV1 and the allow-list is unchanged.
 
 ### RL-S7 -- race launch decision core
 
-Status: planned. Pure, in game/MAIN, a standalone library: launch, the
+Status: done; review required. game/MAIN/MainArcadeRaceLaunchCore.{c,h},
+library ctr_native_arcade_race_launch_core (links nothing, not yet linked
+into ctr_native, never unity-included), with ctests
+main_arcade_race_launch_core_unit (tests/main_arcade_race_launch_core_test.c)
+and main_arcade_race_launch_core_isolation (purity, the section 5 ban, the
+three bounds). Arm/Launch results feed back through a second call on the
+same frame (MainArcadeRaceLaunchCore_LaunchResult). Interpretations: an Arm
+or Launch failure at the title, and a WINDOW_TIMEOUT, request no return
+load (nothing left the title); the pad clear counts from the return step's
+frame, so a return deferred behind a race-track load keeps the neutral pads
+until the return load; race tick 0 is strictly after the frame VALIDATED is
+first seen.
+
+Plan: Pure, in game/MAIN, a standalone library: launch, the
 bounded waits, race tick 0, the rehearsal, return to the main menu, the
 Disarm point, failure mapping, and two races in a row (RL-8..RL-11).
 Tests: a core unit test with the return and pad cases (install from the

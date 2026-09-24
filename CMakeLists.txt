@@ -554,6 +554,19 @@ set_target_properties(ctr_native_arcade_race_setup_core PROPERTIES
 target_include_directories(ctr_native_arcade_race_setup_core PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 target_link_libraries(ctr_native_arcade_race_setup_core PUBLIC ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts)
 
+# Race launch decision core (docs/RACE_LAUNCH_MILESTONE.md RL-8..RL-11, slice
+# RL-S7): the per-frame launch, bounded-wait, race tick 0, rehearsal, return,
+# pad, Disarm, and failure decisions of the live race caller, pure, with
+# caller-owned state. Never unity-included; the RL-S8b caller links it. It
+# links nothing.
+add_library(ctr_native_arcade_race_launch_core STATIC game/MAIN/MainArcadeRaceLaunchCore.c)
+set_target_properties(ctr_native_arcade_race_launch_core PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_race_launch_core PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+
 # Internal live roster proof host glue (docs/ROSTER_MILESTONE.md section 3.4,
 # R-5b): the --arcade-roster-proof options, the proof config (the fixture
 # resolved through match select), a singleton, the report writer, and the
@@ -1629,6 +1642,21 @@ if(BUILD_TESTING)
 
     add_test(NAME main_arcade_race_setup_core_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_setup_core_isolation_test.cmake")
+
+    # Race launch decision core (RL-S7): every RL-8..RL-11 frame rule, the
+    # bounds on and off by one, and two races in a row; the isolation test
+    # keeps it pure and applies the section 5 token ban.
+    add_executable(main_arcade_race_launch_core_test tests/main_arcade_race_launch_core_test.c)
+    set_target_properties(main_arcade_race_launch_core_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(main_arcade_race_launch_core_test PRIVATE ctr_native_arcade_race_launch_core)
+    add_test(NAME main_arcade_race_launch_core_unit COMMAND $<TARGET_FILE:main_arcade_race_launch_core_test>)
+
+    add_test(NAME main_arcade_race_launch_core_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_launch_core_isolation_test.cmake")
 
     # R-5a2/R-5c: MainCanonicalDrivers_ExtractRosterInput and its pre-race
     # variant are named only by their own module, the live race setup adapter
