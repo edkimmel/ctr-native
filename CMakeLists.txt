@@ -1681,6 +1681,12 @@ if(BUILD_TESTING)
     add_test(NAME main_arcade_race_setup_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_setup_isolation_test.cmake")
 
+    # Pause-menu vibration guard (RL-S9, RL-13): the DualShock row's gameMode1
+    # toggle in game/MAIN/MainFreeze.c is skipped while the race setup is not
+    # IDLE, inside CTR_NATIVE; the analog-controller row stays retail.
+    add_test(NAME main_freeze_vibration_guard_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_freeze_vibration_guard_isolation_test.cmake")
+
     add_executable(native_canonical_state_test tests/native_canonical_state_test.c)
     set_target_properties(native_canonical_state_test PROPERTIES
         C_STANDARD 17

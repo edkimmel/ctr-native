@@ -1,5 +1,9 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeRaceSetup.h"
+#endif
+
 
 void MainFreeze_ConfigDrawNPC105(s16 startX, s16 startY, s16 radius, int angleStep, s16 angle, char *color, u32 *otMem, struct PrimMem *primMem)
 {
@@ -515,7 +519,16 @@ static b32 PROCESSINPUTS_MainFreeze_MenuPtrOptions(struct RectMenu *menu, GAMEPA
 				{
 					// selecting dualshock row
 					// toggle gamepad vibration
-					gGT->gameMode1 ^= data.gGT_gameMode1_VibPerPlayer[gamepad->gamepadId[gamepadRow]];
+#if defined(CTR_NATIVE)
+					// Native fix (RL-13, docs/RACE_LAUNCH_MILESTONE.md): while a linked
+					// race setup is not IDLE, gameMode1 must not change under the race,
+					// so the toggle is skipped. The confirm sound above and the analog
+					// controller row below stay retail.
+					if (MainArcadeRaceSetup_Status() == MAIN_ARCADE_RACE_SETUP_IDLE)
+#endif
+					{
+						gGT->gameMode1 ^= data.gGT_gameMode1_VibPerPlayer[gamepad->gamepadId[gamepadRow]];
+					}
 				}
 				else
 				{
