@@ -218,7 +218,8 @@
  * memory card), so a cabinet's saved rumble preference does not apply to a
  * linked race; boolDemoMode pinned to 0.
  * ---------------------------------------------------------------------------
- * Owner decisions (OC-2; docs/ROSTER_MILESTONE.md section 4 takes them over):
+ * Defaults pending owner review (OC-2; docs/ROSTER_MILESTONE.md section 4
+ * takes them over):
  *
  * RS-21: race setup plan encoding v2, tag "CTRN arcade race setup plan v2"
  * (30 bytes, the same length as v1), for BOTH profiles. v2 adds the uint32

@@ -172,12 +172,13 @@ struct NativeCanonicalStateV1;
  *   NATIVE_ARCADE_ROSTER_PROOF_NONCE_MIX (CAB2) (NativeMatchSelect_Resolve,
  *   then NativeMatchSelect_BuildConfig). The seed reaches the config only
  *   through the resolved masterSeed.
- * - RS-23 (owner decision), ONE_CAB: match select stays TWO_CAB-only and is
- *   not used. The arcade-link fixture is built for the identity, and the
- *   config takes from it the build and content identity, trackID, lapCount,
- *   the tick rate, the CAB1 character, and the bots' difficulty (the
- *   fixture's first BOT slot). NativeMatchConfigV1_InitArcadeOneCab gives the
- *   ONE_CAB roles and lifecycles; slot 0 (CAB1_HUMAN) holds the CAB1
+ * - RS-23 (default pending owner review), ONE_CAB: match select stays
+ *   TWO_CAB-only and is not used. The arcade-link fixture is built for the
+ *   identity, and the config takes from it the build and content identity,
+ *   trackID, lapCount, the tick rate, the CAB1 character, and the bots'
+ *   difficulty (the fixture's first BOT slot).
+ *   NativeMatchConfigV1_InitArcadeOneCab gives the ONE_CAB roles and
+ *   lifecycles; slot 0 (CAB1_HUMAN) holds the CAB1
  *   character at difficulty 0, and slots 1..7 (BOT) hold
  *   NativeArcadeBotRules_ExpectedBots1P(CAB1 character), in ascending slot
  *   order, at the fixture's bot difficulty; masterSeed is the seed option

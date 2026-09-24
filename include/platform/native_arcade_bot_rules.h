@@ -11,9 +11,9 @@
 
 /*
  * Arcade bot rules v1 (docs/ROSTER_MILESTONE.md sections 3.1 and 3.3, with
- * the defaults RS-1..RS-9 of section 4 and the owner decisions RS-19 and
- * RS-20). Defines, versions, and digests the
- * native rule choices an arcade single race is built from, so that
+ * the defaults RS-1..RS-9 of section 4 and the defaults pending owner review
+ * RS-19 and RS-20). Defines, versions, and digests the native rule choices
+ * an arcade single race is built from, so that
  * NativeMatchConfigV1.botRulesDigest names them. Two profiles are supported
  * (RS-1, decided by the owner: both ARCADE_TWO_CAB and ARCADE_ONE_CAB), each
  * with its own rules, canonical encoding, and digest (RS-19, below).
@@ -56,13 +56,13 @@
  *   reserved and undrawn in v1. MapRetailSeedsV1 and DeriveRetailSeedsV1
  *   serve both profiles unchanged.
  *
- * RS-19 (owner decision): each profile has its own canonical encoding and
- * digest, and a config's botRulesDigest must equal the digest of its own
- * profile's rules (DigestForProfileV1). The TWO_CAB encoding (V1 below, 111
- * bytes, tag "CTRN arcade bot rules v1") and DigestV1 are unchanged byte for
- * byte, because that digest is carried by the arcade-link fixture, match
- * select, and the netplay config paths; ONE_CAB gets the separate 1P V1
- * encoding and Digest1PV1.
+ * RS-19 (default pending owner review): each profile has its own canonical
+ * encoding and digest, and a config's botRulesDigest must equal the digest
+ * of its own profile's rules (DigestForProfileV1). The TWO_CAB encoding (V1
+ * below, 111 bytes, tag "CTRN arcade bot rules v1") and DigestV1 are
+ * unchanged byte for byte, because that digest is carried by the arcade-link
+ * fixture, match select, and the netplay config paths; ONE_CAB gets the
+ * separate 1P V1 encoding and Digest1PV1.
  *
  * tests/native_arcade_bot_rules_isolation_test.cmake checks that the
  * difficulty table mirrors game/230/D230.c, that the advRng fallback
