@@ -747,7 +747,18 @@ ban.
 
 ### RL-S8a -- race frames ticked, not owned
 
-Status: planned. Review required. Needs RL-S6 (the RACING input reads
+Status: done; review required. MainArcadeLinkPolicyInput gains hostRacing
+(offset 26) and MainArcadeLinkPolicyOutput gains tickOnly (offset 10), each
+in the first reserved byte (sizes 28 and 12 unchanged); in LINK mode with
+hostRacing nonzero and not the idle main-menu level (levelIsMainMenu 0 or
+loading), Decide sets tickOnly and heldButtons only, and
+MainArcadeLink_Frame (hostRacing gathered from NativeArcadeLinkHost_Racing
+before the host tick) then runs MainArcadeLink_LinkTick alone and returns 0,
+right after the decision. Tests: TestLayout and TestRaceFramesTickOnly in
+tests/main_arcade_link_policy_test.c, and section 5b of
+tests/main_arcade_link_hook_isolation_test.cmake.
+
+Plan: Needs RL-S6 (the RACING input reads
 the host racing query; the host's link screen is private today,
 platform/native_arcade_link_host.c:159). The RL-8 policy change: the
 RACING input and the tickOnly output of MainArcadeLinkPolicy, and

@@ -30,7 +30,10 @@
 # (section 3.1) the hook may also include MAIN/MainArcadeLinkSound.h, and the
 # drawer takes the host mode and the policy's enterPressed for the sound
 # decision; the sound rules, including the one retail sound call, are in
-# main_arcade_link_sound_isolation_test.cmake.
+# main_arcade_link_sound_isolation_test.cmake. Since RL-S8a
+# (docs/RACE_LAUNCH_MILESTONE.md RL-8) the gather reads the host racing query
+# and MainArcadeLink_Frame's tickOnly branch, right after the decision, only
+# ticks the link and returns 0.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -267,6 +270,56 @@ endif()
 string(SUBSTRING "${frame_body}" ${off_at} 200 off_block)
 if(NOT off_block MATCHES "^if \\(NativeArcadeLinkHost_Mode\\(\\) == \\(uint32_t\\)NATIVE_ARCADE_LINK_HOST_MODE_OFF\\)[ \t\r\n]*\\{[ \t\r\n]*return 0;")
     message(FATAL_ERROR "arcade link hook isolation: the host-mode OFF check in MainArcadeLink_Frame must return 0 immediately")
+endif()
+
+# 5b. Race frames are ticked, not owned (docs/RACE_LAUNCH_MILESTONE.md RL-8,
+#     RL-S8a). The gather reads the host racing query into the policy's
+#     hostRacing (the only NativeArcadeLinkHost_Racing call, so it is read
+#     where the gather runs, before this frame's host tick). In
+#     MainArcadeLink_Frame the tickOnly branch comes after the host-mode OFF
+#     check, the gather, and the decision, and before any box restore, tap
+#     clear, box hide, host tick of an owned frame, demo countdown reset, or
+#     draw; its block is exactly the link tick and return 0.
+ctr_find_block("${hook_source_path}" "${hook_code}"
+    "static void MainArcadeLink_Gather(" gather_begin gather_end)
+math(EXPR gather_length "${gather_end} - ${gather_begin} + 1")
+string(SUBSTRING "${hook_code}" ${gather_begin} ${gather_length} gather_block)
+ctr_require_literal("${hook_source_path} (MainArcadeLink_Gather)" "${gather_block}"
+    "input->hostRacing = (NativeArcadeLinkHost_Racing() != 0u) ? 1u : 0u;")
+string(REGEX MATCHALL "NativeArcadeLinkHost_Racing\\(" racing_calls "${hook_code}")
+list(LENGTH racing_calls racing_call_count)
+if(NOT racing_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call NativeArcadeLinkHost_Racing exactly once, in MainArcadeLink_Gather (found ${racing_call_count})")
+endif()
+ctr_find_block("${hook_source_path}" "${hook_code}" "${frame_signature}" frame_begin frame_end)
+math(EXPR frame_length "${frame_end} - ${frame_begin} + 1")
+string(SUBSTRING "${hook_code}" ${frame_begin} ${frame_length} frame_block)
+set(tick_only_check "if (output.tickOnly != 0u)")
+ctr_require_order("${hook_source_path} (MainArcadeLink_Frame)" "${frame_block}"
+    "${off_check}" "MainArcadeLink_Gather(gGT, gGS, &input);" "MainArcadeLinkPolicy_Decide(&input, &output)"
+    "${tick_only_check}" "if (output.restoreBox != 0u)" "MainArcadeLink_RestoreMainMenu();"
+    "MainArcadeLink_ClearTaps(gGS);" "MainArcadeLink_HideMainMenu();" "MainArcadeLink_LinkTick(gGT, &output);"
+    "gGT->demoCountdownTimer = TITLE_DEMO_IDLE_FRAMES;" "MainArcadeLink_BuildAndDraw(")
+string(FIND "${frame_block}" "${tick_only_check}" tick_only_at)
+string(SUBSTRING "${frame_block}" 0 ${tick_only_at} before_tick_only)
+foreach(term IN ITEMS "MainArcadeLink_RestoreMainMenu" "MainArcadeLink_ClearTaps" "MainArcadeLink_HideMainMenu"
+        "MainArcadeLink_LinkTick" "NativeArcadeLinkHost_Tick" "NativeArcadeLinkHost_Enter" "demoCountdownTimer"
+        "MainArcadeLink_BuildAndDraw" "buttonsTapped" "anyoneTapped" "INVISIBLE")
+    string(FIND "${before_tick_only}" "${term}" early_at)
+    if(NOT early_at EQUAL -1)
+        message(FATAL_ERROR "arcade link hook isolation: '${term}' runs before the tickOnly branch in MainArcadeLink_Frame")
+    endif()
+endforeach()
+string(REGEX MATCHALL "output\\.tickOnly" tick_only_reads "${hook_code}")
+list(LENGTH tick_only_reads tick_only_read_count)
+if(NOT tick_only_read_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must read output.tickOnly exactly once, in the MainArcadeLink_Frame branch (found ${tick_only_read_count})")
+endif()
+ctr_find_block("${hook_source_path} (MainArcadeLink_Frame)" "${frame_block}" "${tick_only_check}" tick_begin tick_end)
+math(EXPR tick_length "${tick_end} - ${tick_begin} + 1")
+string(SUBSTRING "${frame_block}" ${tick_begin} ${tick_length} tick_block)
+if(NOT tick_block MATCHES "^\\{[ \t\r\n]*MainArcadeLink_LinkTick\\(gGT, &output\\);[ \t\r\n]*return 0;[ \t\r\n]*\\}$")
+    message(FATAL_ERROR "arcade link hook isolation: the tickOnly branch in MainArcadeLink_Frame must run MainArcadeLink_LinkTick(gGT, &output) and return 0, and nothing else (found '${tick_block}')")
 endif()
 
 # 6. The MainFrame_RenderFrame.c call, its input clear, and the prototype

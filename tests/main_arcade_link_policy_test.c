@@ -1,5 +1,6 @@
 #include "MAIN/MainArcadeLinkPolicy.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -66,15 +67,57 @@ static int AllZero(const void *bytes, size_t size)
 static int Owned(const struct MainArcadeLinkPolicyOutput *output)
 {
 	return (output->owns == 1u) && (output->hideBox == 1u) && (output->clearTaps == 1u) && (output->restoreBox == 0u) &&
-		(output->reserved[0] == 0u) && (output->reserved[1] == 0u);
+		(output->tickOnly == 0u) && (output->reserved[0] == 0u);
 }
 
 /* A frame left to retail: nothing but the held mapping and a restore. */
 static int NotOwned(const struct MainArcadeLinkPolicyOutput *output, uint8_t restore)
 {
 	return (output->owns == 0u) && (output->hideBox == 0u) && (output->clearTaps == 0u) && (output->enterPressed == 0u) &&
-		(output->resetDemoCountdown == 0u) && (output->restoreBox == restore) && (output->reserved[0] == 0u) &&
-		(output->reserved[1] == 0u);
+		(output->resetDemoCountdown == 0u) && (output->restoreBox == restore) && (output->tickOnly == 0u) &&
+		(output->reserved[0] == 0u);
+}
+
+/* A race frame (RL-8): the host tick with the held buttons, nothing else. */
+static int TickOnly(const struct MainArcadeLinkPolicyOutput *output, uint32_t held)
+{
+	return (output->tickOnly == 1u) && (output->heldButtons == held) && (output->owns == 0u) &&
+		(output->enterPressed == 0u) && (output->hideBox == 0u) && (output->restoreBox == 0u) &&
+		(output->resetDemoCountdown == 0u) && (output->clearTaps == 0u) && (output->reserved[0] == 0u);
+}
+
+/* The struct layouts: hostRacing and tickOnly took the first reserved byte
+ * of their structs, so every other offset and both sizes are unchanged. */
+static int TestLayout(void)
+{
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, hostMode) == 0u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, titleState) == 4u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, introFrame) == 8u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, rawHeld) == 12u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, prevRawHeld) == 16u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, hostScreenActive) == 20u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, levelIsMainMenu) == 21u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, loading) == 22u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, mainMenuBoxActive) == 23u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, submenuOpen) == 24u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, boxHidden) == 25u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, hostRacing) == 26u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyInput, reserved) == 27u);
+	CHECK(sizeof(((struct MainArcadeLinkPolicyInput *)NULL)->reserved) == 1u);
+	CHECK(sizeof(struct MainArcadeLinkPolicyInput) == 28u);
+
+	CHECK(offsetof(struct MainArcadeLinkPolicyOutput, heldButtons) == 0u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyOutput, owns) == 4u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyOutput, enterPressed) == 5u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyOutput, hideBox) == 6u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyOutput, restoreBox) == 7u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyOutput, resetDemoCountdown) == 8u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyOutput, clearTaps) == 9u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyOutput, tickOnly) == 10u);
+	CHECK(offsetof(struct MainArcadeLinkPolicyOutput, reserved) == 11u);
+	CHECK(sizeof(((struct MainArcadeLinkPolicyOutput *)NULL)->reserved) == 1u);
+	CHECK(sizeof(struct MainArcadeLinkPolicyOutput) == 12u);
+	return 0;
 }
 
 static int TestNullArguments(void)
@@ -354,6 +397,136 @@ static int TestOutsideTitleWindow(void)
 	return 0;
 }
 
+/* RL-8: race frames are ticked, not owned. In LINK mode with the flow on
+ * RACING, off the idle main-menu level (another level, or any load), the
+ * frame is tickOnly: heldButtons as today and every other output 0. */
+static int TestRaceFramesTickOnly(void)
+{
+	struct MainArcadeLinkPolicyInput input;
+	struct MainArcadeLinkPolicyOutput output;
+	struct MainArcadeLinkPolicyOutput today;
+	const uint32_t rawHeld = RAW_START | RAW_CROSS | MAIN_ARCADE_LINK_POLICY_BTN_LEFT | RAW_L1;
+	const uint32_t held = NATIVE_ARCADE_MENU_BUTTON_START | NATIVE_ARCADE_MENU_BUTTON_CROSS | NATIVE_ARCADE_MENU_BUTTON_LEFT;
+
+	/* On a race level: the RACING screen counts as active in the host, and a
+	 * rising START or CROSS still never enters. */
+	input = TitleInput(MODE_LINK);
+	input.levelIsMainMenu = 0u;
+	input.mainMenuBoxActive = 0u;
+	input.hostScreenActive = 1u;
+	input.hostRacing = 1u;
+	input.rawHeld = rawHeld;
+	input.prevRawHeld = 0u;
+	output = Decide(&input);
+	CHECK(TickOnly(&output, held));
+	CHECK(output.heldButtons == MainArcadeLinkPolicy_MapHeld(rawHeld));
+	input.hostRacing = 0u;
+	today = Decide(&input);
+	CHECK(Owned(&today));
+	CHECK(today.heldButtons == output.heldButtons);
+
+	/* A box the title frames hid stays hidden: no restore on a race frame. */
+	input.hostRacing = 1u;
+	input.boxHidden = 1u;
+	output = Decide(&input);
+	CHECK(TickOnly(&output, held));
+	input.hostScreenActive = 0u;
+	output = Decide(&input);
+	CHECK(TickOnly(&output, held));
+	input.hostRacing = 0u;
+	today = Decide(&input);
+	CHECK(NotOwned(&today, 1u));
+
+	/* The main-menu level while loading (the race-track load staged over
+	 * rendered frames): tickOnly, even with the title window's other facts. */
+	input = TitleInput(MODE_LINK);
+	input.loading = 1u;
+	input.hostScreenActive = 1u;
+	input.hostRacing = 1u;
+	input.rawHeld = rawHeld;
+	output = Decide(&input);
+	CHECK(TickOnly(&output, held));
+	input.hostRacing = 0u;
+	today = Decide(&input);
+	CHECK(Owned(&today));
+	CHECK(today.resetDemoCountdown == 1u);
+
+	/* The idle main-menu level: RACING is owned as today, tickOnly 0. */
+	input = TitleInput(MODE_LINK);
+	input.hostScreenActive = 1u;
+	input.hostRacing = 1u;
+	input.rawHeld = rawHeld;
+	output = Decide(&input);
+	CHECK(Owned(&output));
+	CHECK(output.resetDemoCountdown == 1u);
+	CHECK(output.enterPressed == 0u);
+	CHECK(output.heldButtons == held);
+	input.hostRacing = 0u;
+	today = Decide(&input);
+	CHECK(memcmp(&output, &today, sizeof(output)) == 0);
+
+	/* The full grid: tickOnly exactly when LINK, hostRacing nonzero (2 and
+	 * 0xFF count as 1, like the policy's other flags), and not the idle
+	 * main-menu level; otherwise the output is byte-for-byte today's. */
+	{
+		static const uint32_t modes[] = {MODE_OFF, MODE_LINK, MODE_PREVIEW, 3u, 0xFFFFFFFFu};
+		static const uint8_t racings[] = {0u, 1u, 2u, 0xFFu};
+		static const uint32_t states[] = {T_INTRO, T_IN_MENU, T_EXITING, T_RETURNING};
+
+		for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); m++)
+		{
+			for (size_t r = 0; r < sizeof(racings) / sizeof(racings[0]); r++)
+			{
+				for (size_t s = 0; s < sizeof(states) / sizeof(states[0]); s++)
+				{
+					for (uint32_t flags = 0; flags < 64u; flags++)
+					{
+						int expectTick;
+
+						input = TitleInput(modes[m]);
+						input.titleState = states[s];
+						input.introFrame = ((flags & 32u) != 0u) ? 0 : SKIP_FRAME;
+						input.levelIsMainMenu = (uint8_t)((flags & 1u) == 0u);
+						input.loading = (uint8_t)((flags & 2u) != 0u);
+						input.hostScreenActive = (uint8_t)((flags & 4u) != 0u);
+						input.boxHidden = (uint8_t)((flags & 8u) != 0u);
+						input.mainMenuBoxActive = (uint8_t)((flags & 16u) == 0u);
+						input.rawHeld = rawHeld;
+						input.prevRawHeld = 0u;
+						input.hostRacing = 0u;
+						today = Decide(&input);
+						input.hostRacing = racings[r];
+						output = Decide(&input);
+
+						expectTick = (modes[m] == MODE_LINK) && (racings[r] != 0u) &&
+							((input.levelIsMainMenu == 0u) || (input.loading != 0u));
+						/* hostRacing 0 is today's rule: the title window in LINK
+						 * and PREVIEW, or a LINK screen, on any level or load. */
+						CHECK(today.tickOnly == 0u);
+						CHECK((int)today.owns ==
+							((((modes[m] == MODE_LINK) || (modes[m] == MODE_PREVIEW)) &&
+								 (MainArcadeLinkPolicy_TitleMenuReady(&input) != 0)) ||
+								((modes[m] == MODE_LINK) && (input.hostScreenActive != 0u))));
+						CHECK(today.restoreBox == (uint8_t)((today.owns == 0u) &&
+							((modes[m] == MODE_LINK) || (modes[m] == MODE_PREVIEW)) && (input.boxHidden != 0u)));
+						if (expectTick != 0)
+						{
+							CHECK(TickOnly(&output, today.heldButtons));
+							CHECK(output.heldButtons == held);
+						}
+						else
+						{
+							CHECK(output.tickOnly == 0u);
+							CHECK(memcmp(&output, &today, sizeof(output)) == 0);
+						}
+					}
+				}
+			}
+		}
+	}
+	return 0;
+}
+
 /* LINK attract entry: a rising START or CROSS only. */
 static int TestLinkEnter(void)
 {
@@ -536,6 +709,7 @@ static int TestHeldReported(void)
 
 int main(void)
 {
+	if (TestLayout() != 0) return 1;
 	if (TestNullArguments() != 0) return 1;
 	if (TestMapHeld() != 0) return 1;
 	if (TestOffInert() != 0) return 1;
@@ -544,6 +718,7 @@ int main(void)
 	if (TestNoGapFrame() != 0) return 1;
 	if (TestSubmenuOpen() != 0) return 1;
 	if (TestOutsideTitleWindow() != 0) return 1;
+	if (TestRaceFramesTickOnly() != 0) return 1;
 	if (TestLinkEnter() != 0) return 1;
 	if (TestPreview() != 0) return 1;
 	if (TestRestore() != 0) return 1;

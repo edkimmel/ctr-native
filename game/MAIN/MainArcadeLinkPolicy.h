@@ -28,6 +28,14 @@
  * which a link screen is active, on any level; PREVIEW mode never owns
  * outside the title window.
  *
+ * Race frames are ticked, not owned (docs/RACE_LAUNCH_MILESTONE.md RL-8). In
+ * LINK mode, with the host flow on RACING and the frame not on the idle
+ * main-menu level (another level, or a load in progress), the layer does not
+ * own the frame: it only ticks the host with the held buttons. Nothing else
+ * is touched, so the retail race keeps its pad taps, the box is neither
+ * hidden nor restored, and the demo countdown is left alone. On the idle
+ * main-menu level RACING is owned by the rules above.
+ *
  * Pure: caller-owned output, no heap use, no I/O, no mutable state, and
  * fully deterministic.
  */
@@ -86,7 +94,10 @@ struct MainArcadeLinkPolicyInput
 	uint8_t submenuOpen;
 	/* 0 or 1: the hook has hidden the retail main-menu box */
 	uint8_t boxHidden;
-	uint8_t reserved[2];
+	/* 0 or 1: the host flow is on RACING (LINK only; the host's racing query,
+	 * read before this frame's host tick) */
+	uint8_t hostRacing;
+	uint8_t reserved[1];
 };
 
 struct MainArcadeLinkPolicyOutput
@@ -105,7 +116,10 @@ struct MainArcadeLinkPolicyOutput
 	uint8_t resetDemoCountdown;
 	/* 1: clear every player's per-frame taps before the retail menu code runs */
 	uint8_t clearTaps;
-	uint8_t reserved[2];
+	/* 1: LINK only; a race frame: tick the host with heldButtons, touch nothing
+	 * else, and return 0 (every other output is 0) */
+	uint8_t tickOnly;
+	uint8_t reserved[1];
 };
 
 /* Maps a retail held-button word to NATIVE_ARCADE_MENU_BUTTON_* bits. */
@@ -127,7 +141,13 @@ int MainArcadeLinkPolicy_TitleMenuReady(const struct MainArcadeLinkPolicyInput *
  * nothing, when either pointer is NULL. With host mode OFF, or any unknown
  * mode, every output is 0.
  *
- * Otherwise heldButtons is the mapped rawHeld, and:
+ * Otherwise heldButtons is the mapped rawHeld. Then, first:
+ * - tickOnly: LINK, hostRacing (any nonzero value, like the other flags),
+ *   and not the idle main-menu level (levelIsMainMenu 0 or loading
+ *   nonzero). Then every other output (owns, enterPressed, hideBox,
+ *   restoreBox, resetDemoCountdown, clearTaps) is 0, whatever boxHidden
+ *   says. Never in PREVIEW, and never without hostRacing.
+ * Otherwise tickOnly is 0 and:
  * - owns: the title window (see above), or in LINK mode an active link screen.
  * - hideBox and clearTaps: equal to owns.
  * - restoreBox: not owns, and boxHidden.

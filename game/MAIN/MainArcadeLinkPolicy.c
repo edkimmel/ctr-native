@@ -85,6 +85,15 @@ int MainArcadeLinkPolicy_Decide(const struct MainArcadeLinkPolicyInput *input, s
 	pressed = held & ~MainArcadeLinkPolicy_MapHeld(input->prevRawHeld);
 	output->heldButtons = held;
 
+	/* RL-8: race frames are ticked, not owned. Off the idle main-menu level
+	 * the RACING flow only needs the host tick; the retail race keeps its
+	 * taps, box, and demo countdown. */
+	if ((link != 0) && (input->hostRacing != 0u) && ((input->levelIsMainMenu == 0u) || (input->loading != 0u)))
+	{
+		output->tickOnly = 1u;
+		return 1;
+	}
+
 	owns = MainArcadeLinkPolicy_TitleMenuReady(input);
 	if ((link != 0) && (screenActive != 0))
 	{

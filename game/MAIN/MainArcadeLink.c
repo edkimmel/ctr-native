@@ -332,8 +332,9 @@ static void MainArcadeLink_Gather(const struct GameTracker *gGT, const struct Ga
 	input->mainMenuBoxActive = ((MainArcadeLink_MenuThisFrame() == &MM_MENU_MAIN) && (sdata->mainMenuState == MAIN_MENU_TITLE)) ? 1u : 0u;
 	input->submenuOpen = ((MM_MENU_MAIN.state & DRAW_NEXT_MENU_IN_HIERARCHY) != 0) ? 1u : 0u;
 	input->boxHidden = s_mainArcadeLinkHidMainMenu;
+	/* Before this frame's host tick: the flow the frame starts on (RL-8). */
+	input->hostRacing = (NativeArcadeLinkHost_Racing() != 0u) ? 1u : 0u;
 	input->reserved[0] = 0u;
-	input->reserved[1] = 0u;
 }
 
 int MainArcadeLink_TitleMenuReady(const struct GameTracker *gGT, const struct GamepadSystem *gGS)
@@ -368,6 +369,15 @@ int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 	if (!MainArcadeLinkPolicy_Decide(&input, &output))
 	{
 		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
+		return 0;
+	}
+
+	/* RL-8: a race frame is ticked, not owned. The host tick and nothing
+	 * else: no tap clear, no box hide or restore, no demo countdown reset,
+	 * no draw, and 0 so the render frame keeps the menu input. */
+	if (output.tickOnly != 0u)
+	{
+		MainArcadeLink_LinkTick(gGT, &output);
 		return 0;
 	}
 
