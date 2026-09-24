@@ -37,7 +37,7 @@ Integration order:
    machine: both profiles over 900 race ticks, covering same-seed
    identity, seed divergence, and menu-history independence (demo-race
    launch and odd-timer-offset runs). See `docs/ROSTER_MILESTONE.md`.
-   Networked launch through its seam is Task 7.
+   Linked races launch through its seam (Task 7, done).
 4. Native lockstep protocol and virtual-network fault tests — protocol design
    and fault-tolerant session logic complete; a real socket transport,
    connect/handshake protocol, and a lobby data/state layer exist and are
@@ -46,18 +46,23 @@ Integration order:
    their host adapter, and a dormant-by-default hook on the main-menu level
    exist and are tested. Match select lets each player pick a character
    and vote on the track and laps; a disagreement is a seeded draw, and
-   the resolved config is re-validated by a relink handshake and is what
-   START_RACE would launch (`docs/MATCH_SELECT_MILESTONE.md`). Networked
-   race launch (Task 7, through the step-3 race setup seam) is not started,
-   and in-race lockstep driving (Task 8) is gated on it and on live V4
+   the resolved config is re-validated by a relink handshake
+   (`docs/MATCH_SELECT_MILESTONE.md`). Networked race launch (Task 7) is
+   done (`docs/RACE_LAUNCH_MILESTONE.md`): both cabinets agree on a launch
+   commit, then arm and launch the step-3 race setup seam with the agreed
+   config, and a rematch launches a second race in the same process,
+   proven live on one machine by the two-process gate
+   (`arcade_link_launch`). Until Task 8 a linked race is an undriven
+   launch rehearsal. In-race lockstep driving (Task 8) is gated on live V4
    projection; physical two-cabinet validation remains open before steps
    6-7.
 5. Failure handling, results, and rematch — stall-timeout policy, peer-drop
    roster, and rematch config builder complete and fault-tested against
    `native_virtual_datagram`; wired to the results/rematch screens through
    the arcade-link adapter, and every rematch goes back through match
-   select. The in-race driver that feeds it is gated
-   (`docs/GAME_LOOP_UI_MILESTONE.md` Tasks 7-8).
+   select. A local race-setup failure ends a linked race as RESULTS LINK
+   ERROR (RL-11). The in-race driver that feeds it race results is gated
+   (`docs/GAME_LOOP_UI_MILESTONE.md` Task 8).
 6. CAB1 G29/kiosk gate.
 7. Two-cabinet fleet acceptance.
 8. Stretch goal: automatic LAN discovery for up to 4 cabinets (Mario Kart
@@ -143,9 +148,10 @@ Integration order:
   MATCH_SETUP 9 times in a two-cabinet race and 12 in a single-cabinet
   race, and `MainArcadeRaceSetup_Bank()` is the post-setup bank Task 8 must
   project.
-- **Live race setup.** `game/MAIN/MainArcadeRaceSetup` is the seam Task 7
-  calls (`_Arm`, `_Launch`, `_Status`, `_Digests`, `_Bank`, `_Disarm`): it
-  turns a validated TWO_CAB config into a retail 2P arcade race and a
+- **Live race setup.** `game/MAIN/MainArcadeRaceSetup` is the race setup
+  seam (`_Arm`, `_Launch`, `_Status`, `_Digests`, `_Bank`, `_Disarm`)
+  through which the live race caller (Task 7) and the roster proof launch
+  races; nothing reads `_Bank` yet (Task 8). It turns a validated TWO_CAB config into a retail 2P arcade race and a
   validated ONE_CAB config into a retail 1P arcade race (one human, seven
   bots, eight drivers) through the pure plan (encoding v2, the same for
   both profiles), facts, and decision-core libraries, with two hooks in
@@ -155,7 +161,9 @@ Integration order:
   failing closed. It pins every non-transient mode bit (cheats included), the
   vibration bits to 0, and boolDemoMode to 0, and requires the 30/1 tick
   rate. Dormant unless armed; its state is never checkpointed, recorded, or
-  canonical.
+  canonical. The init of the main-menu level while VALIDATED (the return
+  load after a linked race) is a no-op, and the owner Disarms on the first
+  idle main-menu frame, which restores the saved vibration bits.
 - **Race counter pins (RS-17).** The same race-init hook pins the
   boot-relative counters that feed the race simulation or its RNG,
   `gGT->timer` and `gGT->frameTimer_Confetti`, to 0.
@@ -331,19 +339,54 @@ the arcade-link screens and host adapter exist and are tested on top of it
   `native_match_select_session` (one cabinet's select state machine). The
   records travel on a generic 64-byte aux route of
   `native_lockstep_peer_link`. The resolved config is re-validated by a
-  relink handshake and is what START_RACE would launch.
+  relink handshake and is what START_RACE launches.
+  The race launch (Task 7, `docs/RACE_LAUNCH_MILESTONE.md`): after the
+  relink the netplay adapter runs a launch agreement, exchanging 64-byte
+  launch records (`native_arcade_launch`) on the same aux route, and the
+  flow starts the race (START_RACE) only on the relink READY with the
+  launch committed; a relink that completes on one side only launches
+  neither cabinet. The host exposes the exact agreed config
+  (`NativeArcadeLinkHost_GetAgreedConfig`), the racing query, and a local
+  race-failure report that ends RACING as RESULTS LINK ERROR without
+  telling the peer.
   Under `game/MAIN/`, `MainArcadeLinkLayout` (pure layout),
   `MainArcadeLinkPolicy` (pure frame-ownership policy), and `MainArcadeLink`
   (a thin `CTR_NATIVE` hook at the RECTMENU seam in
   `MainFrame_RenderFrame`) draw the screens with the retail menu primitives.
+  Race frames (the flow on RACING off the idle main-menu level) are ticked,
+  not owned: the hook ticks the host and leaves the retail race's input
+  alone. On START_RACE the hook logs the agreed match and hands the launch
+  to the live race caller `MainArcadeRaceLaunch`, which
+  `MainFrame_RenderFrame` steps right after the hook and whose decisions
+  come from the pure core `MainArcadeRaceLaunchCore`. From the title
+  launch window it arms and launches `MainArcadeRaceSetup` with the agreed
+  config, logs one line per validated race with the config, race plan,
+  bot setup plan, and bank digests, reports an Arm, Launch, setup, or
+  bounded-wait failure as a local race failure, returns to the main-menu
+  level after the race, and Disarms there. Until Task 8 the race is the
+  launch rehearsal: it runs on installed neutral pads, nobody drives it,
+  and 150 ticks after race tick 0 the caller reports it finished (RESULTS,
+  RACE COMPLETE). While a race setup is not IDLE the pause-menu vibration
+  toggle does nothing, and sound IDs stay out of cross-cabinet identity
+  (isolation-tested).
   Game code names none of the lockstep, failure-handling, or match-select
   modules, and isolation tests enforce it. Everything is dormant unless
   `--arcade-link` or `--arcade-link-preview` is given; both are rejected
   with any replay
-  option, and quick states are disabled while either is active. START_RACE
-  logs the agreed match and returns to the title until the networked race
-  launch (Task 7) exists. See `docs/GAME_LOOP_UI_MILESTONE.md` and
-  `docs/MATCH_SELECT_MILESTONE.md`.
+  option, and quick states are disabled while either is active. See
+  `docs/GAME_LOOP_UI_MILESTONE.md`, `docs/MATCH_SELECT_MILESTONE.md`, and
+  `docs/RACE_LAUNCH_MILESTONE.md`.
+- **Two-process launch gate (internal builds).**
+  `--arcade-link-autopilot <report path>` (needs `--arcade-link`; rejected
+  with replay options, `--arcade-roster-proof`, `--exit-after-frame`, and in
+  non-internal builds) drives one link cabinet through START, the select,
+  race 1, REMATCH, race 2, and EXIT by replacing the hook's enter decision
+  and held menu buttons on owned LINK frames; it never touches a pad.
+  `tools/arcade-link-launch-check.ps1` (ctest `arcade_link_launch`) runs
+  cab1 and cab2 over 127.0.0.1 ports 7001 and 7002 and requires both to
+  exit 0 with a `result PASS (0)` report, two validated races each, the
+  k-th race's agreed match and digests equal across the two, and race 2's
+  config digest different from race 1's.
 - None of this has been exercised over real two-cabinet LAN hardware or with
   a real G29 (only two real OS processes on one machine over loopback); that
   remains open before step 6.
@@ -370,10 +413,11 @@ ctest --test-dir build-msvc-x86 -C Debug --output-on-failure
 ```
 
 Use `build-msvc-x86`; other `build-msvc-x86-*` directories are from earlier
-milestones. The full suite is 133 tests and passes; it takes about 400 s.
-Two tests carry the ctest label `live` (`arcade_link_preview_render` and
-`arcade_roster_determinism`); `ctest -LE live` excludes them, and the
-default full run includes them. LF-to-CRLF warnings are benign. The
+milestones. The full suite is 144 tests and passes; it takes about 450 s.
+Three tests carry the ctest label `live` (`arcade_link_preview_render`,
+`arcade_roster_determinism`, and `arcade_link_launch`); `ctest -LE live`
+excludes them, and the default full run includes them. LF-to-CRLF
+warnings are benign. The
 `arcade_link_preview_render` test (Windows only) renders all 17
 arcade-link previews with `ctr_native.exe` and checks each capture; it skips
 when `assets/ctr-u.bin` is absent, no display is available, or the build
@@ -382,7 +426,16 @@ under `build-msvc-x86\arcade_link_preview_captures\<config>`. The
 `arcade_roster_determinism` test (Windows only) runs
 `tools/arcade-roster-proof-check.ps1` (docs/ROSTER_MILESTONE.md section
 3.4); it skips on the same three conditions and writes its reports and
-logs under `build-msvc-x86\arcade_roster_proof\<config>`.
+logs under `build-msvc-x86\arcade_roster_proof\<config>`. The
+`arcade_link_launch` test (Windows only) runs
+`tools/arcade-link-launch-check.ps1`, the two-process race launch gate
+(`docs/RACE_LAUNCH_MILESTONE.md` RL-15); it skips on the same three
+conditions and also without a known build identity (a build from a tree
+with uncommitted or untracked changes), because `--arcade-link` needs
+one. A skip (77) is not a pass. It uses the fixed ports 7001 and 7002 and
+writes its reports and logs under
+`build-msvc-x86\arcade_link_launch\<config>`. All three live tests run
+serially (RUN_SERIAL).
 
 `ctr_native.exe` needs a connected desktop session with a display. Without
 one, platform init fails, the SDL error is logged, and the exe exits 1. SDL
@@ -441,6 +494,17 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `game/MAIN/MainFrame_RenderFrame.c`);
   `tests/main_arcade_link_view_layout_test.c` (every preview and live host
   view passes the layout).
+- Race launch (Task 7): `platform/native_arcade_launch.c`,
+  `include/platform/native_arcade_launch.h` (launch record codec and
+  agreement state); `game/MAIN/MainArcadeRaceLaunchCore.{c,h}` (pure
+  launch decision core, library `ctr_native_arcade_race_launch_core`);
+  `game/MAIN/MainArcadeRaceLaunch.{c,h}` (live race caller, stepped from
+  `game/MAIN/MainFrame_RenderFrame.c`); the RL-13 vibration guard in
+  `game/MAIN/MainFreeze.c`. Internal two-process gate:
+  `platform/native_arcade_link_autopilot.c`,
+  `include/platform/native_arcade_link_autopilot.h` (option, pure
+  decision, report); `game/MAIN/MainArcadeLinkAutopilot.{c,h}` (glue);
+  `tools/arcade-link-launch-check.ps1` (checker).
 - Match select: `platform/native_match_select_rules.c`,
   `include/platform/native_match_select_rules.h` (tables, seed, draws,
   resolution, resolved-config builder);
@@ -456,7 +520,8 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   audit), `game/MAIN/MainArcadeRaceSetupFacts.{c,h}` (pure facts builder),
   `game/MAIN/MainArcadeRaceSetupCore.{c,h}` (pure decision core, state
   machine, RS-17 counter audit), `game/MAIN/MainArcadeRaceSetup.{c,h}`
-  (live adapter and the Task 7 seam, hooked from `MainInit_FinalizeInit`).
+  (live adapter and the seam the Task 7 race caller uses, hooked from
+  `MainInit_FinalizeInit`).
 - Live roster proof (internal builds): `platform/native_arcade_roster_proof.c`,
   `include/platform/native_arcade_roster_proof.h` (options, proof config,
   scripted pads, report format, exit codes);
@@ -485,7 +550,7 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
 - Related docs: `docs/ARCADE_FORK.md`, `docs/TOPOLOGY_LEASE_AUTHORITY.md`,
   `docs/REPLAYS.md`, `docs/MEMORY_MODEL.md`, `docs/G29_INPUT.md`,
   `docs/GAME_LOOP_UI_MILESTONE.md`, `docs/MATCH_SELECT_MILESTONE.md`,
-  `docs/ROSTER_MILESTONE.md`.
+  `docs/ROSTER_MILESTONE.md`, `docs/RACE_LAUNCH_MILESTONE.md`.
 
 ## Rules and constraints
 

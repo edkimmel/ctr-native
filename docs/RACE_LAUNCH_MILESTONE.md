@@ -30,6 +30,12 @@ validation (HANDOFF steps 6-7).
 
 ## 2. Starting point
 
+This section records the code as it stood when the plan was written
+(894788d2b), and its line citations are of that time. What Task 7 changed
+is recorded in sections 4 and 6; in particular START_RACE no longer aborts
+to the title (RL-S8b), and the vibration toggle cited last is guarded
+(RL-S9).
+
 - START_RACE logs the agreed match and aborts to the title
   (game/MAIN/MainArcadeLink.c:279-297). No race reaches RACING today.
 - Each relink handshake completes independently per side
@@ -122,6 +128,34 @@ validation (HANDOFF steps 6-7).
    suite passes; and the new live two-process gate arcade_link_launch
    (RL-15) has a recorded, non-skipped PASS from a build made from a clean
    tree. A skip (77) does not count.
+
+Status: met at e5279e31d; every criterion holds at HEAD. How each is
+proven:
+
+1. The flow starts the race only on READY with COMMITTED (RL-S4,
+   native_arcade_flow_unit), and COMMITTED comes only from the launch
+   agreement (RL-S5, native_arcade_netplay_unit loopback cases 33a-33m).
+2. arcade_link_launch: both cabinets log two VALIDATED races, and the k-th
+   race's agreed match and config, plan, bots, and bank digests are equal
+   across the two processes.
+3. native_arcade_netplay_unit (RL-S5): a one-sided relink launches
+   neither cabinet and the rematch agrees; a lost last record launches one
+   and its rematch is REJECTED (RL-7).
+4. arcade_link_launch: race 2 is VALIDATED in the same process after race
+   1, which Arm (IDLE only) allows only after race 1's Disarm; the
+   decision core's two-races cases in main_arcade_race_launch_core_unit.
+5. The CTR_NATIVE guard in the pause options (RL-S9), pinned by
+   main_freeze_vibration_guard_isolation. No live test drives the pause
+   menu: the rehearsal pads make it unreachable.
+6. arcade_sound_identity_isolation (RL-S3).
+7. main_arcade_race_setup_isolation: the allow-list names only
+   game/MAIN/MainArcadeRaceSetup.{c,h}, the proof, and the race caller
+   game/MAIN/MainArcadeRaceLaunch.c (Arm, Launch, and Disarm once each),
+   and the adapter defines MainArcadeRaceSetup_Disarm and never calls it.
+8. The hook and the race caller return before touching anything with the
+   host mode OFF (pinned by main_arcade_link_hook_isolation); the full
+   suite passed, 144/144, at e5279e31d from a clean tree, with a
+   non-skipped arcade_link_launch PASS (RL-S10).
 
 Driving the race in lockstep is Task 8. Until Task 8 lands, a linked race
 is the launch rehearsal of RL-10: it loads and starts, but nobody drives
@@ -449,8 +483,10 @@ is the Task 8 V4 digests.
 
 RL-13 Pause-menu vibration toggle. While a race setup is not IDLE (a
 linked race), confirming a DualShock vibration row in the pause options
-(game/MAIN/MainFreeze.c:518) changes nothing: the gameMode1 write is
-skipped, fixed in place with a minimal change and a comment. The
+(the case 4-7 rows of PROCESSINPUTS_MainFreeze_MenuPtrOptions in
+game/MAIN/MainFreeze.c, whose gameMode1 write is at :530 behind the guard)
+changes nothing: the gameMode1 write is skipped, fixed in place with a
+minimal change and a comment. The
 analog-controller row stays retail (ROSTER risk 9). Pausing itself stays
 retail until Task 8 decides pause under lockstep; the neutral rehearsal
 pads make it unreachable. The layer's tap clearing runs after GameLogic
@@ -479,7 +515,8 @@ NativeArcadeLinkHost_Enter and the held menu buttons passed to
 NativeArcadeLinkHost_Tick, game/MAIN/MainArcadeLink.c:272-277).
 tools/arcade-link-launch-check.ps1, run by a new ctest arcade_link_launch
 (Windows, label "live", RUN_SERIAL TRUE like the two existing live tests,
-CMakeLists.txt:1679 and :1705, here also because ports 7001 and 7002 are
+arcade_link_preview_render and arcade_roster_determinism in
+CMakeLists.txt, here also because ports 7001 and 7002 are
 fixed; skip 77 without assets/ctr-u.bin, a display, the internal option,
 or a known build identity), starts both in parallel with Start-Process as
 tools/arcade-roster-proof-check.ps1 does and requires:
@@ -526,9 +563,10 @@ non-skipped PASS). No other value changed.
 - The race caller, the decision core, and the RL-S2 module name no
   topology-lease acquire, activate, capture, or publish token, and no
   checkpoint, replay, or NativeCanonical token, enforced by isolation
-  tests. Today such bans cover only the setup adapter and the proof
-  (tests/main_arcade_race_setup_isolation_test.cmake:329-344, rule 4 of
-  its header at :20-25).
+  tests: tests/native_arcade_launch_isolation_test.cmake (RL-S2),
+  tests/main_arcade_race_launch_core_isolation_test.cmake (RL-S7), and
+  tests/main_arcade_race_setup_isolation_test.cmake for the caller
+  (RL-S8b), next to the existing bans on the setup adapter and the proof.
 - No canonical-state schema or replay-format change.
 - NativeMatchConfigV1, the handshake, the bundle, and the select record
   are unchanged; the launch record is new and versioned.
@@ -663,7 +701,8 @@ point.
 
 ### RL-S6 -- host API
 
-Status: done. The host gains NativeArcadeLinkHost_GetAgreedConfig (the
+Status: done (0ff1f4dce). The host gains
+NativeArcadeLinkHost_GetAgreedConfig (the
 exact NativeArcadeNetplay_AgreedConfig bytes; the header only
 forward-declares struct NativeMatchConfigV1),
 NativeArcadeLinkHost_ReportRaceFailure (through a new adapter latch,
@@ -690,8 +729,8 @@ NativeMatchConfigV1 and the allow-list is unchanged.
 
 Status: done (3b9e2d1fe); reviewed, no BLOCKER; two should-fixes and the
 nits closed in the follow-up commit. game/MAIN/MainArcadeRaceLaunchCore.{c,h},
-library ctr_native_arcade_race_launch_core (links nothing, not yet linked
-into ctr_native, never unity-included), with ctests
+library ctr_native_arcade_race_launch_core (links nothing, never
+unity-included; ctr_native links it since RL-S8b), with ctests
 main_arcade_race_launch_core_unit (tests/main_arcade_race_launch_core_test.c)
 and main_arcade_race_launch_core_isolation (purity, the section 5 ban, the
 three bounds). Arm/Launch results feed back through a second call on the
@@ -776,7 +815,49 @@ race reaches RACING off the main-menu level until then.
 
 ### RL-S8b -- live race caller
 
-Status: planned. Review required. Needs RL-S5, RL-S6, RL-S7, and
+Status: done (7fd60dc60); reviewed, no BLOCKER; two should-fixes and
+seven nits closed in b9ad3baa5. Files: game/MAIN/MainArcadeRaceLaunch.{c,h}
+(new), game/MAIN/MainArcadeLink.{c,h}, game/MAIN/MainFrame_RenderFrame.c,
+game/game_unity.h, game/MAIN/MainArcadeRaceSetup.h,
+game/MAIN/MainArcadeRaceSetupCore.{c,h}, game/MAIN/MainArcadeRaceLaunchCore.{c,h}
+(the review's finish latch), CMakeLists.txt (ctr_native links
+ctr_native_arcade_race_launch_core), tests/main_arcade_race_setup_core_test.c,
+tests/main_arcade_race_launch_core_test.c,
+tests/main_arcade_race_setup_isolation_test.cmake,
+tests/main_arcade_link_hook_isolation_test.cmake,
+tests/main_arcade_link_sound_isolation_test.cmake (START_RACE no longer
+resets the sound snapshot), and
+tests/main_arcade_race_launch_core_isolation_test.cmake. Interpretations
+and deviations from the plan:
+(a) The caller is not called from inside MainArcadeLink_Frame.
+MainFrame_RenderFrame (game/MAIN/MainFrame_RenderFrame.c) steps
+MainArcadeRaceLaunch_Frame once per frame right after MainArcadeLink_Frame,
+on owned, tickOnly, and other frames alike, and before the roster proof's
+frame and the retail menu-input collect. It reads NativeArcadeLinkHost_Racing
+after the hook's host tick (RL-S7 interpretation (f)), separately from the
+policy's pre-tick read.
+(b) The START_RACE branch of MainArcadeLink_LinkTick
+(game/MAIN/MainArcadeLink.c) keeps the agreed-match log and hands the
+launch to the caller (MainArcadeRaceLaunch_StartRace); it no longer calls
+NativeArcadeLinkHost_AbortToTitle, which the hook isolation test now
+forbids in the hook and the caller, and no game code calls it.
+(c) The race-finished latch lives in the pure core: MainArcadeRaceLaunchCore
+holds it (finishedPending, set with reportFinished, cleared before a Step's
+decisions when the flow is off RACING or on START_RACE) and outputs
+raceFinishedInput; the caller copies it after each accepted Step, and
+MainArcadeRaceLaunch_RaceFinished feeds it to NativeArcadeLinkHost_Tick's
+raceFinished (hook isolation 16b2).
+(d) The rehearsal pads are NativeArcadeRosterProof_ScriptedPads(TWO_CAB,
+TICK_NONE), copied into Platform_InputInstallPadSnapshots; a failed install
+is logged once per race.
+(e) The caller derives the plan's level from the agreed config's trackID
+(planLevel, cleared on Disarm), a copy of the setup plan's level rule that
+it may not name; hook isolation section 16h requires the plan's rule and
+the caller's copy together.
+(f) The caller's return step (MainArcadeRaceLaunch_RequestReturn) is
+pinned identical to the link's return to title (hook isolation 16f2).
+
+Plan: Review required. Needs RL-S5, RL-S6, RL-S7, and
 RL-S8a. The
 caller in the unity chain, right after MAIN/MainArcadeLink.c and before
 MAIN/MainArcadeRosterProof.c (game/game_unity.h:271-276), so it follows
@@ -791,22 +872,66 @@ the section 5 token ban on the caller.
 
 ### RL-S9 -- pause-menu vibration guard
 
-Status: planned. Review required. RL-13, with an isolation pin.
+Status: done (5321fb995); reviewed, no BLOCKER or SHOULD-FIX; four nits
+closed in 120b56d09. RL-13: in the case 4-7 rows of
+PROCESSINPUTS_MainFreeze_MenuPtrOptions (game/MAIN/MainFreeze.c), a
+CTR_NATIVE-only guard skips the gameMode1 vibration toggle unless
+MainArcadeRaceSetup_Status() is MAIN_ARCADE_RACE_SETUP_IDLE; the confirm
+sound and the analog-controller row stay retail, and default boot (setup
+IDLE) keeps the retail toggle. The guard also applies while the
+CTR_INTERNAL roster proof holds the setup non-IDLE. Pin:
+tests/main_freeze_vibration_guard_isolation_test.cmake (ctest
+main_freeze_vibration_guard_isolation).
+
+Plan: Review required. RL-13, with an isolation pin.
 
 ### RL-S10 -- two-process live gate
 
-Status: planned. Review required. RL-15: the autopilot option, the
+Status: done (55d7e5bfb); reviewed. The review reported one BLOCKER, the
+autopilot isolation test's dependence on LF line endings; it did not
+reproduce on Windows, where CMake's file(READ) folds CRLF in text mode,
+and was hardened anyway (the reader normalizes CRLF). That fix, one
+should-fix, and five nits closed in e5279e31d. Files:
+include/platform/native_arcade_link_autopilot.h and
+platform/native_arcade_link_autopilot.c (library
+ctr_native_arcade_link_autopilot: the option parser, the pure decision,
+the progress bookkeeping, and the report), game/MAIN/MainArcadeLinkAutopilot.{c,h}
+(the CTR_NATIVE glue, active only in CTR_INTERNAL builds once configured),
+the two autopilot calls in game/MAIN/MainArcadeLink.c, two read-only RL-12
+evidence getters in game/MAIN/MainArcadeRaceLaunch.{c,h}
+(MainArcadeRaceLaunch_ValidatedRaces and _LastValidated), the option in
+main.c, tools/arcade-link-launch-check.ps1,
+tests/native_arcade_link_autopilot_test.c, and
+tests/native_arcade_link_autopilot_isolation_test.cmake; ctests
+native_arcade_link_autopilot_unit, native_arcade_link_autopilot_isolation,
+and arcade_link_launch (Windows, label live, RUN_SERIAL, SKIP_RETURN_CODE
+77, TIMEOUT 900). Deviations from RL-15: on owned LINK frames the
+autopilot replaces only the hook's enterPressed and heldButtons (and, on
+the frame it enters, sets the policy's own demo-countdown reset for a
+START there); race and tickOnly frames pass pad input unchanged. Its
+digests come from the two read-only getters above. A window close or SDL
+quit exits 0 without a report, so exit 0 alone is no pass: the checker
+requires both exits 0 and each report's `result PASS (0)` line with both
+races.
+Recorded PASS (section 3, criterion 8): the independent verifier's full
+run at e5279e31d from a clean tree passed 144/144 (451 s), with
+arcade_link_launch Passed in 78.16 s, not skipped. Race 1 config digest
+3a95aa18...398c and race 2 config digest 6b078a72...75b7, each equal
+across cab1 and cab2; race 2 differs from race 1.
+
+Plan: Review required. RL-15: the autopilot option, the
 checker script, the ctest (RUN_SERIAL). Tests: an option parser unit
 test, and an isolation pin that main.c rejects the option together with
 replay options.
 
 ### RL-S11 -- docs close-out
 
-Status: planned. This document, GAME_LOOP_UI Task 7 and risks,
+Status: done. This document, GAME_LOOP_UI Task 7 and risks,
 MATCH_SELECT risks 7 and 12, ROSTER RS-10 and risks 8, 11, and 14, and
-docs/HANDOFF.md sections other than "Next work". This includes the stale
-"Task 7 is not started" text in docs/GAME_LOOP_UI_MILESTONE.md:1082 and
-docs/HANDOFF.md:51.
+docs/HANDOFF.md sections other than "Next work", plus the other
+now-false Task 7 statements in those documents and the stale
+MainArcadeLink.c:239-245 citations in the comments of
+game/MAIN/MainArcadeRaceSetupPlan.h and game/MAIN/MainArcadeRaceSetupCore.h.
 
 ## 7. Risks and open questions
 
@@ -830,19 +955,43 @@ docs/HANDOFF.md:51.
    a Task 8 concern). LOAD_Hub_SwapNow (game/LOAD/LOAD_Hub.c:38-43) is
    the adventure-hub swap and not on the race launch path.
 3. The tap clearing on owned frames must not reach race frames (RL-8,
-   RL-S8a; also a Task 8 input concern). If the flow leaves RACING
-   mid-race (link failure or LOST), the following RESULTS frames on the
-   race level are owned (taps cleared, RECTMENU_ClearInput) while the
-   retail race runs until the return load; RL-10's return step bounds
-   this.
+   RL-S8a; also a Task 8 input concern). RACING frames off the idle
+   main-menu level are tickOnly (MainArcadeLinkPolicy_Decide). Once the
+   flow leaves RACING, on any path (the rehearsal finish, an RL-11 local
+   failure, a link failure, or LOST), the RESULTS frames still on the race
+   level are owned (taps cleared, the box hidden, the demo countdown reset,
+   and RECTMENU_ClearInput when the retail collect runs) while the retail
+   race keeps running until the return load sets LOADING. The caller's
+   return step on the frame it first sees the end (deferred to the first
+   LOAD_IDLE frame behind a race-track load) bounds this, and under the
+   rehearsal the race reads only the neutral pads, so nothing is lost
+   today. Task 8 must decide the frames between its real finish and the
+   return load.
 4. Host timing still feeds the simulation (ROSTER risk 7, Task 8).
 5. Pause under lockstep is undecided (Task 8).
 6. The rehearsal RESULTS says RACE COMPLETE for an undriven race. This is
    interim and development only; HANDOFF steps 6-7 need Task 8.
 7. The live gate needs a build made from a clean tree (GAME_LOOP_UI risk
-   5), so it skips (77) on a dirty-tree build. A skip does not count:
-   Task 7 done needs a recorded, non-skipped PASS (section 3, criterion
-   8).
+   5), so it skips (77) on a dirty-tree build. A skip does not count.
+   Satisfied for Task 7: the recorded, non-skipped PASS at e5279e31d
+   (RL-S10 status). Any later change to the launch path needs a new
+   non-skipped run.
 8. Stale bundles after a rematch (GAME_LOOP_UI risk 2) stay a Task 8 test
    item.
 9. The ONE_CAB lobby and UI flow is a follow-up (ROSTER risk 14).
+10. The link's own return to title does not check the load stage. The
+    RETURN_TO_TITLE branch of MainArcadeLink_LinkTick
+    (game/MAIN/MainArcadeLink.c, the `action == ...RETURN_TO_TITLE`
+    block) calls MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL) whenever
+    levelID is not the main-menu level, without checking Loading.stage,
+    and MainRaceTrack_RequestLoad overwrites the stage. After a link
+    failure during the race-track load (levelID already the race level),
+    EXIT on RESULTS could therefore overwrite a running load. Not
+    reachable today: the neutral rehearsal pads stay installed until after
+    the caller's deferred return, so no local input can confirm EXIT (the
+    internal autopilot confirms only on a FINISHED RESULTS), and
+    the RESULTS idle timeout (900 ticks) plus the EXIT hold (60) needs
+    about 960 ticked frames inside one load. It becomes reachable if the
+    pads are cleared earlier or Task 8 changes the input source. Suggested
+    fix: request the load only at LOAD_IDLE or LOAD_REQUESTED, as the race
+    caller's return step does.

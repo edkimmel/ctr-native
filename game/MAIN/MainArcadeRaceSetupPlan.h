@@ -203,7 +203,8 @@
  *   The demo path sets it (MM_Title.c:167) and the race reads it
  *   (MainInit.c:567 converts every human driver to a bot; BOTS.c:1022,
  *   GAMEPAD.c:705); the arcade-link screens also run over a demo race
- *   (MainArcadeLink.c:239-245).
+ *   (the RETURN_TO_TITLE branch of MainArcadeLink_LinkTick in
+ *   MainArcadeLink.c).
  * - Not owned: currLEV (only carries the menu's track to the load request,
  *   QueueLoadTrack.c:31); originalEventTime (read only by the battle and
  *   crystal limit clock, UI_Clock.c:453); the cup fields (read only under

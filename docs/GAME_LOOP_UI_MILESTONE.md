@@ -114,7 +114,8 @@ Transitions:
   returns BEGIN_SELECT (match select, below); any lobby status other than
   READY during the hold (not only LOST) moves back to LOBBY and returns
   RESTART_LOBBY. MATCH_FOUND never starts a race: the race starts from
-  SELECT_RESULT, with START_RACE on READY of the relink.
+  SELECT_RESULT, with START_RACE on READY of the relink once the launch
+  agreement has committed (docs/RACE_LAUNCH_MILESTONE.md RL-5).
 - RACING: input ignored (race input belongs to the game). A link-failure
   reason moves to RESULTS with that reason; otherwise a LOST lobby status
   moves to RESULTS with LINK_ERROR; otherwise raceFinished moves to RESULTS
@@ -140,8 +141,9 @@ Match select (docs/MATCH_SELECT_MILESTONE.md section 2.5) appends the
 screens SELECT and SELECT_RESULT, the actions BEGIN_SELECT and RELINK, the
 observation's selectStatus, and the timings selectResultHoldTicks (60) and
 launchTimeoutTicks (300); existing values are unchanged. SELECT_RESULT
-returns RELINK after its hold, and READY of the relinked lobby moves to
-RACING with START_RACE. A pre-race failure from SELECT or SELECT_RESULT
+returns RELINK after its hold, and READY of the relinked lobby with the
+observation's launchStatus COMMITTED (Task 7, RL-5) moves to RACING with
+START_RACE. A pre-race failure from SELECT or SELECT_RESULT
 moves to RESULTS with LINK_ERROR and returns CLOSE_LINK. That document has
 the screens, actions, and timings in full.
 
@@ -363,7 +365,10 @@ outputs, ticks the host, and draws:
   retail, so the layer leaves the frame alone and the retail intro skip
   keeps working. In LINK mode the layer also owns every frame on which a
   link screen other than OFF is active (NativeArcadeLinkHost_ScreenActive),
-  on any level. PREVIEW mode follows the same title-window rule and never
+  on any level, except race frames: with the flow on RACING and the frame
+  not on the idle main-menu level, the policy sets only tickOnly and the
+  held buttons, and the hook ticks the host and returns 0 without owning
+  the frame (docs/RACE_LAUNCH_MILESTONE.md RL-8). PREVIEW mode follows the same title-window rule and never
   owns outside it (the host's ScreenActive reports 1 in preview mode; the
   policy does not use it there), so from boot to the menu-ready frame a
   preview run shows the retail boot and intro.
@@ -375,12 +380,11 @@ outputs, ticks the host, and draws:
   BTN_SQUARE_one, not the combined bits). A button already held when the
   layer takes the frame is not a press. START_RACE first logs the agreed
   match ("arcade link: agreed match track .. laps .. seed 0x.. slots ..",
-  from NativeArcadeLinkHost_GetAgreedMatch), then logs (Platform_Log) that
-  the networked race launch is not wired yet (Task 7) and calls
-  NativeArcadeLinkHost_AbortToTitle, back to the attract screen; if that
-  falls back to mode OFF (the link cannot reopen), the hook gives the retail
-  box back in the same call, because the next frame's OFF early return
-  touches nothing. RETURN_TO_TITLE off the main-menu level uses the retail
+  from NativeArcadeLinkHost_GetAgreedMatch), then hands the launch to the
+  live race caller (MainArcadeRaceLaunch_StartRace; Task 7,
+  docs/RACE_LAUNCH_MILESTONE.md RL-S8b), which MainFrame_RenderFrame steps
+  right after the hook on the same frame. It no longer aborts to the
+  title. RETURN_TO_TITLE off the main-menu level uses the retail
   demo-mode exit (boolDemoMode 0, numPlyrNextGame 1, mainMenuState
   MAIN_MENU_TITLE, MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL)); on the
   main-menu level it needs nothing.
@@ -478,9 +482,13 @@ the last Tick, whether or not the screen acted on it, so consumers must gate
 on a state change (localMenuEvent: LINK only, NONE in PREVIEW, local input
 only, for menu sounds), and the select view of the match-select screens),
 GetAgreedMatch (track, laps, seed, and slot roles and characters of the
-agreed race config, for the START_RACE log), AbortToTitle (close the link
-and return to screen OFF when START_RACE cannot be honoured yet), and
-Shutdown. docs/MATCH_SELECT_MILESTONE.md section 2.7 lists the select view
+agreed race config, for the START_RACE log), and, since Task 7
+(docs/RACE_LAUNCH_MILESTONE.md RL-S6), Racing (LINK mode with the flow on
+RACING), GetAgreedConfig (the exact agreed NativeMatchConfigV1 bytes, for
+Arm), and ReportRaceFailure (a local race failure ends RACING as RESULTS
+LINK ERROR), and Shutdown (Configure and Shutdown from main.c). The host
+also has AbortToTitle (close the link and return to screen OFF), which no
+game code calls since Task 7. docs/MATCH_SELECT_MILESTONE.md section 2.7 lists the select view
 fields and the host value names that go with them. Its header includes no adapter header and names no lockstep, failure-handling,
 or lobby token, which tests/native_arcade_link_host_isolation_test.cmake
 enforces.
@@ -629,8 +637,10 @@ assigned to player 1". The default keys are Enter for START, C for CROSS,
 and Z for TRIANGLE. Once both have entered the lobby, each should show
 OPPONENT FOUND, then the match-select screens (each item auto-locks after
 20 s, so an idle run takes about a minute), MATCH SET, and after the
-relink return to the title, because START_RACE logs the agreed match and
-aborts to the title until Task 7.
+relink and the launch agreement the linked race: since Task 7 START_RACE
+logs the agreed match and launches the race, which until Task 8 is the
+undriven launch rehearsal (docs/RACE_LAUNCH_MILESTONE.md RL-10), then
+RESULTS (RACE COMPLETE) with REMATCH and EXIT back on the main-menu level.
 
 ### 3.1 Arcade-link menu sound defaults
 
@@ -695,8 +705,10 @@ treat it there like the other three.
 10. SND-10: PREVIEW is silent (scripted, no input). The first frame after the
     snapshot was reset is silent, including an attract entry on that frame.
     The hook resets the snapshot on every frame the layer does not own, in
-    PREVIEW, when GetView fails, after the START_RACE AbortToTitle, and on
-    RETURN_TO_TITLE. With the host mode OFF nothing changes: the OFF early
+    PREVIEW, when GetView fails, and on RETURN_TO_TITLE (until Task 7 also
+    after the START_RACE AbortToTitle; since RL-S8b START_RACE hands the
+    launch to the race caller and keeps the snapshot, which goes on
+    tracking the RACING flow). With the host mode OFF nothing changes: the OFF early
     return is still the first statement. RL-S8a amendment: race frames under
     RL-8 (tickOnly) are the exception to the not-owned reset; they leave the
     snapshot holding the RACING view stored on the last owned frame, so
@@ -718,10 +730,12 @@ treat it there like the other three.
     lists are inside sdata, which checkpoints capture (they are relocated in
     platform/native_checkpoint.c:1442-1443), but link and preview mode reject
     every replay option and disable quick states (section 2.5), so no
-    checkpoint or replay is taken there, although after AbortToTitle falls
-    back to mode OFF (game/MAIN/MainArcadeLink.c:287-293) quick states work
-    again while link-screen sounds may still occupy the HOWL channel lists,
-    which is harmless and identical to a retail menu sound still playing.
+    checkpoint or replay is taken there. The host never falls back to mode
+    OFF during a run: since Task 7 no game code calls
+    NativeArcadeLinkHost_AbortToTitle (whose re-initialization failure was
+    the only fallback path), and main.c calls NativeArcadeLinkHost_Shutdown
+    only on a startup failure and at exit. So quick states stay disabled for
+    the whole link run.
     The arcade-link screens are menus
     outside any race frame, and audio is presentation (RS-8,
     docs/ROSTER_MILESTONE.md).
@@ -868,7 +882,8 @@ Status: done (3f89d8e39). The option parser and host glue are hooked into
 main.c, the
 host glue is linked into ctr_native, and the CTR_NATIVE-only drawer and hook
 are in the unity chain: title-screen entry into LOBBY, START_RACE aborting to
-the title until Task 7, RETURN_TO_TITLE back to the title/attract loop, and
+the title (replaced in Task 7 by the hand-off to the live race caller,
+docs/RACE_LAUNCH_MILESTONE.md RL-S8b), RETURN_TO_TITLE back to the title/attract loop, and
 the internal-only preview option (section 2.5). Review required: it touches
 the game loop, even though default behaviour is unchanged. Review outcome:
 the review found a blocking bug (the retail main-menu box could slide in),
@@ -901,7 +916,7 @@ open submenu no longer releases the frame (the retail menu hierarchy is
 unreachable). Owned frames clear every pad's taps before the retail menu
 code runs, so cheat entry and the intro-skip tap cannot fire. If
 AbortToTitle falls back to mode OFF the hook restores the box in the same
-call. main.c rejects `--arcade-link` or `--arcade-link-preview` with any
+call (removed with the START_RACE abort in Task 7, RL-S8b). main.c rejects `--arcade-link` or `--arcade-link-preview` with any
 replay record, playback, or report option (quick-state hotkeys, then
 documented as unsupported in link and preview mode, are disabled there by
 Task 6b-4). PREVIEW follows the
@@ -938,7 +953,9 @@ AbortToTitle fallback frame gives it back). New isolation checks: every
 quoted "--..." option in platform/native_replay_scheduler_seam.c is in
 main.c's replay-rejection list, the F5 and F8 cases are gated by
 NativeArcadeLinkHost_Mode, and the START_RACE AbortToTitle call is followed
-in its branch by the host-mode OFF check that restores the box.
+in its branch by the host-mode OFF check that restores the box. (Task 7,
+RL-S8b, removed that call and its check; the hook isolation test now
+forbids AbortToTitle in the hook and the race caller.)
 Landed as platform/native_platform.c, game/MAIN/MainArcadeLink.c,
 game/MAIN/MainArcadeLink.h, and
 tests/main_arcade_link_hook_isolation_test.cmake (test
@@ -1022,46 +1039,51 @@ Note for Task 7: `countSounds` (CountSounds, game/HOWL/HOWL_OtherFX.c:3)
 feeds the sound IDs OtherFX_Play returns and callers keep (for example
 gGT->rainSoundID, game/DropRain.c:29), and it already differs between
 cabinets through ordinary retail menu use; Task 7 must keep sound IDs out
-of any cross-cabinet identity.
+of any cross-cabinet identity. Done: RL-14, enforced by
+arcade_sound_identity_isolation (docs/RACE_LAUNCH_MILESTONE.md RL-S3).
 
 ### Task 7 -- networked race launch
 
-Status: in progress. Plan: docs/RACE_LAUNCH_MILESTONE.md (slices
-RL-S1..RL-S11, defaults RL-1..RL-15). Its step-3 prerequisite exists: the
-live race setup seam game/MAIN/MainArcadeRaceSetup
-(docs/ROSTER_MILESTONE.md section 3.2). On START_RACE, configure and load
-the race described by the agreed NativeMatchConfigV1 through that seam:
-MainArcadeRaceSetup_Arm with the agreed config, then
-MainArcadeRaceSetup_Launch (which writes the race
-fields and requests the load); poll MainArcadeRaceSetup_Status until
-VALIDATED (or FAILED, whose player-facing response Task 7 decides, RS-10);
-read MainArcadeRaceSetup_Digests and hand MainArcadeRaceSetup_Bank to
-Task 8; and call MainArcadeRaceSetup_Disarm when the race is left. Task 7
-extends the caller allow-list in
-tests/main_arcade_race_setup_isolation_test.cmake:257-263: today only the
-adapter (game/MAIN/MainArcadeRaceSetup.c and .h) and the roster proof
-(game/MAIN/MainArcadeRosterProof.c) may name MainArcadeRaceSetup_Arm,
-_Launch, and _Disarm, so Task 7 adds its caller file there (the adapter
-itself still must never call _Disarm, :268-271). The
-agreed config is the one match select resolved and the relink handshake
-validated (docs/MATCH_SELECT_MILESTONE.md sections 2.6 and 7): track,
-laps, per-slot characters, the retail 2P AI set, and the derived seed.
-Task 7 must also handle asymmetric relink completion: each side's relink
-handshake completes independently, so one cabinet can reach START_RACE
-while the other times out to LINK ERROR; a lone racer would stall into
-PEER TIMEOUT, and a later rematch may be rejected. Retail cheat entry
-stays possible during the title intro before the menu-ready frame, which
-the layer leaves to retail so the intro skip keeps working (section 2.5,
-residual retail window), but Task 7 need not reset the gameMode2 cheat
-bits itself: RS-2 already does, since the setup plan pins every
-non-transient mode bit, cheat bits included. The design, the answer to
-asymmetric relink completion (the launch agreement, RL-1..RL-7), and the
-interim race behaviour until Task 8 (the launch rehearsal, RL-10) live in
-docs/RACE_LAUNCH_MILESTONE.md.
+Status: done (RL-S1..RL-S11, 894788d2b through e5279e31d plus the RL-S11
+docs close-out). Design, slices, and evidence:
+docs/RACE_LAUNCH_MILESTONE.md (defaults RL-1..RL-15; section 3 records how
+each done criterion is proven). START_RACE now follows a launch commit
+exchanged on the peer-link aux route (the launch record,
+platform/native_arcade_launch.c; the flow's launchStatus gate; the netplay
+adapter's launch agreement), and the arcade-link hook hands it to the live
+race caller game/MAIN/MainArcadeRaceLaunch.{c,h}, stepped by
+MainFrame_RenderFrame right after the hook and driven by the pure decision
+core game/MAIN/MainArcadeRaceLaunchCore.{c,h}. From the title launch window
+the caller arms the live race setup seam game/MAIN/MainArcadeRaceSetup
+(docs/ROSTER_MILESTONE.md section 3.2) with the exact agreed
+NativeMatchConfigV1 (NativeArcadeLinkHost_GetAgreedConfig), launches it,
+and leaves the title; logs one RL-12 line per validated race with the
+config, race plan, bot setup plan, and bank digests
+(MainArcadeRaceSetup_Digests); ends a FAILED setup, an Arm or Launch
+failure, or a bounded-wait expiry as a local RESULTS LINK ERROR through
+NativeArcadeLinkHost_ReportRaceFailure (RL-11, closing RS-10); returns to
+the main-menu level; and Disarms once per race on the first idle main-menu
+frame, so a rematch arms a second race in the same process. The
+tests/main_arcade_race_setup_isolation_test.cmake allow-list names exactly
+this one new caller file, and the adapter still never calls _Disarm.
+Asymmetric relink completion is answered by the launch agreement
+(RL-1..RL-7): a one-sided relink launches neither cabinet, and the residual
+two-generals case is fail-safe. Race frames are ticked, not owned (RL-8,
+tickOnly). The pause-menu vibration toggle is guarded while a race setup
+is not IDLE (RL-13), and sound IDs are kept out of cross-cabinet identity
+by an isolation test (RL-14). Retail cheat entry stays possible during the
+title intro before the menu-ready frame (section 2.5, residual retail
+window); RS-2 resets the gameMode2 cheat bits through the seam. Until Task
+8 a linked race is the launch rehearsal (RL-10): it loads and starts on
+neutral installed pads, nobody drives it, and after 150 ticks the caller
+reports it finished (RESULTS, RACE COMPLETE). The live two-process gate
+arcade_link_launch (RL-15, label live) has a recorded, non-skipped PASS at
+e5279e31d. MainArcadeRaceSetup_Bank is not consumed yet; projecting it is
+Task 8.
 
 ### Task 8 -- in-race lockstep drive and failure handling
 
-Status: gated on task 7 and on live V4 canonical projection. The race
+Status: gated on live V4 canonical projection (Task 7 is done). The race
 driver lives under platform/, because it calls the platform-only
 NativeArcadeNetplay_OnTakeResult and NativeArcadeNetplay_Link hooks and the
 lockstep session API, none of which game code may name. Per tick:
@@ -1078,11 +1100,12 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
 
 ## 6. Risks and open questions
 
-1. The step-3 roster wiring exists (the MainArcadeRaceSetup seam,
-   docs/ROSTER_MILESTONE.md), but Task 7 is not started and Task 8 is
-   gated on it and on live V4 projection. Until then the live hook can
-   reach LOBBY, MATCH_FOUND, the match-select screens, and the preview
-   screens, but not a real networked race.
+1. Task 7 is done (docs/RACE_LAUNCH_MILESTONE.md): the live hook reaches
+   LOBBY, MATCH_FOUND, the match-select screens, a launched and VALIDATED
+   linked race, RESULTS, and a rematch. The race is the undriven launch
+   rehearsal (RL-10) until Task 8, which is gated on live V4 projection,
+   so there is no real networked race yet: no input exchange and no
+   in-race stall or desync detection beyond the adapter's lobby poll.
 2. Stale bundles from a just-finished session that arrive after a rematch
    link has opened on the same port would be staged by the peer link and
    fault the new session on its match identity. Both peers stop sending
@@ -1112,7 +1135,8 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
    gameMode2 bit at Launch and again at race init, and the post-drivers
    check fails closed if a cheat bit is set (docs/ROSTER_MILESTONE.md). So
    Task 7 need not reset them itself, as long as it launches through
-   MainArcadeRaceSetup.
+   MainArcadeRaceSetup, which it does (the race caller,
+   game/MAIN/MainArcadeRaceLaunch.c).
 9. The two-instance loopback run was driven by script on one machine with
    the G29 hidden from SDL. No real two-cabinet or real-wheel run has
    happened; that is the step 6/7 requirement.

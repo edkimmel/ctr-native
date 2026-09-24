@@ -96,8 +96,9 @@
  * - the demo race's drivers were spawned from its own characterIDs at its own
  *   init, so the new values reach it only through presentation readers
  *   (voice lines, HUD) for those frames;
- * - it has a precedent: the arcade-link return-to-title
- *   (MainArcadeLink.c:239-245) writes boolDemoMode and numPlyrNextGame and
+ * - it has a precedent: the arcade-link return-to-title (the
+ *   RETURN_TO_TITLE branch of MainArcadeLink_LinkTick in MainArcadeLink.c)
+ *   writes boolDemoMode and numPlyrNextGame and
  *   requests a load under the running demo race in the same way.
  * This does not contradict the Disarm rule that gameMode1 must not change
  * under a running race. That rule protects the race this setup launched,

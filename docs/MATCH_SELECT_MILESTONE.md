@@ -32,7 +32,8 @@ built here.
 Real two-cabinet, physical-hardware validation (real wire, real switch, real
 G29 input) is not part of this milestone; it stays gated behind step 6 (CAB1
 G29/kiosk gate) and step 7 (two-cabinet fleet acceptance). Launching the
-race on the agreed config is GAME_LOOP_UI Task 7 and stays gated on step 3.
+race on the agreed config is GAME_LOOP_UI Task 7, now done
+(docs/RACE_LAUNCH_MILESTONE.md).
 
 ## 1. Starting point
 
@@ -385,12 +386,13 @@ The adapter owns one select session.
 - Rematch cursors (OD-3). The rematch base derives from lastReadyConfig,
   so after a finished race it carries the previous picks and each cursor
   starts on them; the netplay loopback test
-  TestSelectRematchThroughSelect proves this. It is not reachable live
-  today: every START_RACE calls NativeArcadeLinkHost_AbortToTitle, which
-  shuts the adapter down and re-inits it (clearing lastReadyValid), so the
-  only reachable rematch follows a pre-race LINK ERROR and its cursors
-  start from the select base (the fixture on a first match). Starting on
-  the previous picks becomes live with Task 7.
+  TestSelectRematchThroughSelect proves this. It is reachable live since
+  Task 7: START_RACE no longer calls NativeArcadeLinkHost_AbortToTitle
+  (docs/RACE_LAUNCH_MILESTONE.md RL-S8b), so the adapter keeps
+  lastReadyConfig across the race, taken in ArmRace on the START_RACE of
+  a relink lobby (RL-6), and a rematch after a finished race starts its
+  cursors on the previous picks. A rematch after a pre-race LINK ERROR
+  still starts from the select base.
 - selectEntropy is host-local and never parsed from argv. main.c reads the
   wall clock and SDL's performance counter once, only with --arcade-link
   ((time << 32) XOR counter); default and preview runs leave it 0. The host
@@ -398,8 +400,11 @@ The adapter owns one select session.
   AbortToTitle, before it initializes the adapter:
   NativeArcadeLinkHost_MixSelectEntropy = entropy XOR (epoch *
   0x9E3779B97F4A7C15). AbortToTitle re-runs the adapter's Init (restarting
-  selectSerial) after every START_RACE, so without the epoch the
-  first-select nonces would repeat; with it they vary. Previews never
+  selectSerial), so without the epoch the first-select nonces would repeat
+  across it; with it they vary. Until Task 7 that happened after every
+  START_RACE; since RL-S8b no game code calls AbortToTitle, so one
+  adapter Init lasts the whole link run and selectSerial keeps counting
+  across races. Previews never
   derive a nonce. The entropy reaches identity only through the exchanged
   nonces and the agreed masterSeed.
 - Each tick in SELECT, and in SELECT_RESULT before RELINK: drain the aux
@@ -475,8 +480,10 @@ The adapter owns one select session.
   - select-result: SELECT_RESULT, CONFIRMED: TIGER TEMPLE drawn (the votes
     differ), 3 laps agreed, P1 CRASH, P2 CORTEX, no reassignment, and the
     bots of retail 2P AI set 0 (POLAR, N. GIN, TINY, COCO).
-- START_RACE still returns to the title (Task 7 is gated). Before the
-  "not wired yet" line, the hook logs the agreed match with Platform_Log:
+- On START_RACE the hook logs the agreed match with Platform_Log, then
+  hands the launch to the live race caller (Task 7,
+  docs/RACE_LAUNCH_MILESTONE.md RL-S8b; until Task 7 it returned to the
+  title with a "not wired yet" line). The agreed-match line:
   "arcade link: agreed match track <id> laps <n> seed 0x<16 hex> slots
   <8 characters> (<8 roles>)", the roles as 1, 2, B (bot), or - (inactive).
 
@@ -570,9 +577,9 @@ These are decided by the owner, not defaults.
    a new derived seed -> MATCH FOUND -> select again, never keeping the
    previous picks. Each cursor starts on that player's previous pick,
    because the rematch base config carries them; the adapter implements
-   and tests this (2.6), and it becomes live with Task 7. Today every
-   START_RACE aborts to the title, so the only reachable rematch follows
-   a pre-race LINK ERROR and starts from the select base.
+   and tests this (2.6), and it is live since Task 7: a rematch after a
+   finished race starts on the previous picks, and one after a pre-race
+   LINK ERROR starts from the select base.
 
 ## 4. Owner-accepted UX defaults
 
@@ -583,7 +590,7 @@ owner has accepted all of them, SEL-1..SEL-17, as decisions.
 1. SEL-1: A vote tie resolves by a seeded draw among the tied options only,
    not among all tracks, so a player's vote always counts.
 2. SEL-2: The lap options are 3, 5, 7, as in retail. The cursor starts on 3
-   (the fixture) or, once Task 7 makes a post-race rematch reachable, on
+   (the fixture) or, in a post-race rematch (reachable since Task 7), on
    the previous pick (2.6).
 3. SEL-3: The track list is the 16 base multiplayer tracks: no Oxide Station
    (retail offers it in 1P only) and no Turbo Track (it needs a save
@@ -758,9 +765,11 @@ docs/LOBBY_MILESTONE.md peer-link note.
 
 ## 7. Risks and open questions
 
-1. GAME_LOOP_UI Task 7 must map the agreed config onto gGT->levelID,
-   gGT->numLaps, and data.characterIDs, and load the 2P AI pack of the
-   chosen set. The bot rule mirrors LOAD_Robots2P, so that pack exists.
+1. Closed by GAME_LOOP_UI Task 7: the race caller arms the race setup
+   seam with the agreed config, whose plan maps it onto gGT->levelID,
+   gGT->numLaps, and data.characterIDs, and the retail 2P load brings in
+   the chosen set's AI pack. The bot rule mirrors LOAD_Robots2P, so that
+   pack exists; arcade_link_launch validates two such races live.
 2. NativeMatchConfigV1 supports only two humans; 3-4 humans (step 8) need a
    config change. The rules, message, and session are already sized for 4.
 3. If every select message during the 60-tick linger is lost, the peer
@@ -771,13 +780,18 @@ docs/LOBBY_MILESTONE.md peer-link note.
    run remains the step 6/7 gate.
 6. The capture checker cannot tell select screens with a similar layout
    apart beyond their band structure (like GAME_LOOP_UI risk 14).
-7. Asymmetric relink completion (a Task 7 gate item). Each side's relink
-   handshake completes independently, so one cabinet can reach READY and
-   START_RACE on the resolved config while the other times out to LINK
-   ERROR. Today START_RACE aborts to the title, so no race runs, but Task 7
-   must handle it: a lone racer would stall into PEER TIMEOUT, and a later
-   rematch may be rejected, because the two sides' lastReadyConfig differ
-   (2.6).
+7. Asymmetric relink completion (a Task 7 gate item, now handled). Each
+   side's relink handshake completes independently, so one cabinet can
+   reach READY on the resolved config while the other times out to LINK
+   ERROR. Task 7 answers it with the launch agreement
+   (docs/RACE_LAUNCH_MILESTONE.md RL-1..RL-7): START_RACE needs a launch
+   commit, a relink that completes on one side only launches neither
+   cabinet, and lastReadyConfig of a relink lobby is taken at START_RACE
+   (RL-6), so the rematch after it agrees; the netplay loopback tests
+   prove both. The residual two-generals case (a commit whose records
+   never reach the peer before its launch timeout) launches one cabinet
+   alone; it is fail-safe, and the rematch is REJECTED to OPPONENT LEFT on
+   both (RL-7).
 8. A stale select record from an earlier select on the same base is not
    filtered by baseDigest (2.3). It fails safe (NONCE_CHANGED,
    DIGEST_MISMATCH, or PEER_SILENT), never a wrong agreement, and the aux
@@ -790,6 +804,9 @@ docs/LOBBY_MILESTONE.md peer-link note.
 11. The title scene behind the translucent panel differs between parallel
     and one-at-a-time preview renders; the capture checker was calibrated
     to pass both (native_capture_check.c records the ranges).
-12. Until Task 7, a live `--arcade-link` run shows up to about 60 s of
-    select (three 20 s items), the 2 s result, and the relink before
-    START_RACE logs the agreed match and returns to the title.
+12. A live `--arcade-link` run shows up to about 60 s of select (three
+    20 s items), the 2 s result, and the relink and launch agreement
+    before START_RACE logs the agreed match and launches the race. Until
+    Task 8 that race is the undriven launch rehearsal
+    (docs/RACE_LAUNCH_MILESTONE.md RL-10), which reports itself finished
+    150 ticks after race tick 0 and shows RESULTS (RACE COMPLETE).

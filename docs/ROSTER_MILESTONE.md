@@ -155,8 +155,9 @@ C and E for TWO_CAB, their one-cab counterparts I and J for ONE_CAB),
 and seed divergence. The ONE_CAB runs go through the 1P setup, the green
 light, bot driving, and 1P race physics, digested through the rng,
 rcontrol, and topology-free drivers digests (the Physics group itself is
-not digested, RS-13). Networked launch (Task 7), the in-race lockstep
-drive (Task 8), and real two-cabinet evidence (steps 6-7) remain.
+not digested, RS-13). Networked launch (Task 7) is done
+(docs/RACE_LAUNCH_MILESTONE.md); the in-race lockstep drive (Task 8) and
+real two-cabinet evidence (steps 6-7) remain.
 
 ## 3. Decided design
 
@@ -325,9 +326,9 @@ The seam (Task 7's entry points; the proof uses the same ones):
   (MainArcadeRaceSetupCore.c:214, checked at :423). After a Launch it
   restores the saved bits only on the idle main-menu level; otherwise it
   leaves them as they are and logs that, since gameMode1 must not change
-  under a running race. "As they are" means 0 from the pin unless the
-  pause-menu toggle (game/MAIN/MainFreeze.c:518, risk 8) flipped one
-  mid-race.
+  under a running race. "As they are" means 0 from the pin; the pause-menu
+  toggle (game/MAIN/MainFreeze.c, risk 8) can no longer flip one mid-race
+  since Task 7's RL-13 guard.
 
 Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
 
@@ -348,7 +349,9 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   each nav path's numPoints. VALIDATED, else FAILED; it writes no retail
   field.
 - A hook in the wrong state (OnFinalizeInitBegin in SEEDED or VALIDATED,
-  OnDriversInitialized in LAUNCHED) latches FAILED/STATE; a hook that
+  OnDriversInitialized in LAUNCHED) latches FAILED/STATE, except, since
+  Task 7's RL-9 change, OnFinalizeInitBegin in VALIDATED with a tracker
+  on the main-menu level (the return load), a no-op; a hook that
   should act without a game tracker latches FAILED/NO_TRACKER. Every other
   hook call is a no-op, so default boot and every load not launched here
   are unchanged.
@@ -356,7 +359,8 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   checkpoint region, never recorded or canonical (RS-11).
 - tests/main_arcade_race_setup_isolation_test.cmake enforces the hook
   placement, that Arm, Launch, and Disarm are named only in
-  MainArcadeRaceSetup.{c,h} and MainArcadeRosterProof.c, that each core
+  MainArcadeRaceSetup.{c,h}, MainArcadeRosterProof.c, and (since Task 7)
+  the race caller MainArcadeRaceLaunch.c, that each core
   write target stores to its one retail field, that nothing writes
   levelID, and the token bans. The plan, facts, and core have their own
   unit and isolation tests; each unit test covers both profiles, and the
@@ -541,7 +545,7 @@ overrode the TWO_CAB-only default.
    fails closed (FACTS) if a cheat bit or a plan bit changed. Nonzero
    config values are reserved for future modes and rejected. This closes
    the Task 7 cheat-reset item (GAME_LOOP_UI risk 8) once Task 7 launches
-   through the seam.
+   through the seam, which it does (game/MAIN/MainArcadeRaceLaunch.c).
 3. RS-3: Difficulty stays global, as in retail. Every bot slot carries the
    retail speed value (0x50 easy, 0xA0 medium, 0xF0 hard), all equal; human
    slots carry 0. The arcade-link fixture uses medium (0xA0).
@@ -568,6 +572,13 @@ overrode the TWO_CAB-only default.
    (section 4 intro).
 10. RS-10: A fact-validation failure latches FAILED and logs; step 3 does
     not abort the race itself. Task 7 decides the player-facing response.
+    Closed by Task 7 RL-11 (docs/RACE_LAUNCH_MILESTONE.md): a FAILED setup
+    before the rehearsal ends, an Arm or Launch failure, or a bounded-wait
+    expiry ends the linked race locally as RESULTS LINK ERROR through
+    NativeArcadeLinkHost_ReportRaceFailure (the peer is not told); the race
+    caller logs the failure, returns to the main-menu level, clears the
+    rehearsal pads, and Disarms on the first idle main-menu frame (at once
+    after an Arm or Launch failure at the title).
 11. RS-11: Setup state is game-owned static, never checkpointed, replayed,
     or canonical; quick states are disabled in proof mode.
 12. RS-12: Boot-relative control counters are not altered by the setup in
@@ -975,10 +986,17 @@ parallel (C and I about 264 s each, the other eight about 81 s).
    pacing (RS-18) and only V2 playback cancels it (the recorded VSync
    packets and frame elapsed time), so Task 8 must adopt deterministic
    VBlanks per tick for linked races.
-8. The pause-menu vibration toggle flips a P*_VIBRATE bit in gameMode1
-   mid-race (game/MAIN/MainFreeze.c:518), and gameMode1 is canonical
-   control state, so one cabinet toggling rumble would diverge the control
-   digest. Tasks 7/8 must disable that row in linked races.
+8. Closed by Task 7 RL-13 (docs/RACE_LAUNCH_MILESTONE.md RL-S9). The
+   retail pause-menu vibration toggle flips a P*_VIBRATE bit in gameMode1
+   mid-race, and gameMode1 is canonical control state, so one cabinet
+   toggling rumble would diverge the control digest. A CTR_NATIVE guard in
+   the case 4-7 rows of PROCESSINPUTS_MainFreeze_MenuPtrOptions
+   (game/MAIN/MainFreeze.c, the write at :530) now skips the toggle while
+   MainArcadeRaceSetup_Status() is not IDLE (a linked race, or the
+   internal roster proof), pinned by
+   main_freeze_vibration_guard_isolation. The confirm sound and the
+   analog-controller row stay retail (risk 9); with the setup IDLE the
+   toggle is retail.
 9. data.rwd (the racing wheel calibration, loaded from the saved options,
    game/RaceConfig.c:16) applies only to NeGcon/JogCon pads, and native
    input produces only digital or analog pads, so it cannot reach a linked
@@ -994,12 +1012,19 @@ parallel (C and I about 264 s each, the other eight about 81 s).
 11. A second armed race in one session. R-5c fixed the stale race order:
     a launch after an earlier race (the attract demo race) reads the
     pre-race roster input and validates (run C). A new race init while the
-    setup is VALIDATED latches FAILED/STATE, so the owner must Disarm
-    between races. Disarm clears the whole state to IDLE, so Arm can run
-    again, but no live path does that yet: nothing calls Disarm (the
-    isolation test forbids the adapter from calling it itself), the proof
-    runs one race per process, and no test runs two armed races in one
-    process. Task 7 owns that sequence.
+    setup is VALIDATED latches FAILED/STATE (since RL-S8b, except the init
+    of the main-menu level), so the owner must Disarm between races.
+    Disarm clears the whole state to IDLE, so Arm can run again. Closed by
+    Task 7
+    (docs/RACE_LAUNCH_MILESTONE.md RL-9): the live race caller
+    (game/MAIN/MainArcadeRaceLaunch.c) Disarms once per race on the first
+    idle main-menu frame after it, and the RL-S8b seam change makes the
+    return load's init in VALIDATED on the main-menu level a no-op instead
+    of FAILED/STATE. The adapter still never calls Disarm itself (the
+    isolation test forbids it), and the proof still runs one race per
+    process. A rematch is a second armed race in one process, proven live
+    by arcade_link_launch (race 2 VALIDATED in the same process on both
+    cabinets) and by the decision core's two-races unit tests.
 12. Open review nit (R-6d re-review): the checker's failure branches for
     the race tick 0 timer pin and frameTimerConfetti have no offline
     fixture-report test; only the live test runs them, and only on the pass
@@ -1017,8 +1042,10 @@ parallel (C and I about 264 s each, the other eight about 81 s).
 14. ONE_CAB has no lobby or UI flow. The fixture, the arcade-link lobby,
     and match select remain TWO_CAB-only (RS-1); the only path that
     launches a race through the ONE_CAB setup is the internal roster proof
-    (`--arcade-roster-proof-profile one-cab`, RS-23). A player-facing
-    single-cabinet flow is a follow-up.
+    (`--arcade-roster-proof-profile one-cab`, RS-23). Task 7's networked
+    launch arms only the agreed config of the TWO_CAB link, so it does not
+    change this. A player-facing single-cabinet lobby and UI flow stays a
+    follow-up.
 15. Open optional review nits. OC-1 re-review: the bot rules isolation
     test does not pin numDrivers between the else-if chain and the spawn
     loop of MainInit_Drivers, and does not count LOAD_Robots1P calls with
