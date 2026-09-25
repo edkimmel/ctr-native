@@ -126,11 +126,41 @@ static int CheckNotRacing(void)
 	return 0;
 }
 
+/* No end-of-race record (LR-S6): 0, and *out untouched. */
+static int CheckNoRaceEnd(void)
+{
+	struct NativeArcadeLinkHostRaceEnd raceEnd;
+	struct NativeArcadeLinkHostRaceEnd sentinel;
+
+	memset(&raceEnd, 0xA5, sizeof(raceEnd));
+	sentinel = raceEnd;
+	CHECK(NativeArcadeLinkHost_TakeRaceEnd(&raceEnd) == 0);
+	CHECK(memcmp(&raceEnd, &sentinel, sizeof(raceEnd)) == 0);
+	CHECK(NativeArcadeLinkHost_TakeRaceEnd(NULL) == 0);
+	return 0;
+}
+
+/* Exactly one end-of-race record (LR-S6), with this race number, end
+ * reason, and foreign-bundle drop count; then none. */
+static int CheckRaceEnd(uint32_t raceNumber, uint32_t endReason, uint32_t drops)
+{
+	struct NativeArcadeLinkHostRaceEnd raceEnd;
+
+	memset(&raceEnd, 0xA5, sizeof(raceEnd));
+	CHECK(NativeArcadeLinkHost_TakeRaceEnd(&raceEnd) == 1);
+	CHECK(raceEnd.raceNumber == raceNumber);
+	CHECK(raceEnd.endReason == endReason);
+	CHECK(raceEnd.foreignBundleDrops == drops);
+	CHECK(CheckNoRaceEnd() == 0);
+	return 0;
+}
+
 /* Mode OFF and every call inert. */
 static int CheckInert(void)
 {
 	struct NativeArcadeLinkHostView view;
 
+	CHECK(CheckNoRaceEnd() == 0);
 	CHECK(CheckNoAgreedMatch() == 0);
 	CHECK(CheckNotRacing() == 0);
 	CHECK(NativeArcadeLinkHost_InternalSelectEntropy() == 0u);
@@ -1345,10 +1375,13 @@ static int TestLinkRaceFailureAndRacingQuery(void)
 	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
 	CHECK(NativeArcadeLinkHost_ReportRaceFailure() == 1);
 	/* The next Tick, with a same-tick finish: LINK ERROR outranks it. */
+	CHECK(CheckNoRaceEnd() == 0);
 	CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == ACT_NONE);
 	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
 	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
 	CHECK(CheckNotRacing() == 0);
+	/* LR-S6: the end-of-race record, once, from the first RESULTS tick. */
+	CHECK(CheckRaceEnd(1u, NATIVE_ARCADE_FLOW_END_LINK_ERROR, 0u) == 0);
 	/* The raced config stays readable on RESULTS, unchanged. */
 	memset(&afterFailure, 0xA5, sizeof(afterFailure));
 	CHECK(NativeArcadeLinkHost_GetAgreedConfig(&afterFailure) == 1);
@@ -1365,6 +1398,7 @@ static int TestLinkRaceFailureAndRacingQuery(void)
 		CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
 		CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
 		CHECK(CheckNotRacing() == 0);
+		CHECK(CheckNoRaceEnd() == 0);
 	}
 	CHECK(NativeArcadeNetplay_GetView(&g_peer, &peerView) == 1);
 	CHECK(peerView.lobbyStatus == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
@@ -1410,6 +1444,8 @@ static int TestLinkRaceFailureAndRacingQuery(void)
 	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK);
 	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF);
 	CHECK(CheckNotRacing() == 0);
+	/* An aborted race never reached RESULTS: no end-of-race record. */
+	CHECK(CheckNoRaceEnd() == 0);
 	CHECK(CheckNoAgreedMatch() == 0);
 	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
 	CHECK(CheckNotRacing() == 0);
@@ -1427,6 +1463,8 @@ static int TestLinkRaceFailureAndRacingQuery(void)
 	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
 	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
 	CHECK(CheckNotRacing() == 0);
+	/* The abort re-initialized the link, so this is race 1 again. */
+	CHECK(CheckRaceEnd(1u, NATIVE_ARCADE_FLOW_END_FINISHED, 0u) == 0);
 	memset(&afterFailure, 0xA5, sizeof(afterFailure));
 	CHECK(NativeArcadeLinkHost_GetAgreedConfig(&afterFailure) == 1);
 	CHECK(memcmp(&afterFailure, &race3, sizeof(race3)) == 0);
@@ -1467,6 +1505,8 @@ static int TestRacePacing(void)
 	CHECK(NativeArcadeLinkHost_Configure(&previewOptions, NULL) == 1);
 	CHECK(NativeArcadeLinkHost_RaceBegin() == 0);
 	NativeArcadeLinkHost_RaceEnd();
+	/* PREVIEW has no end-of-race record either (LR-S6). */
+	CHECK(CheckNoRaceEnd() == 0);
 	NativeArcadeLinkHost_Shutdown();
 	CHECK(CheckPacingUntouched(0, 0u) == 0);
 

@@ -275,6 +275,16 @@ static void MainArcadeLink_LogAgreedMatch(const struct NativeArcadeLinkHostMatch
 		(unsigned)match->slotCharacter[7], roles);
 }
 
+/* Logs the end of a linked race (the linked-race plan, LR-14 and
+ * LR-S6), once per race: its number, its end reason (the flow's
+ * NATIVE_ARCADE_FLOW_END_* value), and the records of another match the link
+ * dropped since the previous race end (stale bundles after a rematch). */
+static void MainArcadeLink_LogRaceEnd(const struct NativeArcadeLinkHostRaceEnd *raceEnd)
+{
+	Platform_Log("[CTR Native] arcade link: race %u ended (reason %u); foreign bundles dropped %u\n",
+		(unsigned)raceEnd->raceNumber, (unsigned)raceEnd->endReason, (unsigned)raceEnd->foreignBundleDrops);
+}
+
 /* The policy's class of the retail loading stage. */
 static uint32_t MainArcadeLink_StageClass(void)
 {
@@ -322,6 +332,7 @@ static void MainArcadeLink_ReturnStep(struct GameTracker *gGT, uint8_t returnAct
 static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainArcadeLinkPolicyOutput *output)
 {
 	struct NativeArcadeLinkHostMatch match;
+	struct NativeArcadeLinkHostRaceEnd raceEnd;
 	uint32_t action;
 
 	if (output->enterPressed != 0u)
@@ -335,6 +346,12 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 	/* The internal RL-15 autopilot observes every tick (inert unless
 	 * configured). */
 	MainArcadeLinkAutopilot_AfterTick(action);
+
+	/* LR-14: the end-of-race line, on the tick the race reached RESULTS. */
+	if (NativeArcadeLinkHost_TakeRaceEnd(&raceEnd))
+	{
+		MainArcadeLink_LogRaceEnd(&raceEnd);
+	}
 
 	if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)
 	{

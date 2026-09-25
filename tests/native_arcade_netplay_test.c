@@ -162,6 +162,14 @@
 /* RL-S6: the local race-failure input. */
 #define TEST_LOCAL_FAILURE_A_PORT 48490u
 #define TEST_LOCAL_FAILURE_B_PORT 48491u
+/* LR-S6 (docs/LOCKSTEP_RACE_MILESTONE.md LR-14): stale bundles after a
+ * rematch. */
+#define TEST_STALE_DESYNC_A_PORT 48492u
+#define TEST_STALE_DESYNC_B_PORT 48493u
+#define TEST_STALE_PRE_RACE_A_PORT 48494u
+#define TEST_STALE_PRE_RACE_B_PORT 48495u
+#define TEST_STALE_LINGER_A_PORT 48496u
+#define TEST_STALE_LINGER_B_PORT 48497u
 
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
@@ -5538,6 +5546,462 @@ static int TestLocalRaceFailure(void)
 	return 0;
 }
 
+/* ---- LR-S6 (docs/LOCKSTEP_RACE_MILESTONE.md LR-14): stale bundles after a
+ * rematch ---- */
+
+/* The old match's bundles B keeps sending: frames 0..D of B's race session
+ * (digest-free, so composable at any time while it is RUNNING). Three, well
+ * under the peer link's 8-entry early-bundle staging buffer. */
+#define STALE_BUNDLE_COUNT (NATIVE_ARCADE_NETPLAY_DEFAULT_INPUT_DELAY + 1u)
+
+static uint8_t g_stale[STALE_BUNDLE_COUNT][NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+static uint8_t g_staleIdentity[NATIVE_LOCKSTEP_BUNDLE_V1_MATCH_IDENTITY_BYTES];
+
+/* A with the production cadence (150-tick attempt budget) and the given
+ * rematch wait, B likewise; every other timing stays small. */
+static int InitStalePair(const struct NativeMatchConfigV1 *fixture, uint32_t portA, uint32_t portB, uint32_t rematchWaitTicks)
+{
+	struct NativeArcadeNetplayConfig defaults;
+	struct NativeArcadeNetplayConfig config;
+
+	NativeArcadeNetplay_DefaultConfig(&defaults);
+	if (!MakeConfig(&config, fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, portA, portB))
+	{
+		return 0;
+	}
+	config.attemptTicksPerCandidate = defaults.attemptTicksPerCandidate;
+	config.timings.rematchWaitTimeoutTicks = rematchWaitTicks;
+	if (!NativeArcadeNetplay_Init(&g_a, &config))
+	{
+		return 0;
+	}
+	if (!MakeConfig(&config, fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, portB, portA))
+	{
+		return 0;
+	}
+	config.attemptTicksPerCandidate = defaults.attemptTicksPerCandidate;
+	config.timings.rematchWaitTimeoutTicks = rematchWaitTicks;
+	return NativeArcadeNetplay_Init(&g_b, &config);
+}
+
+/* On RACING: keeps B's frames 0..D, composed from its race session, and
+ * that session's match identity. */
+static int KeepStaleBundles(void)
+{
+	struct NativeLockstepPeerLink *link = NativeArcadeNetplay_Link(&g_b);
+	struct NativeLockstepSession *session;
+	size_t size = 0;
+	uint32_t frame;
+
+	CHECK(link != NULL);
+	session = NativeLockstepPeerLink_Session(link);
+	CHECK(NativeLockstepSession_Mode(session) == NATIVE_LOCKSTEP_RUNNING);
+	for (frame = 0; frame < STALE_BUNDLE_COUNT; frame++)
+	{
+		CHECK(NativeLockstepSession_ComposeBundle(session, frame, g_stale[frame], sizeof(g_stale[frame]), &size) == 1);
+		CHECK(size == NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES);
+	}
+	memcpy(g_staleIdentity, session->matchIdentity, sizeof(g_staleIdentity));
+	return 0;
+}
+
+/* One kept stale bundle, sent from B's open link's socket (B's cabinet port,
+ * so A's sender filter passes it) to A: the resend of a cabinet still held
+ * on the old match. */
+static int SendStale(uint32_t toPort, uint32_t index)
+{
+	struct NativeUdpTransportAddress to;
+	struct NativeLockstepPeerLink *link = NativeArcadeNetplay_Link(&g_b);
+
+	CHECK(link != NULL);
+	CHECK(NativeUdpTransport_MakeAddress(&to, "127.0.0.1", (uint16_t)toPort));
+	CHECK(NativeUdpTransport_Send(&link->transport, &to, g_stale[index % STALE_BUNDLE_COUNT], NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES));
+	return 0;
+}
+
+/* netplay's end-of-race record: exactly one, with this race number, end
+ * reason, and drop count; a second take finds nothing. */
+static int ExpectRaceEnd(struct NativeArcadeNetplay *netplay, uint32_t raceNumber, uint32_t endReason, uint32_t drops)
+{
+	struct NativeArcadeNetplayRaceEnd raceEnd;
+	struct NativeArcadeNetplayRaceEnd sentinel;
+
+	memset(&raceEnd, 0xA5, sizeof(raceEnd));
+	CHECK(NativeArcadeNetplay_TakeRaceEnd(netplay, &raceEnd) == 1);
+	CHECK(raceEnd.raceNumber == raceNumber);
+	CHECK(raceEnd.endReason == endReason);
+	CHECK(raceEnd.foreignBundleDrops == drops);
+	memset(&raceEnd, 0xA5, sizeof(raceEnd));
+	sentinel = raceEnd;
+	CHECK(NativeArcadeNetplay_TakeRaceEnd(netplay, &raceEnd) == 0);
+	CHECK(memcmp(&raceEnd, &sentinel, sizeof(raceEnd)) == 0);
+	return 0;
+}
+
+/* No end-of-race record is latched on netplay. */
+static int ExpectNoRaceEnd(struct NativeArcadeNetplay *netplay)
+{
+	struct NativeArcadeNetplayRaceEnd raceEnd;
+
+	CHECK(NativeArcadeNetplay_TakeRaceEnd(netplay, &raceEnd) == 0);
+	return 0;
+}
+
+/* Tick both through the results dwell with no buttons (arming both menus). */
+static int DwellBoth(void)
+{
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint32_t tick;
+
+	for (tick = 0; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+	}
+	return 0;
+}
+
+/* Both have reached READY on the new match and moved on to SELECT: both
+ * links RUNNING on one new identity (not the old match's), with no fault or
+ * divergence on either session; A dropped exactly `drops` stale records and
+ * B none. */
+static int ExpectRematchReadyClean(uint32_t drops)
+{
+	struct NativeLockstepPeerLink *linkA = NativeArcadeNetplay_Link(&g_a);
+	struct NativeLockstepPeerLink *linkB = NativeArcadeNetplay_Link(&g_b);
+	struct NativeLockstepSession *sessionA;
+	struct NativeLockstepSession *sessionB;
+
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(linkA != NULL);
+	CHECK(linkB != NULL);
+	CHECK(NativeLockstepPeerLink_Mode(linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_Mode(linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	sessionA = NativeLockstepPeerLink_Session(linkA);
+	sessionB = NativeLockstepPeerLink_Session(linkB);
+	CHECK(NativeLockstepSession_FirstFault(sessionA) == NULL);
+	CHECK(NativeLockstepSession_FirstDivergence(sessionA) == NULL);
+	CHECK(NativeLockstepSession_FirstFault(sessionB) == NULL);
+	CHECK(NativeLockstepSession_FirstDivergence(sessionB) == NULL);
+	CHECK(memcmp(sessionA->matchIdentity, sessionB->matchIdentity, sizeof(sessionA->matchIdentity)) == 0);
+	CHECK(memcmp(sessionA->matchIdentity, g_staleIdentity, sizeof(g_staleIdentity)) != 0);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(linkA) == drops);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(linkB) == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedEarlyBundleCount(linkA) == 0u);
+	return 0;
+}
+
+/* TestInRaceDivergenceFromPoll's real race frames, as a helper: both
+ * sessions run frames over the real links (submit, compose and send, Tick to
+ * poll, take, record), A's simulation drifting from divergeFrame on, until
+ * both flows show DESYNC on RESULTS. */
+static int RaceUntilDesync(uint32_t divergeFrame)
+{
+	struct NativeCanonicalInputPadV1 pad;
+	struct NativeLockstepPeerLink *linkA = NativeArcadeNetplay_Link(&g_a);
+	struct NativeLockstepPeerLink *linkB = NativeArcadeNetplay_Link(&g_b);
+	struct NativeLockstepSession *sessionA;
+	struct NativeLockstepSession *sessionB;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	const uint32_t detectFrame = divergeFrame + NATIVE_ARCADE_NETPLAY_DEFAULT_INPUT_DELAY + 1u;
+	uint32_t frame;
+	uint32_t spin;
+	int left = 0;
+	int takenA;
+	int takenB;
+	int recordOk;
+
+	CHECK(linkA != NULL);
+	CHECK(linkB != NULL);
+	sessionA = NativeLockstepPeerLink_Session(linkA);
+	sessionB = NativeLockstepPeerLink_Session(linkB);
+	for (frame = 0; (frame <= detectFrame) && !left; frame++)
+	{
+		MakeTestPad(&pad, g_a.localSlot, frame);
+		CHECK(NativeLockstepSession_SubmitLocalInput(sessionA, frame, &pad) == 1);
+		MakeTestPad(&pad, g_b.localSlot, frame);
+		CHECK(NativeLockstepSession_SubmitLocalInput(sessionB, frame, &pad) == 1);
+		CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(linkA, frame) == 1);
+		CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(linkB, frame) == 1);
+
+		takenA = 0;
+		takenB = 0;
+		for (spin = 0; (spin < DRIVE_BUDGET) && !(takenA && takenB); spin++)
+		{
+			TickBoth(0u, 0u, 0u, &actionA, &actionB);
+			CHECK(actionA == ACT_NONE);
+			CHECK(actionB == ACT_NONE);
+			if ((ScreenOf(&g_a) != NATIVE_ARCADE_FLOW_SCREEN_RACING) || (ScreenOf(&g_b) != NATIVE_ARCADE_FLOW_SCREEN_RACING))
+			{
+				left = 1;
+				break;
+			}
+			if (!takenA)
+			{
+				takenA = TakeAndRecord(sessionA, frame, (frame >= divergeFrame) ? 3u : 0u, &recordOk) == NATIVE_LOCKSTEP_SESSION_OK;
+				CHECK(recordOk);
+			}
+			if (!takenB)
+			{
+				takenB = TakeAndRecord(sessionB, frame, 0u, &recordOk) == NATIVE_LOCKSTEP_SESSION_OK;
+				CHECK(recordOk);
+			}
+		}
+		CHECK(left || (takenA && takenB));
+	}
+	CHECK(left);
+	if (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING)
+	{
+		CHECK(TickUntilLeft(&g_a, NATIVE_ARCADE_FLOW_SCREEN_RACING, ACT_NONE));
+	}
+	if (ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING)
+	{
+		CHECK(TickUntilLeft(&g_b, NATIVE_ARCADE_FLOW_SCREEN_RACING, ACT_NONE));
+	}
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_DESYNC);
+	CHECK(EndReasonOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_END_DESYNC);
+	return 0;
+}
+
+/*
+ * LR-14, the live gate's race 2 -> race 3 transition: a DESYNC followed by
+ * REMATCH. Both show DESYNC; A confirms REMATCH while B stays on RESULTS and
+ * keeps resending its old match's bundles, one per tick, to A's new
+ * (HANDSHAKING) rematch link, which stages them. B then confirms REMATCH.
+ * Both reach READY on the rematch config with no fault: A's link dropped
+ * every stale record on replay instead of faulting MATCH_IDENTITY. The drops
+ * then reach the next race's end-of-race record on A, although the rematch
+ * link was closed at RELINK in between.
+ */
+static int TestRematchAfterDesyncDropsStaleBundles(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeArcadeNetplayRaceEnd raceEnd;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint32_t i;
+
+	/* The take refuses NULLs and an uninitialized adapter. */
+	CHECK(NativeArcadeNetplay_TakeRaceEnd(NULL, &raceEnd) == 0);
+	memset(&g_probe, 0, sizeof(g_probe));
+	g_probe.raceEndPending = 1u;
+	CHECK(NativeArcadeNetplay_TakeRaceEnd(&g_probe, &raceEnd) == 0);
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(InitStalePair(&fixture, TEST_STALE_DESYNC_A_PORT, TEST_STALE_DESYNC_B_PORT, REMATCH_WAIT_TIMEOUT_TICKS));
+	CHECK(NativeArcadeNetplay_TakeRaceEnd(&g_a, NULL) == 0);
+	CHECK(ExpectNoRaceEnd(&g_a) == 0);
+	CHECK(EnterAndRaceInitialized());
+	CHECK(ExpectNoRaceEnd(&g_a) == 0);
+	CHECK(KeepStaleBundles() == 0);
+	CHECK(RaceUntilDesync(6u) == 0);
+	/* Race 1 ended in DESYNC on both, with nothing dropped yet. */
+	CHECK(ExpectRaceEnd(&g_a, 1u, NATIVE_ARCADE_FLOW_END_DESYNC, 0u) == 0);
+	CHECK(ExpectRaceEnd(&g_b, 1u, NATIVE_ARCADE_FLOW_END_DESYNC, 0u) == 0);
+	CHECK(DwellBoth() == 0);
+
+	/* A confirms REMATCH; B, on RESULTS, keeps sending the old bundles. */
+	TickBoth(BTN_CROSS, 0u, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_BEGIN_REMATCH);
+	CHECK(actionB == ACT_NONE);
+	for (i = 0; i < STALE_BUNDLE_COUNT; i++)
+	{
+		CHECK(SendStale(TEST_STALE_DESYNC_A_PORT, i) == 0);
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+		CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+		CHECK(NativeLockstepPeerLink_Mode(NativeArcadeNetplay_Link(&g_a)) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+	}
+
+	/* B stops and confirms REMATCH too; both reach READY, then SELECT. */
+	TickBoth(0u, BTN_CROSS, 0u, &actionA, &actionB);
+	CHECK(actionB == ACT_BEGIN_REMATCH);
+	CHECK(DriveBothUntil(ACT_BEGIN_SELECT));
+	CHECK(ExpectRematchReadyClean(STALE_BUNDLE_COUNT) == 0);
+	CHECK(ExpectNoRaceEnd(&g_a) == 0);
+
+	/* On through the select and the relink (which closes A's rematch link)
+	 * to race 2, which finishes: its end-of-race record carries the drops. */
+	CHECK(DriveBothUntil(ACT_START_RACE));
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(NativeArcadeNetplay_Link(&g_a)) == 0u);
+	TickBoth(0u, 0u, 1u, &actionA, &actionB);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(ExpectRaceEnd(&g_a, 2u, NATIVE_ARCADE_FLOW_END_FINISHED, STALE_BUNDLE_COUNT) == 0);
+	CHECK(ExpectRaceEnd(&g_b, 2u, NATIVE_ARCADE_FLOW_END_FINISHED, 0u) == 0);
+	/* Once per race: RESULTS ticks latch nothing more. */
+	TickBoth(0u, 0u, 1u, &actionA, &actionB);
+	CHECK(ExpectNoRaceEnd(&g_a) == 0);
+
+	/* Shutdown drops a latched record. */
+	g_a.raceEndPending = 1u;
+	ShutdownBoth();
+	CHECK(ExpectNoRaceEnd(&g_a) == 0);
+	return 0;
+}
+
+/*
+ * LR-14 after a pre-race failure (RL-11): A's race fails locally, so A is on
+ * RESULTS (LINK ERROR) while B is still held on RACING and keeps resending
+ * its early bundles. A confirms REMATCH once its dwell ends; B's resends
+ * reach A's rematch link. The real 900-period start wait would outlast the
+ * 300-tick rematch wait, so the test ends B's stale sending itself after
+ * three ticks: B's race fails too, B passes its dwell and confirms REMATCH,
+ * well inside A's production 300-tick rematch wait. Both reach READY with no
+ * fault, A dropped every stale record, and A's rematch wait had not expired
+ * when both were READY.
+ */
+static int TestRematchAfterPreRaceFailureDropsStaleBundles(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeArcadeNetplayView view;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint32_t ticksInRematchWait = 0u;
+	uint32_t tick;
+	uint32_t i;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(InitStalePair(&fixture, TEST_STALE_PRE_RACE_A_PORT, TEST_STALE_PRE_RACE_B_PORT,
+		NATIVE_ARCADE_FLOW_DEFAULT_REMATCH_WAIT_TIMEOUT_TICKS));
+	CHECK(g_a.config.timings.rematchWaitTimeoutTicks == 300u);
+	CHECK(EnterAndRaceInitialized());
+	CHECK(KeepStaleBundles() == 0);
+
+	/* A's race fails before it starts; B is held on RACING. */
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(&g_a) == 1);
+	TickBoth(0u, 0u, 0u, &actionA, &actionB);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(ExpectRaceEnd(&g_a, 1u, NATIVE_ARCADE_FLOW_END_LINK_ERROR, 0u) == 0);
+	CHECK(ExpectNoRaceEnd(&g_b) == 0);
+	for (tick = 0; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+	}
+
+	/* A confirms REMATCH; held B keeps resending. */
+	TickBoth(BTN_CROSS, 0u, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_BEGIN_REMATCH);
+	CHECK(actionB == ACT_NONE);
+	for (i = 0; i < STALE_BUNDLE_COUNT; i++)
+	{
+		CHECK(SendStale(TEST_STALE_PRE_RACE_A_PORT, i) == 0);
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+		CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+		ticksInRematchWait += 1u;
+	}
+
+	/* B's stale sending ends: its race fails too, it passes its dwell, and
+	 * it confirms REMATCH. */
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(&g_b) == 1);
+	TickBoth(0u, 0u, 0u, &actionA, &actionB);
+	ticksInRematchWait += 1u;
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(ExpectRaceEnd(&g_b, 1u, NATIVE_ARCADE_FLOW_END_LINK_ERROR, 0u) == 0);
+	for (tick = 0; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+		ticksInRematchWait += 1u;
+	}
+	TickBoth(0u, BTN_CROSS, 0u, &actionA, &actionB);
+	CHECK(actionB == ACT_BEGIN_REMATCH);
+	ticksInRematchWait += 1u;
+
+	/* Until A leaves REMATCH_WAIT: to MATCH_FOUND (READY), not EXIT. */
+	for (tick = 0; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT); tick++)
+	{
+		CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+		CHECK(view.ticksInScreen < g_a.config.timings.rematchWaitTimeoutTicks);
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+		ticksInRematchWait += 1u;
+	}
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND);
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	CHECK(ticksInRematchWait < g_a.config.timings.rematchWaitTimeoutTicks);
+	CHECK(DriveBothUntil(ACT_BEGIN_SELECT));
+	CHECK(ExpectRematchReadyClean(STALE_BUNDLE_COUNT) == 0);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * LR-14 on a clean finish: the finish linger overlaps the return load
+ * (LR-13), so B, finished and on RESULTS, still sends its old match's
+ * bundles after A has confirmed REMATCH. A's rematch link drops them on
+ * replay; both reach READY with no fault. A late copy that arrives after
+ * the new link is RUNNING is dropped there too.
+ */
+static int TestRematchDuringFinishLingerDropsStaleBundles(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint32_t tick;
+	uint32_t i;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(InitStalePair(&fixture, TEST_STALE_LINGER_A_PORT, TEST_STALE_LINGER_B_PORT, REMATCH_WAIT_TIMEOUT_TICKS));
+	CHECK(EnterAndRaceInitialized());
+	CHECK(KeepStaleBundles() == 0);
+	CHECK(FinishAndDwell());
+	CHECK(ExpectRaceEnd(&g_a, 1u, NATIVE_ARCADE_FLOW_END_FINISHED, 0u) == 0);
+	CHECK(ExpectRaceEnd(&g_b, 1u, NATIVE_ARCADE_FLOW_END_FINISHED, 0u) == 0);
+
+	/* A confirms REMATCH; B lingers on its old, still RUNNING link. */
+	TickBoth(BTN_CROSS, 0u, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_BEGIN_REMATCH);
+	CHECK(actionB == ACT_NONE);
+	for (i = 0; i < STALE_BUNDLE_COUNT; i++)
+	{
+		CHECK(NativeLockstepPeerLink_Mode(NativeArcadeNetplay_Link(&g_b)) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+		CHECK(SendStale(TEST_STALE_LINGER_A_PORT, i) == 0);
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+		CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	}
+
+	TickBoth(0u, BTN_CROSS, 0u, &actionA, &actionB);
+	CHECK(actionB == ACT_BEGIN_REMATCH);
+	CHECK(DriveBothUntil(ACT_BEGIN_SELECT));
+	CHECK(ExpectRematchReadyClean(STALE_BUNDLE_COUNT) == 0);
+
+	/* A late copy, from B's port, reaches A's RUNNING rematch link. */
+	CHECK(SendStale(TEST_STALE_LINGER_A_PORT, 0u) == 0);
+	for (tick = 0; (tick < DRIVE_BUDGET) &&
+		(NativeLockstepPeerLink_DroppedForeignBundleCount(NativeArcadeNetplay_Link(&g_a)) < STALE_BUNDLE_COUNT + 1u);
+		tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+	}
+	CHECK(ExpectRematchReadyClean(STALE_BUNDLE_COUNT + 1u) == 0);
+
+	ShutdownBoth();
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestPure() == 0);
@@ -5586,6 +6050,9 @@ int main(void)
 	CHECK(TestLaunchStaleAcrossCloseTitleEnter() == 0);
 	CHECK(TestLaunchFaultDuringLinger() == 0);
 	CHECK(TestLocalRaceFailure() == 0);
+	CHECK(TestRematchAfterDesyncDropsStaleBundles() == 0);
+	CHECK(TestRematchAfterPreRaceFailureDropsStaleBundles() == 0);
+	CHECK(TestRematchDuringFinishLingerDropsStaleBundles() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }

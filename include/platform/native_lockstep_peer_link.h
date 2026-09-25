@@ -121,6 +121,20 @@ struct NativeLockstepPeerLink
 	 */
 	uint32_t droppedEarlyBundleCount;
 	/*
+	 * Foreign-identity drop counter (docs/LOCKSTEP_RACE_MILESTONE.md LR-14),
+	 * the same observable-counter idiom: incremented once for every
+	 * bundle-width record NativeLockstepPeerLink_Poll drops, while RUNNING
+	 * or when it replays staged early bundles, because the record's first
+	 * decode failure against this link's session is MATCH_IDENTITY, so it
+	 * belongs to another match (typically a finished one, arriving after a
+	 * rematch opened this link). Such a record never reaches the session.
+	 * Zeroed by a successful NativeLockstepPeerLink_Open only, like
+	 * droppedEarlyBundleCount. Host-local: never sent, and never part of a
+	 * checkpoint, replay, or canonical state. Read via
+	 * NativeLockstepPeerLink_DroppedForeignBundleCount.
+	 */
+	uint32_t droppedForeignBundleCount;
+	/*
 	 * Aux inbox, also private bookkeeping: a ring of received higher-layer
 	 * aux datagrams (each exactly NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES, opaque
 	 * to this module), filled by NativeLockstepPeerLink_Poll only while mode
@@ -143,9 +157,11 @@ struct NativeLockstepPeerLink
 /*
  * Calls NativeUdpTransport_GlobalInit, opens the transport on localPort,
  * stores the peer address, calls NativeLockstepHandshake_Init then _Begin
- * with proposedConfig/localRole, stores inputDelay, empties the aux inbox
- * and zeroes droppedAuxCount (so no aux datagram or count from a previous
- * link survives), sets mode HANDSHAKING, and immediately composes and sends
+ * with proposedConfig/localRole, stores inputDelay, empties the early-bundle
+ * staging buffer, zeroes droppedEarlyBundleCount and
+ * droppedForeignBundleCount, empties the aux inbox and zeroes
+ * droppedAuxCount (so no aux datagram or count from a previous link
+ * survives), sets mode HANDSHAKING, and immediately composes and sends
  * the first HELLO over the real socket to the peer address. Returns 0 and
  * cleans up anything partially opened (transport, global init) on any
  * failure -- a NULL argument, a bad transport open, a handshake Begin
@@ -228,8 +244,9 @@ void NativeLockstepPeerLink_Retransmit(struct NativeLockstepPeerLink *link);
  *     (localRole was captured at Open time), NativeLockstepSession_Init
  *     then _Open are called on this link's own session with the agreed
  *     config, inputDelay, and that slot index, and every early bundle
- *     staged so far is replayed into NativeLockstepSession_AcceptBundle, in
- *     arrival order, before this call returns: on session-open success mode
+ *     staged so far is replayed, in arrival order, before this call
+ *     returns, exactly as the bundle route below handles a record while
+ *     RUNNING (the foreign-identity drop included): on session-open success mode
  *     becomes RUNNING, on failure mode becomes FAULTED (a defensive path
  *     only, since Begin already validated the config). If the handshake
  *     mode becomes REJECTED, link mode becomes REJECTED. If this side's
@@ -238,11 +255,23 @@ void NativeLockstepPeerLink_Retransmit(struct NativeLockstepPeerLink *link);
  *     AcceptMessage's own documented no-op behavior on an already-terminal
  *     handshake applies and link mode is left exactly as it was.
  *   - Exactly NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES (128): while mode is
- *     RUNNING, fed to NativeLockstepSession_AcceptBundle on this link's own
- *     session; afterwards NativeLockstepSession_Mode is checked, DIVERGED
+ *     RUNNING, first decoded against this link's session (its match
+ *     identity, protocol version, and input delay) with
+ *     NativeLockstepBundleV1_Decode. A record whose first decode failure is
+ *     NATIVE_LOCKSTEP_FAULT_MATCH_IDENTITY belongs to another match
+ *     (docs/LOCKSTEP_RACE_MILESTONE.md LR-14): it is dropped, never reaches
+ *     the session, leaves link mode alone, and increments
+ *     droppedForeignBundleCount (readable through
+ *     NativeLockstepPeerLink_DroppedForeignBundleCount). The decoder checks
+ *     the record's own digest before its identity, so a corrupt record of
+ *     either identity is not dropped: like every other record it is fed,
+ *     unchanged, to NativeLockstepSession_AcceptBundle on this link's own
+ *     session, which latches its fault as before; afterwards
+ *     NativeLockstepSession_Mode is checked, DIVERGED
  *     sets link mode DIVERGED, FAULTED sets link mode FAULTED, anything
  *     else leaves RUNNING alone. While mode is still HANDSHAKING, it is
- *     staged into the early-bundle buffer instead (dropped only if that
+ *     staged into the early-bundle buffer instead, unscreened (the identity
+ *     is checked when it is replayed; dropped only if that
  *     buffer is already full, which needs more in-flight bundles than
  *     NATIVE_LOCKSTEP_PEER_LINK_EARLY_BUNDLE_CAPACITY, an already-generous,
  *     session-ring-matching bound; each such drop increments
@@ -295,6 +324,16 @@ enum NativeLockstepPeerLinkMode NativeLockstepPeerLink_Mode(const struct NativeL
  * mirroring NativeLockstepPeerLink_Mode's own NULL convention.
  */
 uint32_t NativeLockstepPeerLink_DroppedEarlyBundleCount(const struct NativeLockstepPeerLink *link);
+
+/*
+ * The same observable-counter idiom (docs/LOCKSTEP_RACE_MILESTONE.md LR-14):
+ * returns the number of foreign-identity records NativeLockstepPeerLink_Poll
+ * has dropped since the last successful NativeLockstepPeerLink_Open, while
+ * RUNNING or when replaying staged early bundles (see the
+ * NativeLockstepPeerLink_Poll doc comment above). Host-local. Returns 0 for
+ * a NULL link, mirroring NativeLockstepPeerLink_Mode's own NULL convention.
+ */
+uint32_t NativeLockstepPeerLink_DroppedForeignBundleCount(const struct NativeLockstepPeerLink *link);
 
 /*
  * Sends one higher-layer aux datagram, opaque to this module, to the peer

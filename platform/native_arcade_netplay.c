@@ -134,10 +134,36 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 	return 1;
 }
 
+/*
+ * LR-14: reads the open link's foreign-identity drop count and adds what is
+ * new since the last read to foreignDropsSinceRaceEnd (saturating). A count
+ * below the last read is a new link (the lobby closed and reopened one
+ * inside its own poll), so all of it is new. With no lobby or no open link
+ * the count reads 0. Called after every lobby poll and before every close or
+ * restart of the lobby, so no link's drops are lost when it closes.
+ */
+static void NativeArcadeNetplay_ReadForeignDrops(struct NativeArcadeNetplay *netplay)
+{
+	uint32_t count = 0u;
+	uint32_t added;
+
+	if (netplay->lobbyBegun != 0u)
+	{
+		count = NativeLockstepPeerLink_DroppedForeignBundleCount(NativeLobbyState_Link(&netplay->lobby));
+	}
+	added = (count >= netplay->linkForeignDropsSeen) ? (count - netplay->linkForeignDropsSeen) : count;
+	netplay->foreignDropsSinceRaceEnd = (added > (UINT32_MAX - netplay->foreignDropsSinceRaceEnd))
+		? UINT32_MAX
+		: (netplay->foreignDropsSinceRaceEnd + added);
+	netplay->linkForeignDropsSeen = count;
+}
+
 /* Opens a lobby on the current proposal. A failed open leaves lobbyBegun 0,
  * which reads as WAITING, so the flow's retry pause tries again. */
 static void NativeArcadeNetplay_BeginLobby(struct NativeArcadeNetplay *netplay)
 {
+	/* Every lobby begins on a fresh link. */
+	netplay->linkForeignDropsSeen = 0u;
 	netplay->lobbyReadySeen = 0u;
 	netplay->lobbyBegun = (uint8_t)(NativeLobbyState_Begin(&netplay->lobby, netplay->config.localPort,
 										netplay->config.candidates, netplay->config.candidateCount,
@@ -148,7 +174,9 @@ static void NativeArcadeNetplay_BeginLobby(struct NativeArcadeNetplay *netplay)
 
 static void NativeArcadeNetplay_CloseLobby(struct NativeArcadeNetplay *netplay)
 {
+	NativeArcadeNetplay_ReadForeignDrops(netplay);
 	NativeLobbyState_Close(&netplay->lobby);
+	netplay->linkForeignDropsSeen = 0u;
 	netplay->lobbyBegun = 0u;
 	netplay->lobbyReadySeen = 0u;
 	netplay->raceArmed = 0u;
@@ -166,8 +194,11 @@ static void NativeArcadeNetplay_RestartLobby(struct NativeArcadeNetplay *netplay
 		NativeArcadeNetplay_CloseLobby(netplay);
 		return;
 	}
+	/* The restart closes the lobby's link: its drops are read first. */
+	NativeArcadeNetplay_ReadForeignDrops(netplay);
 	if ((netplay->lobbyBegun != 0u) && NativeLobbyState_RestartCycle(&netplay->lobby))
 	{
+		netplay->linkForeignDropsSeen = 0u;
 		netplay->lobbyReadySeen = 0u;
 		return;
 	}
@@ -632,6 +663,7 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	enum NativeArcadeMenuEvent event;
 	enum NativeArcadeFlowAction action;
 	uint32_t serial;
+	uint32_t screenBefore;
 
 	if ((netplay == NULL) || (netplay->initialized == 0u))
 	{
@@ -648,11 +680,13 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 		return NATIVE_ARCADE_FLOW_ACTION_NONE;
 	}
 
-	/* 2. Service the lobby. */
+	/* 2. Service the lobby, then read the link's foreign-identity drops
+	 * (LR-14): the poll is where the link drops them. */
 	if (netplay->lobbyBegun != 0u)
 	{
 		NativeLobbyState_Poll(&netplay->lobby);
 	}
+	NativeArcadeNetplay_ReadForeignDrops(netplay);
 
 	/* 2a. The first READY of this lobby. A first or rematch lobby: its
 	 * proposal (the current config, which is what BeginLobby proposed) is
@@ -743,7 +777,21 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 			? NATIVE_ARCADE_FLOW_LAUNCH_COMMITTED : NATIVE_ARCADE_FLOW_LAUNCH_PENDING);
 
 	/* 6. Run the flow. */
+	screenBefore = NativeArcadeFlow_Screen(&netplay->flow);
 	action = NativeArcadeFlow_Tick(&netplay->flow, &observation, event);
+
+	/* 6a. The end of a race (LR-14): the flow's first RESULTS frame of it,
+	 * once per race (RACING only ever leaves to RESULTS, with action NONE).
+	 * The end-of-race record takes the drops since the previous race end. */
+	if ((screenBefore == NATIVE_ARCADE_FLOW_SCREEN_RACING) &&
+		(NativeArcadeFlow_Screen(&netplay->flow) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS))
+	{
+		netplay->raceEnd.raceNumber = netplay->matchCount;
+		netplay->raceEnd.endReason = NativeArcadeFlow_EndReason(&netplay->flow);
+		netplay->raceEnd.foreignBundleDrops = netplay->foreignDropsSinceRaceEnd;
+		netplay->foreignDropsSinceRaceEnd = 0u;
+		netplay->raceEndPending = 1u;
+	}
 
 	/* 7. Execute the host-side part of the action. RELINK, RESTART_LOBBY,
 	 * CLOSE_LINK, BEGIN_SELECT, BEGIN_REMATCH, and RETURN_TO_TITLE reset the
@@ -804,6 +852,17 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 
 	/* 9. START_RACE and RETURN_TO_TITLE are the caller's cue. */
 	return action;
+}
+
+int NativeArcadeNetplay_TakeRaceEnd(struct NativeArcadeNetplay *netplay, struct NativeArcadeNetplayRaceEnd *out)
+{
+	if ((netplay == NULL) || (out == NULL) || (netplay->initialized == 0u) || (netplay->raceEndPending == 0u))
+	{
+		return 0;
+	}
+	*out = netplay->raceEnd;
+	netplay->raceEndPending = 0u;
+	return 1;
 }
 
 int NativeArcadeNetplay_ReportLocalRaceFailure(struct NativeArcadeNetplay *netplay)
@@ -1078,4 +1137,5 @@ void NativeArcadeNetplay_Shutdown(struct NativeArcadeNetplay *netplay)
 	NativeArcadeLaunch_Reset(&netplay->launch);
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 	netplay->localRaceFailure = 0u;
+	netplay->raceEndPending = 0u;
 }

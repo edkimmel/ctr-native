@@ -66,6 +66,7 @@ int NativeLockstepPeerLink_Open(struct NativeLockstepPeerLink *link, uint16_t lo
 	link->localRole = localRole;
 	link->earlyBundleCount = 0;
 	link->droppedEarlyBundleCount = 0;
+	link->droppedForeignBundleCount = 0;
 	NativeLockstepPeerLink_ResetAux(link);
 	link->mode = NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING;
 	link->opened = 1;
@@ -119,14 +120,65 @@ static void NativeLockstepPeerLink_ApplySessionMode(struct NativeLockstepPeerLin
 	}
 }
 
+/*
+ * LR-14 (docs/LOCKSTEP_RACE_MILESTONE.md): 1 when a bundle-width record is
+ * another match's, so it must be dropped rather than handed to the session.
+ * The record is decoded against this link's open session (its match
+ * identity, protocol version, and input delay) with the unchanged decoder,
+ * and it is foreign exactly when the decoder's first failure is
+ * MATCH_IDENTITY. The decoder checks magic, version, size, and the record's
+ * own digest before the identity, so a corrupt record of either identity
+ * fails earlier (BAD_DIGEST, for instance) and is not foreign: it goes to the
+ * session and faults there as before. A record that decodes, or fails on any
+ * check after the identity, is not foreign either. Only called while the
+ * session is open (RUNNING link mode).
+ */
+static int NativeLockstepPeerLink_IsForeignBundle(const struct NativeLockstepPeerLink *link, const uint8_t *bytes, size_t size)
+{
+	struct NativeCodecReader reader;
+	struct NativeLockstepBundleV1 bundle;
+	uint32_t cause = NATIVE_LOCKSTEP_FAULT_NONE;
+
+	if (size != NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES)
+	{
+		return 0;
+	}
+	NativeCodecReader_Init(&reader, bytes, size);
+	if (NativeLockstepBundleV1_Decode(&reader, link->session.matchIdentity, link->session.protocolVersion,
+		    link->session.inputDelay, &bundle, &cause))
+	{
+		return 0;
+	}
+	return (cause == NATIVE_LOCKSTEP_FAULT_MATCH_IDENTITY) ? 1 : 0;
+}
+
+/* The one path by which a bundle reaches the session, while RUNNING: a
+ * foreign-identity record (LR-14) is dropped and counted in
+ * droppedForeignBundleCount; every other record goes to
+ * NativeLockstepSession_AcceptBundle unchanged, and the session's
+ * DIVERGED/FAULTED latch is mirrored into link mode. */
+static void NativeLockstepPeerLink_AcceptOrDropBundle(struct NativeLockstepPeerLink *link, const uint8_t *bytes, size_t size)
+{
+	if (NativeLockstepPeerLink_IsForeignBundle(link, bytes, size))
+	{
+		link->droppedForeignBundleCount++;
+		return;
+	}
+	(void)NativeLockstepSession_AcceptBundle(&link->session, bytes, size);
+	NativeLockstepPeerLink_ApplySessionMode(link);
+}
+
 /* Called exactly once, immediately after this side's own handshake latches
  * COMPLETE and NativeLockstepSession_Open has just succeeded: hands every
  * bundle staged by NativeLockstepPeerLink_Poll while this side was still
  * HANDSHAKING to the freshly opened session, in the order they arrived, then
  * clears the buffer. Mirrors NativeLockstepPeerLink_Poll's own RUNNING-mode
- * handling for each one, including the DIVERGED/FAULTED mode transitions,
- * so a peer whose bundles arrived early is treated exactly as if this side
- * had already been RUNNING when they arrived. */
+ * handling for each one, including the foreign-identity drop (LR-14) and the
+ * DIVERGED/FAULTED mode transitions, so a peer whose bundles arrived early is
+ * treated exactly as if this side had already been RUNNING when they
+ * arrived. The identity is screened here, on replay, not when a record is
+ * staged: before the session opens there is no agreed identity to screen
+ * against. */
 static void NativeLockstepPeerLink_ReplayEarlyBundles(struct NativeLockstepPeerLink *link)
 {
 	for (uint32_t i = 0; i < link->earlyBundleCount; i++)
@@ -137,8 +189,7 @@ static void NativeLockstepPeerLink_ReplayEarlyBundles(struct NativeLockstepPeerL
 			 * session is no longer RUNNING for simulation purposes. */
 			break;
 		}
-		(void)NativeLockstepSession_AcceptBundle(&link->session, link->earlyBundleBytes[i], link->earlyBundleSizes[i]);
-		NativeLockstepPeerLink_ApplySessionMode(link);
+		NativeLockstepPeerLink_AcceptOrDropBundle(link, link->earlyBundleBytes[i], link->earlyBundleSizes[i]);
 	}
 	link->earlyBundleCount = 0;
 }
@@ -205,15 +256,15 @@ static void NativeLockstepPeerLink_HandleHandshakeDatagram(struct NativeLockstep
 }
 
 /* Handles one NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES-sized datagram: fed
- * straight to the session while RUNNING, staged for later replay while
- * still HANDSHAKING (see NativeLockstepPeerLink_ReplayEarlyBundles), and
- * dropped in every other (terminal) mode. */
+ * to the session while RUNNING (a foreign-identity record is dropped and
+ * counted instead, LR-14), staged for later replay while still HANDSHAKING
+ * (see NativeLockstepPeerLink_ReplayEarlyBundles), and dropped in every
+ * other (terminal) mode. */
 static void NativeLockstepPeerLink_HandleBundleDatagram(struct NativeLockstepPeerLink *link, const uint8_t *bytes, size_t size)
 {
 	if (link->mode == NATIVE_LOCKSTEP_PEER_LINK_RUNNING)
 	{
-		(void)NativeLockstepSession_AcceptBundle(&link->session, bytes, size);
-		NativeLockstepPeerLink_ApplySessionMode(link);
+		NativeLockstepPeerLink_AcceptOrDropBundle(link, bytes, size);
 	}
 	else if (link->mode == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING)
 	{
@@ -335,6 +386,11 @@ enum NativeLockstepPeerLinkMode NativeLockstepPeerLink_Mode(const struct NativeL
 uint32_t NativeLockstepPeerLink_DroppedEarlyBundleCount(const struct NativeLockstepPeerLink *link)
 {
 	return (link != NULL) ? link->droppedEarlyBundleCount : 0u;
+}
+
+uint32_t NativeLockstepPeerLink_DroppedForeignBundleCount(const struct NativeLockstepPeerLink *link)
+{
+	return (link != NULL) ? link->droppedForeignBundleCount : 0u;
 }
 
 int NativeLockstepPeerLink_SendAux(struct NativeLockstepPeerLink *link, const uint8_t *bytes, size_t size)

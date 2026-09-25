@@ -183,6 +183,19 @@ struct NativeArcadeLinkHostMatch
 	uint8_t slotCharacter[NATIVE_ARCADE_LINK_HOST_MATCH_SLOTS];
 };
 
+/* The end of one linked race, for the end-of-race log line
+ * (the linked-race plan, LR-14 and LR-S6). Host-local. */
+struct NativeArcadeLinkHostRaceEnd
+{
+	/* 1 for the first race since Configure or AbortToTitle */
+	uint32_t raceNumber;
+	/* enum NativeArcadeFlowEndReason the race ended with */
+	uint32_t endReason;
+	/* records of another match (stale bundles, typically of the match
+	 * before a rematch) the link dropped since the previous race end */
+	uint32_t foreignBundleDrops;
+};
+
 /*
  * Always shuts down first, so a second call replaces the first. NULL options
  * leave the mode OFF and return 0. Options with neither the link enabled nor
@@ -238,6 +251,13 @@ int NativeArcadeLinkHost_GetAgreedConfig(struct NativeMatchConfigV1 *out);
  * A latch never outlives its race: Enter, AbortToTitle, Shutdown, and every
  * link reset of the flow clear it. */
 int NativeArcadeLinkHost_ReportRaceFailure(void);
+
+/* LINK only (the linked-race plan, LR-14 and LR-S6): once per race,
+ * from the tick the flow moves RACING -> RESULTS, fills *out with that
+ * race's end-of-race record and returns 1; the caller logs it. Otherwise
+ * (NULL, OFF, PREVIEW, or nothing latched, including a record already
+ * taken) returns 0 with *out untouched. */
+int NativeArcadeLinkHost_TakeRaceEnd(struct NativeArcadeLinkHostRaceEnd *out);
 
 /* 1 iff the mode is LINK and the flow is on RACING (docs/RACE_LAUNCH_MILESTONE.md
  * RL-8); 0 otherwise, including OFF, PREVIEW, and before any Configure. */

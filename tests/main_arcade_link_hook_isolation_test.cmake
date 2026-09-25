@@ -49,7 +49,10 @@
 # the link's return to title is the helper MainArcadeLink_RequestReturn,
 # reached only through the policy's load-stage gate
 # (MainArcadeLinkPolicy_ReturnStep), which defers it on a host-local pending
-# flag while a level load runs (16f2).
+# flag while a level load runs (16f2). Since LR-S6
+# (docs/LOCKSTEP_RACE_MILESTONE.md LR-14) the link tick logs the host's
+# end-of-race record, once per race, with its foreign-bundle drop count
+# (12b).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -654,6 +657,32 @@ math(EXPR log_length "${log_end} - ${log_begin} + 1")
 string(SUBSTRING "${hook_code}" ${log_begin} ${log_length} log_block)
 ctr_require_literal("${hook_source_path} (agreed-match log)" "${log_block}"
     "Platform_Log(\"[CTR Native] arcade link: agreed match track %u laps %u seed 0x%08X%08X slots")
+
+# 12b. The end-of-race line (docs/LOCKSTEP_RACE_MILESTONE.md LR-14, LR-S6):
+#      the only NativeArcadeLinkHost_TakeRaceEnd call is in
+#      MainArcadeLink_LinkTick, after the host tick and the autopilot's
+#      AfterTick, and its success block logs through the hook's Platform_Log
+#      helper in the format the plan names. The host latches the record once
+#      per race, so the line is written once per race.
+string(REGEX MATCHALL "NativeArcadeLinkHost_TakeRaceEnd\\(" race_end_calls "${hook_code}")
+list(LENGTH race_end_calls race_end_call_count)
+if(NOT race_end_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call NativeArcadeLinkHost_TakeRaceEnd exactly once (found ${race_end_call_count})")
+endif()
+ctr_find_block("${hook_source_path}" "${hook_code}"
+    "static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainArcadeLinkPolicyOutput *output)"
+    link_tick_begin link_tick_end)
+math(EXPR link_tick_length "${link_tick_end} - ${link_tick_begin} + 1")
+string(SUBSTRING "${hook_code}" ${link_tick_begin} ${link_tick_length} link_tick_block)
+ctr_require_order("${hook_source_path} (MainArcadeLink_LinkTick)" "${link_tick_block}"
+    "action = NativeArcadeLinkHost_Tick(" "MainArcadeLinkAutopilot_AfterTick(action);"
+    "if (NativeArcadeLinkHost_TakeRaceEnd(&raceEnd))" "MainArcadeLink_LogRaceEnd(&raceEnd);")
+ctr_find_block("${hook_source_path}" "${hook_code}"
+    "static void MainArcadeLink_LogRaceEnd(const struct NativeArcadeLinkHostRaceEnd *raceEnd)" race_end_log_begin race_end_log_end)
+math(EXPR race_end_log_length "${race_end_log_end} - ${race_end_log_begin} + 1")
+string(SUBSTRING "${hook_code}" ${race_end_log_begin} ${race_end_log_length} race_end_log_block)
+ctr_require_literal("${hook_source_path} (end-of-race log)" "${race_end_log_block}"
+    "Platform_Log(\"[CTR Native] arcade link: race %u ended (reason %u); foreign bundles dropped %u")
 
 # 13. The host-side test read-back header is never included by game code:
 #     the hook's include allowlist above already excludes it; this also keeps

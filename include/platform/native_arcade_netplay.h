@@ -136,6 +136,13 @@
  * tracker and roster, so the result is DESYNC or LINK ERROR from the real
  * cause. The Task 8 race driver is therefore not the link's only reader.
  *
+ * Stale bundles (docs/LOCKSTEP_RACE_MILESTONE.md LR-14): the peer link drops
+ * and counts records of another match, such as a finished match's bundles
+ * reaching a rematch link. The adapter adds up those counts over every link
+ * it opens and, once per race, on the tick the flow moves RACING ->
+ * RESULTS, latches an end-of-race record with the drops since the previous
+ * race end (NativeArcadeNetplay_TakeRaceEnd) for the caller to log.
+ *
  * Rematch rule (UX-7): agreement is implicit, not a new wire message. The
  * rematch derives from lastReadyConfig: the proposal of the most recent
  * first or rematch lobby that reached READY, or of the relink lobby whose
@@ -311,6 +318,25 @@ struct NativeArcadeNetplayView
 	struct NativeArcadeNetplaySelectView select;
 };
 
+/*
+ * The end of one race, for the end-of-race log line
+ * (docs/LOCKSTEP_RACE_MILESTONE.md LR-14, LR-S6). Host-local: never sent,
+ * and never part of the match config, seeds, replay, saved states, or
+ * canonical state.
+ */
+struct NativeArcadeNetplayRaceEnd
+{
+	/* matchCount when the race ended: 1 for the first race since Init */
+	uint32_t raceNumber;
+	/* enum NativeArcadeFlowEndReason the race ended with */
+	uint32_t endReason;
+	/* Records of another match (foreign identity) the peer links of this
+	 * adapter dropped since the previous race end, or since Init for the
+	 * first: every link opened in between is counted, the rematch and relink
+	 * links included, not only the race's own. */
+	uint32_t foreignBundleDrops;
+};
+
 struct NativeArcadeNetplay
 {
 	struct NativeArcadeNetplayConfig config;
@@ -394,6 +420,19 @@ struct NativeArcadeNetplay
 	 * relink lobby until the next reset point. Never sent whole, never part
 	 * of the match config, seeds, or simulation identity. */
 	struct NativeArcadeLaunchAgreement launch;
+	/* Foreign-identity drop accounting (docs/LOCKSTEP_RACE_MILESTONE.md
+	 * LR-14): the open link's NativeLockstepPeerLink_DroppedForeignBundleCount
+	 * as last read (after every lobby poll, and before every close or restart
+	 * of the lobby), and the drops read since the previous race end. A read
+	 * below the last one is a new link, whose whole count is new. Host-local,
+	 * like the race-end record below; only Init resets the running count. */
+	uint32_t linkForeignDropsSeen;
+	uint32_t foreignDropsSinceRaceEnd;
+	/* 1 from the Tick whose flow moved RACING -> RESULTS until
+	 * NativeArcadeNetplay_TakeRaceEnd takes raceEnd; Init and Shutdown clear
+	 * it. */
+	uint8_t raceEndPending;
+	struct NativeArcadeNetplayRaceEnd raceEnd;
 };
 
 /* memset 0, then the four NATIVE_ARCADE_NETPLAY_DEFAULT_* values, the flow's
@@ -451,6 +490,18 @@ int NativeArcadeNetplay_ReportLocalRaceFailure(struct NativeArcadeNetplay *netpl
  * itself, so this hook is not the only path to DESYNC or LINK ERROR. */
 void NativeArcadeNetplay_OnTakeResult(struct NativeArcadeNetplay *netplay, enum NativeLockstepSessionResult result,
 	uint32_t frameIndex);
+
+/* The end-of-race record (docs/LOCKSTEP_RACE_MILESTONE.md LR-14, LR-S6),
+ * once per race: on the Tick whose flow moves RACING -> RESULTS (the flow's
+ * first RESULTS frame of that race, whatever the end reason) the adapter
+ * latches the race number, the end reason, and the foreign-identity records
+ * its peer links dropped since the previous race end, and restarts that
+ * count. This call then copies the record into *out, clears the latch, and
+ * returns 1; it returns 0 with *out untouched when nothing is latched, and
+ * for NULL or an uninitialized adapter. A record not taken before the next
+ * race end is replaced by it. The caller logs it; the adapter itself never
+ * logs. */
+int NativeArcadeNetplay_TakeRaceEnd(struct NativeArcadeNetplay *netplay, struct NativeArcadeNetplayRaceEnd *out);
 
 /* Fills *view and returns 1; returns 0 on a NULL argument. The select
  * sub-view is filled from the select session while NativeArcadeNetplay_Select

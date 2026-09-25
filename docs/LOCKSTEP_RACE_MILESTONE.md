@@ -531,7 +531,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-32; LR-17 is the owner's ruling)
+## 4. Decided design (defaults LR-1..LR-36; LR-17 is the owner's ruling)
 
 The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
 written, except that LR-18, the finish grace, amends LR-1, LR-12, LR-13,
@@ -540,8 +540,8 @@ LR-15. LR-17 is ruled (a). LR-3's D is accepted pending a feel test on
 the physical cabinets (LR-3). Before that, the plan review changed
 several defaults; "Review changes" at the end of this section lists what
 changed, and "Owner decisions (2026-09-25)" after it lists the owner's
-decisions. LR-19..LR-27 were added by LR-S4 and record the mechanics it
-settled.
+decisions. LR-19..LR-27 were added by LR-S4, LR-28..LR-32 by LR-S5, and
+LR-33..LR-36 by LR-S6; each records the mechanics its slice settled.
 
 LR-1 Placement. The race driver lives under platform/, because game code
 may not name lockstep (tests/native_lockstep_isolation_test.cmake:128-157
@@ -1714,6 +1714,54 @@ every fault-cause value (append-only) and bans the token from the codec
 and the window sources. native_lockstep_protocol_unit's causes[] lists
 decoder causes only, so it asserts VERIFY_AHEAD is not among them.
 
+LR-33 Where the peer link screens identity (LR-S6). Only when it hands a
+record to the session: on replay of the staged records and while
+RUNNING. Staging does not screen. A HANDSHAKING link has no agreed
+identity yet, so stale records can still fill the 8 staging slots
+(GAP 4, counted by DroppedEarlyBundleCount), and the resend (LR-3)
+recovers what those slots displaced. The link decodes each 128-byte
+record once, with the unchanged decoder, against the session's identity,
+protocol version, and D, before AcceptBundle. Only a first failure of
+MATCH_IDENTITY is dropped. A dropped record never reaches the session: it
+takes no window space and never changes the link mode. A drop does not
+stop a replay; a fault still does.
+
+LR-34 The foreign-bundle counter (LR-S6). The counter is
+NativeLockstepPeerLink.droppedForeignBundleCount, read through
+NativeLockstepPeerLink_DroppedForeignBundleCount (0 for NULL). It is per
+link. Like DroppedEarlyBundleCount, only a successful Open zeroes it, and
+it survives Close. It is host-local: never sent, and never part of a
+checkpoint, replay, or canonical state.
+
+LR-35 The adapter adds up the drops over its links (LR-S6). Stale records
+usually land on the rematch lobby's link, and RELINK closes that link
+before the race it leads to. So the adapter reads the open link's count
+after every lobby poll and before every close or restart of the lobby.
+A read below the last one is a new link, and all of it is new. Only Init
+resets the running total, so the host's AbortToTitle, which re-runs Init,
+resets it too. One case is not counted: drops in a replay that also
+faults a still-HANDSHAKING link, in the same lobby poll that closes that
+link at its attempt budget. The counter feeds a log line only.
+
+LR-36 The end-of-race record and log line (LR-S6). The adapter has no
+log call: its isolation test allows no stdio or log header. So it
+latches a record for the game hook to log. The record is latched on the
+Tick whose flow moves RACING -> RESULTS, once per race and for any end
+reason. A race aborted to the title never reaches RESULTS and has no
+record. The record holds the race number (the adapter's matchCount), the
+end reason, and the drops since the previous race end. That count then
+restarts. NativeArcadeNetplay_TakeRaceEnd, then
+NativeArcadeLinkHost_TakeRaceEnd, returns the record once. A record not
+taken is replaced at the next race end, and Shutdown drops it.
+MainArcadeLink_LinkTick takes it right after the host tick and the
+autopilot's AfterTick, and logs through Platform_Log:
+
+    [CTR Native] arcade link: race <n> ended (reason <r>); foreign bundles dropped <k>
+
+<r> is the NATIVE_ARCADE_FLOW_END_* value. main_arcade_link_hook_isolation
+(12b) pins the call site and the format. Drops after a session's last
+race are never logged.
+
 Review changes. The plan review (on befa152a9) changed these defaults:
 
 - LR-11 no longer treats a lead as a desync. A peer digest for a frame
@@ -2598,7 +2646,83 @@ Any test that lists the fault causes gains the new one.
 
 ### LR-S6 -- peer link: drop foreign-identity records
 
-Status: planned. Review required (the peer link). Run 2.
+Status: done. Review required (the peer link). Run 2. New defaults
+LR-33..LR-36 (section 4).
+
+Result:
+
+- The drop is in platform/native_lockstep_peer_link.c (LR-33). A new
+  helper, NativeLockstepPeerLink_AcceptOrDropBundle, is the only path
+  from a bundle to AcceptBundle, and both drop points use it: the replay
+  of staged records (NativeLockstepPeerLink_ReplayEarlyBundles) and the
+  RUNNING bundle route (NativeLockstepPeerLink_HandleBundleDatagram).
+  NativeLockstepPeerLink_IsForeignBundle decodes a record with the
+  unchanged NativeLockstepBundleV1_Decode, against the session's
+  matchIdentity, protocolVersion, and inputDelay. A record whose first
+  failure is MATCH_IDENTITY is dropped and counted. Every other record
+  goes to AcceptBundle unchanged. The wire, the decoder and its check
+  order, the session, the handshake, and the config are unchanged.
+- The counter is droppedForeignBundleCount, and its accessor is
+  NativeLockstepPeerLink_DroppedForeignBundleCount (LR-34), in
+  include/platform/native_lockstep_peer_link.h. The header's Open, Poll,
+  and struct comments describe the drop.
+- The adapter, platform/native_arcade_netplay.{c,h}, adds up the drops
+  over its links (LR-35). It latches one end-of-race record per race
+  (struct NativeArcadeNetplayRaceEnd, NativeArcadeNetplay_TakeRaceEnd;
+  LR-36). The host passes the record on
+  (NativeArcadeLinkHost_TakeRaceEnd, struct NativeArcadeLinkHostRaceEnd).
+  game/MAIN/MainArcadeLink.c logs it once per race:
+  "[CTR Native] arcade link: race <n> ended (reason <r>); foreign bundles
+  dropped <k>".
+- Tests, native_lockstep_peer_link_unit:
+  - TestForeignIdentityDroppedWhileStaging: two foreign records
+    interleaved with two of the peer's own, staged unscreened. On replay
+    both foreign records are dropped and counted, and the two own frames
+    are taken.
+  - TestForeignIdentityDroppedWhileRunning: three foreign records (one a
+    resend) are dropped and counted while RUNNING. There is no fault, the
+    next own frame is taken, and a new Open zeroes the counter.
+  - TestForeignIdentityCorruptStillFaults: three records each fault
+    BAD_DIGEST and are not dropped: a foreign record with one corrupted
+    pad byte while RUNNING; a current record with its identity bytes
+    flipped and its digest stale; and the corrupt foreign record staged,
+    which faults on replay.
+  - TestCurrentIdentityBadDelayOrSlotStillFaults: a current-identity
+    record with D + 1 faults INPUT_DELAY, and one from the receiver's own
+    slot faults BAD_SLOT.
+- Tests, native_arcade_netplay_unit, each a loopback pair in which B
+  resends its old match's frames 0..D to A's new rematch link:
+  - TestRematchAfterDesyncDropsStaleBundles: after a real DESYNC. Both
+    reach READY with no fault, and A dropped exactly 3. Race 2's
+    end-of-race record on A still carries the 3 after RELINK closed that
+    link. The record is latched once per race, and Shutdown clears it.
+  - TestRematchAfterPreRaceFailureDropsStaleBundles: A's race fails
+    locally (RL-11) while B is held on RACING, with A's rematch wait at
+    the production 300 ticks. B's sending ends after 3 ticks, and its race
+    fails too. Both reach READY with A's rematch wait unexpired (asserted
+    every tick, and in total).
+  - TestRematchDuringFinishLingerDropsStaleBundles: B keeps sending on
+    RESULTS after a clean finish. The drops happen on replay, and a late
+    copy is dropped while RUNNING.
+- Also: native_arcade_link_host_unit checks the host take (inert when
+  OFF or PREVIEW, once per race, none for an aborted race, and race 1
+  again after AbortToTitle). main_arcade_link_hook_isolation gains 12b:
+  one TakeRaceEnd call, after the tick and AfterTick, with the log
+  format pinned. The peer-link isolation rules are unchanged, and
+  native_lockstep_peer_link_process_unit still passes.
+- Probes, each reverted:
+  - Never dropping failed both drop tests in native_lockstep_peer_link_unit
+    and all three new netplay tests (each run alone).
+  - Dropping BAD_DIGEST too failed TestForeignIdentityCorruptStillFaults
+    (and the existing TestInRaceFaultFromPoll).
+  - Dropping every decode failure failed
+    TestCurrentIdentityBadDelayOrSlotStillFaults at INPUT_DELAY (and the
+    existing TestAuxKeptAfterTerminal).
+  - Removing the adapter's drop reads failed race 2's end-of-race
+    record.
+  - Latching on every RESULTS tick failed the once-per-race check.
+  - Removing the log call failed main_arcade_link_hook_isolation.
+- Fast suite (-LE live): 151 of 151 passed.
 
 Plan: LR-14's decision in platform/native_lockstep_peer_link.{c,h}: the
 identity check on replayed staged records and on RUNNING records, the

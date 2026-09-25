@@ -75,6 +75,32 @@
 #define AUX_OPEN_FAIL_PORT 48230u
 #define AUX_TERMINAL_PORT_A 48231u
 #define AUX_TERMINAL_PORT_B 48232u
+/* Foreign-identity drop tests (docs/LOCKSTEP_RACE_MILESTONE.md LR-14, LR-S6)
+ * continue the band at 48233-48246. */
+#define FOREIGN_STAGING_PORT_A 48233u
+#define FOREIGN_STAGING_PORT_B 48234u
+#define FOREIGN_RUNNING_PORT_A 48235u
+#define FOREIGN_RUNNING_PORT_B 48236u
+#define FOREIGN_CORRUPT_PORT_A 48237u
+#define FOREIGN_CORRUPT_PORT_B 48238u
+#define FOREIGN_FLIPPED_PORT_A 48239u
+#define FOREIGN_FLIPPED_PORT_B 48240u
+#define FOREIGN_CORRUPT_STAGED_PORT_A 48241u
+#define FOREIGN_CORRUPT_STAGED_PORT_B 48242u
+#define CURRENT_BAD_DELAY_PORT_A 48243u
+#define CURRENT_BAD_DELAY_PORT_B 48244u
+#define CURRENT_BAD_SLOT_PORT_A 48245u
+#define CURRENT_BAD_SLOT_PORT_B 48246u
+
+/* Wire offsets in a 128-byte bundle (platform/native_lockstep_protocol.c,
+ * NativeLockstepBundle_WriteBody): the 8-byte match identity follows the
+ * four u32 fields magic, bundle version, encoded size, and protocol
+ * version; byte 40 lies in the first pad entry (the byte
+ * tests/native_arcade_netplay_test.c corrupts too). Both lie inside the
+ * digested body (bytes 0..119). */
+#define BUNDLE_IDENTITY_OFFSET 16u
+#define BUNDLE_IDENTITY_BYTES 8u
+#define BUNDLE_PAD_BYTE_OFFSET 40u
 
 /* Real loopback delivery is asynchronous relative to sendto returning
  * (tests/native_udp_transport_test.c's own PollReceive helper documents the
@@ -1313,6 +1339,334 @@ static int TestAuxKeptAfterTerminal(void)
 	return 0;
 }
 
+/* ---- LR-14 (docs/LOCKSTEP_RACE_MILESTONE.md, LR-S6): foreign-identity
+ * records ---- */
+
+/* The fixture config of another match: the same config with another master
+ * seed, so its digest, and with it the match identity every one of its
+ * bundles carries, differs from the fixture's. */
+static void BuildForeignConfig(struct NativeMatchConfigV1 *config)
+{
+	NativeLockstepPeerLinkFixture_BuildConfig(config);
+	config->masterSeed ^= UINT64_C(0x5A5A5A5A5A5A5A5A);
+}
+
+/* A cleanly encoded bundle for frame (at most inputDelay, so it carries no
+ * digest) from a scratch session opened on config with inputDelay and the
+ * given role's slot: its own digest is valid, whatever its identity. */
+static int ComposeScratchBundle(const struct NativeMatchConfigV1 *config, uint32_t inputDelay, uint8_t role, uint32_t frame,
+	uint8_t *bytes)
+{
+	static struct NativeLockstepSession scratch;
+	uint8_t slot = 0u;
+	size_t size = 0;
+
+	CHECK(frame <= inputDelay);
+	CHECK(NativeMatchConfigV1_FindRoleSlot(config, role, &slot));
+	NativeLockstepSession_Init(&scratch);
+	CHECK(NativeLockstepSession_Open(&scratch, config, inputDelay, slot));
+	CHECK(NativeLockstepSession_ComposeBundle(&scratch, frame, bytes, NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES, &size));
+	CHECK(size == NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES);
+	return 0;
+}
+
+/* A foreign-identity CAB1 bundle for frame, D = NATIVE_LOCKSTEP_MIN_INPUT_DELAY. */
+static int ComposeForeignBundle(uint32_t frame, uint8_t *bytes)
+{
+	struct NativeMatchConfigV1 foreign;
+
+	BuildForeignConfig(&foreign);
+	return ComposeScratchBundle(&foreign, (uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		frame, bytes);
+}
+
+/* Poll-only spin that stops once link has dropped at least expected
+ * foreign-identity records or left RUNNING. */
+static void PumpPollUntilForeignCount(struct NativeLockstepPeerLink *link, uint32_t expected)
+{
+	uint32_t attempt;
+
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Poll(link);
+		if ((NativeLockstepPeerLink_DroppedForeignBundleCount(link) >= expected) ||
+			(NativeLockstepPeerLink_Mode(link) != NATIVE_LOCKSTEP_PEER_LINK_RUNNING))
+		{
+			break;
+		}
+	}
+}
+
+/* Poll-only spin until link's session takes frame (or a bounded give-up). */
+static enum NativeLockstepSessionResult PumpPollUntilTaken(struct NativeLockstepPeerLink *link, uint32_t frame)
+{
+	struct NativeLockstepSessionFrameInputs inputs;
+	enum NativeLockstepSessionResult result = NATIVE_LOCKSTEP_SESSION_STALL;
+	uint32_t attempt;
+
+	for (attempt = 0; attempt < SPIN_BUDGET; attempt++)
+	{
+		NativeLockstepPeerLink_Poll(link);
+		result = NativeLockstepSession_TakeFrameInputs(NativeLockstepPeerLink_Session(link), frame, &inputs);
+		if (result != NATIVE_LOCKSTEP_SESSION_STALL)
+		{
+			break;
+		}
+	}
+	return result;
+}
+
+/* TestEarlyBundleArrival's construction as a helper: A RUNNING, B still
+ * HANDSHAKING, and the one HELLO B will ever get from A held back in
+ * savedHello until the caller sends it. */
+static int OpenHeldPair(struct NativeLockstepPeerLink *linkA, struct NativeLockstepPeerLink *linkB, uint16_t portA, uint16_t portB,
+	struct NativeUdpTransportAddress *addrA, struct NativeUdpTransportAddress *addrB, uint8_t *savedHello, size_t *savedHelloSize)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeUdpTransportAddress sender;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+	CHECK(NativeUdpTransport_MakeAddress(addrA, "127.0.0.1", portA));
+	CHECK(NativeUdpTransport_MakeAddress(addrB, "127.0.0.1", portB));
+	CHECK(NativeLockstepPeerLink_Open(linkA, portA, addrB, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_Open(linkB, portB, addrA, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	NativeLockstepPeerLink_Retransmit(linkA);
+	memset(&sender, 0, sizeof(sender));
+	CHECK(PumpRawReceive(&linkB->transport, savedHello, NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES, savedHelloSize, &sender) ==
+		NATIVE_UDP_TRANSPORT_RECEIVE_OK);
+	CHECK(*savedHelloSize == NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES);
+	CHECK(PumpPollUntilMode(linkA, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_Mode(linkB) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(linkB) == 0u);
+	return 0;
+}
+
+/* B's session latched exactly one fault, with this cause, and dropped no
+ * foreign record. */
+static int ExpectFaultNotDropped(struct NativeLockstepPeerLink *link, uint32_t cause)
+{
+	const struct NativeLockstepFaultReport *fault;
+
+	CHECK(PumpPollUntilMode(link, NATIVE_LOCKSTEP_PEER_LINK_FAULTED) == NATIVE_LOCKSTEP_PEER_LINK_FAULTED);
+	fault = NativeLockstepSession_FirstFault(NativeLockstepPeerLink_Session(link));
+	CHECK(fault != NULL);
+	CHECK(fault->cause == cause);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(link) == 0u);
+	return 0;
+}
+
+/*
+ * Foreign records staged while HANDSHAKING are dropped on replay. B is held
+ * HANDSHAKING while A's link sends, in this order, a foreign bundle, A's own
+ * frame 0, another foreign bundle, and A's own frame 1. All four are staged
+ * unscreened (the count stays 0: before the session opens there is no
+ * identity to screen against). When the held HELLO completes B's handshake,
+ * the replay drops and counts the two foreign records and hands A's two
+ * frames to the session, which takes both: a drop does not stop the replay.
+ */
+static int TestForeignIdentityDroppedWhileStaging(void)
+{
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t savedHello[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
+	uint8_t foreign[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	size_t savedHelloSize = 0;
+	struct NativeLockstepSession *session;
+	struct NativeLockstepSessionFrameInputs inputs;
+
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(NULL) == 0u);
+	CHECK(OpenHeldPair(&linkA, &linkB, (uint16_t)FOREIGN_STAGING_PORT_A, (uint16_t)FOREIGN_STAGING_PORT_B, &addrA, &addrB,
+		savedHello, &savedHelloSize) == 0);
+
+	CHECK(ComposeForeignBundle(0u, foreign) == 0);
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, foreign, sizeof(foreign)));
+	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkA, 0u));
+	CHECK(ComposeForeignBundle(1u, foreign) == 0);
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, foreign, sizeof(foreign)));
+	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkA, 1u));
+
+	PumpPollUntilEarlyCount(&linkB, 4u);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+	CHECK(linkB.earlyBundleCount == 4u);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(&linkB) == 0u);
+
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, savedHello, savedHelloSize));
+	CHECK(PumpPollUntilMode(&linkB, NATIVE_LOCKSTEP_PEER_LINK_RUNNING) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(linkB.earlyBundleCount == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(&linkB) == 2u);
+	CHECK(NativeLockstepPeerLink_DroppedEarlyBundleCount(&linkB) == 0u);
+
+	session = NativeLockstepPeerLink_Session(&linkB);
+	CHECK(NativeLockstepSession_FirstFault(session) == NULL);
+	CHECK(NativeLockstepSession_FirstDivergence(session) == NULL);
+	CHECK(NativeLockstepSession_TakeFrameInputs(session, 0u, &inputs) == NATIVE_LOCKSTEP_SESSION_OK);
+	CHECK(NativeLockstepSession_TakeFrameInputs(session, 1u, &inputs) == NATIVE_LOCKSTEP_SESSION_OK);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+/*
+ * Foreign records arriving while RUNNING are dropped and counted, never
+ * reach the session, and leave the link RUNNING: B then takes A's own frame
+ * 0, sent after them. The counter survives Close and is zeroed by the next
+ * successful Open, like the early-bundle drop counter.
+ */
+static int TestForeignIdentityDroppedWhileRunning(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t foreign[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	uint32_t frame;
+
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)FOREIGN_RUNNING_PORT_A, (uint16_t)FOREIGN_RUNNING_PORT_B, &addrA, &addrB) == 0);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(&linkB) == 0u);
+
+	for (frame = 0; frame <= (uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY; frame++)
+	{
+		CHECK(ComposeForeignBundle(frame, foreign) == 0);
+		CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, foreign, sizeof(foreign)));
+	}
+	/* The same foreign record again: a resent stale bundle counts again. */
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, foreign, sizeof(foreign)));
+	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkA, 0u));
+
+	CHECK(PumpPollUntilTaken(&linkB, 0u) == NATIVE_LOCKSTEP_SESSION_OK);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(&linkB) == (uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY + 2u);
+	CHECK(NativeLockstepSession_FirstFault(NativeLockstepPeerLink_Session(&linkB)) == NULL);
+	CHECK(NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(&linkB)) == NULL);
+	/* The sender's own counter is untouched. */
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(&linkA) == 0u);
+
+	NativeLockstepPeerLink_Close(&linkB);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(&linkB) == (uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY + 2u);
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+	CHECK(NativeLockstepPeerLink_Open(&linkB, (uint16_t)FOREIGN_RUNNING_PORT_B, &addrA, &config,
+		(uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, (uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY));
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(&linkB) == 0u);
+
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+/*
+ * The drop path's edge: the decoder checks a record's own digest before its
+ * identity, so a corrupt record is never dropped as foreign, it faults
+ * BAD_DIGEST. Three records, each against a fresh pair: a foreign-identity
+ * record with one corrupted pad byte, sent while RUNNING; a current-identity
+ * record (A's own frame 0) whose identity bytes are flipped without
+ * recomputing its digest, sent while RUNNING; and the corrupt foreign
+ * record again, staged while HANDSHAKING, which faults on replay.
+ */
+static int TestForeignIdentityCorruptStillFaults(void)
+{
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t savedHello[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
+	uint8_t bundle[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	size_t savedHelloSize = 0;
+	size_t size = 0;
+	uint32_t i;
+
+	/* A corrupt foreign record while RUNNING. */
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)FOREIGN_CORRUPT_PORT_A, (uint16_t)FOREIGN_CORRUPT_PORT_B, &addrA, &addrB) == 0);
+	CHECK(ComposeForeignBundle(0u, bundle) == 0);
+	bundle[BUNDLE_PAD_BYTE_OFFSET] ^= 0x01u;
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, bundle, sizeof(bundle)));
+	CHECK(ExpectFaultNotDropped(&linkB, (uint32_t)NATIVE_LOCKSTEP_FAULT_BAD_DIGEST) == 0);
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+
+	/* A current-identity record with its identity flipped, digest stale. */
+	memset(&linkA, 0, sizeof(linkA));
+	memset(&linkB, 0, sizeof(linkB));
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)FOREIGN_FLIPPED_PORT_A, (uint16_t)FOREIGN_FLIPPED_PORT_B, &addrA, &addrB) == 0);
+	CHECK(NativeLockstepSession_ComposeBundle(&linkA.session, 0u, bundle, sizeof(bundle), &size));
+	CHECK(size == NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES);
+	CHECK(memcmp(&bundle[BUNDLE_IDENTITY_OFFSET], linkB.session.matchIdentity, BUNDLE_IDENTITY_BYTES) == 0);
+	for (i = 0; i < BUNDLE_IDENTITY_BYTES; i++)
+	{
+		bundle[BUNDLE_IDENTITY_OFFSET + i] ^= 0xFFu;
+	}
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, bundle, sizeof(bundle)));
+	CHECK(ExpectFaultNotDropped(&linkB, (uint32_t)NATIVE_LOCKSTEP_FAULT_BAD_DIGEST) == 0);
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+
+	/* The corrupt foreign record staged while HANDSHAKING: the replay
+	 * faults. */
+	memset(&linkA, 0, sizeof(linkA));
+	memset(&linkB, 0, sizeof(linkB));
+	CHECK(OpenHeldPair(&linkA, &linkB, (uint16_t)FOREIGN_CORRUPT_STAGED_PORT_A, (uint16_t)FOREIGN_CORRUPT_STAGED_PORT_B, &addrA,
+		&addrB, savedHello, &savedHelloSize) == 0);
+	CHECK(ComposeForeignBundle(0u, bundle) == 0);
+	bundle[BUNDLE_PAD_BYTE_OFFSET] ^= 0x01u;
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, bundle, sizeof(bundle)));
+	PumpPollUntilEarlyCount(&linkB, 1u);
+	CHECK(linkB.earlyBundleCount == 1u);
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, savedHello, savedHelloSize));
+	CHECK(ExpectFaultNotDropped(&linkB, (uint32_t)NATIVE_LOCKSTEP_FAULT_BAD_DIGEST) == 0);
+	CHECK(linkB.earlyBundleCount == 0u);
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
+/*
+ * Every non-identity fault still latches: a current-identity record (the
+ * fixture's identity, validly encoded) with a wrong input delay faults
+ * INPUT_DELAY, and one whose sender slot is B's own slot faults BAD_SLOT.
+ * Neither is dropped.
+ */
+static int TestCurrentIdentityBadDelayOrSlotStillFaults(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeLockstepPeerLink linkA = {0};
+	struct NativeLockstepPeerLink linkB = {0};
+	struct NativeUdpTransportAddress addrA;
+	struct NativeUdpTransportAddress addrB;
+	uint8_t bundle[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+
+	/* A wrong D: identity and digest are right, the delay is D + 1. */
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)CURRENT_BAD_DELAY_PORT_A, (uint16_t)CURRENT_BAD_DELAY_PORT_B, &addrA, &addrB) ==
+		0);
+	CHECK(ComposeScratchBundle(&config, (uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY + 1u, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		0u, bundle) == 0);
+	CHECK(memcmp(&bundle[BUNDLE_IDENTITY_OFFSET], linkB.session.matchIdentity, BUNDLE_IDENTITY_BYTES) == 0);
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, bundle, sizeof(bundle)));
+	CHECK(ExpectFaultNotDropped(&linkB, (uint32_t)NATIVE_LOCKSTEP_FAULT_INPUT_DELAY) == 0);
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+
+	/* A wrong sender slot: B's own (CAB2) slot, which is not a peer of B. */
+	memset(&linkA, 0, sizeof(linkA));
+	memset(&linkB, 0, sizeof(linkB));
+	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)CURRENT_BAD_SLOT_PORT_A, (uint16_t)CURRENT_BAD_SLOT_PORT_B, &addrA, &addrB) == 0);
+	CHECK(ComposeScratchBundle(&config, (uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, 0u,
+		bundle) == 0);
+	CHECK(memcmp(&bundle[BUNDLE_IDENTITY_OFFSET], linkB.session.matchIdentity, BUNDLE_IDENTITY_BYTES) == 0);
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, bundle, sizeof(bundle)));
+	CHECK(ExpectFaultNotDropped(&linkB, (uint32_t)NATIVE_LOCKSTEP_FAULT_BAD_SLOT) == 0);
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestEarlyBundleArrival() == 0);
@@ -1329,6 +1683,10 @@ int main(void)
 	CHECK(TestAuxForeignSenderDiscarded() == 0);
 	CHECK(TestAuxOpenResetsInbox() == 0);
 	CHECK(TestAuxKeptAfterTerminal() == 0);
+	CHECK(TestForeignIdentityDroppedWhileStaging() == 0);
+	CHECK(TestForeignIdentityDroppedWhileRunning() == 0);
+	CHECK(TestForeignIdentityCorruptStillFaults() == 0);
+	CHECK(TestCurrentIdentityBadDelayOrSlotStillFaults() == 0);
 	puts("native_lockstep_peer_link_test: passed");
 	return 0;
 }

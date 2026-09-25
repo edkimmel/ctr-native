@@ -633,6 +633,24 @@ int NativeArcadeLinkHost_ReportRaceFailure(void)
 	return NativeArcadeNetplay_ReportLocalRaceFailure(&g_netplay);
 }
 
+int NativeArcadeLinkHost_TakeRaceEnd(struct NativeArcadeLinkHostRaceEnd *out)
+{
+	struct NativeArcadeNetplayRaceEnd raceEnd;
+
+	if ((out == NULL) || (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK))
+	{
+		return 0;
+	}
+	if (!NativeArcadeNetplay_TakeRaceEnd(&g_netplay, &raceEnd))
+	{
+		return 0;
+	}
+	out->raceNumber = raceEnd.raceNumber;
+	out->endReason = raceEnd.endReason;
+	out->foreignBundleDrops = raceEnd.foreignBundleDrops;
+	return 1;
+}
+
 uint8_t NativeArcadeLinkHost_Racing(void)
 {
 	if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK)
