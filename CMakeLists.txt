@@ -1809,7 +1809,9 @@ if(BUILD_TESTING)
         C_STANDARD_REQUIRED ON
         C_EXTENSIONS OFF
     )
-    target_link_libraries(main_arcade_race_hold_core_test PRIVATE ctr_native_arcade_race_hold_core)
+    # LR-S11: the hold's banner rule is pinned equal to the drive's BannerDue
+    # (LR-44), so this test also links the drive core.
+    target_link_libraries(main_arcade_race_hold_core_test PRIVATE ctr_native_arcade_race_hold_core ctr_native_arcade_race_drive)
     add_test(NAME main_arcade_race_hold_core_unit COMMAND $<TARGET_FILE:main_arcade_race_hold_core_test>)
 
     # The hold loop itself (MainArcadeRaceHold_Run) over stubbed platform

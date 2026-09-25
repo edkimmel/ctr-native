@@ -1,4 +1,5 @@
 #include "MAIN/MainArcadeRaceHoldCore.h"
+#include "platform/native_arcade_race_drive.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -139,6 +140,54 @@ static int TestGraceBoundary(void)
 	return 0;
 }
 
+/*
+ * LR-S11: the hold's banner rule is the drive's BannerDue (LR-44), which the
+ * host reports as the drive state's bannerDue. The same grace constant, and
+ * for every period count the hold core asks for a banner on the first pump
+ * of that period exactly when BannerDue(periods) holds: in a steady hold
+ * (every period, 0..2000), after late pumps that skip periods (strides 2,
+ * 3, 7, 9, 10, 11, 13, 45 and a jump straight past the grace), and at the
+ * top of the range. A pump inside a period never draws.
+ */
+static int TestBannerDueMatchesDrive(void)
+{
+	static const uint32_t strides[] = {2u, 3u, 7u, 9u, 10u, 11u, 13u, 45u};
+	struct MainArcadeRaceHoldCore core;
+
+	CHECK(MAIN_ARCADE_RACE_HOLD_GRACE_PERIODS == NATIVE_ARCADE_RACE_DRIVE_HOLD_GRACE_PERIODS);
+	for (uint32_t periods = 0u; periods <= 2000u; periods++)
+	{
+		CHECK((NativeArcadeRaceDrive_BannerDue(periods) != 0) == (periods >= MAIN_ARCADE_RACE_HOLD_GRACE_PERIODS));
+	}
+	CHECK(NativeArcadeRaceDrive_BannerDue(UINT32_MAX) != 0);
+
+	MainArcadeRaceHoldCore_Begin(&core, START);
+	for (uint32_t period = 1u; period <= 2000u; period++)
+	{
+		const uint32_t flags = MainArcadeRaceHoldCore_Pump(&core, START + (period * PERIOD));
+
+		CHECK(core.periods == period);
+		CHECK(((flags & MAIN_ARCADE_RACE_HOLD_DRAW_BANNER) != 0u) == (NativeArcadeRaceDrive_BannerDue(core.periods) != 0));
+		CHECK((MainArcadeRaceHoldCore_Pump(&core, START + (period * PERIOD) + (PERIOD / 2u)) & MAIN_ARCADE_RACE_HOLD_DRAW_BANNER) == 0u);
+	}
+	for (uint32_t i = 0u; i < (uint32_t)(sizeof(strides) / sizeof(strides[0])); i++)
+	{
+		MainArcadeRaceHoldCore_Begin(&core, START);
+		for (uint32_t period = strides[i]; period <= 400u; period += strides[i])
+		{
+			const uint32_t flags = MainArcadeRaceHoldCore_Pump(&core, START + (period * PERIOD) + 1u);
+
+			CHECK(core.periods == period);
+			CHECK(((flags & MAIN_ARCADE_RACE_HOLD_DRAW_BANNER) != 0u) == (NativeArcadeRaceDrive_BannerDue(core.periods) != 0));
+		}
+	}
+	MainArcadeRaceHoldCore_Begin(&core, START);
+	CHECK(MainArcadeRaceHoldCore_Pump(&core, START + (UINT64_C(0xFFFFFFFF) * PERIOD)) ==
+	      (MAIN_ARCADE_RACE_HOLD_NEW_PERIOD | MAIN_ARCADE_RACE_HOLD_DRAW_BANNER));
+	CHECK(NativeArcadeRaceDrive_BannerDue(core.periods) != 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestConstants() == 0);
@@ -146,6 +195,7 @@ int main(void)
 	CHECK(TestSteadyHold() == 0);
 	CHECK(TestLatePump() == 0);
 	CHECK(TestGraceBoundary() == 0);
+	CHECK(TestBannerDueMatchesDrive() == 0);
 	puts("main_arcade_race_hold_core_test: ok");
 	return 0;
 }

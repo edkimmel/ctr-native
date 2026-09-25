@@ -12,7 +12,8 @@
 # platform/native_lockstep_session.h, and platform/native_match_config.h;
 # the library stays portable C17 with extensions off and links exactly the
 # lockstep session library. Only the allowed targets (drive_allowed_linkers:
-# the unit test and, since LR-S9, the host glue) may link the core.
+# the unit test, since LR-S9 the host glue, and since LR-S11 the hold
+# core's unit test) may link the core.
 #
 # The send order (LR-2, LR-29) is pinned structurally as far as text can:
 # the source makes exactly one ComposeBundle call and one sendBundle call,
@@ -28,7 +29,8 @@
 # found both files and the API, so it cannot pass trivially.
 #
 # LR-S9 added the host glue (ctr_native_arcade_link_host) to
-# drive_allowed_linkers: it runs the drive over the adapter (LR-1).
+# drive_allowed_linkers: it runs the drive over the adapter (LR-1). LR-S11
+# added the hold core's unit test (the BannerDue equality).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade race drive isolation")
@@ -110,8 +112,9 @@ set(drive_allowed_includes
 set(drive_allowed_links ctr_native_lockstep_session)
 
 # The only targets that may link the core: the unit test and the host glue
-# (LR-S9).
-set(drive_allowed_linkers native_arcade_race_drive_test ctr_native_arcade_link_host)
+# (LR-S9), and the hold core's unit test, which pins the hold's banner rule
+# equal to BannerDue (LR-S11, LR-44).
+set(drive_allowed_linkers native_arcade_race_drive_test ctr_native_arcade_link_host main_arcade_race_hold_core_test)
 
 # Code each file must contain after comment stripping, so a scan that lost
 # the code (or the wrong file) fails.

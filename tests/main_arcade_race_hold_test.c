@@ -17,6 +17,7 @@
 
 #include "MAIN/MainArcadeRaceHold.h"
 #include "MAIN/MainArcadeRaceHoldCore.h"
+#include "platform/native_hold_banner.h"
 
 #define CHECK(expression) do { if (!(expression)) { fprintf(stderr, "%d: %s\n", __LINE__, #expression); return 1; } } while (0)
 
@@ -29,7 +30,11 @@ static uint32_t s_pumps;
 static uint32_t s_clockReads;
 static uint32_t s_waits;
 static uint32_t s_waitMsTotal;
-static uint32_t s_bannerCalls;
+static uint32_t s_bannerCalls;      /* both presents */
+static uint32_t s_blockBannerCalls; /* Platform_PresentVRAMDisplayBanner */
+static uint32_t s_glyphBannerCalls; /* Platform_PresentVRAMDisplayBannerGlyphs (LR-S11) */
+static const struct NativeHoldBannerGlyphs *s_expectedGlyphs;
+static int s_glyphsPassedOk; /* every glyph present got s_expectedGlyphs */
 static uint32_t s_bannerPresented;
 static int s_bannerTextOk;
 static int s_bannerReturn; /* 1: present every banner, 0: none, 2: every other one */
@@ -64,6 +69,10 @@ static void StubReset(int bannerReturn)
 	s_waits = 0u;
 	s_waitMsTotal = 0u;
 	s_bannerCalls = 0u;
+	s_blockBannerCalls = 0u;
+	s_glyphBannerCalls = 0u;
+	s_expectedGlyphs = NULL;
+	s_glyphsPassedOk = 1;
 	s_bannerPresented = 0u;
 	s_bannerTextOk = 1;
 	s_bannerReturn = bannerReturn;
@@ -93,7 +102,25 @@ void Platform_HostWaitMs(unsigned int milliseconds)
 	Event('W', "SB");
 }
 
+static int BannerStub(const char *text);
+
 int Platform_PresentVRAMDisplayBanner(const char *text)
+{
+	s_blockBannerCalls++;
+	return BannerStub(text);
+}
+
+int Platform_PresentVRAMDisplayBannerGlyphs(const char *text, const struct NativeHoldBannerGlyphs *glyphs)
+{
+	s_glyphBannerCalls++;
+	if (glyphs != s_expectedGlyphs)
+	{
+		s_glyphsPassedOk = 0;
+	}
+	return BannerStub(text);
+}
+
+static int BannerStub(const char *text)
 {
 	int presented;
 
@@ -285,7 +312,7 @@ static int TestModes(void)
 	memset(&step, 0, sizeof(step));
 	memset(&result, 0xA5, sizeof(result));
 	step.limit = 45u;
-	MainArcadeRaceHold_RunMode(Step, &step, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, &result);
+	MainArcadeRaceHold_RunMode(Step, &step, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, NULL, &result);
 	CHECK(s_bannerCalls == 0u && s_bannerPresented == 0u);
 	CHECK(result.bannersDue == 0u && result.bannersPresented == 0u);
 	CHECK(strchr(s_trace, 'B') == NULL);
@@ -301,15 +328,67 @@ static int TestModes(void)
 		StubReset(1);
 		memset(&step, 0, sizeof(step));
 		step.limit = 45u;
-		MainArcadeRaceHold_RunMode(Step, &step, bannerModes[i], &result);
+		MainArcadeRaceHold_RunMode(Step, &step, bannerModes[i], NULL, &result);
 		CHECK(memcmp(&result, &reference, sizeof(result)) == 0);
 		CHECK(s_bannerCalls == 35u && s_bannerTextOk == 1 && s_orderOk == 1);
 	}
 
 	/* A NULL step and a NULL result, without the banner: one pump. */
 	StubReset(1);
-	MainArcadeRaceHold_RunMode(NULL, NULL, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, NULL);
+	MainArcadeRaceHold_RunMode(NULL, NULL, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, NULL, NULL);
 	CHECK(s_pumps == 1u && s_waits == 0u && s_bannerCalls == 0u);
+	return 0;
+}
+
+/* The glyph table (LR-S11): with a table every due banner goes to the glyph
+ * present with that exact table, never to the block present, and the hold
+ * is otherwise Run's; without one (Run, the roster proof) every banner goes
+ * to the block present; without the banner neither is called. The loop
+ * never reads the table: a table of 0xA5 bytes passes through unchanged. */
+static int TestGlyphs(void)
+{
+	static struct NativeHoldBannerGlyphs glyphs;
+	static struct NativeHoldBannerGlyphs untouched;
+	const struct NativeHoldBannerGlyphs *const table = &glyphs;
+	struct StepState step;
+	struct MainArcadeRaceHoldResult result;
+	struct MainArcadeRaceHoldResult reference;
+
+	memset(&glyphs, 0xA5, sizeof(glyphs));
+	memset(&untouched, 0xA5, sizeof(untouched));
+	/* Run: the block present only. */
+	StubReset(1);
+	memset(&step, 0, sizeof(step));
+	step.limit = 45u;
+	MainArcadeRaceHold_Run(Step, &step, &reference);
+	CHECK(s_blockBannerCalls == 35u && s_glyphBannerCalls == 0u);
+
+	/* RunMode with the banner and a table: the glyph present only. */
+	StubReset(1);
+	s_expectedGlyphs = table;
+	memset(&step, 0, sizeof(step));
+	step.limit = 45u;
+	MainArcadeRaceHold_RunMode(Step, &step, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, table, &result);
+	CHECK(s_glyphBannerCalls == 35u && s_blockBannerCalls == 0u && s_glyphsPassedOk == 1);
+	CHECK(s_bannerTextOk == 1 && s_orderOk == 1 && s_lastEvent == 'S');
+	CHECK(memcmp(&result, &reference, sizeof(result)) == 0);
+
+	/* Half presented: the counts follow the glyph present's answers. */
+	StubReset(2);
+	s_expectedGlyphs = table;
+	memset(&step, 0, sizeof(step));
+	step.limit = 45u;
+	MainArcadeRaceHold_RunMode(Step, &step, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, table, &result);
+	CHECK(result.bannersDue == 35u && result.bannersPresented == 18u && s_glyphBannerCalls == 35u);
+
+	/* A table without the banner: no present at all. */
+	StubReset(1);
+	s_expectedGlyphs = table;
+	memset(&step, 0, sizeof(step));
+	step.limit = 45u;
+	MainArcadeRaceHold_RunMode(Step, &step, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, table, &result);
+	CHECK(s_bannerCalls == 0u && result.bannersDue == 0u && result.bannersPresented == 0u);
+	CHECK(memcmp(&glyphs, &untouched, sizeof(glyphs)) == 0);
 	return 0;
 }
 
@@ -340,6 +419,10 @@ int main(void)
 		return 1;
 	}
 	if (TestModes() != 0)
+	{
+		return 1;
+	}
+	if (TestGlyphs() != 0)
 	{
 		return 1;
 	}

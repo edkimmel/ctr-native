@@ -8,6 +8,7 @@
 #include "platform/native_frame_capture.h"
 #include "platform/native_glad.h"
 #include "platform/native_gpu.h"
+#include "platform/native_hold_banner.h"
 #include "platform/native_input.h"
 #include "platform/native_log.h"
 #include "platform/native_perf.h"
@@ -47,6 +48,10 @@ global_variable int s_pinnedVramDisplayH = 0;
 /* Host-local: the text of the one Platform_PresentVRAMDisplayBanner present
  * in progress; NULL otherwise. */
 global_variable const char *s_presentBannerText = NULL;
+/* Host-local: that present's glyph table (LR-S11; NULL: the block font),
+ * and the font its draw used (NATIVE_HOLD_BANNER_FONT_*), for the log. */
+global_variable const struct NativeHoldBannerGlyphs *s_presentBannerGlyphs = NULL;
+global_variable u32 s_presentBannerFont = 0;
 #if defined(CTR_INTERNAL)
 /* Host-local presentation state only; never observed by game/replay code. */
 global_variable struct NativeFrameCaptureConfig s_frameCaptureConfig;
@@ -599,9 +604,9 @@ void Platform_EndScene(void)
 		}
 		if (s_presentBannerText != NULL)
 		{
-			/* Platform_PresentVRAMDisplayBanner: a host overlay on the
-			 * presented image only, drawn before the capture reads it. */
-			NativeRenderer_DrawPresentBanner(s_presentBannerText);
+			/* Platform_PresentVRAMDisplayBanner(Glyphs): a host overlay on
+			 * the presented image only, drawn before the capture reads it. */
+			s_presentBannerFont = NativeRenderer_DrawPresentBanner(s_presentBannerText, s_presentBannerGlyphs);
 		}
 		NativeRenderer_EndGpuFrame();
 #if defined(CTR_INTERNAL)
@@ -656,7 +661,9 @@ void Platform_PresentVRAMDisplay(void)
 	Platform_EndFrame();
 }
 
-int Platform_PresentVRAMDisplayBanner(const char *text)
+/* The two banner presents (include/platform.h): glyphs NULL is the block
+ * font, the roster proof's banner, exactly as before LR-S11. */
+internal int Platform_PresentBanner(const char *text, const struct NativeHoldBannerGlyphs *glyphs)
 {
 	/* A scene in progress, or a pinned presentation the game asked for, is
 	 * render-pass state this overlay must not end or consume. */
@@ -665,12 +672,33 @@ int Platform_PresentVRAMDisplayBanner(const char *text)
 		return 0;
 	}
 	s_presentBannerText = text;
+	s_presentBannerGlyphs = glyphs;
+	s_presentBannerFont = NATIVE_HOLD_BANNER_FONT_NO_TABLE;
 	Platform_PresentVRAMDisplay();
 	s_presentBannerText = NULL;
+	s_presentBannerGlyphs = NULL;
 #if defined(CTR_INTERNAL)
-	Platform_Log("[CTR Native] hold banner presented as capture frame %d\n", s_frameCaptureFrameIndex);
+	if (glyphs == NULL)
+	{
+		Platform_Log("[CTR Native] hold banner presented as capture frame %d\n", s_frameCaptureFrameIndex);
+	}
+	else
+	{
+		Platform_Log("[CTR Native] hold banner presented as capture frame %d in the %s\n", s_frameCaptureFrameIndex,
+		             NativeHoldBanner_FontName(s_presentBannerFont));
+	}
 #endif
 	return 1;
+}
+
+int Platform_PresentVRAMDisplayBanner(const char *text)
+{
+	return Platform_PresentBanner(text, NULL);
+}
+
+int Platform_PresentVRAMDisplayBannerGlyphs(const char *text, const struct NativeHoldBannerGlyphs *glyphs)
+{
+	return Platform_PresentBanner(text, glyphs);
 }
 
 /* Host-local (include/platform.h): the monotonic host time. */

@@ -27,6 +27,17 @@
 #     heap, game state, or static mutable state), includes only its header,
 #     stddef.h, stdint.h, and string.h, and its library builds exactly its .c,
 #     links nothing, is C17 with extensions off, and is linked by ctr_native.
+# Since LR-S11 (LR-72), the game-font banner: rule 1 declares
+# Platform_PresentVRAMDisplayBannerGlyphs too; rule 2 pins both public
+# presents to one shared present (the block one passes no table), its
+# one-shot table and font result, and Platform_EndScene's banner branch;
+# rule 3 pins the draw's game-font-then-block-font order, the read-only
+# mirror accessor, and the residency rule that reads the GPU-newer tile bits
+# and never writes them, and bans every VRAM write or upload, readback
+# (NativeRenderer_ReadVRAM included), and ordering-table or primitive token
+# from the draw, the residency rule, and the platform's banner path; rule 4
+# lets only the hold module call the glyph present; rule 5 also bans the
+# game's font names (DecalFont, the icon groups, data.) from the pure core.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "host wait isolation")
@@ -140,10 +151,11 @@ set(vblank_tokens
 foreach(declaration IN ITEMS
         "unsigned long long Platform_HostClockUs(void);"
         "void Platform_HostWaitMs(unsigned int milliseconds);"
-        "int Platform_PresentVRAMDisplayBanner(const char *text);")
+        "int Platform_PresentVRAMDisplayBanner(const char *text);"
+        "int Platform_PresentVRAMDisplayBannerGlyphs(const char *text, const struct NativeHoldBannerGlyphs *glyphs);")
     ctr_require("${platform_header}" "${platform_h_code}" "${declaration}")
 endforeach()
-foreach(name IN ITEMS Platform_HostClockUs Platform_HostWaitMs Platform_PresentVRAMDisplayBanner)
+foreach(name IN ITEMS Platform_HostClockUs Platform_HostWaitMs Platform_PresentVRAMDisplayBanner Platform_PresentVRAMDisplayBannerGlyphs)
     ctr_count_identifier("${platform_h_code}" "${name}" declaration_hits)
     if(NOT declaration_hits EQUAL 1)
         message(FATAL_ERROR "${prefix}: ${platform_header} must declare ${name} exactly once (found ${declaration_hits})")
@@ -164,9 +176,11 @@ if(NOT clock_normalized STREQUAL "{ return (unsigned long long)(SDL_GetTicksNS()
     message(FATAL_ERROR "${prefix}: Platform_HostClockUs must only read SDL_GetTicksNS (found '${clock_normalized}')")
 endif()
 
-# 2. The banner present and what it reaches, and the event pump.
+# 2. The banner presents and what they reach, and the event pump.
 foreach(opener IN ITEMS
+        "internal int Platform_PresentBanner(const char *text, const struct NativeHoldBannerGlyphs *glyphs)"
         "int Platform_PresentVRAMDisplayBanner(const char *text)"
+        "int Platform_PresentVRAMDisplayBannerGlyphs(const char *text, const struct NativeHoldBannerGlyphs *glyphs)"
         "void Platform_PresentVRAMDisplay(void)"
         "void Platform_PinVRAMDisplayFrames(int frameCount)"
         "int Platform_BeginScene(void)"
@@ -180,44 +194,139 @@ foreach(opener IN ITEMS
         ctr_forbid("${platform_path} (${opener})" "${body}" "${term}")
     endforeach()
 endforeach()
-ctr_block("${platform_path}" "${platform_code}" "int Platform_PresentVRAMDisplayBanner(const char *text)" banner_body)
-ctr_require_order("${platform_path} (Platform_PresentVRAMDisplayBanner)" "${banner_body}"
+# The two public presents are the one shared present, the block font's with
+# no table (so Platform_PresentVRAMDisplayBanner is what it was before
+# LR-S11) and the game font's with the caller's table.
+ctr_block("${platform_path}" "${platform_code}" "int Platform_PresentVRAMDisplayBanner(const char *text)" block_banner_body)
+string(REGEX REPLACE "[ \t\n]+" " " block_banner_flat "${block_banner_body}")
+if(NOT block_banner_flat STREQUAL "{ return Platform_PresentBanner(text, NULL); }")
+    message(FATAL_ERROR "${prefix}: Platform_PresentVRAMDisplayBanner must be exactly the shared present with no glyph table (found '${block_banner_flat}')")
+endif()
+ctr_block("${platform_path}" "${platform_code}" "int Platform_PresentVRAMDisplayBannerGlyphs(const char *text, const struct NativeHoldBannerGlyphs *glyphs)" glyph_banner_body)
+string(REGEX REPLACE "[ \t\n]+" " " glyph_banner_flat "${glyph_banner_body}")
+if(NOT glyph_banner_flat STREQUAL "{ return Platform_PresentBanner(text, glyphs); }")
+    message(FATAL_ERROR "${prefix}: Platform_PresentVRAMDisplayBannerGlyphs must be exactly the shared present with its glyph table (found '${glyph_banner_flat}')")
+endif()
+ctr_count_identifier("${platform_code}" "Platform_PresentBanner" shared_hits)
+if(NOT shared_hits EQUAL 3)
+    message(FATAL_ERROR "${prefix}: ${platform_path} must define Platform_PresentBanner and call it only from the two public presents (found ${shared_hits})")
+endif()
+ctr_block("${platform_path}" "${platform_code}" "internal int Platform_PresentBanner(const char *text, const struct NativeHoldBannerGlyphs *glyphs)" banner_body)
+ctr_require_order("${platform_path} (Platform_PresentBanner)" "${banner_body}"
     "if ((s_platformInitialized == 0) || (s_platformBeginScene != 0) || (s_pinnedVramDisplayFrames > 0) || (text == NULL))"
     "return 0;"
     "s_presentBannerText = text;"
+    "s_presentBannerGlyphs = glyphs;"
+    "s_presentBannerFont = NATIVE_HOLD_BANNER_FONT_NO_TABLE;"
     "Platform_PresentVRAMDisplay();"
     "s_presentBannerText = NULL;"
+    "s_presentBannerGlyphs = NULL;"
     "return 1;")
 ctr_require("${platform_path}" "${platform_code}" "\nglobal_variable const char *s_presentBannerText = NULL;\n")
+ctr_require("${platform_path}" "${platform_code}" "\nglobal_variable const struct NativeHoldBannerGlyphs *s_presentBannerGlyphs = NULL;\n")
+ctr_require("${platform_path}" "${platform_code}" "\nglobal_variable u32 s_presentBannerFont = 0;\n")
 ctr_count_identifier("${platform_code}" "s_presentBannerText" text_hits)
 if(NOT text_hits EQUAL 5)
     message(FATAL_ERROR "${prefix}: ${platform_path} must name s_presentBannerText exactly five times: its declaration, the set and the clear in the banner present, and the check and the draw in Platform_EndScene (found ${text_hits})")
+endif()
+ctr_count_identifier("${platform_code}" "s_presentBannerGlyphs" glyphs_hits)
+if(NOT glyphs_hits EQUAL 4)
+    message(FATAL_ERROR "${prefix}: ${platform_path} must name s_presentBannerGlyphs exactly four times: its declaration, the set and the clear in the banner present, and the draw in Platform_EndScene (found ${glyphs_hits})")
+endif()
+ctr_count_identifier("${platform_code}" "s_presentBannerFont" font_hits)
+if(NOT font_hits EQUAL 4)
+    message(FATAL_ERROR "${prefix}: ${platform_path} must name s_presentBannerFont exactly four times: its declaration, the reset in the banner present, the draw's result in Platform_EndScene, and the log (found ${font_hits})")
 endif()
 ctr_block("${platform_path}" "${platform_code}" "void Platform_EndScene(void)" end_scene_body)
 ctr_require_order("${platform_path} (Platform_EndScene)" "${end_scene_body}"
     "if (s_pinnedVramDisplayFrames > 0)"
     "NativeRenderer_PresentVRAMDisplay();"
     "if (s_presentBannerText != NULL)"
-    "NativeRenderer_DrawPresentBanner(s_presentBannerText);"
+    "s_presentBannerFont = NativeRenderer_DrawPresentBanner(s_presentBannerText, s_presentBannerGlyphs);"
     "NativeRenderer_EndGpuFrame();"
     "Platform_ServiceFrameCapture();"
     "NativeRenderer_SwapWindow();")
 
-# 3. The renderer's banner draw.
-ctr_block("${renderer_path}" "${renderer_code}" "void NativeRenderer_DrawPresentBanner(const char *text)" draw_body)
-foreach(term IN LISTS vblank_tokens ITEMS
-        CopyVRAM MarkVRAMDirty MarkGpuVRAMNewer cpuPixels StoreFrameBuffer GpuPackTextureToVRAM UpdateVRAM
-        s_mainRenderTarget s_offscreenRenderTarget BindMainRenderTarget LoadRenderTarget glDraw DrawVRAMRegion activeDrawEnv activeDispEnv)
+# 3. The renderer's banner draw, and (LR-S11) its read of the game font's
+#    glyphs: the VRAM mirror is read, never written, and only where no tile
+#    is GPU-newer (the residency rule), so the read needs no readback and
+#    changes no render state. NativeRenderer_ReadVRAM is not used: it
+#    resolves GPU-newer tiles with a readback (SyncGpuVRAMToCPU:
+#    NativeRenderer_UpdateVRAM, glReadPixels, the tile bits cleared).
+#    Neither the draw nor the platform's banner path names a VRAM write or
+#    upload, a readback, or an ordering-table or primitive token.
+set(render_pass_tokens
+    NativeRenderer_ReadVRAM ResolveVRAMRead SyncGpuVRAMToCPU glReadPixels glTexSubImage glTexImage LoadImage WriteVRAM ClearVRAM
+    CopyVRAM MarkVRAMDirty MarkGpuVRAMNewer cpuDirtyRect UpdateVRAM StoreFrameBuffer GpuPackTextureToVRAM
+    OTag otMem primMem ptrOT DrawPrim AddPrim addPrim DrawOTag pushBuffer backBuffer DecalFont)
+ctr_block("${renderer_path}" "${renderer_code}" "u32 NativeRenderer_DrawPresentBanner(const char *text, const struct NativeHoldBannerGlyphs *glyphs)" draw_body)
+foreach(term IN LISTS vblank_tokens render_pass_tokens ITEMS
+        cpuPixels gpuNewerTiles s_vram s_mainRenderTarget s_offscreenRenderTarget BindMainRenderTarget LoadRenderTarget glDraw DrawVRAMRegion
+        activeDrawEnv activeDispEnv)
     ctr_forbid("${renderer_path} (NativeRenderer_DrawPresentBanner)" "${draw_body}" "${term}")
 endforeach()
 ctr_require_order("${renderer_path} (NativeRenderer_DrawPresentBanner)" "${draw_body}"
-    "NativeHoldBanner_Layout(text, s_presentViewport.w, s_presentViewport.h, layout)"
+    "if (glyphs != NULL)"
+    "NativeHoldBanner_GlyphLayout(text, glyphs, NativeRenderer_BannerVRAM(), NativeRenderer_BannerResident, NULL,"
+    "if (font == NATIVE_HOLD_BANNER_FONT_GAME)"
+    "else if (NativeHoldBanner_Layout(text, s_presentViewport.w, s_presentViewport.h, layout))"
+    "return font;"
     "glBindFramebuffer(GL_FRAMEBUFFER, 0);"
     "glEnable(GL_SCISSOR_TEST);"
     "NativeRenderer_ClearHostRect("
     "glScissor(previousScissorBox[0], previousScissorBox[1], previousScissorBox[2], previousScissorBox[3]);"
     "glClearColor(previousClearColor[0], previousClearColor[1], previousClearColor[2], previousClearColor[3]);"
-    "s_previousScissorState = previousScissorEnabled ? 1 : 0;")
+    "s_previousScissorState = previousScissorEnabled ? 1 : 0;"
+    "return font;")
+# The mirror is handed out read-only, by one accessor, to the draw alone.
+ctr_block("${renderer_path}" "${renderer_code}" "internal const u16 *NativeRenderer_BannerVRAM(void)" mirror_body)
+string(REGEX REPLACE "[ \t\n]+" " " mirror_flat "${mirror_body}")
+if(NOT mirror_flat STREQUAL "{ return s_vram.cpuPixels; }")
+    message(FATAL_ERROR "${prefix}: NativeRenderer_BannerVRAM must only hand out the mirror (found '${mirror_flat}')")
+endif()
+# The residency rule reads the tile bits only.
+ctr_block("${renderer_path}" "${renderer_code}" "internal int NativeRenderer_BannerResident(void *context, int32_t x, int32_t y, int32_t w, int32_t h)" resident_body)
+foreach(term IN LISTS vblank_tokens render_pass_tokens ITEMS cpuPixels gl SDL_ s_previous s_mainRenderTarget)
+    ctr_forbid("${renderer_path} (NativeRenderer_BannerResident)" "${resident_body}" "${term}")
+endforeach()
+ctr_require("${renderer_path} (NativeRenderer_BannerResident)" "${resident_body}"
+    "if ((s_vram.gpuNewerTiles[tileIndex >> 5] & (1u << (tileIndex & 31))) != 0u)")
+set(tile_write "gpuNewerTiles[^;]*[^=!<>]=[^=]|gpuNewerTiles[^;]*(\\+\\+|--)")
+foreach(probe IN ITEMS "s_vram.gpuNewerTiles[i] = 0;" "s_vram.gpuNewerTiles[i] |= 1u;" "s_vram.gpuNewerTiles[i] &= ~1u;" "s_vram.gpuNewerTiles[i]++;")
+    string(REGEX MATCH "${tile_write}" probe_hit "${probe}")
+    if(probe_hit STREQUAL "")
+        message(FATAL_ERROR "${prefix}: the tile write scan misses '${probe}'")
+    endif()
+endforeach()
+string(REGEX MATCH "${tile_write}" probe_hit "if ((s_vram.gpuNewerTiles[i >> 5] & (1u << (i & 31))) != 0u)")
+if(NOT probe_hit STREQUAL "")
+    message(FATAL_ERROR "${prefix}: the tile write scan flags a read")
+endif()
+string(REGEX MATCH "${tile_write}" resident_write "${resident_body}")
+if(NOT resident_write STREQUAL "")
+    message(FATAL_ERROR "${prefix}: NativeRenderer_BannerResident writes the tile bits ('${resident_write}')")
+endif()
+foreach(name IN ITEMS NativeRenderer_BannerVRAM NativeRenderer_BannerResident)
+    ctr_count_identifier("${renderer_code}" "${name}" helper_hits)
+    ctr_count_identifier("${draw_body}" "${name}" helper_draw_hits)
+    if(NOT helper_hits EQUAL 2 OR NOT helper_draw_hits EQUAL 1)
+        message(FATAL_ERROR "${prefix}: ${renderer_path} must define ${name} and use it only in the banner draw (found ${helper_hits}, ${helper_draw_hits} in the draw)")
+    endif()
+endforeach()
+ctr_require("${renderer_path}" "${renderer_code}"
+    "_Static_assert(NATIVE_HOLD_BANNER_VRAM_WIDTH == VRAM_WIDTH && NATIVE_HOLD_BANNER_VRAM_HEIGHT == VRAM_HEIGHT,")
+# The platform's banner path: the shared present, the two public ones, and
+# Platform_EndScene's banner branch.
+foreach(body_name IN ITEMS banner_body block_banner_body glyph_banner_body)
+    foreach(term IN LISTS render_pass_tokens ITEMS cpuPixels gpuNewerTiles NativeRenderer_BannerVRAM)
+        ctr_forbid("${platform_path} (${body_name})" "${${body_name}}" "${term}")
+    endforeach()
+endforeach()
+ctr_block("${platform_path} (Platform_EndScene)" "${end_scene_body}" "if (s_presentBannerText != NULL)" end_scene_banner)
+string(REGEX REPLACE "[ \t\n]+" " " end_scene_banner_flat "${end_scene_banner}")
+if(NOT end_scene_banner_flat STREQUAL "{ s_presentBannerFont = NativeRenderer_DrawPresentBanner(s_presentBannerText, s_presentBannerGlyphs); }")
+    message(FATAL_ERROR "${prefix}: Platform_EndScene's banner branch must only draw the banner (found '${end_scene_banner_flat}')")
+endif()
 
 # 4. Callers, over every game, platform, include, and main.c file.
 file(GLOB_RECURSE scan_files
@@ -240,6 +349,7 @@ foreach(path IN LISTS scan_files)
     endif()
     ctr_strip_comments("${relative_path}" "${source}" code)
     foreach(rule "Platform_HostWaitMs|hold_owners" "Platform_HostClockUs|hold_owners" "Platform_PresentVRAMDisplayBanner|hold_owners"
+            "Platform_PresentVRAMDisplayBannerGlyphs|hold_owners"
             "NativeRenderer_DrawPresentBanner|draw_owners" "s_presentBannerText|text_owners")
         string(REPLACE "|" ";" rule_items "${rule}")
         list(GET rule_items 0 name)
@@ -258,8 +368,8 @@ if(scanned LESS 300)
     message(FATAL_ERROR "${prefix}: scanned only ${scanned} files; the scan is broken")
 endif()
 list(SORT hold_callers)
-if(NOT "${hold_callers}" STREQUAL "Platform_HostClockUs;Platform_HostWaitMs;Platform_PresentVRAMDisplayBanner")
-    message(FATAL_ERROR "${prefix}: ${hold_source} must call the wait, the clock, and the banner present (found '${hold_callers}')")
+if(NOT "${hold_callers}" STREQUAL "Platform_HostClockUs;Platform_HostWaitMs;Platform_PresentVRAMDisplayBanner;Platform_PresentVRAMDisplayBannerGlyphs")
+    message(FATAL_ERROR "${prefix}: ${hold_source} must call the wait, the clock, and the two banner presents (found '${hold_callers}')")
 endif()
 ctr_count_identifier("${platform_code}" "NativeRenderer_DrawPresentBanner" draw_calls)
 if(NOT draw_calls EQUAL 1)
@@ -276,7 +386,8 @@ foreach(relative_path IN ITEMS "${banner_header}" "${banner_source}")
     endif()
     foreach(term IN LISTS vblank_tokens ITEMS
             SDL_ glClear glScissor glad GL_ Platform_ NativeRenderer platform.h common.h gGT sdata malloc calloc realloc "free(" alloca
-            fopen printf FILE clock "time(" "time.h" Lockstep lockstep Replay replay Lease lease Topology topology)
+            fopen printf FILE clock "time(" "time.h" Lockstep lockstep Replay replay Lease lease Topology topology
+            DecalFont DecalHUD ICONGROUP "data." iconGroup primMem ptrOT OTag cpuPixels gpuNewerTiles)
         ctr_forbid("${relative_path}" "${code}" "${term}")
     endforeach()
     string(REGEX MATCHALL "#[ \t]*include[^\n]*" include_lines "${code}")
@@ -285,10 +396,11 @@ foreach(relative_path IN ITEMS "${banner_header}" "${banner_source}")
             message(FATAL_ERROR "${prefix}: disallowed include '${include_line}' in ${relative_path}")
         endif()
     endforeach()
-    # The only static is the const glyph table.
+    # The only static data is the const glyph table (LR-S11: static
+    # functions are internal helpers, not state).
     string(REGEX MATCHALL "(^|[^A-Za-z0-9_])static[ \t\n][^;{=]*" statics "${code}")
     foreach(static_head IN LISTS statics)
-        if(NOT static_head MATCHES "static const uint8_t k_nativeHoldBannerGlyphs\\[")
+        if(NOT static_head MATCHES "static const uint8_t k_nativeHoldBannerGlyphs\\[" AND NOT static_head MATCHES "static uint32_t NativeHoldBanner_[A-Za-z]+\\(")
             message(FATAL_ERROR "${prefix}: ${relative_path} holds static state '${static_head}'")
         endif()
     endforeach()

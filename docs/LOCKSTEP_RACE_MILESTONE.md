@@ -531,7 +531,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-71; LR-17 is the owner's ruling)
+## 4. Decided design (defaults LR-1..LR-72; LR-17 is the owner's ruling)
 
 The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
 written, except that LR-18, the finish grace, amends LR-1, LR-12, LR-13,
@@ -543,8 +543,8 @@ changed, and "Owner decisions (2026-09-25)" after it lists the owner's
 decisions. LR-19..LR-27 were added by LR-S4, LR-28..LR-32 by LR-S5,
 LR-33..LR-36 by LR-S6, LR-37..LR-40 by LR-S7, LR-41..LR-48 by LR-S8,
 LR-49..LR-57 by LR-S9, LR-58..LR-60 by LR-S10 part 1, LR-61..LR-68 by
-LR-S10 part 2, and LR-69..LR-71 by LR-S12; each records the mechanics its
-slice settled.
+LR-S10 part 2, LR-69..LR-71 by LR-S12, and LR-72 by LR-S11; each records
+the mechanics its slice settled.
 
 LR-1 Placement. The race driver lives under platform/, because game code
 may not name lockstep (tests/native_lockstep_isolation_test.cmake:128-157
@@ -921,7 +921,16 @@ ordering table. The pinned present it rides on does go through
 Platform_BeginScene and NativeRenderer_BeginScene, which bind the main
 render target and clear it or reload it from VRAM, as every
 Platform_PresentVRAMDisplay does; the next DrawOTag rebuilds that target,
-and VRAM is not written. LR-S11 settles the final style.
+and VRAM is not written. LR-S11 settled the final style (LR-72): the race
+hold's banner is still that host overlay, but its text is the arcade-link
+layout's font (FONT_SMALL, WHITE), whose glyphs the host decodes read-only
+from the CPU VRAM mirror through a pointer-free glyph table the race
+caller reads from the game's icon data; the 5x7 block font remains the
+fallback, and the roster proof's banner. The answer to "why a block
+font": DecalFont itself cannot be called from the hold (it writes
+primitive memory and the ordering table), and LR-S2 took the smallest
+safe overlay; the game font needed only its texels, which the hold can
+read without touching render-pass state.
 
 Note for LR-S9: Platform_PollHostEvents indirectly calls
 Platform_InputControllerAdded/Removed and SubmitName_UseKeyboard, which
@@ -1094,7 +1103,9 @@ return step, RL-8):
                                   stall timeout               RACE OUT OF SYNC (DESYNC)
     desync only in F - 1 or F     may go undetected in        RACE COMPLETE on the side that
                                   band (below)                finishes on F (RACE OUT OF SYNC
-                                                              if the other leads); RACE
+                                                              if it shows in F - 1 and the
+                                                              other, in step or leading,
+                                                              does not finish on F); RACE
                                                               COMPLETE or OPPONENT
                                                               DISCONNECTED on the other
     protocol fault                the record that faults      LINK ERROR (LINK_ERROR)
@@ -1135,7 +1146,7 @@ The rows in detail:
     in band detects it; only the live gate's offline per-tick comparison
     does (LR-16).
   - Only cabinet A finishes on F. A shows RACE COMPLETE, unless the next
-    case applies. A's last bundle,
+    case applies (a state differing from F - 1). A's last bundle,
     composed on its tick F - 1, is for frame F + D - 1 and carries A's
     digest of F - 2, so B never sees A's digests of F - 1 or F and never
     detects the divergence. B takes up to frame F + D - 1. If B's own
@@ -1143,21 +1154,29 @@ The rows in detail:
     otherwise B stalls on frame F + D and shows OPPONENT DISCONNECTED
     after the stall timeout.
   - B, which did not finish on F, does send its own digest of F - 1, in
-    the bundle it composes on its tick F. If B leads A, that bundle can
-    reach A before A's finish is on the flow: parked and compared at A's
-    record of F - 1, compared on arrival, or drained by the adapter Tick
-    of pass F + 1. That Tick is the one that sees A's finish (the race
-    caller reports it after pass F's Tick, section 2.1), and there a link
-    failure outranks a same-tick finish (native_arcade_flow.c:278-301).
-    In each case A shows RACE OUT OF SYNC. Once A's flow is on RESULTS a
+    the bundle it composes on its tick F. If B leads A, or is in step with
+    it, that bundle reaches A before A's finish is on the flow: parked and
+    compared at A's record of F - 1, compared on arrival, or drained by
+    the adapter Tick of pass F + 1. That Tick is the one that sees A's
+    finish (the race caller reports it after pass F's Tick, section 2.1),
+    and there a link failure outranks a same-tick finish
+    (native_arcade_flow.c:278-301). In each case, when the state differs
+    from F - 1, A shows RACE OUT OF SYNC. Once A's flow is on RESULTS a
     later latch changes nothing: the adapter turns a latched cause into
     the flow's end only while RACING (native_arcade_netplay.c:683-686).
   So the in-band result of such a divergence is RACE COMPLETE on the side
-  that finishes on F, or RACE OUT OF SYNC there when the other side leads,
-  and RACE COMPLETE or OPPONENT DISCONNECTED on the other side. With the
-  cabinets in step and B's finish more than D ticks after F, it is RACE
-  COMPLETE on one side and OPPONENT DISCONNECTED on the other. It is
-  fail-safe, as risk 6 is.
+  that finishes on F when it shows in F alone (or the other side lags), or
+  RACE OUT OF SYNC there when it shows from F - 1 and the other side, in
+  step or leading, did not finish on F; and RACE COMPLETE or OPPONENT
+  DISCONNECTED on the other side. With the cabinets in step and B's finish
+  more than D ticks after F, a divergence in F alone is RACE COMPLETE on
+  one side and OPPONENT DISCONNECTED on the other. One that shows from
+  F - 1 is RACE OUT OF SYNC on A and OPPONENT DISCONNECTED on B: B's bundle
+  composed on its tick F carries its digest of F - 1 and arrives before
+  A's pass F + 1 Tick (LR-S12's review follow-ups:
+  TestDrivePeerLeadsFinishDivergence, and the probe of
+  TestDriveHostOnlyFinishesOnF's in-step case with the state differing
+  from F - 1). It is fail-safe, as risk 6 is.
 - Peer drop. It ends the race for the survivor straight to RESULTS; the
   survivor does not race on against bots. The peer-drop roster is still
   applied for the record (native_arcade_netplay.c:600-610).
@@ -1922,7 +1941,9 @@ call is GO, and reports no stall. So on race tick 0 the first reported
 stall is period 811, and the timeout is counted period 900, also when
 periods jump across 810 or 900; elsewhere it is counted period 90.
 BannerDue(periods) is periods >= 10 (LR-9's hold grace); the hold module
-keeps its own identical rule until LR-S11. Step while held, or Hold while
+keeps its own identical rule (MainArcadeRaceHoldCore's DRAW_BANNER), and
+since LR-S11 main_arcade_race_hold_core_unit pins the two equal (LR-72).
+Step while held, or Hold while
 not held, is FAILURE_SEQUENCE.
 
 LR-45 Take classification and the send gate (LR-S8).
@@ -2502,7 +2523,9 @@ iteration: with NO_BANNER no banner is due or drawn (bannersDue and
 bannersPresented stay 0); any other value draws it. MainArcadeRaceHold_Run
 is exactly RunMode with the banner, so the roster proof is unchanged. The
 race caller holds with RunMode(MainArcadeRaceLaunch_HoldStep, state,
-NO_BANNER, &hold) until LR-S11 turns the banner on; its step forwards
+NO_BANNER, &hold) until LR-S11 turns the banner on (LR-72: RunMode gains
+a glyph table argument before the result, the caller holds with BANNER
+and its table, and Run passes NULL); its step forwards
 (periods, newPeriod) unchanged to NativeArcadeLinkHost_RaceHold with the
 committed pads as the output, keeps the status, and returns 1 only while
 it is HOLD. After the loop the kept status is GO or END and is handled as
@@ -2673,6 +2696,111 @@ one test read-back, NativeArcadeLinkHost_InternalLaunchTicksSinceCommit
 the internal header that no game source or main.c names (rule 3b). The
 launch core's test harness checks neutral pads from the end frame on
 every frame.
+
+LR-72 The hold banner in the game font (LR-S11; LR-9's presentation, LR-44,
+LR-64, risk 2). The race hold shows the banner: the race caller holds with
+MainArcadeRaceHold_RunMode(MainArcadeRaceLaunch_HoldStep, state,
+MAIN_ARCADE_RACE_HOLD_MODE_BANNER, &glyphs, &hold), so after the LR-9 grace
+of 10 periods it redraws the displayed frame with WAITING FOR OPPONENT on
+the first pump of every period until GO or END. The hold core's rule
+(DRAW_BANNER on a new period p >= 10) is the drive's BannerDue (LR-44), and
+main_arcade_race_hold_core_unit pins them equal (the same grace constant,
+and for every period 0..2000, strided late pumps, and the top of the range,
+a banner exactly when BannerDue(periods)). The banner is still a host
+overlay on the pinned present (LR-9, "LR-S2 (a) result"); what LR-S11
+changes is its text, now the arcade-link layout's banner font and colour,
+FONT_SMALL and WHITE (MainArcadeLinkLayout.c's Body items).
+
+- What is read, where, and when. The race caller,
+  MainArcadeRaceLaunch_BannerGlyphs, once each time a hold starts (after a
+  race step returns HOLD, before the loop), read only, into a pointer-free
+  table on the drive tick's stack (struct NativeHoldBannerGlyphs,
+  include/platform/native_hold_banner.h: count, colour, and per character
+  tpage, clut, u, v, kind, width, height, advance), exactly as
+  DecalFont_DrawLineStrlen looks the characters up: the icon group
+  gGT->iconGroup[data.font_IconGroupID[FONT_SMALL]] (none when NULL, as
+  DecalFont's native guard); per character the pen advance
+  (font_charPixWidth[FONT_SMALL], font_puncPixWidth for ':' and '.'), the
+  icon ID font_characterIconID[c - 0x21] for 0x21..0xFF (0xFF, a space's,
+  is a BLANK that only advances), and for an ID up to 0x7F and below
+  numIcons the icon through ICONGROUP_GETICONS: its TextureLayout's tpage,
+  clut, u0, v0, and the size DecalHUD_DrawPolyGT4 draws, u1 - u0 by
+  v2 - v0; and the colour data.ptrColor[WHITE][0] (WHITE's four corners are
+  equal, so one modulation colour is exact). Button, indent, and kana
+  characters are left MISSING; the banner has none. No game state is
+  written, nothing is drawn, and no DecalFont_ or DecalHUD_ function, ordering
+  table, or primitive memory is named. The hold hands the table to
+  Platform_PresentVRAMDisplayBannerGlyphs unread.
+- The platform's read. Not NativeRenderer_ReadVRAM: it resolves a GPU-newer
+  8x8 tile before reading (NativeRenderer_SyncGpuVRAMToCPU uploads the
+  pending CPU rectangles with NativeRenderer_UpdateVRAM, reads the VRAM
+  framebuffer back with glReadPixels into the mirror, and clears the tile
+  bits), which is a readback and a render-state change. The banner draw
+  instead reads the CPU VRAM mirror through a const accessor
+  (NativeRenderer_BannerVRAM), and only rectangles none of whose tiles is
+  GPU-newer (NativeRenderer_BannerResident, which reads the tile bits and
+  writes nothing): the glyph texels and each CLUT. In the race observed
+  (LR-S11's result) the font's tiles were current in the mirror at every
+  banner. No VRAM write or upload, no readback, no ordering table or
+  primitive memory; GL state is only the overlay's own scissored clears,
+  restored as before.
+- The decode, pure and unit-tested (NativeHoldBanner_GlyphSource,
+  _GlyphTexel, _Modulate, _GlyphLayout in ctr_native_hold_banner): 4-bit
+  (4 texels a word, lowest nibble first) and 8-bit (2, low byte first) CLUT
+  pages at page x (tpage & 0xF) * 64 and y 256 for tpage bit 4, CLUTs at
+  x (clut & 0x3F) * 16 and y clut >> 6 (native_gpu.c GET_CLUT_X/Y); a CLUT
+  entry 0x0000 is transparent, any other is opaque (the glyphs are drawn
+  opaque, as DecalFont draws them) and modulated as the PS1 does: each
+  5-bit channel times the colour's channel over 128, clamped to 31, widened
+  to 8 bits. The layout moves the pen by each advance and top-aligns the
+  glyphs; its extent is the furthest pen or glyph edge, its line the
+  tallest glyph, and scale, bar, and centring are the block font's rules
+  over those. Each run of one colour in a glyph row is one rectangle
+  (at most 4096), filled with a scissored clear after the black bar.
+- Fallback: the block font (LR-S2's), whenever the game font is refused:
+  no table (the roster proof), a table that does not match the text, a
+  character with no icon (no icon group, no icon ID for a letter, an ID
+  above 0x7F or not below numIcons, a NULL icon), a 15-bit or reserved
+  depth, a glyph out of bounds (size 1..32, u + width and v + height
+  within 256, advance 0..64, texels and a CLUT of 16 or 256 entries inside
+  VRAM), texels or a CLUT on a GPU-newer tile or no mirror (the read would
+  need a readback), a glyph with no opaque texel or a text with no glyph,
+  more than 4096 rectangles, or a viewport too small. A text the block font
+  cannot lay out either is not drawn, as before. Internal builds log each
+  race-hold banner as "hold banner presented as capture frame <n> in the
+  game font" or "... in the block font (<reason>)"; the roster proof's line
+  is unchanged.
+- The roster proof's hold is unchanged: MainArcadeRaceHold_Run passes no
+  table, so its banner is the block font and its host work and report are
+  as before.
+- The owner's question, why the banner used a 5x7 block font: DecalFont
+  cannot draw it from the hold (it writes primitive memory and the UI
+  ordering table, render-pass state, game/DecalFont.c:169, :196-205), and
+  LR-S2 took the smallest overlay that touched neither. The game font never
+  needed DecalFont, only its texels, which the host reads from the mirror
+  it already keeps. Live, every race-style banner (the roster proof's hold
+  routed through this path for the observation) was drawn in the game
+  font, and it matches the game's own DecalFont rendering of the same text
+  on the arcade-link lobby screen.
+- No automated capture check of a race hold banner: no existing live path
+  produces a race-caller hold of 10 periods or more. arcade_link_launch's
+  cabinets run in step on loopback (no hold of a full period is logged),
+  and forcing one needs a freeze injection, which LR-S13 plans (race 1's
+  freeze and a frame capture per cabinet), the natural home for that
+  check. The roster proof's run K does hold, but its banner is the block
+  font by design and its capture frame numbers move between runs, so a
+  check there would test neither the game-font path nor a fixed frame. The
+  unit cases over a synthetic VRAM image stand in, with the manual
+  observation in LR-S11's result.
+- Pinned by main_arcade_race_hold_isolation (the table handed on unread,
+  one present per banner, Run passing NULL, the caller holding with
+  BANNER and &glyphs, the proof naming no table), native_host_wait_isolation
+  (the shared present, the draw's order, the read-only accessor and
+  residency rule, and no VRAM write, upload, readback, NativeRenderer_ReadVRAM,
+  or ordering-table or primitive token in the draw or the platform's banner
+  path), main_arcade_link_hook_isolation 16j and 16l (the read's place and
+  its read-only body), and native_arcade_race_drive_isolation (the hold
+  core's unit test may link the drive core, for the BannerDue pin).
 
 Review changes. The plan review (on befa152a9) changed these defaults:
 
@@ -2903,7 +3031,8 @@ platform wait, both of which later ship). Run 1.
 (a) result. Every pass criterion passed. The banner is drawn with one
 deviation from LR-9, for the owner's review: it is not in "the
 arcade-link layout's font and style" but in a built-in host block font
-(LR-9, "LR-S2 (a) result").
+(LR-9, "LR-S2 (a) result"). LR-S11 settled it: the race hold's banner
+is in the arcade-link font, with the block font as the fallback (LR-72).
 
 - The hold module is game/MAIN/MainArcadeRaceHold.{c,h} (unity chain,
   CTR_NATIVE). Its pure period core is game/MAIN/MainArcadeRaceHoldCore.{c,h}
@@ -4765,7 +4894,129 @@ Tests:
 
 ### LR-S11 -- hold presentation
 
-Status: planned. Run 4.
+Status: done. Run 4. New default LR-72 (section 4).
+
+Result:
+
+- The API:
+
+      int Platform_PresentVRAMDisplayBannerGlyphs(const char *text, const struct NativeHoldBannerGlyphs *glyphs);
+      void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode,
+          const struct NativeHoldBannerGlyphs *glyphs, struct MainArcadeRaceHoldResult *result);
+      uint32_t NativeHoldBanner_GlyphSource(const struct NativeHoldBannerGlyph *glyph, char c,
+          struct NativeHoldBannerRect *texels, struct NativeHoldBannerRect *clut);
+      int NativeHoldBanner_GlyphTexel(const struct NativeHoldBannerGlyph *glyph, const uint16_t *vram,
+          uint32_t s, uint32_t t, uint16_t *entry);
+      uint32_t NativeHoldBanner_Modulate(uint16_t entry, uint32_t color);
+      uint32_t NativeHoldBanner_GlyphLayout(const char *text, const struct NativeHoldBannerGlyphs *glyphs,
+          const uint16_t *vram, NativeHoldBannerResidentFn resident, void *residentContext,
+          int32_t viewportW, int32_t viewportH, struct NativeHoldBannerGlyphLayout *layout);
+      const char *NativeHoldBanner_FontName(uint32_t font);
+
+  with struct NativeHoldBannerGlyph and NativeHoldBannerGlyphs (the
+  pointer-free table), NativeHoldBannerColorRect and
+  NativeHoldBannerGlyphLayout, the kinds MISSING 0, ICON 1, BLANK 2, and the
+  font results NATIVE_HOLD_BANNER_FONT_GAME 0 and the block font's
+  reasons NO_TABLE 1 .. RECTS 9. NativeRenderer_DrawPresentBanner takes the
+  table and returns the font it drew. Platform_PresentVRAMDisplayBanner(text)
+  and MainArcadeRaceHold_Run are unchanged in behaviour.
+- The files: game/MAIN/MainArcadeRaceLaunch.c (the glyph read, the hold
+  with the banner); game/MAIN/MainArcadeRaceHold.{c,h} (the table argument,
+  the glyph present); include/platform.h and platform/native_platform.c
+  (the glyph present over one shared present, the font result, the log
+  line); include/platform/native_renderer.h and platform/native_renderer.c
+  (the draw in either font, the read-only mirror accessor, the residency
+  rule); include/platform/native_hold_banner.h and
+  platform/native_hold_banner.c (the table, the decode, the layout);
+  CMakeLists.txt (the hold core's unit test links the drive core); the unit
+  tests tests/native_hold_banner_test.c, tests/main_arcade_race_hold_test.c,
+  and tests/main_arcade_race_hold_core_test.c; and the isolation tests
+  main_arcade_race_hold (1, 2, 6), native_host_wait (1-5),
+  main_arcade_link_hook (16j, new 16l), and native_arcade_race_drive (the
+  linker list). No change to the simulation, the drive, the host, the
+  session, the wire, the canonical state, any checkpoint or replay state,
+  or the lease; no VRAM write; no heap.
+- The outcome of the game-font read: the game font is used.
+  NativeRenderer_ReadVRAM was not: it reads back GPU-newer tiles
+  (glReadPixels after an upload of the pending CPU rectangles, clearing the
+  tile bits), which would touch render-pass state; the draw reads the CPU
+  mirror only where no tile is GPU-newer (LR-72). Fallback to the block
+  font on every refusal listed in LR-72.
+- Tests. native_hold_banner_unit, over a synthetic VRAM image (no retail
+  data): TestModulate (0x80 identity, 0xFF doubling and the clamp at 31,
+  per-channel order, darker shades, the STP bit carries no colour);
+  TestTexels (4-bit nibble order across VRAM words from an odd u, 8-bit
+  byte order with a 256-entry CLUT, the transparent 0x0000 entry, an
+  STP-only entry opaque, out-of-range arguments leaving the entry
+  untouched, a 15-bit page read nothing); TestGlyphSource (the texel and
+  CLUT rectangles of both depths, a BLANK only for a space, MISSING and
+  unknown kinds, both refused depths, every size, page, advance, CLUT row,
+  and VRAM-edge bound on both sides of the limit, rectangles untouched on
+  a refusal); TestGlyphFallbacks (the banner accepted with its residency
+  asked for each letter's texels and CLUT, then each refusal with the
+  layout untouched: NO_TABLE; TEXT for a NULL, empty, short, long, or
+  miscounted text and a NULL layout; NO_ICON for a missing letter, a blank
+  letter, and a missing space; DEPTH; BOUNDS; NOT_RESIDENT for refused
+  texels, a refused CLUT, and no VRAM image; TRANSPARENT for a glyph with
+  no opaque texel, an unloaded CLUT, and a text of spaces; VIEWPORT on both
+  axes, with the exact fit accepted; RECTS for 20480 runs; every font name
+  distinct); TestGlyphLayouts (the banner painted back into texel cells
+  matches every glyph's modulated texels at its pen position, empty
+  elsewhere, runs maximal, at 960x720 scale 2, 1920x1080 scale 5, 640x480
+  scale 1, and a height-bound 4000x120 scale 3; deterministic; the per
+  character advance with a punctuation width and a glyph wider than its
+  advance setting the extent; the tallest glyph setting the line; one
+  rectangle per colour run; the text colour modulating; an 8-bit font).
+  main_arcade_race_hold_core_unit, TestBannerDueMatchesDrive (the LR-44
+  equality). main_arcade_race_hold_unit, TestGlyphs (a table goes to the
+  glyph present, 35 times, with that exact pointer, and never to the block
+  present; Run goes only to the block present; the counts follow the
+  present's answers; no banner mode presents nothing; the table is
+  unchanged).
+- Probes, each reverted (the tree was byte-identical afterwards; the build
+  and suites below ran on the restored sources):
+  - the hold core drawing from period 11, and BannerDue from 11:
+    main_arcade_race_hold_core_unit failed each time;
+  - a 0x0000 entry opaque, an STP-only entry transparent, the 4-bit high
+    nibble first, the 8-bit high byte first, the residency callback
+    ignored, no all-transparent check, the 15-bit depth accepted, the CLUT
+    row bound removed, a letter allowed as a BLANK, the texel right edge
+    unchecked, the rectangle budget unchecked, and a fixed advance of 13:
+    native_hold_banner_unit failed each time. A first probe that accepted
+    CLUT word bit 15 passed, because a set bit 15 names a row of 512 or
+    more, which the row bound refuses; the redundant bit test was removed
+    and the row bound probed instead (above);
+  - the hold always using the block present: main_arcade_race_hold_unit
+    and main_arcade_race_hold_isolation failed; the hold reading the
+    table's count, Run passing a table, the caller holding without the
+    banner, and the caller passing no table: main_arcade_race_hold_isolation
+    failed (and main_arcade_link_hook_isolation for the last two); the hold
+    naming data.: main_arcade_race_hold_isolation failed;
+  - the draw calling NativeRenderer_ReadVRAM, the residency rule clearing
+    a tile bit, the mirror accessor writing a texel, the platform's banner
+    present calling NativeRenderer_UpdateVRAM, and the draw naming ptrOT:
+    native_host_wait_isolation failed each time;
+  - the caller writing through the icon (a cast-away const |=) and calling
+    DecalFont_GetLineWidth: main_arcade_link_hook_isolation failed (16l).
+- Manual observation (internal build; the captures stay under
+  build-msvc-x86 and are never committed): with a temporary, reverted
+  probe that routed the roster proof's hold through the race caller's
+  glyph read and RunMode, `--arcade-roster-proof ... --arcade-roster-proof-hold`
+  logged all 35 banners (capture frames 1580..1614) "in the game font". A
+  capture of banner frame 1590 (800x600) shows the frozen split-screen
+  race under a black bar with WAITING FOR OPPONENT in the game's own small
+  font, 13 texels apart at scale 2: the glyph pixels are white (0xFFFFFF),
+  grey (0x7B7B7B), and the font's opaque near-black edge (0x000008), the
+  WHITE modulation of its texels. It matches the lobby preview capture's
+  DecalFont rendering of the same text (arcade_link_preview_render's
+  lobby.bmp). The committed proof is unchanged and draws the block font.
+- The plan's capture check: not built. The capture checker does not gain
+  the hold banner, because no existing live path produces a race hold
+  frame; LR-S13's race-1 freeze is where that check belongs (LR-72).
+- Fast suite (-LE live): 154 of 154 passed. The live gate
+  arcade_link_launch and arcade_roster_determinism (the hold module the
+  proof's run K uses) run on the committed tree; their results are
+  reported with the commit, not recorded here.
 
 Plan: the LR-9 grace and banner from the LR-S2 result: the
 MainArcadeRaceHold draw path and the banner as a host overlay
@@ -5117,7 +5368,13 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
    VBlanks (LR-7). LR-S2 (a) decided the hold: it works, and the banner
    is drawn as a host overlay in a built-in block font instead of the
    arcade-link font (LR-9, "LR-S2 (a) result"), so the frozen-frame
-   fallback was not needed. Audio during the hold was not observed or
+   fallback was not needed. LR-S11 turned the banner on for the race hold
+   and draws its text in the arcade-link font after all, decoded read-only
+   from the VRAM mirror, with the block font as the fallback (LR-72); a
+   host whose font tiles are GPU-newer, or whose icon data is not loaded,
+   shows the block font instead, never a broken glyph. The race hold's
+   banner has no automated capture check until LR-S13's freeze can
+   produce one (LR-72). Audio during the hold was not observed or
    recorded, so the underrun risk stays open. At a render scale above 1
    the banner frame shows the 1x VRAM image (the pinned present reads
    VRAM), so the picture visibly drops resolution while held and returns

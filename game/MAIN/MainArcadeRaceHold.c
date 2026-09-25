@@ -9,8 +9,10 @@
  * advance, read into, or write the simulation, and the banner is drawn by
  * the platform over the presented image only, never through the game's
  * ordering table or primitive memory (tests/main_arcade_race_hold_isolation_test.cmake).
- * The mode only decides whether step 3 (the banner) runs (LR-S10 part 2:
- * the race caller holds without it until LR-S11).
+ * The mode only decides whether step 3 (the banner) runs (LR-S10 part 2),
+ * and the glyph table only which present draws it (LR-S11: the race
+ * caller's table, the game font; NULL, the roster proof's, the block font).
+ * The table is handed on, never read here.
  *
  * Unity-included (game/game_unity.h); the period core is a linked library.
  */
@@ -24,7 +26,8 @@
 #include "MAIN/MainArcadeRaceHold.h"
 #include "MAIN/MainArcadeRaceHoldCore.h"
 
-void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, struct MainArcadeRaceHoldResult *result)
+void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, const struct NativeHoldBannerGlyphs *glyphs,
+                                struct MainArcadeRaceHoldResult *result)
 {
 	struct MainArcadeRaceHoldCore core;
 	uint32_t bannersDue = 0u;
@@ -48,8 +51,18 @@ void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, ui
 		 * the banner over the displayed frame. */
 		if ((mode != MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER) && ((flags & MAIN_ARCADE_RACE_HOLD_DRAW_BANNER) != 0u))
 		{
+			int presented;
+
 			bannersDue++;
-			if (Platform_PresentVRAMDisplayBanner(MAIN_ARCADE_RACE_HOLD_BANNER_TEXT) != 0)
+			if (glyphs != NULL)
+			{
+				presented = Platform_PresentVRAMDisplayBannerGlyphs(MAIN_ARCADE_RACE_HOLD_BANNER_TEXT, glyphs);
+			}
+			else
+			{
+				presented = Platform_PresentVRAMDisplayBanner(MAIN_ARCADE_RACE_HOLD_BANNER_TEXT);
+			}
+			if (presented != 0)
 			{
 				bannersPresented++;
 			}
@@ -73,7 +86,7 @@ void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, ui
 
 void MainArcadeRaceHold_Run(MainArcadeRaceHoldStepFn step, void *context, struct MainArcadeRaceHoldResult *result)
 {
-	MainArcadeRaceHold_RunMode(step, context, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, result);
+	MainArcadeRaceHold_RunMode(step, context, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, NULL, result);
 }
 
 #endif

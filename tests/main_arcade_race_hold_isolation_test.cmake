@@ -8,8 +8,9 @@
 #     name, no lockstep, netplay, lobby, or session token, no section 5
 #     token (lease, topology, checkpoint, replay, canonical state), no heap,
 #     and no static state; its only platform calls are the event pump, the
-#     host clock, the host wait, and the banner present; its includes are an
-#     allow-list; the .c is one CTR_NATIVE block;
+#     host clock, the host wait, and the two banner presents (block font and,
+#     since LR-S11, game font); its includes are an allow-list; the .c is one
+#     CTR_NATIVE block;
 #  2. MainArcadeRaceHold_Run does its host work in the LR-9 order: pump,
 #     period bookkeeping, the caller's step, the banner, the host wait;
 #  3. the period core is pure (no game, platform, SDL, clock, I/O, heap, or
@@ -32,7 +33,14 @@
 #     MainArcadeRaceHold_Run is exactly RunMode with the banner (the roster
 #     proof keeps its banner), and RunMode is named only by the hold module
 #     and the race caller (game/MAIN/MainArcadeRaceLaunch.c), which calls it
-#     exactly once, without the banner, until LR-S11 turns it on.
+#     exactly once. Since LR-S11 (LR-72): RunMode takes the caller's glyph
+#     table and hands it on unread (named only in the parameter, the NULL
+#     test, and the glyph present; the banner guard holds exactly the count
+#     and one present: the glyph present for a table, the block present for
+#     none); Run passes NULL, so the roster proof's banner stays the block
+#     font and the proof names no glyph table; the race caller holds with
+#     the banner and its table (&glyphs), never without it, and presents no
+#     banner itself.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "race hold isolation")
@@ -179,8 +187,8 @@ endforeach()
 string(REGEX MATCHALL "Platform_[A-Za-z0-9_]+" platform_names "${hold_code}")
 list(REMOVE_DUPLICATES platform_names)
 list(SORT platform_names)
-if(NOT "${platform_names}" STREQUAL "Platform_HostClockUs;Platform_HostWaitMs;Platform_PollHostEvents;Platform_PresentVRAMDisplayBanner")
-    message(FATAL_ERROR "${prefix}: ${hold_source} may call only Platform_PollHostEvents, Platform_HostClockUs, Platform_HostWaitMs, and Platform_PresentVRAMDisplayBanner (found '${platform_names}')")
+if(NOT "${platform_names}" STREQUAL "Platform_HostClockUs;Platform_HostWaitMs;Platform_PollHostEvents;Platform_PresentVRAMDisplayBanner;Platform_PresentVRAMDisplayBannerGlyphs")
+    message(FATAL_ERROR "${prefix}: ${hold_source} may call only Platform_PollHostEvents, Platform_HostClockUs, Platform_HostWaitMs, Platform_PresentVRAMDisplayBanner, and Platform_PresentVRAMDisplayBannerGlyphs (found '${platform_names}')")
 endif()
 string(REGEX MATCHALL "Platform_[A-Za-z0-9_]+" header_platform_names "${hold_h_code}")
 if(NOT "${header_platform_names}" STREQUAL "")
@@ -206,7 +214,10 @@ if(NOT hold_trimmed MATCHES "^#if defined\\(CTR_NATIVE\\)\n" OR NOT hold_trimmed
 endif()
 
 # 2. The LR-9 order of one iteration.
-ctr_require("${hold_source}" "${hold_code}" "void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, struct MainArcadeRaceHoldResult *result)")
+string(REGEX REPLACE "[ \t\n]+" " " hold_flat "${hold_code}")
+string(REGEX REPLACE "[ \t\n]+" " " hold_h_flat "${hold_h_code}")
+ctr_require("${hold_source}" "${hold_flat}"
+    "void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, const struct NativeHoldBannerGlyphs *glyphs, struct MainArcadeRaceHoldResult *result)")
 ctr_block("${hold_source}" "${hold_code}" "void MainArcadeRaceHold_RunMode(" run_body)
 ctr_block("${hold_source} (MainArcadeRaceHold_RunMode)" "${run_body}" "for (;;)" loop_body)
 ctr_require_order("${hold_source} (the hold loop)" "${loop_body}"
@@ -215,9 +226,11 @@ ctr_require_order("${hold_source} (the hold loop)" "${loop_body}"
     "step(context, core.periods,"
     "break;"
     "MAIN_ARCADE_RACE_HOLD_DRAW_BANNER"
+    "Platform_PresentVRAMDisplayBannerGlyphs(MAIN_ARCADE_RACE_HOLD_BANNER_TEXT, glyphs)"
     "Platform_PresentVRAMDisplayBanner(MAIN_ARCADE_RACE_HOLD_BANNER_TEXT)"
     "Platform_HostWaitMs(MAIN_ARCADE_RACE_HOLD_WAIT_MS);")
-foreach(name IN ITEMS Platform_PollHostEvents Platform_HostWaitMs Platform_PresentVRAMDisplayBanner MainArcadeRaceHoldCore_Pump)
+foreach(name IN ITEMS Platform_PollHostEvents Platform_HostWaitMs Platform_PresentVRAMDisplayBanner Platform_PresentVRAMDisplayBannerGlyphs
+        MainArcadeRaceHoldCore_Pump)
     ctr_count_identifier("${hold_code}" "${name}" name_hits)
     if(NOT name_hits EQUAL 1)
         message(FATAL_ERROR "${prefix}: ${hold_source} must call ${name} exactly once, in the loop (found ${name_hits})")
@@ -226,28 +239,40 @@ endforeach()
 ctr_require("${hold_header}" "${hold_h_code}" "#define MAIN_ARCADE_RACE_HOLD_BANNER_TEXT \"WAITING FOR OPPONENT\"")
 ctr_require("${hold_header}" "${hold_h_code}" "#define MAIN_ARCADE_RACE_HOLD_WAIT_MS 1u")
 
-# 6. The mode gates only the banner (LR-S10 part 2).
+# 6. The mode gates only the banner (LR-S10 part 2), and the glyph table
+#    only which present draws it (LR-S11).
 ctr_require("${hold_header}" "${hold_h_code}" "#define MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER 0u\n")
 ctr_require("${hold_header}" "${hold_h_code}" "#define MAIN_ARCADE_RACE_HOLD_MODE_BANNER 1u\n")
-ctr_require("${hold_header}" "${hold_h_code}"
-    "void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, struct MainArcadeRaceHoldResult *result);")
+ctr_require("${hold_header}" "${hold_h_flat}"
+    "struct NativeHoldBannerGlyphs; void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, const struct NativeHoldBannerGlyphs *glyphs, struct MainArcadeRaceHoldResult *result);")
 ctr_require("${hold_header}" "${hold_h_code}"
     "void MainArcadeRaceHold_Run(MainArcadeRaceHoldStepFn step, void *context, struct MainArcadeRaceHoldResult *result);")
 set(banner_guard "if ((mode != MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER) && ((flags & MAIN_ARCADE_RACE_HOLD_DRAW_BANNER) != 0u))")
 ctr_block("${hold_source} (the hold loop)" "${loop_body}" "${banner_guard}" banner_block)
 string(REGEX REPLACE "[ \t\n]+" " " banner_flat "${banner_block}")
-if(NOT banner_flat STREQUAL "{ bannersDue++; if (Platform_PresentVRAMDisplayBanner(MAIN_ARCADE_RACE_HOLD_BANNER_TEXT) != 0) { bannersPresented++; } }")
-    message(FATAL_ERROR "${prefix}: the banner guard of ${hold_source} must hold the banner count and present only (found '${banner_flat}')")
+if(NOT banner_flat STREQUAL "{ int presented; bannersDue++; if (glyphs != NULL) { presented = Platform_PresentVRAMDisplayBannerGlyphs(MAIN_ARCADE_RACE_HOLD_BANNER_TEXT, glyphs); } else { presented = Platform_PresentVRAMDisplayBanner(MAIN_ARCADE_RACE_HOLD_BANNER_TEXT); } if (presented != 0) { bannersPresented++; } }")
+    message(FATAL_ERROR "${prefix}: the banner guard of ${hold_source} must hold the banner count and one present only, the glyph present for a table and the block present for none (found '${banner_flat}')")
 endif()
 ctr_count_identifier("${run_body}" "mode" run_mode_hits)
 ctr_count_identifier("${hold_code}" "mode" hold_mode_hits)
 if(NOT run_mode_hits EQUAL 1 OR NOT hold_mode_hits EQUAL 2)
     message(FATAL_ERROR "${prefix}: ${hold_source} may name mode only in RunMode's parameter and its banner guard (found ${run_mode_hits} in the body, ${hold_mode_hits} in the file)")
 endif()
+# The table is handed on, never read: glyphs is named only in RunMode's
+# parameter, the NULL test, and the glyph present, and never dereferenced.
+ctr_count_identifier("${banner_block}" "glyphs" banner_glyphs_hits)
+ctr_count_identifier("${hold_code}" "glyphs" hold_glyphs_hits)
+if(NOT banner_glyphs_hits EQUAL 2 OR NOT hold_glyphs_hits EQUAL 3)
+    message(FATAL_ERROR "${prefix}: ${hold_source} may name glyphs only in RunMode's parameter, the banner guard's NULL test, and the glyph present (found ${banner_glyphs_hits} in the guard, ${hold_glyphs_hits} in the file)")
+endif()
+foreach(term IN ITEMS "glyphs->" "glyphs[" "NativeHoldBannerGlyph " "native_hold_banner")
+    ctr_forbid("${hold_source}" "${hold_code}" "${term}")
+    ctr_forbid("${hold_header}" "${hold_h_code}" "${term}")
+endforeach()
 ctr_block("${hold_source}" "${hold_code}" "void MainArcadeRaceHold_Run(MainArcadeRaceHoldStepFn step" run_wrapper)
 string(REGEX REPLACE "[ \t\n]+" " " run_wrapper_flat "${run_wrapper}")
-if(NOT run_wrapper_flat STREQUAL "{ MainArcadeRaceHold_RunMode(step, context, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, result); }")
-    message(FATAL_ERROR "${prefix}: MainArcadeRaceHold_Run must be exactly RunMode with the banner (found '${run_wrapper_flat}')")
+if(NOT run_wrapper_flat STREQUAL "{ MainArcadeRaceHold_RunMode(step, context, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, NULL, result); }")
+    message(FATAL_ERROR "${prefix}: MainArcadeRaceHold_Run must be exactly RunMode with the banner in the block font (no glyph table: the roster proof's hold is unchanged by LR-S11) (found '${run_wrapper_flat}')")
 endif()
 ctr_count_identifier("${hold_code}" "MainArcadeRaceHold_RunMode" hold_run_mode_hits)
 if(NOT hold_run_mode_hits EQUAL 2)
@@ -360,7 +385,9 @@ foreach(path IN LISTS scan_files)
         message(FATAL_ERROR "${prefix}: ${relative_path} names MainArcadeRaceHold_RunMode; only the hold module and ${launch_source} may")
     endif()
 endforeach()
-# 6 (cont). The race caller holds once, without the banner.
+# 6 (cont). The race caller holds once, with the banner and its glyph table
+#    (LR-S11: the game font; LR-S10 part 2 held without the banner), and
+#    never presents a banner itself; the roster proof never passes a table.
 ctr_read_source("${launch_source}" launch)
 ctr_strip_comments("${launch_source}" "${launch}" launch_code)
 ctr_count_identifier("${launch_code}" "MainArcadeRaceHold_RunMode" launch_run_mode_hits)
@@ -369,11 +396,18 @@ if(NOT launch_run_mode_hits EQUAL 1 OR NOT launch_run_hits EQUAL 0)
     message(FATAL_ERROR "${prefix}: ${launch_source} must call MainArcadeRaceHold_RunMode exactly once and never MainArcadeRaceHold_Run (found ${launch_run_mode_hits} and ${launch_run_hits})")
 endif()
 string(REGEX MATCH "MainArcadeRaceHold_RunMode\\([^;]*\\);" launch_hold_call "${launch_code}")
-if(NOT launch_hold_call MATCHES "^MainArcadeRaceHold_RunMode\\([A-Za-z0-9_]+, [^,]+, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, [^,]+\\);$")
-    message(FATAL_ERROR "${prefix}: ${launch_source} must hold with MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER (found '${launch_hold_call}')")
+if(NOT launch_hold_call MATCHES "^MainArcadeRaceHold_RunMode\\([A-Za-z0-9_]+, [^,]+, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, &glyphs, [^,]+\\);$")
+    message(FATAL_ERROR "${prefix}: ${launch_source} must hold with MAIN_ARCADE_RACE_HOLD_MODE_BANNER and its glyph table &glyphs (LR-S11; found '${launch_hold_call}')")
 endif()
-ctr_forbid("${launch_source}" "${launch_code}" "MAIN_ARCADE_RACE_HOLD_MODE_BANNER")
+ctr_forbid("${launch_source}" "${launch_code}" "MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER")
 ctr_forbid("${launch_source}" "${launch_code}" "Platform_PresentVRAMDisplayBanner")
+ctr_read_source("${proof_source}" proof)
+foreach(term IN ITEMS NativeHoldBannerGlyphs native_hold_banner MainArcadeRaceLaunch_BannerGlyphs MainArcadeRaceHold_RunMode)
+    string(FIND "${proof}" "${term}" proof_glyph_at)
+    if(NOT proof_glyph_at EQUAL -1)
+        message(FATAL_ERROR "${prefix}: ${proof_source} names ${term}; the roster proof's hold stays in the block font (LR-S11)")
+    endif()
+endforeach()
 if(scanned LESS 300)
     message(FATAL_ERROR "${prefix}: scanned only ${scanned} files; the scan is broken")
 endif()

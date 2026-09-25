@@ -21,8 +21,10 @@
  *      in here; the roster proof counts 45 periods);
  *   3. from the 11th tick period on (holdGraceTicks = 10), on the first
  *      iteration of each period, redraws the displayed frame with the
- *      WAITING FOR OPPONENT banner (Platform_PresentVRAMDisplayBanner, a
- *      host overlay on the presented image only);
+ *      WAITING FOR OPPONENT banner (a host overlay on the presented image
+ *      only): Platform_PresentVRAMDisplayBannerGlyphs in the game font when
+ *      the caller passed a glyph table (LR-S11), else
+ *      Platform_PresentVRAMDisplayBanner in the block font;
  *   4. sleeps about 1 ms through the host-local wait (Platform_HostWaitMs),
  *      which emits no VBlank.
  *
@@ -61,13 +63,19 @@ struct MainArcadeRaceHoldResult
 /*
  * Runs the hold until step returns 0 (a NULL step ends it at once, after
  * one pump), in mode (MAIN_ARCADE_RACE_HOLD_MODE_*; any value other than
- * NO_BANNER draws the banner). The result, when not NULL, is filled on
- * return. The race caller holds without the banner until the Task 8 race
- * plan's LR-S11 turns it on (LR-9).
+ * NO_BANNER draws the banner), with the banner in the game font from glyphs
+ * (the pointer-free table of include/platform/native_hold_banner.h, handed
+ * to the platform unchanged and never read here) or, for NULL glyphs, in
+ * the block font. The result, when not NULL, is filled on return. Since
+ * LR-S11 the race caller holds with the banner and its glyph table (LR-9,
+ * LR-72).
  */
-void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, struct MainArcadeRaceHoldResult *result);
+struct NativeHoldBannerGlyphs;
+void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, const struct NativeHoldBannerGlyphs *glyphs,
+                                struct MainArcadeRaceHoldResult *result);
 
-/* MainArcadeRaceHold_RunMode with the banner (the roster proof's hold). */
+/* MainArcadeRaceHold_RunMode with the banner in the block font (NULL
+ * glyphs): the roster proof's hold, unchanged by LR-S11. */
 void MainArcadeRaceHold_Run(MainArcadeRaceHoldStepFn step, void *context, struct MainArcadeRaceHoldResult *result);
 
 #endif

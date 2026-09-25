@@ -36,9 +36,11 @@
  *   4. the local pad sample (Platform_InputSampleLocalPad), converted to the
  *      host's pad; in internal builds, while the arcade-link autopilot runs,
  *      the autopilot's steering pad instead (LR-16);
- *   5. the host's race step for the tick; on a hold, the blocking hold loop
- *      (MAIN/MainArcadeRaceHold.h, without the banner until LR-S11), whose
- *      step forwards its arguments to the host's hold until it stops holding;
+ *   5. the host's race step for the tick; on a hold, the banner's game-font
+ *      glyphs read once (read only, LR-S11) and the blocking hold loop
+ *      (MAIN/MainArcadeRaceHold.h, with the WAITING FOR OPPONENT banner),
+ *      whose step forwards its arguments to the host's hold until it stops
+ *      holding;
  *   6. the result back to the core (MainArcadeRaceLaunchCore_DriveResult):
  *      GO, and the committed pads are installed by this frame's Apply; or the
  *      drive's end: a finish kind is the core's finish report, a local
@@ -73,6 +75,7 @@
 #include "platform/native_arcade_link_host.h"
 #include "platform/native_arcade_roster_proof.h"
 #include "platform/native_canonical_projector.h"
+#include "platform/native_hold_banner.h"
 #include "platform/native_input.h"
 #include "platform/native_log.h"
 #include "platform/native_match_config.h"
@@ -629,6 +632,77 @@ static int MainArcadeRaceLaunch_HoldStep(void *context, uint32_t periods, int ne
 	return (state->holdStatus == NATIVE_ARCADE_LINK_HOST_RACE_HOLD) ? 1 : 0;
 }
 
+/*
+ * The hold banner's game-font glyphs (LR-S11, LR-72): the arcade-link
+ * layout's banner font and colour (FONT_SMALL, WHITE; MainArcadeLinkLayout.c),
+ * one entry per character of the banner text, looked up as
+ * DecalFont_DrawLineStrlen does: the pen advance (the punctuation width for
+ * ':' and '.'), the icon ID from font_characterIconID for 0x21..0xFF (none,
+ * 0xFF, is a blank that only advances), the font's icon group (none when
+ * NULL, as DecalFont's native guard), and the icon's texture words and
+ * corners. Read only: no game state is written, nothing is drawn, and no
+ * ordering table or primitive memory is touched; the platform decodes the
+ * texels itself and falls back to its block font for any entry it refuses.
+ * A button, indent, or kana character is left MISSING (the banner has none).
+ */
+static void MainArcadeRaceLaunch_BannerGlyphs(const struct GameTracker *gGT, struct NativeHoldBannerGlyphs *glyphs)
+{
+	const char *text = MAIN_ARCADE_RACE_HOLD_BANNER_TEXT;
+	const size_t length = strlen(text);
+	const int groupID = (int)data.font_IconGroupID[FONT_SMALL];
+	const struct IconGroup *group = NULL;
+
+	memset(glyphs, 0, sizeof(*glyphs));
+	if (length > (size_t)NATIVE_HOLD_BANNER_MAX_CHARS)
+	{
+		return;
+	}
+	glyphs->count = (uint32_t)length;
+	glyphs->color = data.ptrColor[WHITE][0];
+	if ((groupID >= 0) && ((size_t)groupID < (sizeof(gGT->iconGroup) / sizeof(gGT->iconGroup[0]))))
+	{
+		group = gGT->iconGroup[groupID];
+	}
+	for (size_t i = 0; i < length; i++)
+	{
+		struct NativeHoldBannerGlyph *glyph = &glyphs->glyphs[i];
+		const uint32_t c = (uint32_t)(unsigned char)text[i];
+		uint32_t iconID = 0xFFu;
+		const struct Icon *icon;
+
+		glyph->advance = ((c == ':') || (c == '.')) ? data.font_puncPixWidth[FONT_SMALL] : data.font_charPixWidth[FONT_SMALL];
+		if ((c < 3u) || (c == '@') || (c == '[') || (c == '^') || (c == '*'))
+		{
+			continue;
+		}
+		if ((c - 0x21u) < 0xDFu)
+		{
+			iconID = (uint32_t)data.font_characterIconID[c - 0x21u];
+		}
+		if (iconID == 0xFFu)
+		{
+			glyph->kind = NATIVE_HOLD_BANNER_GLYPH_BLANK;
+			continue;
+		}
+		if ((iconID > 0x7Fu) || (group == NULL) || ((int)iconID >= (int)group->numIcons))
+		{
+			continue;
+		}
+		icon = (ICONGROUP_GETICONS(group))[iconID];
+		if (icon == NULL)
+		{
+			continue;
+		}
+		glyph->tpage = icon->texLayout.tpage;
+		glyph->clut = icon->texLayout.clut;
+		glyph->u = icon->texLayout.u0;
+		glyph->v = icon->texLayout.v0;
+		glyph->width = (int16_t)((int)icon->texLayout.u1 - (int)icon->texLayout.u0);
+		glyph->height = (int16_t)((int)icon->texLayout.v2 - (int)icon->texLayout.v0);
+		glyph->kind = NATIVE_HOLD_BANNER_GLYPH_ICON;
+	}
+}
+
 /* The drive tick's result back to the core. A refusal is only logged: it
  * would leave the result due and every later Step refused (a wedged race),
  * but it cannot happen here. The core refuses only a NULL, a result outside
@@ -715,6 +789,7 @@ static void MainArcadeRaceLaunch_Drive(const struct GameTracker *gGT, struct Mai
 	struct MainArcadeRaceDigestTick tick;
 	struct NativeArcadeLinkHostPad sample;
 	struct MainArcadeRaceHoldResult hold;
+	struct NativeHoldBannerGlyphs glyphs;
 	uint32_t status;
 
 	MainArcadeRaceLaunch_Facts(gGT, &facts);
@@ -749,10 +824,12 @@ static void MainArcadeRaceLaunch_Drive(const struct GameTracker *gGT, struct Mai
 	if (status == NATIVE_ARCADE_LINK_HOST_RACE_HOLD)
 	{
 		/* LR-9: block here, before the VBlanks, until the host commits the
-		 * tick or ends the drive; no banner until LR-S11. */
+		 * tick or ends the drive; after the grace, with the banner in the
+		 * game font (LR-S11). */
+		MainArcadeRaceLaunch_BannerGlyphs(gGT, &glyphs);
 		memset(&hold, 0, sizeof(hold));
 		state->holdStatus = NATIVE_ARCADE_LINK_HOST_RACE_HOLD;
-		MainArcadeRaceHold_RunMode(MainArcadeRaceLaunch_HoldStep, state, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, &hold);
+		MainArcadeRaceHold_RunMode(MainArcadeRaceLaunch_HoldStep, state, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, &glyphs, &hold);
 		status = state->holdStatus;
 		if (hold.periods != 0u)
 		{

@@ -866,20 +866,74 @@ internal void NativeRenderer_ClearPresentationBars(void)
 	s_previousScissorState = previousScissorEnabled ? 1 : 0;
 }
 
-/* The hold banner layout: too large for the stack, host-local scratch. */
+/* The hold banner layouts: too large for the stack, host-local scratch. */
 global_variable struct NativeHoldBannerLayout s_presentBannerLayout;
+global_variable struct NativeHoldBannerGlyphLayout s_presentBannerGlyphLayout;
 
-void NativeRenderer_DrawPresentBanner(const char *text)
+_Static_assert(NATIVE_HOLD_BANNER_VRAM_WIDTH == VRAM_WIDTH && NATIVE_HOLD_BANNER_VRAM_HEIGHT == VRAM_HEIGHT,
+               "the banner's glyph decode reads the VRAM mirror's layout");
+
+/* The hold banner's residency rule (LR-S11): VRAM rectangle (x, y, w, h)
+ * may be read from the CPU mirror only while none of its 8x8 tiles is
+ * GPU-newer. Read only: it never resolves a tile (that would be a readback,
+ * NativeRenderer_SyncGpuVRAMToCPU) and changes no state. */
+internal int NativeRenderer_BannerResident(void *context, int32_t x, int32_t y, int32_t w, int32_t h)
+{
+	(void)context;
+	if ((x < 0) || (y < 0) || (w <= 0) || (h <= 0) || (x + w > VRAM_WIDTH) || (y + h > VRAM_HEIGHT))
+	{
+		return 0;
+	}
+	for (int32_t tileY = y / NATIVE_VRAM_TILE_SIZE; tileY <= (y + h - 1) / NATIVE_VRAM_TILE_SIZE; tileY++)
+	{
+		for (int32_t tileX = x / NATIVE_VRAM_TILE_SIZE; tileX <= (x + w - 1) / NATIVE_VRAM_TILE_SIZE; tileX++)
+		{
+			const int32_t tileIndex = tileY * NATIVE_VRAM_TILE_COLS + tileX;
+
+			if ((s_vram.gpuNewerTiles[tileIndex >> 5] & (1u << (tileIndex & 31))) != 0u)
+			{
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+/* The CPU VRAM mirror, read only, for the hold banner's glyph decode. */
+internal const u16 *NativeRenderer_BannerVRAM(void)
+{
+	return s_vram.cpuPixels;
+}
+
+u32 NativeRenderer_DrawPresentBanner(const char *text, const struct NativeHoldBannerGlyphs *glyphs)
 {
 	GLint previousScissorBox[4];
 	GLfloat previousClearColor[4];
 	GLboolean previousScissorEnabled;
 	struct NativeHoldBannerLayout *layout = &s_presentBannerLayout;
+	struct NativeHoldBannerGlyphLayout *glyphLayout = &s_presentBannerGlyphLayout;
 	const int viewportTop = s_presentViewport.y + s_presentViewport.h;
+	const struct NativeHoldBannerRect *bar;
+	u32 font = NATIVE_HOLD_BANNER_FONT_NO_TABLE;
 
-	if (!NativeHoldBanner_Layout(text, s_presentViewport.w, s_presentViewport.h, layout))
+	/* The game font when the table and the mirror allow it (LR-S11), else
+	 * the block font. */
+	if (glyphs != NULL)
 	{
-		return;
+		font = NativeHoldBanner_GlyphLayout(text, glyphs, NativeRenderer_BannerVRAM(), NativeRenderer_BannerResident, NULL,
+		                                    s_presentViewport.w, s_presentViewport.h, glyphLayout);
+	}
+	if (font == NATIVE_HOLD_BANNER_FONT_GAME)
+	{
+		bar = &glyphLayout->bar;
+	}
+	else if (NativeHoldBanner_Layout(text, s_presentViewport.w, s_presentViewport.h, layout))
+	{
+		bar = &layout->bar;
+	}
+	else
+	{
+		return font;
 	}
 
 	previousScissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
@@ -890,14 +944,27 @@ void NativeRenderer_DrawPresentBanner(const char *text)
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	glEnable(GL_SCISSOR_TEST);
 	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-	NativeRenderer_ClearHostRect(s_presentViewport.x + layout->bar.x, viewportTop - (layout->bar.y + layout->bar.h), layout->bar.w,
-	                             layout->bar.h);
-	glClearColor(1.0f, 0.75f, 0.0f, 1.0f);
-	for (u32 i = 0; i < layout->textRectCount; i++)
+	NativeRenderer_ClearHostRect(s_presentViewport.x + bar->x, viewportTop - (bar->y + bar->h), bar->w, bar->h);
+	if (font == NATIVE_HOLD_BANNER_FONT_GAME)
 	{
-		const struct NativeHoldBannerRect *rect = &layout->text[i];
+		for (u32 i = 0; i < glyphLayout->rectCount; i++)
+		{
+			const struct NativeHoldBannerColorRect *rect = &glyphLayout->rects[i];
 
-		NativeRenderer_ClearHostRect(s_presentViewport.x + rect->x, viewportTop - (rect->y + rect->h), rect->w, rect->h);
+			glClearColor((GLfloat)(rect->color & 0xFFu) / 255.0f, (GLfloat)((rect->color >> 8) & 0xFFu) / 255.0f,
+			             (GLfloat)((rect->color >> 16) & 0xFFu) / 255.0f, 1.0f);
+			NativeRenderer_ClearHostRect(s_presentViewport.x + rect->x, viewportTop - (rect->y + rect->h), rect->w, rect->h);
+		}
+	}
+	else
+	{
+		glClearColor(1.0f, 0.75f, 0.0f, 1.0f);
+		for (u32 i = 0; i < layout->textRectCount; i++)
+		{
+			const struct NativeHoldBannerRect *rect = &layout->text[i];
+
+			NativeRenderer_ClearHostRect(s_presentViewport.x + rect->x, viewportTop - (rect->y + rect->h), rect->w, rect->h);
+		}
 	}
 
 	if (previousScissorEnabled)
@@ -911,6 +978,7 @@ void NativeRenderer_DrawPresentBanner(const char *text)
 	}
 	glClearColor(previousClearColor[0], previousClearColor[1], previousClearColor[2], previousClearColor[3]);
 	s_previousScissorState = previousScissorEnabled ? 1 : 0;
+	return font;
 }
 
 void NativeRenderer_ResetDevice(void)

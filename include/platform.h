@@ -51,10 +51,19 @@ int Platform_PollInput(void);
  * presented; 0, with nothing done, before the platform started, while a
  * scene is in progress (the displayed frame is not settled then), while a
  * pinned present the game asked for is still owed, or for a NULL text.
+ * Platform_PresentVRAMDisplayBannerGlyphs (LR-S11): the same present with
+ * the text in the game font, from the caller's pointer-free glyph table
+ * (NULL: exactly Platform_PresentVRAMDisplayBanner). The glyphs' texels are
+ * read from the CPU VRAM mirror only, and only where it is current (no GPU
+ * readback, no upload, nothing written); a table the renderer refuses, or
+ * texels the mirror does not hold, fall back to the block font
+ * (include/platform/native_hold_banner.h).
  */
+struct NativeHoldBannerGlyphs;
 unsigned long long Platform_HostClockUs(void);
 void Platform_HostWaitMs(unsigned int milliseconds);
 int Platform_PresentVRAMDisplayBanner(const char *text);
+int Platform_PresentVRAMDisplayBannerGlyphs(const char *text, const struct NativeHoldBannerGlyphs *glyphs);
 
 #if defined(CTR_INTERNAL)
 /*

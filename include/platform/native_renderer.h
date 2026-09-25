@@ -32,13 +32,21 @@ void NativeRenderer_PresentVRAMDisplay(void);
 void NativeRenderer_PresentVRAMRect(int x, int y, int w, int h);
 void NativeRenderer_PresentMainRenderTarget(void);
 /*
- * Host overlay for Platform_PresentVRAMDisplayBanner (LR-S2 (a)): fills the
+ * Host overlay for Platform_PresentVRAMDisplayBanner and
+ * Platform_PresentVRAMDisplayBannerGlyphs (LR-S2 (a), LR-S11): fills the
  * include/platform/native_hold_banner.h layout of text into the window
  * framebuffer's presentation viewport with scissored clears, after a present
- * and before the swap. It never touches VRAM or the render target, and it
- * restores the scissor box, scissor enable, and clear colour it changed.
+ * and before the swap. With a glyph table it draws the game font, its texels
+ * read from the CPU VRAM mirror only where no 8x8 tile is GPU-newer (no
+ * readback, no upload, no render-state change; NativeRenderer_ReadVRAM is
+ * not used, because it can do both); otherwise, or when the table is
+ * refused, the block font. It never touches VRAM or the render target, and
+ * it restores the scissor box, scissor enable, and clear colour it changed.
+ * Returns the font drawn (NATIVE_HOLD_BANNER_FONT_GAME) or the block font's
+ * reason; a banner the block font cannot lay out either is not drawn.
  */
-void NativeRenderer_DrawPresentBanner(const char *text);
+struct NativeHoldBannerGlyphs;
+u32 NativeRenderer_DrawPresentBanner(const char *text, const struct NativeHoldBannerGlyphs *glyphs);
 void NativeRenderer_SaveVRAM(const char *outputFileName, int x, int y, int width, int height, int readFromFramebuffer);
 void NativeRenderer_Clear(int x, int y, int w, int h, u8 r, u8 g, u8 b);
 void NativeRenderer_ClearVRAM(int x, int y, int w, int h, u8 r, u8 g, u8 b);

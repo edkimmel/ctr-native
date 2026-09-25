@@ -1214,7 +1214,8 @@ endif()
 #      - MainArcadeRaceLaunch_Drive runs in this order: the facts, the pad
 #        freeze, the projection (ProjectState), the local sample, the host's
 #        race step with this tick's state, sample, facts, and the committed
-#        pads as its output, the hold without the banner, the GO result, and
+#        pads as its output, the banner's glyph read and the hold with the
+#        banner (LR-S11; without it before), the GO result, and
 #        otherwise the end; the host's race step and hold are each called
 #        exactly once in the file, the hold only from the hold step, whose
 #        body forwards the loop's arguments unchanged and holds on only
@@ -1258,7 +1259,8 @@ ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_Drive)" "${drive_
     "MainArcadeRaceLaunch_Sample(gGT, output->raceTick, &sample);"
     "status = NativeArcadeLinkHost_RaceStep(output->raceTick, &s_mainArcadeRaceLaunchTickState, &sample, &facts, state->committed);"
     "if (status == NATIVE_ARCADE_LINK_HOST_RACE_HOLD)"
-    "MainArcadeRaceHold_RunMode(MainArcadeRaceLaunch_HoldStep, state, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, &hold);"
+    "MainArcadeRaceLaunch_BannerGlyphs(gGT, &glyphs);"
+    "MainArcadeRaceHold_RunMode(MainArcadeRaceLaunch_HoldStep, state, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, &glyphs, &hold);"
     "status = state->holdStatus;"
     "if (status == NATIVE_ARCADE_LINK_HOST_RACE_GO)"
     "MainArcadeRaceLaunch_DriveResult(output, MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_GO);"
@@ -1563,3 +1565,101 @@ ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_AutopilotSample)"
     "sample->id = MAIN_ARCADE_RACE_LAUNCH_STEER_PAD_ID;"
     "sample->buttons[0] = (uint8_t)(word & 0xFFu);" "sample->buttons[1] = (uint8_t)((word >> 8) & 0xFFu);"
     "sample->analog[axis] = MAIN_ARCADE_RACE_LAUNCH_STEER_ANALOG;")
+
+# 16l. The hold banner's game-font glyphs (docs/LOCKSTEP_RACE_MILESTONE.md
+#      LR-S11, LR-72): MainArcadeRaceLaunch_BannerGlyphs is defined once and
+#      called once (16j pins the call in the drive tick's HOLD branch, right
+#      before the hold); it reads the arcade-link banner font's facts
+#      (data.font_IconGroupID, font_characterIconID, the font's widths, the
+#      WHITE colour, the icon group through ICONGROUP_GETICONS) and writes
+#      only the caller's table: every assignment's left side is a field of
+#      glyph or glyphs or a plain local (a declaration included), the only
+#      increment is the loop's, the only calls are memset of the table,
+#      strlen, and ICONGROUP_GETICONS (sizeof aside), and it names no draw
+#      path (DecalFont_, DecalHUD_, the ordering table, primitive memory) and
+#      no platform or host call. The whole caller names no DecalFont_ or
+#      DecalHUD_ call. The write scan checks itself on writes it must catch
+#      and reads it must pass.
+set(glyph_signature "static void MainArcadeRaceLaunch_BannerGlyphs(const struct GameTracker *gGT, struct NativeHoldBannerGlyphs *glyphs)")
+ctr_require_literal("${caller_source_path}" "${caller_code}" "${glyph_signature}")
+string(REGEX MATCHALL "(^|[^A-Za-z0-9_])MainArcadeRaceLaunch_BannerGlyphs([^A-Za-z0-9_]|$)" glyph_names "${caller_code}")
+list(LENGTH glyph_names glyph_name_count)
+if(NOT glyph_name_count EQUAL 2)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must define MainArcadeRaceLaunch_BannerGlyphs and call it once (found ${glyph_name_count})")
+endif()
+foreach(term IN ITEMS "DecalFont_" "DecalHUD_")
+    ctr_forbid("${caller_source_path}" "${caller_code}" "${term}")
+endforeach()
+ctr_find_block("${caller_source_path}" "${caller_code}" "${glyph_signature}" glyph_begin glyph_end)
+math(EXPR glyph_length "${glyph_end} - ${glyph_begin} + 1")
+string(SUBSTRING "${caller_code}" ${glyph_begin} ${glyph_length} glyph_block)
+foreach(term IN ITEMS
+        "data.font_IconGroupID[FONT_SMALL]" "data.font_characterIconID[c - 0x21u]" "data.font_charPixWidth[FONT_SMALL]"
+        "data.font_puncPixWidth[FONT_SMALL]" "data.ptrColor[WHITE][0]" "(ICONGROUP_GETICONS(group))[iconID]"
+        "memset(glyphs, 0, sizeof(*glyphs));" "const struct IconGroup *group = NULL;" "const struct Icon *icon;")
+    ctr_require_literal("${caller_source_path} (MainArcadeRaceLaunch_BannerGlyphs)" "${glyph_block}" "${term}")
+endforeach()
+foreach(term IN ITEMS primMem ptrOT pushBuffer backBuffer OTag otMem AddPrim addPrim addPoly setPoly DrawPrim Platform_ NativeArcadeLinkHost_
+        MainArcadeRaceHold_ memcpy memmove strcpy "&icon" "&group" "&gGT" "&data")
+    ctr_forbid("${caller_source_path} (MainArcadeRaceLaunch_BannerGlyphs)" "${glyph_block}" "${term}")
+endforeach()
+# Returns the statements of body that write anything but the table or a
+# local ('[' and ']' are masked: an unbalanced '[' would stop a list split).
+function(ctr_glyph_writes body out_var)
+    string(REGEX REPLACE "[ \t\r\n]+" " " flat "${body}")
+    string(REPLACE "[" "@LB@" flat "${flat}")
+    string(REPLACE "]" "@RB@" flat "${flat}")
+    string(REPLACE "{" ";" flat "${flat}")
+    string(REPLACE "}" ";" flat "${flat}")
+    set(bad "")
+    foreach(statement IN LISTS flat)
+        string(STRIP "${statement}" statement)
+        if(statement MATCHES "(\\+\\+|--)" AND NOT statement MATCHES "^i\\+\\+\\)$")
+            list(APPEND bad "${statement}")
+            continue()
+        endif()
+        if(statement MATCHES "^(.*[^=!<>+*/%&|^-])(=|[-+*/%&|^]=|<<=|>>=)([^=].*)?$")
+            set(lhs "${CMAKE_MATCH_1}")
+            string(REGEX REPLACE "^for \\(" "" lhs "${lhs}")
+            string(STRIP "${lhs}" lhs)
+            if(NOT lhs MATCHES "^(glyph|glyphs)->[A-Za-z_][A-Za-z0-9_]*$"
+                    AND NOT lhs MATCHES "^([A-Za-z_][A-Za-z0-9_]* )*\\**[A-Za-z_][A-Za-z0-9_]*$")
+                list(APPEND bad "${statement}")
+            endif()
+        endif()
+    endforeach()
+    set(${out_var} "${bad}" PARENT_SCOPE)
+endfunction()
+foreach(probe IN ITEMS "{ icon->texLayout.u0 = 1; }" "{ group->numIcons = 0; }" "{ gGT->iconGroup[5] = 0; }"
+        "{ data.font_charPixWidth[2] = 1; }" "{ *(u8 *)icon = 0; }" "{ ((struct Icon *)icon)->texLayout.tpage |= 1; }"
+        "{ icon->texLayout.v0++; }" "{ --group->numIcons; }" "{ glyphs->glyphs[0].u = 1; }" "{ data.ptrColor[4][0] <<= 1; }")
+    ctr_glyph_writes("${probe}" probe_bad)
+    if("${probe_bad}" STREQUAL "")
+        message(FATAL_ERROR "arcade link hook isolation: the glyph write scan misses '${probe}'")
+    endif()
+endforeach()
+foreach(probe IN ITEMS "{ glyph->u = icon->texLayout.u0; }" "{ const int groupID = (int)data.font_IconGroupID[FONT_SMALL]; }"
+        "{ iconID = 0xFFu; }" "{ for (size_t i = 0; i < length; i++) { glyph->kind = 1u; } }"
+        "{ if ((c == ':') || (iconID >= 1u) || (c != 2u) || (c <= 3u)) { continue; } }"
+        "{ const struct IconGroup *group = NULL; group = gGT->iconGroup[groupID]; }")
+    ctr_glyph_writes("${probe}" probe_bad)
+    if(NOT "${probe_bad}" STREQUAL "")
+        message(FATAL_ERROR "arcade link hook isolation: the glyph write scan flags the read '${probe}' ('${probe_bad}')")
+    endif()
+endforeach()
+ctr_glyph_writes("${glyph_block}" glyph_bad)
+if(NOT "${glyph_bad}" STREQUAL "")
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_BannerGlyphs may write only its table and its locals (LR-S11: the glyph read is read-only; found '${glyph_bad}')")
+endif()
+string(REGEX MATCHALL "[A-Za-z_][A-Za-z0-9_]*[ ]*\\(" glyph_calls "${glyph_block}")
+foreach(call IN LISTS glyph_calls)
+    string(REGEX REPLACE "[ ]*\\($" "" call "${call}")
+    if(NOT call MATCHES "^(memset|strlen|ICONGROUP_GETICONS|sizeof|if|for)$")
+        message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_BannerGlyphs may call only memset, strlen, and ICONGROUP_GETICONS (found '${call}')")
+    endif()
+endforeach()
+string(REGEX MATCHALL "memset\\(" glyph_memsets "${glyph_block}")
+list(LENGTH glyph_memsets glyph_memset_count)
+if(NOT glyph_memset_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_BannerGlyphs may clear only its table, once (found ${glyph_memset_count} memset calls)")
+endif()
