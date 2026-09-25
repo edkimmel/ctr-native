@@ -617,7 +617,21 @@ Task 7 (networked race launch) is complete and tracked in
    - Next: fold these decisions into `docs/LOCKSTEP_RACE_MILESTONE.md`, then
      LR-S4 onward. LR-1..LR-16 stand as written unless changed above.
    - LR-S2..LR-S3 are in progress.
-2. Real two-cabinet and G29 validation (actual wire, LAN switch,
+2. Package and ship, as soon as possible (owner directive). This comes
+   next, after the LR-S2..LR-S3 run and before the rest of Task 8, so the
+   cabinets get a build early.
+   - A Release build, checked against the Debug suite.
+   - A package step that produces one self-contained folder: the exe,
+     DLLs, and a per-cabinet config template (role, peer address,
+     fullscreen). It contains NO retail data; each cabinet supplies its
+     own `assets/ctr-u.bin`.
+   - Both cabinets must run the byte-identical package, because the
+     handshake rejects different builds.
+   - The owner will guide deployment to `C:\arcade` and the sync between
+     cabinets. Later Task 8 builds ship the same way.
+   - Stretch goals (items 8-13 above) are developed in this repo after
+     shipping. `C:\arcade` only ever receives packaged builds.
+3. Real two-cabinet and G29 validation (actual wire, LAN switch,
    latency/loss, wheel input) needs cabinet access. It is the separately
    gated requirement for step 6 (CAB1 G29/kiosk gate) and step 7
    (two-cabinet fleet acceptance).
