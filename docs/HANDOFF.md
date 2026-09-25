@@ -606,16 +606,24 @@ Task 7 (networked race launch) is complete and tracked in
      - LR-17 ruled (a): the NavHeader.last read is check-only;
      - input delay: 3 ticks, pending a feel test;
      - the split screen ships.
-   - Done: LR-S1 through LR-S9. That is the plan; the hold and autopilot
-     spikes; race VBlank pacing and the counter pin; the live V4
-     projection; parked early peer digests; dropping records from another
-     match; the local pad sample seam; the pure drive core; and the host
-     drive glue with the verbatim bundle send. Defaults now run to LR-57.
-     The suite is 157 tests, 154 of them in `-LE live`.
-   - Nothing in `game/` calls RaceStep or RaceHold yet.
-   - Next: LR-S10 (the caller replaces the rehearsal), LR-S11 (hold
-     presentation), LR-S12 (failure wiring to RESULTS), then the LR-S13
-     one-machine gate and the LR-S14 docs.
+   - Done: LR-S1 through LR-S12. Linked races now run in lockstep end to
+     end. The caller drives the race through RaceStep and RaceHold in
+     place of the rehearsal. Failures (stall, fault, desync, local, finish
+     grace, race-length bound) reach RESULTS, and a desync logs one line
+     per race. The hold banner uses the game's small font, read-only from
+     the host's VRAM copy, with the 5x7 block font as the fallback
+     (LR-72). Defaults now run to LR-72. The suite is 157 tests, 154 of
+     them in `-LE live`.
+   - The `arcade_link_launch` gate runs two lockstep races on a 300-tick
+     cap. It does not yet prove that steering moves a kart, that the hold
+     works live, or that the banner draws live.
+   - Next: LR-S13 (the one-machine three-race gate: a natural finish,
+     freeze and forced-desync injections, and cab2 killed in race 3),
+     then LR-S14 (docs close-out).
+   - For packaging: `ctr_native` always defines `CTR_INTERNAL`, so the
+     non-internal build branch is never compiled. The Release package
+     needs a decision on whether the internal autopilot and test options
+     ship.
    - Hold banner: it is a host overlay, because DecalFont writes
      render-pass state (LR-S2 (a)). The owner asked why it does not use the
      game font. LR-S11 default: the host overlay draws the game font's
