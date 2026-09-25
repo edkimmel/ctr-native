@@ -388,6 +388,14 @@ static int TestGamepad(void)
 	CHECK(SampleUntouched(&dst));
 	CHECK(CheckSlot0Snapshot(&dst, 0x73, 0xfff7, 0x80, 0x80, 0x80, 0x80));
 
+	/* A held key merges into the connected gamepad's buttons: pad CROSS and
+	 * keyboard left, with the gamepad's id and axes. */
+	CHECK(SetPad(joystick, true, false, false, 32767, 0));
+	s_keys[s_keyboardMapping.kc_dpad_left] = true;
+	CHECK(SampleUntouched(&dst));
+	CHECK(CheckSlot0Snapshot(&dst, 0x73, 0xbf7f, 0x80, 0x80, 0xff, 0x80));
+	ClearKeys();
+
 	/* The chord is suppressed, and analog mode never toggles, however many
 	 * samples see it. */
 	CHECK(SetPad(joystick, false, true, true, 0, 0));
@@ -433,6 +441,66 @@ static int TestGamepad(void)
 	return 1;
 }
 
+/* A gamepad on slot 1 with installed pads cleared: Platform_InputUpdate
+ * records slot 1 as active and toggles slot 1's analog mode, never slot
+ * 0's, and the sample (slot 0 only) stays neutral. */
+static int TestGamepadSlot1(void)
+{
+	struct PlatformInputPadSnapshot dst;
+	struct PlatformInputPadSnapshot pads[PLATFORM_INPUT_PAD_COUNT];
+	SDL_JoystickID id = AttachVirtualGamepad();
+	SDL_Joystick *joystick;
+
+	CHECK(id != 0);
+	CHECK(s_installedSnapshotsActive == 0);
+	CHECK(!NativeInput_HasDevice(&s_controllers[0]));
+	NativeInput_OpenController(id, 1);
+	CHECK(s_controllers[1].controller != NULL);
+	CHECK(s_controllers[1].analogEnabled == 1);
+	joystick = SDL_GetGamepadJoystick(s_controllers[1].controller);
+	CHECK(joystick != NULL);
+	s_keyboardControllerSlot = 0;
+	ClearKeys();
+	g_padCommEnable = 1;
+	s_lastActiveControllerSlot = -1;
+	const s32 slot0Analog = s_controllers[0].analogEnabled;
+	const s32 slot0Switching = s_controllers[0].switchingAnalog;
+
+	CHECK(SetPad(joystick, true, false, false, 0, 0));
+	Platform_InputUpdate();
+	CHECK(s_lastActiveControllerSlot == 1);
+	CHECK(Platform_InputCapturePadSnapshots(pads, PLATFORM_INPUT_PAD_COUNT) == PLATFORM_INPUT_PAD_COUNT);
+	CHECK(pads[1].connected == 1);
+	CHECK(pads[1].id == 0x73);
+	CHECK(SnapshotButtons(&pads[1]) == 0xbfff);
+	CHECK(CheckNeutral(&pads[0]));
+	CHECK(SampleUntouched(&dst));
+	CHECK(CheckNeutral(&dst));
+
+	/* The chord toggles slot 1 once, however many updates see it. */
+	CHECK(SetPad(joystick, false, true, true, 0, 0));
+	Platform_InputUpdate();
+	Platform_InputUpdate();
+	CHECK(s_controllers[1].analogEnabled == 0);
+	CHECK(s_controllers[1].switchingAnalog == 1);
+	CHECK(s_controllers[0].analogEnabled == slot0Analog);
+	CHECK(s_controllers[0].switchingAnalog == slot0Switching);
+	CHECK(s_lastActiveControllerSlot == 1);
+
+	CHECK(SetPad(joystick, false, false, false, 0, 0));
+	Platform_InputUpdate();
+	CHECK(s_controllers[1].switchingAnalog == 0);
+	CHECK(Platform_InputCapturePadSnapshots(pads, PLATFORM_INPUT_PAD_COUNT) == PLATFORM_INPUT_PAD_COUNT);
+	CHECK(pads[1].id == 0x41);
+	CHECK(s_controllers[0].analogEnabled == slot0Analog);
+	CHECK(s_controllers[0].switchingAnalog == slot0Switching);
+	g_padCommEnable = 0;
+
+	NativeInput_CloseController(1);
+	CHECK(SDL_DetachVirtualJoystick(id));
+	return 1;
+}
+
 static SDL_JoystickID AttachVirtualG29(void)
 {
 	SDL_VirtualJoystickDesc desc;
@@ -460,8 +528,9 @@ static int SetWheel(SDL_Joystick *joystick, Sint16 steering, Sint16 throttle, Si
 
 /* A G29 on slot 0, with the G29 diagnostic enabled. The sample advances its
  * own pedal hysteresis (LR-37), never slot 0's saved g29State, never the
- * diagnostic, and never the active slot. A re-arm (clear, or an install
- * that turns installed pads on) seeds it from the live g29State. */
+ * diagnostic, and never the active slot. A re-arm (clear, an install that
+ * turns installed pads on, a slot-0 device change, or a restore) seeds it
+ * from the live g29State. */
 static int TestG29(void)
 {
 	struct PlatformInputPadSnapshot dst;
@@ -556,6 +625,58 @@ static int TestG29(void)
 	CHECK(SetWheel(joystick, 0, 24000, 32767, false));
 	CHECK(SampleUntouched(&dst));
 	CHECK(SnapshotButtons(&dst) == 0xffff);
+
+	/* A slot-0 device change re-arms. Wake and press both pedals in the
+	 * sample, then re-enumerate the wheel: the fresh wheel's pedals read raw
+	 * 0, which the stale awake state would sample as CROSS+SQUARE (0x3fff).
+	 * Seeded from the reset g29State they are asleep (0xffff), as
+	 * Platform_InputUpdate sees them. */
+	CHECK(SetWheel(joystick, 0, 32767, 32767, false));
+	CHECK(SampleUntouched(&dst));
+	CHECK(SetWheel(joystick, 0, 0, 0, false));
+	CHECK(SampleUntouched(&dst));
+	CHECK(SnapshotButtons(&dst) == 0x3fff);
+	NativeInput_CloseController(0);
+	CHECK(SDL_DetachVirtualJoystick(id));
+	id = AttachVirtualG29();
+	CHECK(id != 0);
+	NativeInput_OpenController(id, 0);
+	joystick = s_controllers[0].joystick;
+	CHECK(joystick != NULL);
+	SDL_UpdateJoysticks();
+	CHECK(SDL_GetJoystickAxis(joystick, NATIVE_G29_STEERING_AXIS) == 0);
+	CHECK(SDL_GetJoystickAxis(joystick, NATIVE_G29_THROTTLE_AXIS) == 0);
+	CHECK(SDL_GetJoystickAxis(joystick, NATIVE_G29_BRAKE_AXIS) == 0);
+	s_keyboardControllerSlot = 0;
+	CHECK(s_installedSnapshotsActive == 1);
+	CHECK(SampleUntouched(&dst));
+	CHECK(CheckSlot0Snapshot(&dst, 0x73, 0xffff, 0x80, 0x80, 0x80, 0x80));
+	CHECK(s_sampleG29State.throttleAwake == 0 && s_sampleG29State.brakeAwake == 0);
+	Platform_InputClearInstalledPadSnapshots();
+	Platform_InputUpdate();
+	CHECK(Platform_InputCapturePadSnapshots(pads, PLATFORM_INPUT_PAD_COUNT) == PLATFORM_INPUT_PAD_COUNT);
+	CHECK(memcmp(&dst, &pads[0], sizeof(dst)) == 0);
+
+	/* A swap involving slot 0 and a restore re-arm too; a swap of two other
+	 * slots does not. */
+	CHECK(InstallPads());
+	CHECK(SampleUntouched(&dst));
+	CHECK(s_sampleG29Armed == 0);
+	NativeInput_SwapControllerSlots(1, 2);
+	CHECK(s_sampleG29Armed == 0);
+	NativeInput_SwapControllerSlots(0, 1);
+	CHECK(s_sampleG29Armed == 1);
+	NativeInput_SwapControllerSlots(0, 1);
+	CHECK(s_controllers[0].joystick == joystick);
+	CHECK(SampleUntouched(&dst));
+	CHECK(s_sampleG29Armed == 0);
+	{
+		static u8 state[sizeof(struct NativeInputStateSnapshot)];
+
+		CHECK(Platform_InputCaptureState(state, (int)sizeof(state)) == 1);
+		CHECK(Platform_InputRestoreState(state, (int)sizeof(state)) == 1);
+		CHECK(s_sampleG29Armed == 1);
+	}
 	g_padCommEnable = 0;
 
 	CHECK(SDL_UnsetEnvironmentVariable(SDL_GetEnvironment(), NATIVE_INPUT_G29_DIAGNOSTIC_ENV));
@@ -601,7 +722,8 @@ int main(void)
 
 	/* The cases build on each other's state, so the first failure stops the
 	 * chain; input is shut down either way. */
-	(void)((s_failures == 0) && TestInstalledNeutral() && TestInstalledKeyboard() && TestClearedKeyboard() && TestGamepad() && TestG29());
+	(void)((s_failures == 0) && TestInstalledNeutral() && TestInstalledKeyboard() && TestClearedKeyboard() && TestGamepad() && TestGamepadSlot1() &&
+	       TestG29());
 	TestAfterShutdown();
 
 	if (s_failures != 0)

@@ -124,12 +124,14 @@ global_variable struct NativeInputG29Diagnostic s_g29Diagnostic;
 /* The local sample's own G29 pedal hysteresis (LR-37). Like s_g29Diagnostic
  * it is deliberately outside NativeInputStateSnapshot: host-local and
  * sample-only, never saved, restored, or written by Platform_InputUpdate.
- * Re-arm rule: Platform_InputInit, Platform_InputShutdown, an install of pad
- * snapshots that turns installed pads on (inactive to active), and
- * Platform_InputClearInstalledPadSnapshots set s_sampleG29Armed. The first
- * sample after that seeds the state from slot 0's live g29State (read-only);
- * later samples advance it alone, so a race's samples keep one continuous
- * hysteresis while Platform_InputUpdate replays installed pads. */
+ * Re-arm rule: a (non-repeat) Platform_InputInit, Platform_InputShutdown,
+ * an install of pad snapshots that turns installed pads on (inactive to
+ * active), Platform_InputClearInstalledPadSnapshots, a successful
+ * Platform_InputRestoreState, and every change of slot 0's device (closing
+ * or opening slot 0, or a swap involving slot 0) set s_sampleG29Armed. The
+ * first sample after that seeds the state from slot 0's live g29State
+ * (read-only); later samples advance it alone, so a race's samples keep one
+ * continuous hysteresis while Platform_InputUpdate replays installed pads. */
 global_variable struct NativeG29MappingState s_sampleG29State;
 global_variable s32 s_sampleG29Armed = 1;
 
@@ -816,6 +818,11 @@ internal void NativeInput_SwapControllerSlots(s32 slotA, s32 slotB)
 	struct NativeInputController controller = s_controllers[slotA];
 	s_controllers[slotA] = s_controllers[slotB];
 	s_controllers[slotB] = controller;
+	if ((slotA == 0) || (slotB == 0))
+	{
+		/* Slot 0 now holds another device and its g29State (LR-37). */
+		s_sampleG29Armed = 1;
+	}
 
 	s32 mapping = s_controllerToSlotMapping[slotA];
 	s_controllerToSlotMapping[slotA] = s_controllerToSlotMapping[slotB];
@@ -883,6 +890,11 @@ internal void NativeInput_CloseController(s32 slot)
 	controller->analogEnabled = 0;
 	controller->switchingAnalog = 0;
 	s_controllerToSlotMapping[slot] = -1;
+	if (slot == 0)
+	{
+		/* Slot 0's g29State was just reset (LR-37). */
+		s_sampleG29Armed = 1;
+	}
 
 	if (s_lastActiveControllerSlot == slot)
 	{
@@ -902,6 +914,11 @@ internal void NativeInput_OpenController(SDL_JoystickID instanceId, s32 slot)
 	if (NativeInput_HasDevice(controller))
 	{
 		return;
+	}
+	if (slot == 0)
+	{
+		/* A new slot-0 device starts from a reset g29State (LR-37). */
+		s_sampleG29Armed = 1;
 	}
 
 	/* SDL's CAB1 controller database may classify the G29 as a Gamepad.  The
@@ -1384,6 +1401,8 @@ int Platform_InputRestoreState(const void *src, int srcSize)
 		s_controllers[slot].switchingAnalog = snapshot->controllers[slot].switchingAnalog;
 		s_controllerToSlotMapping[slot] = snapshot->controllers[slot].controllerToSlotMapping;
 	}
+	/* Slot 0's g29State and the installed-pad flag were replaced (LR-37). */
+	s_sampleG29Armed = 1;
 	NativeInput_WritePadBus();
 
 	return 1;

@@ -1656,6 +1656,7 @@ if(BUILD_TESTING)
     target_compile_definitions(native_input_sample_test PRIVATE CTR_NATIVE)
     target_link_libraries(native_input_sample_test PRIVATE SDL3::SDL3 ctr_native_g29_input ctr_native_sdl_assert)
     add_test(NAME native_input_sample_unit COMMAND $<TARGET_FILE:native_input_sample_test>)
+    set_tests_properties(native_input_sample_unit PROPERTIES TIMEOUT 60)
 
     # Sound IDs stay out of cross-cabinet identity (docs/RACE_LAUNCH_MILESTONE.md
     # RL-14; slice RL-S3): identity-bearing sources name no sound-ID token.

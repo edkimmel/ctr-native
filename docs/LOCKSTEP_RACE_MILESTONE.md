@@ -1784,9 +1784,15 @@ is not initialized. The bytes are not normalized: the drive core does that
 state, s_sampleG29State in platform/native_input.c. Like the G29
 diagnostic it is host-local: not in NativeInputStateSnapshot, never saved
 or restored, and never written by Platform_InputUpdate. It is re-armed by
-Platform_InputInit, Platform_InputShutdown, an install that turns
-installed pads on (inactive to active; a repeat install while active does
-not re-arm), and Platform_InputClearInstalledPadSnapshots. The first
+a (non-repeat) Platform_InputInit (a repeat call returns early and does
+not re-arm), Platform_InputShutdown, an install that turns installed pads
+on (inactive to active; a repeat install while active does not re-arm),
+Platform_InputClearInstalledPadSnapshots, a successful
+Platform_InputRestoreState (it may turn installed pads on and replaces
+slot 0's g29State), and every change of slot 0's device: closing slot 0,
+opening a device on slot 0, and a slot swap involving slot 0 (a fresh
+device's pedals start asleep, so a stale awake state would read a
+re-enumerated wheel's raw 0 pedals as pressed). The first
 sample after a re-arm seeds it from slot 0's live g29State (read-only).
 Later samples advance it alone, so a race's samples keep one continuous
 hysteresis while Platform_InputUpdate replays installed pads.
@@ -2892,6 +2898,23 @@ Result:
     a comment passed.
 - Fast suite (-LE live): 154 of 154 passed. arcade_roster_determinism
   (live, run alone because it uses the installed pads): passed.
+- Review follow-ups: the sample now re-arms on every slot-0 device change
+  (NativeInput_CloseController and NativeInput_OpenController on slot 0,
+  NativeInput_SwapControllerSlots involving slot 0) and on a successful
+  Platform_InputRestoreState, and LR-37 says so and says a (non-repeat)
+  Platform_InputInit; a re-enumerated G29 with raw 0 pedals sampled
+  0x3fff (stale awake state) without the fix and now samples 0xffff, as
+  Update does. native_input_sample_unit adds that case, swap and restore
+  re-arm checks, a slot-1 gamepad case (Update records slot 1 as active
+  and toggles slot 1's analog mode, not slot 0's), and a gamepad-plus-key
+  sample case, and has TIMEOUT 60. The isolation test allows only
+  NativeCanonicalInputPadV1 (LR-S8 adds the state type under its own
+  review) and requires every target that links the core to be in
+  drive_allowed_linkers (the unit test only). Probes, each reverted: no
+  Close/Open re-arm read 0x3fff and failed; no swap re-arm, no restore
+  re-arm, and Update recording slot 0 each failed the sample unit; a
+  ctr_native link, a generator-expression link, a missing unit-test link,
+  and NativeCanonicalStateV4 in the header each failed the isolation test.
 
 Plan: LR-4. Platform_InputSampleLocalPad (name settled here) in
 platform/native_input.c reads host slot 0 into caller scratch while
