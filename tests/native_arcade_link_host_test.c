@@ -3055,6 +3055,109 @@ static int TestDriveRefusalsAndResets(void)
 	return 0;
 }
 
+/*
+ * LR-60: the internal race tick limit. The setter stores 0..18000 in any
+ * mode and refuses anything above with nothing changed; Shutdown, and so
+ * Configure, resets it to 0. A LINK race whose limit was set to 5 after
+ * Configure begins its drive with 5: race ticks 0..4 GO with the expected
+ * pads on both sides, and race tick 5 records and ends as RACE_TICK_LIMIT
+ * (a finish kind: end tick 5, the finish linger armed, nothing reported),
+ * and the caller's finish report shows RACE COMPLETE. A limit set before
+ * Configure is gone: that race's drive runs with the default 18000 and
+ * goes past race tick 5.
+ */
+static int TestDriveRaceTickLimit(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	struct NativeArcadeLinkHostDriveState state;
+	const uint32_t limit = 5u;
+	const uint64_t entropy = UINT64_C(0x71C1000000000007);
+	uint32_t hostAction = ACT_NONE;
+	uint32_t peerAction = ACT_NONE;
+
+	/* The setter's range, in mode OFF: it only stores. */
+	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(18001u) == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(1u) == 1);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 1u);
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(18000u) == 1);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 18000u);
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(18001u) == 0);
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(UINT32_MAX) == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 18000u);
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(0u) == 1);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(300u) == 1);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 300u);
+	CHECK(NativeArcadeLinkHost_InternalDriveRaceTickLimit() == 0u);
+	/* Shutdown resets it. */
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
+
+	/* Configure resets it too, so the caller sets it after Configure. */
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(limit) == 1);
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT);
+	options.selectEntropy = entropy;
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalDriveRaceTickLimit() == 0u);
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(limit) == 1);
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(18001u) == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == limit);
+	CHECK(NativeArcadeLinkLoopback_PeerInit(&g_peer, &identity, TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, entropy ^ UINT64_C(0x5A5A)) == 1);
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(NativeArcadeNetplay_Enter(&g_peer) == NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY);
+	CHECK(DrivePairToRace() == 0);
+	CHECK(BeginRaceDrives() == 0);
+	CHECK(NativeArcadeLinkHost_InternalDriveRaceTickLimit() == limit);
+
+	/* Race ticks 0..4 GO on both sides. */
+	CHECK(RoundsBoth(limit) == 0);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.raceTick == limit - 1u);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_NONE);
+	/* Race tick 5, the limit tick: recorded, then END as the race tick limit. */
+	NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+	CHECK((hostAction == ACT_NONE) && (peerAction == ACT_NONE));
+	CHECK(HostStep(0u) == RACE_END);
+	CHECK(g_driveBad == 0);
+	CHECK(g_hostNext == limit);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_RACE_TICK_LIMIT);
+	CHECK(strcmp(NativeArcadeLinkHost_DriveEndKindName(state.endKind), "race tick limit") == 0);
+	CHECK(state.endTick == limit);
+	CHECK(state.raceTick == limit);
+	CHECK(state.graceStartTick == NATIVE_ARCADE_LINK_HOST_NO_TICK);
+	CHECK(state.lingerTicksLeft == NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS);
+	CHECK(state.failureReported == 0u);
+	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalLocalRaceFailure() == 0u);
+	/* A finish kind: the caller's finish report shows RACE COMPLETE. */
+	CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+	CHECK(CheckRaceEnd(1u, NATIVE_ARCADE_FLOW_END_FINISHED, 0u) == 0);
+	StopDriveRace();
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
+
+	/* A limit set before Configure is gone: the default 18000. */
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(limit) == 1);
+	CHECK(StartDriveRace(TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, UINT64_C(0x71C1000000000008)) == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalDriveRaceTickLimit() == NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT);
+	CHECK(RoundsBoth(limit + 3u) == 0);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_NONE);
+	CHECK(state.raceTick == limit + 2u);
+	StopDriveRace();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestInertBeforeConfigure() == 0);
@@ -3075,6 +3178,7 @@ int main(void)
 	CHECK(TestDriveTakeClassification() == 0);
 	CHECK(TestDriveParkedDigestMismatch() == 0);
 	CHECK(TestDriveRefusalsAndResets() == 0);
+	CHECK(TestDriveRaceTickLimit() == 0);
 	puts("native_arcade_link_host_test: passed");
 	return 0;
 }

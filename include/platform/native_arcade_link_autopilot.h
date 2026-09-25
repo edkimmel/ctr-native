@@ -16,6 +16,11 @@
  *   --arcade-link-autopilot <report path>   drive this link cabinet through
  *                                           two races and write the report
  *                                           to this path
+ *   --arcade-link-autopilot-race-ticks <n>  lower the linked race's length
+ *                                           bound to n race ticks (decimal
+ *                                           1..18000; docs/LOCKSTEP_RACE_MILESTONE.md
+ *                                           LR-42, LR-60); needs
+ *                                           --arcade-link-autopilot
  *
  * The report path is opened as given when the report is written: a relative
  * path resolves against the base directory (main.c changes into it before
@@ -23,7 +28,11 @@
  * options are left untouched. Arguments other than this option are ignored,
  * because other host parsers own them. A missing value (end of argv, a NULL
  * entry, or a next argument starting with '-'), an empty or over-long path,
- * or a repeated option is an error. main.c requires --arcade-link with it and
+ * or a repeated option is an error; so is a race tick count that is not 1 to
+ * 5 decimal digits with a value of 1..RACE_TICKS_MAX, and a race tick count
+ * without --arcade-link-autopilot. main.c hands the count to the link host's
+ * race tick limit setter after its Configure; 0 (absent) keeps the default
+ * bound. main.c requires --arcade-link with it and
  * rejects it together with --arcade-roster-proof, --exit-after-frame, and
  * every replay record or playback option.
  *
@@ -132,6 +141,10 @@
  */
 
 #define NATIVE_ARCADE_LINK_AUTOPILOT_PATH_BYTES 512u
+/* The largest --arcade-link-autopilot-race-ticks value: the race drive's
+ * default bound, which the override may only lower (LR-42). The link host
+ * refuses anything above it too. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_RACE_TICKS_MAX 18000u
 /* Races in one run: race 1, REMATCH, race 2, EXIT. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_RACES 2u
 /* A button is held on one decision in this many. */
@@ -174,6 +187,8 @@ struct NativeArcadeLinkAutopilotOptions
 	uint8_t enabled; /* --arcade-link-autopilot given */
 	uint8_t reserved[3];
 	char reportPath[NATIVE_ARCADE_LINK_AUTOPILOT_PATH_BYTES];
+	/* --arcade-link-autopilot-race-ticks, 1..RACE_TICKS_MAX; 0 when absent */
+	uint32_t raceTickLimit;
 };
 
 /* One race of the run, in this cabinet's order. */

@@ -31,7 +31,10 @@
 # drive's status and end-kind values itself (each static-asserted in the
 # .c); the .c also includes the drive core's header, may name the two
 # canonical type names the drive takes, and the library also links the
-# drive core (rules 2, 3, 3d, 3g, and 4).
+# drive core (rules 2, 3, 3d, 3g, and 4). Since LR-S10 part 1 (LR-60) the
+# header declares the internal race tick limit setter, whose host-local value
+# BeginDrive hands the drive, and only main.c's internal-build code sets it
+# (rule 3h).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -440,7 +443,7 @@ ctr_require_in("${host_source} (BeginDrive)" "${begin_body}"
     "callbacks.poll = NativeArcadeLinkHost_DrivePoll;"
     "callbacks.onTakeResult = NativeArcadeLinkHost_DriveTakeResult;"
     "callbacks.servicePeriod = NativeArcadeLinkHost_DriveServicePeriod;"
-    "NativeArcadeRaceDrive_Begin(&g_drive, NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay)), &g_driveKept, &callbacks, 0u)"
+    "NativeArcadeRaceDrive_Begin(&g_drive, NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay)), &g_driveKept, &callbacks, g_raceTickLimit)"
     "NativeArcadeLinkHost_ReportDriveFailure();")
 
 # The one failure-report path.
@@ -529,6 +532,130 @@ foreach(path IN LISTS drive_scan_paths)
 endforeach()
 if(drive_scanned LESS 300)
     message(FATAL_ERROR "arcade link host isolation: the RaceStep/RaceHold/RaceService scan saw only ${drive_scanned} files; the scan is broken")
+endif()
+
+# 3h. The internal race tick limit override (docs/LOCKSTEP_RACE_MILESTONE.md
+#     LR-60, LR-S10 part 1). The header declares the setter. The .c keeps
+#     the limit in one host-local static, g_raceTickLimit, which the setter
+#     writes only for 0..18000 (the drive's own bound; anything above is
+#     refused with nothing changed), Shutdown (and so Configure, which shuts
+#     down first, pinned above) resets to 0, BeginDrive alone hands to the
+#     drive (pinned above), and the test read-back returns; it is named
+#     nowhere else. Outside the host's own two files, no source names the
+#     setter but main.c, which calls it exactly once, and only inside an
+#     internal-build (CTR_INTERNAL) region: never in game/, platform/,
+#     include/, or tools/.
+ctr_require_in("${host_header}" "${header_flat}" "int NativeArcadeLinkHost_SetRaceTickLimit(uint32_t limit);")
+ctr_require_in("${host_source}" "${source_flat}" "static uint32_t g_raceTickLimit;")
+ctr_body("${host_source}" "${source_code}" "int NativeArcadeLinkHost_SetRaceTickLimit(" limit_body)
+ctr_require_in("${host_source} (SetRaceTickLimit)" "${limit_body}"
+    "{ if (limit > NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT) { return 0; } g_raceTickLimit = limit; return 1;")
+ctr_require_in("${host_source} (Shutdown)" "${shutdown_body}" "g_raceTickLimit = 0u;")
+ctr_body("${host_source}" "${source_code}" "uint32_t NativeArcadeLinkHost_InternalRaceTickLimit(" limit_readback_body)
+ctr_require_in("${host_source} (InternalRaceTickLimit)" "${limit_readback_body}" "{ return g_raceTickLimit;")
+ctr_require_count("${host_source}" "${source_flat}" "g_raceTickLimit" 5)
+ctr_require_count("${host_source}" "${source_flat}" "g_raceTickLimit =" 2)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_SetRaceTickLimit(" 1)
+
+# The preprocessor regions of code (comments removed) that hold term: sets
+# out_var to 1 when every line naming term lies inside the true branch of an
+# `#if defined(CTR_INTERNAL)` or `#ifdef CTR_INTERNAL`, or the #else branch of
+# an `#if !defined(CTR_INTERNAL)` or `#ifndef CTR_INTERNAL`, at any depth.
+function(ctr_only_internal code term out_var)
+    string(REPLACE ";" "@SEMI@" masked "${code}")
+    string(REPLACE "\r" "" masked "${masked}")
+    string(REPLACE "\n" ";" lines "${masked}")
+    set(stack "")
+    set(all_internal 1)
+    foreach(line IN LISTS lines)
+        string(STRIP "${line}" stripped)
+        if(stripped MATCHES "^#[ \t]*(if[ \t]+defined[ \t]*\\(?[ \t]*CTR_INTERNAL[ \t]*\\)?|ifdef[ \t]+CTR_INTERNAL)[ \t]*$")
+            list(APPEND stack "I")
+        elseif(stripped MATCHES "^#[ \t]*(if[ \t]+![ \t]*defined[ \t]*\\(?[ \t]*CTR_INTERNAL[ \t]*\\)?|ifndef[ \t]+CTR_INTERNAL)[ \t]*$")
+            list(APPEND stack "N")
+        elseif(stripped MATCHES "^#[ \t]*if")
+            list(APPEND stack "O")
+        elseif(stripped MATCHES "^#[ \t]*(else|elif)")
+            list(LENGTH stack depth)
+            if(depth EQUAL 0)
+                message(FATAL_ERROR "arcade link host isolation: an #else without an #if; the region scan is broken")
+            endif()
+            list(POP_BACK stack top)
+            if(top STREQUAL "N" AND stripped MATCHES "^#[ \t]*else")
+                list(APPEND stack "I")
+            else()
+                list(APPEND stack "O")
+            endif()
+        elseif(stripped MATCHES "^#[ \t]*endif")
+            list(LENGTH stack depth)
+            if(depth EQUAL 0)
+                message(FATAL_ERROR "arcade link host isolation: an #endif without an #if; the region scan is broken")
+            endif()
+            list(POP_BACK stack top)
+        endif()
+        string(FIND "${line}" "${term}" term_at)
+        if(NOT term_at EQUAL -1)
+            list(FIND stack "I" internal_at)
+            if(internal_at EQUAL -1)
+                set(all_internal 0)
+            endif()
+        endif()
+    endforeach()
+    list(LENGTH stack depth)
+    if(NOT depth EQUAL 0)
+        message(FATAL_ERROR "arcade link host isolation: unbalanced #if in the region scan")
+    endif()
+    set(${out_var} ${all_internal} PARENT_SCOPE)
+endfunction()
+# The region scan's self-check.
+foreach(probe IN ITEMS
+        "1|#if defined(CTR_INTERNAL)\n\tX();\n#endif\n"
+        "1|#if defined(CTR_NATIVE)\n#ifdef CTR_INTERNAL\nif (a) { X(); }\n#endif\n#endif\n"
+        "1|#if !defined(CTR_INTERNAL)\nY();\n#else\nX();\n#endif\n"
+        "0|X();\n#if defined(CTR_INTERNAL)\n#endif\n"
+        "0|#if defined(CTR_INTERNAL)\nY();\n#else\nX();\n#endif\n"
+        "0|#if !defined(CTR_INTERNAL)\nX();\n#endif\n"
+        "0|#if defined(CTR_INTERNAL)\n#endif\n#if defined(CTR_NATIVE)\nX();\n#endif\n")
+    string(FIND "${probe}" "|" bar_at)
+    string(SUBSTRING "${probe}" 0 ${bar_at} probe_expected)
+    math(EXPR probe_text_at "${bar_at} + 1")
+    string(SUBSTRING "${probe}" ${probe_text_at} -1 probe_text)
+    ctr_only_internal("${probe_text}" "X()" probe_result)
+    if(NOT probe_result EQUAL probe_expected)
+        message(FATAL_ERROR "arcade link host isolation: the CTR_INTERNAL region scan got ${probe_result} for '${probe_text}', expected ${probe_expected}")
+    endif()
+endforeach()
+set(limit_owners "${host_source}" "${host_header}")
+set(limit_named_in_main 0)
+foreach(path IN LISTS drive_scan_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    list(FIND limit_owners "${relative_path}" limit_owner)
+    if(NOT limit_owner EQUAL -1)
+        continue()
+    endif()
+    file(READ "${path}" scanned)
+    string(FIND "${scanned}" "NativeArcadeLinkHost_SetRaceTickLimit" limit_at)
+    if(limit_at EQUAL -1)
+        continue()
+    endif()
+    if(NOT relative_path STREQUAL "main.c")
+        message(FATAL_ERROR "arcade link host isolation: ${relative_path} names NativeArcadeLinkHost_SetRaceTickLimit; only main.c may, in an internal-build region (LR-60)")
+    endif()
+    string(REGEX REPLACE "/\\*([^*]|\\*+[^*/])*\\*+/" " " main_code "${scanned}")
+    string(REGEX REPLACE "//[^\r\n]*" "" main_code "${main_code}")
+    ctr_count("${main_code}" "NativeArcadeLinkHost_SetRaceTickLimit(" main_limit_calls)
+    ctr_count("${main_code}" "NativeArcadeLinkHost_SetRaceTickLimit" main_limit_names)
+    if(NOT main_limit_calls EQUAL 1 OR NOT main_limit_names EQUAL 1)
+        message(FATAL_ERROR "arcade link host isolation: main.c must name NativeArcadeLinkHost_SetRaceTickLimit exactly once, in its one call (found ${main_limit_names} names, ${main_limit_calls} calls)")
+    endif()
+    ctr_only_internal("${main_code}" "NativeArcadeLinkHost_SetRaceTickLimit" main_limit_internal)
+    if(NOT main_limit_internal)
+        message(FATAL_ERROR "arcade link host isolation: main.c names NativeArcadeLinkHost_SetRaceTickLimit outside a CTR_INTERNAL region (LR-60)")
+    endif()
+    set(limit_named_in_main 1)
+endforeach()
+if(NOT limit_named_in_main)
+    message(FATAL_ERROR "arcade link host isolation: main.c must set the race tick limit (NativeArcadeLinkHost_SetRaceTickLimit) in its internal autopilot handling")
 endif()
 
 # 4. ctr_native_arcade_link_host links exactly the adapter and the host

@@ -30,4 +30,12 @@ uint32_t NativeArcadeLinkHost_InternalDriveFailureReports(void);
  * clears it); 0 unless the mode is LINK. */
 uint32_t NativeArcadeLinkHost_InternalConsecutiveStalls(void);
 
+/* The race tick limit the host's race tick limit setter stored (0: the
+ * default), in any mode (LR-60). */
+uint32_t NativeArcadeLinkHost_InternalRaceTickLimit(void);
+
+/* The race tick limit in force in the race drive: the begun drive's (18000
+ * for a default begin), 0 for a drive not begun; 0 unless the mode is LINK. */
+uint32_t NativeArcadeLinkHost_InternalDriveRaceTickLimit(void);
+
 #endif

@@ -196,6 +196,11 @@ static uint8_t g_driveFailureReported;
 /* Local drive failures reported since Configure or Shutdown (a test
  * read-back). */
 static uint32_t g_driveFailureReports;
+/* The race tick limit the next LINK RaceBegin hands the drive (LR-60): 0,
+ * the drive's default 18000, unless NativeArcadeLinkHost_SetRaceTickLimit
+ * lowered it. Host-local: it never enters a saved state, a recording,
+ * canonical state, or the wire. Shutdown (and so Configure) resets it. */
+static uint32_t g_raceTickLimit;
 
 uint64_t NativeArcadeLinkHost_MixSelectEntropy(uint64_t entropy, uint64_t epoch)
 {
@@ -295,8 +300,9 @@ static void NativeArcadeLinkHost_ReportDriveFailure(void)
 }
 
 /* RaceBegin's drive part (LINK mode): a fresh drive, begun over the race
- * link's session with the default race tick limit (0: 18000; LR-S10 adds
- * the internal override), when the flow is on RACING. A refused begin has
+ * link's session with the stored race tick limit (0: the default 18000;
+ * 1..18000: the internal override, LR-60), when the flow is on RACING. A
+ * refused begin has
  * ended the drive as a local failure, which is reported. Off RACING the
  * race is already over and the drive stays re-initialized. */
 static void NativeArcadeLinkHost_BeginDrive(void)
@@ -316,7 +322,7 @@ static void NativeArcadeLinkHost_BeginDrive(void)
 	callbacks.servicePeriod = NativeArcadeLinkHost_DriveServicePeriod;
 	g_driveBegun = 1u;
 	if (!NativeArcadeRaceDrive_Begin(&g_drive, NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay)),
-			&g_driveKept, &callbacks, 0u))
+			&g_driveKept, &callbacks, g_raceTickLimit))
 	{
 		NativeArcadeLinkHost_ReportDriveFailure();
 	}
@@ -531,6 +537,27 @@ uint32_t NativeArcadeLinkHost_InternalConsecutiveStalls(void)
 	return (g_mode == NATIVE_ARCADE_LINK_HOST_MODE_LINK) ? g_netplay.outcome.consecutiveStallFrames : 0u;
 }
 
+uint32_t NativeArcadeLinkHost_InternalRaceTickLimit(void)
+{
+	return g_raceTickLimit;
+}
+
+uint32_t NativeArcadeLinkHost_InternalDriveRaceTickLimit(void)
+{
+	return (g_mode == NATIVE_ARCADE_LINK_HOST_MODE_LINK) ? NativeArcadeRaceDrive_RaceTickLimit(&g_drive) : 0u;
+}
+
+int NativeArcadeLinkHost_SetRaceTickLimit(uint32_t limit)
+{
+	/* LR-42: the override may only lower the drive's bound. */
+	if (limit > NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT)
+	{
+		return 0;
+	}
+	g_raceTickLimit = limit;
+	return 1;
+}
+
 int NativeArcadeLinkHost_RaceBegin(void)
 {
 	if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK)
@@ -565,6 +592,7 @@ void NativeArcadeLinkHost_Shutdown(void)
 	}
 	NativeArcadeLinkHost_ResetDrive();
 	g_driveFailureReports = 0u;
+	g_raceTickLimit = 0u;
 	if (g_mode == NATIVE_ARCADE_LINK_HOST_MODE_LINK)
 	{
 		NativeArcadeNetplay_Shutdown(&g_netplay);

@@ -26,7 +26,10 @@
 #  6. the three RL-8/RL-10 bounds are defined literally, exactly once:
 #     launchWindowTimeoutTicks 900, launchValidateTimeoutTicks 1800, and
 #     launchRehearsalTicks 150; and the setup status mirrors match the order
-#     of enum MainArcadeRaceSetupStatus.
+#     of enum MainArcadeRaceSetupStatus. Since LR-S10 part 1 (LR-59) the
+#     driver slot count 8 and the finished bit mirror 0x2000000 are pinned
+#     the same way, the retail ACTION_RACE_FINISHED still has that value,
+#     and the race caller static-asserts the mirror.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "race launch core isolation")
@@ -247,7 +250,9 @@ foreach(define IN ITEMS
         "MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_LAUNCHED 2u"
         "MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_SEEDED 3u"
         "MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_VALIDATED 4u"
-        "MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_FAILED 5u")
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_FAILED 5u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS 8u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED 0x2000000u")
     string(REPLACE " " ";" define_items "${define}")
     list(GET define_items 0 define_name)
     list(GET define_items 1 define_value)
@@ -265,3 +270,11 @@ endforeach()
 ctr_read_source("game/MAIN/MainArcadeRaceSetupCore.h" setup_core_header)
 ctr_require("game/MAIN/MainArcadeRaceSetupCore.h" "${setup_core_header}"
     "enum MainArcadeRaceSetupStatus\n{\n\tMAIN_ARCADE_RACE_SETUP_IDLE = 0,\n\tMAIN_ARCADE_RACE_SETUP_ARMED,\n\tMAIN_ARCADE_RACE_SETUP_LAUNCHED,\n\tMAIN_ARCADE_RACE_SETUP_SEEDED,\n\tMAIN_ARCADE_RACE_SETUP_VALIDATED,\n\tMAIN_ARCADE_RACE_SETUP_FAILED\n};")
+# The finished bit mirror (docs/LOCKSTEP_RACE_MILESTONE.md LR-59): the retail
+# value it mirrors, and the race caller's static assert of it.
+ctr_read_source("include/namespace_Vehicle.h" vehicle_header)
+ctr_require("include/namespace_Vehicle.h" "${vehicle_header}" "\tACTION_RACE_FINISHED = 0x2000000,\n")
+ctr_read_source("game/MAIN/MainArcadeRaceLaunch.c" caller_source)
+string(REPLACE "\r\n" "\n" caller_source "${caller_source}")
+ctr_require("game/MAIN/MainArcadeRaceLaunch.c" "${caller_source}"
+    "_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED == (uint32_t)ACTION_RACE_FINISHED,")

@@ -531,7 +531,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-57; LR-17 is the owner's ruling)
+## 4. Decided design (defaults LR-1..LR-60; LR-17 is the owner's ruling)
 
 The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
 written, except that LR-18, the finish grace, amends LR-1, LR-12, LR-13,
@@ -542,7 +542,8 @@ several defaults; "Review changes" at the end of this section lists what
 changed, and "Owner decisions (2026-09-25)" after it lists the owner's
 decisions. LR-19..LR-27 were added by LR-S4, LR-28..LR-32 by LR-S5,
 LR-33..LR-36 by LR-S6, LR-37..LR-40 by LR-S7, LR-41..LR-48 by LR-S8,
-and LR-49..LR-57 by LR-S9; each records the mechanics its slice settled.
+LR-49..LR-57 by LR-S9, and LR-58..LR-60 by LR-S10 part 1; each records the
+mechanics its slice settled.
 
 LR-1 Placement. The race driver lives under platform/, because game code
 may not name lockstep (tests/native_lockstep_isolation_test.cmake:128-157
@@ -1615,7 +1616,9 @@ cause and the runtime's reason, until the next race tick 0, and every
 call in between fails. MainArcadeRaceDigest_EndRace on the end frame
 invalidates the runtime's topology context. It fails after a latched
 failure or with no race. The module copies no state out: the V4 state
-copy for RecordLocalDigests, if LR-11 needs one, is LR-S10's.
+copy for RecordLocalDigests, if LR-11 needs one, is LR-S10's. (LR-S10
+part 1 settled it: MainArcadeRaceDigest_ProjectState, LR-58; Project
+still copies only the digests.)
 
 LR-21 Storage. The digest state (request, bank copy, extracted values,
 base) is one file-scope static, and the runtime workspace is its own
@@ -2156,7 +2159,7 @@ re-initialized, the ring cleared, and, when the flow is on RACING, the
 drive is begun over NativeLockstepPeerLink_Session of
 NativeArcadeNetplay_Link, with the ring, the four callbacks (LR-53), and
 race tick limit 0 (the default 18000; LR-S10 adds the internal
-override). Off RACING the race is already over, so no drive is begun and
+override, LR-60). Off RACING the race is already over, so no drive is begun and
 RaceStep refuses. A Begin refusal has already ended the drive as
 LOCAL_FAILURE (LR-41), and the glue reports it as a local race failure
 at once (the next Tick shows LINK ERROR); the return stays 1, because
@@ -2272,6 +2275,121 @@ needs, and pinned:
   RaceEnd's one NativeArcadeLinkHost_RaceEndDrive() call before it; the
   pacing logic, the three setter calls, and the six g_racePacing names
   are unchanged.
+
+LR-58 The state copy for the digest record (LR-S10 part 1). The drive's
+RaceStep takes the whole const struct NativeCanonicalStateV4 * of the race
+tick, because NativeLockstepSession_RecordLocalDigests validates the
+state, so the digest module gains
+
+    int MainArcadeRaceDigest_ProjectState(uint32_t raceTick, const struct MainArcadeRaceDigestSources *sources,
+        struct MainArcadeRaceDigestTick *out, struct NativeCanonicalStateV4 *stateOut);
+
+- It is Project with the whole state: the same lifecycle, sequence rule,
+  failure latch, and one NativePerf scope
+  (NATIVE_PERF_BUCKET_ARCADE_RACE_DIGEST) per call. Project and
+  ProjectState share the static ProjectTick, which takes a wantState flag
+  and the state pointer; Project passes 0 and NULL and behaves exactly as
+  before. Each public function holds its own scope around exactly one
+  ProjectTick call, so the file names each NativePerf call twice.
+- The copy. After the VIEW check, and before ReleaseV4 zeroes the view,
+  ProjectTick copies the view whole into module-static scratch, a
+  stateScratch member of the file-scope digest state (LR-21: one
+  file-scope static, no heap; race tick 0 zeroes it with the rest). It
+  hands the copy to the caller only after the topology check succeeded,
+  right after *out. So on any failure *out and *stateOut are both
+  untouched; there is no partial write. The scratch keeps the last copy
+  until the next race tick 0; like the rest of the digest state it never
+  enters a saved state, a recording, or canonical state.
+- A NULL stateOut is an ARGUMENT failure in the same argument check as a
+  NULL out: after the sequence rule (on race tick 0 the runtime reset still
+  runs first, as for a NULL out), latched until the next race tick 0.
+- The state's frameNumber is raceTick and its combined and domain digests
+  are the tick's (the same view). The module stays read-only on game state
+  and names no lease or topology reader.
+- Callers: the race caller (LR-S10 part 2) projects through ProjectState;
+  the roster proof stays on Project, and
+  main_arcade_race_digest_isolation pins that it never names ProjectState.
+  The isolation test also pins the copy's order in ProjectTick (the wanted
+  state required in the argument check, the copy after the frame check
+  and before Release, the hand-out after the topology latch and *out), the
+  names' counts, and each public function's one scope around one
+  ProjectTick call.
+
+LR-59 The finished-human count (LR-S10 part 1, for LR-18). A pure
+launch-core function, in the library ctr_native_arcade_race_launch_core,
+which names no retail header:
+
+    uint32_t MainArcadeRaceLaunchCore_FinishedHumans(const uint32_t actionsFlagSet[MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS],
+        uint32_t numPlyrCurrGame);
+
+- It counts the slots 0 .. min(numPlyrCurrGame, 8) - 1 whose flag word has
+  MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED; NULL returns 0, and
+  every other bit is ignored. It counts by slot, not by kind: a finished
+  human that BOTS_Driver_Convert (game/PlayLevel.c:226) turned into a bot
+  (ACTION_BOT, 0x100000) still counts, and a finished bot in a slot at or
+  above numPlyrCurrGame does not. The caller copies each slot's
+  actionsFlagSet in (0 for a NULL driver).
+- The mirrors, next to the setup-status mirrors:
+  MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS 8u and
+  MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED 0x2000000u (retail
+  ACTION_RACE_FINISHED, include/namespace_Vehicle.h:607).
+  game/MAIN/MainArcadeRaceLaunch.c static-asserts the mirror against
+  ACTION_RACE_FINISHED next to the setup mirrors; it does not call the
+  function yet (part 2 does). main_arcade_race_launch_core_isolation pins
+  both defines literally, once each, the retail enum value, and the static
+  assert.
+
+LR-60 The internal race-tick-limit override (LR-S10 part 1, for LR-42).
+
+- The host: int NativeArcadeLinkHost_SetRaceTickLimit(uint32_t limit). 0
+  restores the default and 1 to 18000 lower the bound; both are stored and
+  return 1. Anything above 18000 (the drive's
+  NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT) returns 0 and changes nothing.
+  It stores in any mode; only a LINK RaceBegin uses the value:
+  NativeArcadeLinkHost_BeginDrive passes it to NativeArcadeRaceDrive_Begin
+  instead of the literal 0u. The value is one host-local static,
+  g_raceTickLimit: never in a checkpoint, a recording, canonical state, or
+  on the wire.
+- The reset points. Shutdown resets it to 0, and so does Configure, whose
+  first statement is Shutdown; the caller therefore sets it after
+  Configure. The choice for Shutdown: reset, the safer option, so a
+  Shutdown before an exit or a replacing Configure never leaves a lowered
+  bound behind for a later configuration. AbortToTitle's normal path keeps
+  it (the same configured session's next race keeps its cap); its
+  defensive branch shuts down, and the mode is OFF then anyway. RaceEnd and
+  the drive's re-initialization do not touch it.
+- The option: --arcade-link-autopilot-race-ticks <n>, parsed by
+  NativeArcadeLinkAutopilotOptions_ApplyArgs into the new last field
+  raceTickLimit of struct NativeArcadeLinkAutopilotOptions (0 when
+  absent). n is 1 to 5 decimal digits with a value of 1..18000
+  (NATIVE_ARCADE_LINK_AUTOPILOT_RACE_TICKS_MAX; leading zeros are allowed
+  within the five digits), given at most once, and it requires
+  --arcade-link-autopilot on the same command line; anything else fails
+  the parse transactionally, as the other autopilot errors do.
+- main.c: in its existing CTR_INTERNAL autopilot block, after the host's
+  Configure and MainArcadeLinkAutopilot_Configure, it calls
+  NativeArcadeLinkHost_SetRaceTickLimit(options.raceTickLimit) (0 keeps
+  the default), exits 1 through the Configure failure's cleanup if the
+  host refuses (unreachable after the parse), and prints one line,
+  "[CTR Native] arcade link autopilot: race tick limit <n>", when the cap
+  is nonzero. The invalid-option error names the new option. Non-internal
+  builds keep rejecting the autopilot, and so the cap, which needs it.
+- The test read-backs (native_arcade_link_host_internal.h, rule 3b):
+  NativeArcadeLinkHost_InternalRaceTickLimit (the stored value) and
+  NativeArcadeLinkHost_InternalDriveRaceTickLimit (the begun drive's limit
+  in force; 0 unless LINK).
+- The isolation, native_arcade_link_host_isolation rule 3h: the header
+  declares the setter; the .c pins the setter's body, the one static named
+  exactly five times with exactly two writes (the setter and Shutdown),
+  Shutdown's reset, and the read-back; rule 3g's BeginDrive pin now names
+  g_raceTickLimit in place of 0u, as strict as before. A scan of game/,
+  platform/, include/, tools/, and main.c (raw text, comments included)
+  allows the setter's name only in the host's own two files and in
+  main.c, which must name it exactly once, in its one call, inside a
+  CTR_INTERNAL region (a preprocessor-region scan with its own
+  self-check).
+- The live gate's value is chosen in part 2, which also adds the option to
+  tools/arcade-link-launch-check.ps1; part 1 leaves the script unchanged.
 
 Review changes. The plan review (on befa152a9) changed these defaults:
 
@@ -4023,8 +4141,142 @@ Tests:
 
 ### LR-S10 -- the caller: the rehearsal's replacement
 
-Status: planned. Review required (simulation identity, the launch and
-race path). Run 4.
+Status: part 1 done (the seams); part 2 (the caller) planned. Review
+required (simulation identity, the launch and race path). Run 4. New
+defaults LR-58..LR-60 (section 4).
+
+Result, part 1:
+
+- The API, three additive seams the race caller (part 2) will use:
+
+      int MainArcadeRaceDigest_ProjectState(uint32_t raceTick, const struct MainArcadeRaceDigestSources *sources,
+          struct MainArcadeRaceDigestTick *out, struct NativeCanonicalStateV4 *stateOut);
+      uint32_t MainArcadeRaceLaunchCore_FinishedHumans(const uint32_t actionsFlagSet[MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS],
+          uint32_t numPlyrCurrGame);
+      int NativeArcadeLinkHost_SetRaceTickLimit(uint32_t limit);
+
+  with MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS (8u) and
+  MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED (0x2000000u), the
+  internal option --arcade-link-autopilot-race-ticks <n>
+  (NativeArcadeLinkAutopilotOptions.raceTickLimit), and two test
+  read-backs. The live race path is unchanged: the launch core's
+  REHEARSAL phase, MainArcadeRaceLaunch.c's behaviour (it gains only the
+  mirror's static assert), and tools/arcade-link-launch-check.ps1 stay as
+  they are; no game source calls RaceStep, RaceHold, ProjectState,
+  FinishedHumans, or the setter; every existing API behaves as before, and
+  a race begun without the option still gets the default 18000.
+- The files: game/MAIN/MainArcadeRaceDigest.{c,h} (ProjectState, the
+  scratch, the shared ProjectTick); game/MAIN/MainArcadeRaceLaunchCore.{c,h}
+  (the count and the two defines); game/MAIN/MainArcadeRaceLaunch.c (the
+  static assert); include/platform/native_arcade_link_host.h and
+  platform/native_arcade_link_host.c (the setter, g_raceTickLimit, its
+  Shutdown reset, BeginDrive's argument, the read-backs);
+  include/platform/native_arcade_link_host_internal.h (the two
+  read-backs); include/platform/native_arcade_link_autopilot.h and
+  platform/native_arcade_link_autopilot.c (the option); main.c (the
+  setter call, the log line, the error text); the unit tests
+  tests/main_arcade_race_digest_test.c,
+  tests/main_arcade_race_launch_core_test.c,
+  tests/native_arcade_link_autopilot_test.c, and
+  tests/native_arcade_link_host_test.c; and the isolation tests
+  tests/main_arcade_race_digest_isolation_test.cmake,
+  tests/main_arcade_race_launch_core_isolation_test.cmake, and
+  tests/native_arcade_link_host_isolation_test.cmake (rule 3h).
+  native_arcade_link_autopilot_isolation needed no change: its main.c pin
+  still holds, since the setter call follows the pinned Configure call
+  inside the same CTR_INTERNAL block. No change to the wire, the session,
+  the drive core, the canonical state, any checkpoint or replay state, or
+  the lease; no heap.
+- The decisions: LR-58 (ProjectState: the shared helper with a wantState
+  flag, the scratch as a member of the file-scope digest state, the copy
+  before Release and the hand-out after the topology check, a NULL state
+  latched as ARGUMENT, one scope per public call, the roster proof kept on
+  Project); LR-59 (the count by slot with the clamp to 8, NULL 0, the
+  mirror and its static assert, pinned); LR-60 (the setter's range and
+  return values, the host-local static, Shutdown resets and so Configure
+  does, AbortToTitle's normal path keeps it, the option's grammar and its
+  need for --arcade-link-autopilot, main.c's call after Configure and its
+  log line, the two read-backs, rule 3h; the gate's value is part 2's).
+  Two comments were worded so the raw-text scan of rule 3h holds: the
+  autopilot header and the read-back header describe the setter without
+  naming it.
+- main_arcade_race_digest_unit, TestProjectState: over the same sources a
+  race through ProjectState gives Project's ticks byte for byte on four
+  ticks; each state's frameNumber is the race tick, its combined and domain
+  digests are the tick's, NativeCanonicalStateV4_Validate accepts it, its
+  race-relative control values are 2k and k, and the runtime is released
+  after each tick; four calls open four scopes, all closed. A NULL state on
+  race tick 0 fails ARGUMENT with the tick untouched, and the latch holds:
+  the next ProjectState and Project fail with a 0xA5-filled tick and state
+  byte-identical, and EndRace fails; a NULL state on a later tick of a
+  running race latches the same way. A skipped tick (SEQUENCE), a bank the
+  projector refuses (PREPARE), and a runtime failure forced inside
+  PrepareV4 on tick 1 (PREPARE) each leave the 0xA5-filled tick and state
+  byte-identical. The TOPOLOGY and RELEASE failures after the copy cannot
+  be reached from outside; the isolation test pins the order instead.
+- main_arcade_race_launch_core_unit, TestFinishedHumans: two humans both
+  finished count 2; only slots 0..numPlyrCurrGame - 1 count (1 of 2 with
+  numPlyrCurrGame 1); a finished bot in slot 3 does not count with two
+  humans (and does with four); a finished human also carrying 0x100000
+  counts; the bot bit alone does not; numPlyrCurrGame 0 gives 0; all eight
+  slots finished give 8 for numPlyrCurrGame 8, 9, and 0xFFFFFFFF; NULL
+  gives 0; every other bit, alone and all together, counts nothing.
+- native_arcade_link_autopilot_unit, TestRaceTicksOption: absent is 0;
+  1, 300, 18000, and 00300 are accepted before and after the autopilot
+  option; 0, 18001, 000300 (six digits), 4294967296, a word, -5, +5,
+  0x12c, empty, trailing junk (300x, "300 "), a missing or NULL value, an
+  option as the value, the option twice (same and different values), and
+  the option without --arcade-link-autopilot (with and without other
+  options) are each refused with the 0xA5-filled options untouched; the
+  near names --arcade-link-autopilot-race-ticks=5 and
+  --arcade-link-autopilot-race-tick are ignored.
+- native_arcade_link_host_unit, TestDriveRaceTickLimit (the drive ports
+  48515-48516, reused): in mode OFF the setter stores 1, 18000, 0, and 300
+  and refuses 18001 and UINT32_MAX with nothing changed; Shutdown resets
+  it; a limit set before Configure is reset by it; set to 5 after
+  Configure (18001 then refused), the race's drive begins with 5 (the
+  read-back), race ticks 0..4 GO on both sides with the expected committed
+  pads, and the host's race tick 5 returns END with end kind
+  RACE_TICK_LIMIT ("race tick limit"), end tick and race tick 5, no grace,
+  the finish linger armed with 15 ticks, and nothing reported; the finish
+  Tick shows RESULTS, end reason FINISHED, and race 1's end record. After
+  the stop the limit is 0; a limit set before the next Configure is gone,
+  that race's drive runs with 18000, and it passes race tick 5 (ticks
+  0..7 GO, no end).
+- Probes, each reverted (the final build uses the restored sources):
+  - ProjectState passing wantState 0: main_arcade_race_digest_unit and
+    main_arcade_race_digest_isolation failed;
+  - the state handed out right at the copy, before Release and the
+    topology check: the unit passed (only unreachable failures follow the
+    copy) and the isolation test failed;
+  - the NULL-state check removed: the unit crashed (the NULL state case)
+    and the isolation test failed;
+  - the roster proof projecting through ProjectState: the isolation test
+    failed;
+  - FinishedHumans counting all eight slots whatever numPlyrCurrGame,
+    counting by kind (skipping ACTION_BOT), and clamping to 7:
+    main_arcade_race_launch_core_unit failed each time (its isolation
+    passed);
+  - the mirror changed to 0x1000000u: the core unit and its isolation test
+    failed, and ctr_native failed to build (C2338, the static assert in
+    MainArcadeRaceLaunch.c);
+  - the static assert removed: main_arcade_race_launch_core_isolation
+    failed;
+  - BeginDrive passing 0u, Shutdown not resetting the limit, and the
+    setter accepting 18001: native_arcade_link_host_unit and
+    native_arcade_link_host_isolation failed each time;
+  - main.c's call removed from the internal block and made after the
+    "Starting..." line instead: the isolation test failed (outside a
+    CTR_INTERNAL region); with the call only removed it failed too (main.c
+    must set the limit);
+  - a game source naming the setter (in a comment): the isolation test
+    failed;
+  - the parser accepting the option without --arcade-link-autopilot,
+    accepting 0, and accepting it twice: native_arcade_link_autopilot_unit
+    failed each time (its isolation passed).
+- Fast suite (-LE live): 154 of 154 passed. No live test was run: nothing
+  on the live path calls the new seams, and a race begun without the
+  option passes the drive the same default as before.
 
 Plan:
 

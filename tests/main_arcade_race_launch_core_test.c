@@ -500,6 +500,69 @@ static int TestFailureNames(void)
 	return 0;
 }
 
+/*
+ * The finished-human count (docs/LOCKSTEP_RACE_MILESTONE.md LR-18, LR-59): by
+ * slot, 0 .. min(numPlyrCurrGame, 8) - 1, over the finished bit only.
+ */
+static int TestFinishedHumans(void)
+{
+	const uint32_t finished = MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED;
+	const uint32_t bot = 0x100000u; /* ACTION_BOT, set by BOTS_Driver_Convert */
+	uint32_t flags[MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS];
+	uint32_t slot;
+
+	CHECK(MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS == 8u);
+	CHECK(finished == 0x2000000u);
+
+	/* Two humans, both finished. */
+	memset(flags, 0, sizeof(flags));
+	flags[0] = finished;
+	flags[1] = finished;
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 2u) == 2u);
+	/* Only slots 0 .. numPlyrCurrGame - 1 count. */
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 1u) == 1u);
+	flags[0] = 0u;
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 2u) == 1u);
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 1u) == 0u);
+	/* A finished bot in slot 3 does not count with two humans. */
+	memset(flags, 0, sizeof(flags));
+	flags[3] = finished | bot;
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 2u) == 0u);
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 4u) == 1u);
+	/* A finished human that retail converted to a bot still counts. */
+	flags[1] = finished | bot;
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 2u) == 1u);
+	/* An unfinished converted slot (the bot bit alone) does not. */
+	flags[0] = bot;
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 2u) == 1u);
+	/* No humans: nothing counts. */
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 0u) == 0u);
+	/* Every slot finished: numPlyrCurrGame above 8 clamps to 8. */
+	for (slot = 0u; slot < MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS; slot++)
+	{
+		flags[slot] = finished;
+	}
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 8u) == 8u);
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 9u) == 8u);
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 0xFFFFFFFFu) == 8u);
+	/* NULL. */
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(NULL, 2u) == 0u);
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(NULL, 0u) == 0u);
+	/* Every other bit, alone or together, does not count. */
+	for (slot = 0u; slot < MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS; slot++)
+	{
+		flags[slot] = ~finished;
+	}
+	CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 8u) == 0u);
+	for (slot = 0u; slot < 32u; slot++)
+	{
+		memset(flags, 0, sizeof(flags));
+		flags[0] = 1u << slot;
+		CHECK(MainArcadeRaceLaunchCore_FinishedHumans(flags, 1u) == (((1u << slot) == finished) ? 1u : 0u));
+	}
+	return 0;
+}
+
 /* NULLs, out-of-range inputs, and the launch result protocol. */
 static int TestArguments(void)
 {
@@ -1703,6 +1766,8 @@ int main(void)
 	if (TestLayout() != 0)
 		return 1;
 	if (TestFailureNames() != 0)
+		return 1;
+	if (TestFinishedHumans() != 0)
 		return 1;
 	if (TestArguments() != 0)
 		return 1;

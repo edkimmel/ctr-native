@@ -17,12 +17,15 @@
 #     frame before latching a VIEW or RELEASE failure (Release, else Reset),
 #     invalidates the topology context only in EndRace, calls no other
 #     runtime entry, calls both world extractors, and wraps the whole
-#     projection in its one NativePerf scope;
+#     projection in its one NativePerf scope per call (Project and, since
+#     LR-S10 part 1, ProjectState, which copies the view whole into the
+#     module's scratch before Release and hands it out only after the tick
+#     succeeded, LR-58);
 #  3. MainArcadeRaceDigest_* is named only by the module and its callers:
 #     the roster proof (LR-S4; the race caller joins in LR-S10). platform/
 #     and include/ never name it. The proof projects once per logged tick
-#     and ends the race once, with the setup's post-setup bank and the
-#     racing overlay's mine pool;
+#     (through Project, never ProjectState) and ends the race once, with the
+#     setup's post-setup bank and the racing overlay's mine pool;
 #  4. the unity chain includes the world extractors and the module exactly
 #     once, in order; ctr_native links neither world extractor library (a
 #     pulled member would define sdata twice);
@@ -375,14 +378,18 @@ endforeach()
 # 2. The lifecycle, the bank, the topology summary, the world, NativePerf.
 string(FIND "${digest_c_code}" "static int MainArcadeRaceDigest_ProjectTick(" tick_at)
 string(FIND "${digest_c_code}" "int MainArcadeRaceDigest_Project(uint32_t raceTick" project_at)
+string(FIND "${digest_c_code}" "int MainArcadeRaceDigest_ProjectState(uint32_t raceTick" project_state_at)
 string(FIND "${digest_c_code}" "int MainArcadeRaceDigest_EndRace(void)" end_at)
-if(tick_at EQUAL -1 OR project_at EQUAL -1 OR end_at EQUAL -1 OR NOT tick_at LESS project_at OR NOT project_at LESS end_at)
-    message(FATAL_ERROR "${prefix}: ${digest_source} must define ProjectTick, then Project, then EndRace")
+if(tick_at EQUAL -1 OR project_at EQUAL -1 OR project_state_at EQUAL -1 OR end_at EQUAL -1 OR NOT tick_at LESS project_at OR
+        NOT project_at LESS project_state_at OR NOT project_state_at LESS end_at)
+    message(FATAL_ERROR "${prefix}: ${digest_source} must define ProjectTick, then Project, then ProjectState, then EndRace")
 endif()
 math(EXPR tick_length "${project_at} - ${tick_at}")
 string(SUBSTRING "${digest_c_code}" ${tick_at} ${tick_length} tick_body)
-math(EXPR project_length "${end_at} - ${project_at}")
+math(EXPR project_length "${project_state_at} - ${project_at}")
 string(SUBSTRING "${digest_c_code}" ${project_at} ${project_length} project_body)
+math(EXPR project_state_length "${end_at} - ${project_state_at}")
+string(SUBSTRING "${digest_c_code}" ${project_state_at} ${project_state_length} project_state_body)
 string(SUBSTRING "${digest_c_code}" ${end_at} -1 end_body)
 ctr_require_order("${digest_source} (MainArcadeRaceDigest_ProjectTick)" "${tick_body}"
     "if (raceTick == 0u)"
@@ -426,16 +433,57 @@ foreach(pair IN ITEMS
         message(FATAL_ERROR "${prefix}: ${digest_source}'s ${latch} path must end the frame (one Reset) before its one return")
     endif()
 endforeach()
+# LR-58: ProjectState copies the view whole into the module's scratch before
+# Release zeroes it, and hands the copy out only after the topology check and
+# *out, so a failure writes neither output. The state is required only when
+# wanted, in the same argument check as out (latched as ARGUMENT).
+ctr_require_order("${digest_source} (ProjectState's copy, MainArcadeRaceDigest_ProjectTick)" "${tick_body}"
+    "int wantState, struct NativeCanonicalStateV4 *stateOut)"
+    "if ((sources == NULL) || (out == NULL) || ((wantState != 0) && (stateOut == NULL)) ||"
+    "return MainArcadeRaceDigest_Fail(MAIN_ARCADE_RACE_DIGEST_FAILURE_ARGUMENT);"
+    "tick.frameNumber = view->frameNumber;"
+    "if (wantState != 0)\n\t{\n\t\tstate->stateScratch = *view;\n\t}"
+    "if (!MainCanonicalRuntime_ReleaseV4(workspace, &state->request))"
+    "return MainArcadeRaceDigest_Fail(MAIN_ARCADE_RACE_DIGEST_FAILURE_TOPOLOGY);"
+    "*out = tick;"
+    "if (wantState != 0)\n\t{\n\t\t*stateOut = state->stateScratch;\n\t}"
+    "state->nextTick = raceTick + 1u;")
+foreach(pair IN ITEMS "stateScratch|2" "stateOut|3" "wantState|4")
+    string(REPLACE "|" ";" pair "${pair}")
+    list(GET pair 0 name)
+    list(GET pair 1 expected)
+    ctr_count_identifier("${tick_body}" "${name}" hits)
+    if(NOT hits EQUAL expected)
+        message(FATAL_ERROR "${prefix}: ${digest_source}'s ProjectTick names ${name} ${hits} time(s), expected ${expected}")
+    endif()
+endforeach()
+ctr_require("${digest_source}" "${digest_c_code}" "\tstruct NativeCanonicalStateV4 stateScratch;\n")
+ctr_require("${digest_header}" "${digest_h_code}"
+    "int MainArcadeRaceDigest_ProjectState(uint32_t raceTick, const struct MainArcadeRaceDigestSources *sources,\n\tstruct MainArcadeRaceDigestTick *out, struct NativeCanonicalStateV4 *stateOut);")
+# One NativePerf scope per call: Project's and ProjectState's, each around
+# exactly one ProjectTick call (Project without the state, ProjectState with).
 ctr_require_order("${digest_source} (MainArcadeRaceDigest_Project)" "${project_body}"
     "NativePerf_BeginScope(NATIVE_PERF_BUCKET_ARCADE_RACE_DIGEST);"
-    "MainArcadeRaceDigest_ProjectTick(raceTick, sources, out);"
+    "MainArcadeRaceDigest_ProjectTick(raceTick, sources, out, 0, NULL);"
     "NativePerf_EndScope(NATIVE_PERF_BUCKET_ARCADE_RACE_DIGEST);")
+ctr_require_order("${digest_source} (MainArcadeRaceDigest_ProjectState)" "${project_state_body}"
+    "NativePerf_BeginScope(NATIVE_PERF_BUCKET_ARCADE_RACE_DIGEST);"
+    "MainArcadeRaceDigest_ProjectTick(raceTick, sources, out, 1, stateOut);"
+    "NativePerf_EndScope(NATIVE_PERF_BUCKET_ARCADE_RACE_DIGEST);")
+foreach(body_name IN ITEMS project_body project_state_body)
+    foreach(name IN ITEMS NativePerf_BeginScope NativePerf_EndScope MainArcadeRaceDigest_ProjectTick)
+        ctr_count_identifier("${${body_name}}" "${name}" hits)
+        if(NOT hits EQUAL 1)
+            message(FATAL_ERROR "${prefix}: ${digest_source}'s ${body_name} names ${name} ${hits} time(s), expected 1")
+        endif()
+    endforeach()
+endforeach()
 ctr_require("${digest_source} (MainArcadeRaceDigest_EndRace)" "${end_body}"
     "MainCanonicalRuntime_InvalidateTopology(MainCanonicalRuntime_Global())")
 foreach(pair IN ITEMS
         "MainCanonicalRuntime_Reset|3" "MainCanonicalRuntime_BeginFrame|1" "MainCanonicalRuntime_PrepareV4|1"
         "MainCanonicalRuntime_ViewV4|1" "MainCanonicalRuntime_ReleaseV4|2" "MainCanonicalRuntime_InvalidateTopology|1"
-        "MainCanonicalRuntime_Init|0" "NativeCanonicalTopologyV1_Init|2" "NativePerf_BeginScope|1" "NativePerf_EndScope|1"
+        "MainCanonicalRuntime_Init|0" "NativeCanonicalTopologyV1_Init|2" "NativePerf_BeginScope|2" "NativePerf_EndScope|2"
         "MainCanonicalWorldCounters_ExtractV1|1" "MainCanonicalWorldMineRegistry_ExtractV1|1"
         "NativeDeterministicRngBankV1_Init|0" "NativeDeterministicRngBankV1_InitInPlace|0")
     string(REPLACE "|" ";" pair "${pair}")
@@ -500,7 +548,7 @@ if(NOT "${named_by}" STREQUAL "${proof_source}")
 endif()
 ctr_read_source("${proof_source}" proof)
 ctr_code("${proof_source}" "${proof}" proof_code)
-foreach(pair IN ITEMS "MainArcadeRaceDigest_Project|1" "MainArcadeRaceDigest_EndRace|1")
+foreach(pair IN ITEMS "MainArcadeRaceDigest_Project|1" "MainArcadeRaceDigest_ProjectState|0" "MainArcadeRaceDigest_EndRace|1")
     string(REPLACE "|" ";" pair "${pair}")
     list(GET pair 0 name)
     list(GET pair 1 expected)

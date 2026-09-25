@@ -289,11 +289,24 @@ uint64_t NativeArcadeLinkHost_MixSelectEntropy(uint64_t entropy, uint64_t epoch)
  * failure). Turns the host-local fixed VBlank pacing on, so every race tick
  * advances exactly the VBlanks it asks for whatever the host frame time, and
  * returns 1. It also begins the race drive over the link's running session
- * when the flow is on RACING (race tick limit 0, the default); a refused
- * begin ends the drive as a local failure and is reported as a local race
- * failure, and the return stays 1. Otherwise (OFF, PREVIEW, or before any
- * Configure) returns 0 with nothing done. */
+ * when the flow is on RACING, with the race tick limit that
+ * NativeArcadeLinkHost_SetRaceTickLimit left (0, the default 18000, unless
+ * an internal caller lowered it); a refused begin ends the drive as a local
+ * failure and is reported as a local race failure, and the return stays 1.
+ * Otherwise (OFF, PREVIEW, or before any Configure) returns 0 with nothing
+ * done. */
 int NativeArcadeLinkHost_RaceBegin(void);
+
+/*
+ * The internal race-length override (the linked-race plan, LR-42, LR-60):
+ * the race tick limit every later LINK RaceBegin hands the drive. 0 restores
+ * the default (the drive's 18000) and 1 to 18000 lower it; both are stored
+ * and return 1. Anything above 18000 returns 0 and changes nothing. The
+ * value is host-local: it never enters a saved state, a recording, canonical
+ * state, or the wire. Shutdown, and so Configure, resets it to 0, so a caller
+ * sets it after Configure. Only main.c's internal autopilot option sets it.
+ */
+int NativeArcadeLinkHost_SetRaceTickLimit(uint32_t limit);
 
 /* The race caller's Disarm frame (the first idle main-menu frame after the
  * race, or at once after an Arm or Launch failure at the title): turns off
@@ -437,8 +450,9 @@ const char *NativeArcadeLinkHost_DriveFailureName(uint32_t failureReason);
  * LR-7). Shutdown is also reached mid-race, where it turns that pacing off
  * too: from a replacing Configure, and from AbortToTitle's defensive branch
  * when the adapter fails to reinitialize. Either way the race's link is gone,
- * so that linked race cannot go on. It re-initializes the race drive. Idempotent
- * and safe before any Configure. */
+ * so that linked race cannot go on. It re-initializes the race drive and
+ * resets the race tick limit to 0 (the default). Idempotent and safe before
+ * any Configure. */
 void NativeArcadeLinkHost_Shutdown(void);
 
 #endif

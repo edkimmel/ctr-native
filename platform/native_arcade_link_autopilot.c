@@ -18,6 +18,7 @@
  */
 
 static const char k_autopilotOption[] = "--arcade-link-autopilot";
+static const char k_raceTicksOption[] = "--arcade-link-autopilot-race-ticks";
 
 /* The RESULTS row a decision confirmed, stored + 1 so 0 means none. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_CONFIRMED_NONE 0u
@@ -37,10 +38,34 @@ void NativeArcadeLinkAutopilotOptions_SetDefaults(struct NativeArcadeLinkAutopil
 	memset(options, 0, sizeof(*options));
 }
 
+/* The race tick count: 1 to 5 decimal digits, nothing else, with a value of
+ * 1..RACE_TICKS_MAX (LR-60). */
+static int NativeArcadeLinkAutopilotOptions_ParseRaceTicks(const char *text, uint32_t *value)
+{
+	uint32_t result = 0u;
+	size_t digits = 0u;
+
+	for (; text[digits] != '\0'; digits++)
+	{
+		if ((text[digits] < '0') || (text[digits] > '9') || (digits == 5u))
+		{
+			return 0;
+		}
+		result = (result * 10u) + (uint32_t)(text[digits] - '0');
+	}
+	if ((digits == 0u) || (result < 1u) || (result > NATIVE_ARCADE_LINK_AUTOPILOT_RACE_TICKS_MAX))
+	{
+		return 0;
+	}
+	*value = result;
+	return 1;
+}
+
 int NativeArcadeLinkAutopilotOptions_ApplyArgs(int argc, char *argv[], struct NativeArcadeLinkAutopilotOptions *options)
 {
 	struct NativeArcadeLinkAutopilotOptions candidate;
 	int seen = 0;
+	int seenRaceTicks = 0;
 
 	if ((options == NULL) || (argc < 0) || ((argc > 0) && (argv == NULL)))
 	{
@@ -53,6 +78,17 @@ int NativeArcadeLinkAutopilotOptions_ApplyArgs(int argc, char *argv[], struct Na
 		const char *value;
 		size_t length;
 
+		if ((arg != NULL) && (strcmp(arg, k_raceTicksOption) == 0))
+		{
+			if (seenRaceTicks || (index + 1 >= argc) || (argv[index + 1] == NULL) ||
+			    !NativeArcadeLinkAutopilotOptions_ParseRaceTicks(argv[index + 1], &candidate.raceTickLimit))
+			{
+				return 0;
+			}
+			seenRaceTicks = 1;
+			index++;
+			continue;
+		}
 		if ((arg == NULL) || (strcmp(arg, k_autopilotOption) != 0))
 		{
 			continue;
@@ -71,6 +107,12 @@ int NativeArcadeLinkAutopilotOptions_ApplyArgs(int argc, char *argv[], struct Na
 		memcpy(candidate.reportPath, value, length);
 		candidate.enabled = 1u;
 		seen = 1;
+	}
+	/* The race tick count only lowers the autopilot race's bound: without
+	 * the autopilot it is an error. */
+	if (seenRaceTicks && !seen)
+	{
+		return 0;
 	}
 	*options = candidate;
 	return 1;

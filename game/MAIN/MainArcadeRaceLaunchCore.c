@@ -393,3 +393,25 @@ const char *MainArcadeRaceLaunchCore_FailureName(uint32_t failure)
 		return "UNKNOWN";
 	}
 }
+
+uint32_t MainArcadeRaceLaunchCore_FinishedHumans(const uint32_t actionsFlagSet[MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS],
+                                                 uint32_t numPlyrCurrGame)
+{
+	const uint32_t slots = (numPlyrCurrGame < MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS) ? numPlyrCurrGame : MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS;
+	uint32_t finished = 0u;
+	uint32_t slot;
+
+	if (actionsFlagSet == NULL)
+	{
+		return 0u;
+	}
+	/* By slot, not by kind (LR-18): a converted human keeps counting. */
+	for (slot = 0u; slot < slots; slot++)
+	{
+		if ((actionsFlagSet[slot] & MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED) != 0u)
+		{
+			finished++;
+		}
+	}
+	return finished;
+}

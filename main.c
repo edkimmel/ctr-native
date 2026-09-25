@@ -268,7 +268,7 @@ int main(int argc, char *argv[])
 	NativeArcadeLinkAutopilotOptions_SetDefaults(&arcadeLinkAutopilotOptions);
 	if (!NativeArcadeLinkAutopilotOptions_ApplyArgs(argc, argv, &arcadeLinkAutopilotOptions))
 	{
-		fprintf(stderr, "[CTR Native] invalid arcade link autopilot option; expected --arcade-link-autopilot <report path> (once).\n");
+		fprintf(stderr, "[CTR Native] invalid arcade link autopilot option; expected --arcade-link-autopilot <report path> (once) [--arcade-link-autopilot-race-ticks <1-18000> (once, needs --arcade-link-autopilot)].\n");
 		return NativeConsole_Return(1);
 	}
 #if !defined(CTR_INTERNAL)
@@ -451,6 +451,21 @@ int main(int argc, char *argv[])
 	{
 		MainArcadeLinkAutopilot_Configure(&arcadeLinkAutopilotOptions);
 		printf("[CTR Native] arcade link autopilot: report %s\n", arcadeLinkAutopilotOptions.reportPath);
+		/* The internal race-length cap (docs/LOCKSTEP_RACE_MILESTONE.md
+		 * LR-60): set after the host's Configure, which resets it; 0 keeps
+		 * the default bound. The parser already bounded it to 18000. */
+		if (!NativeArcadeLinkHost_SetRaceTickLimit(arcadeLinkAutopilotOptions.raceTickLimit))
+		{
+			fprintf(stderr, "[CTR Native] failed to set the arcade link race tick limit.\n");
+			NativeArcadeLinkHost_Shutdown();
+			Platform_LogFlush();
+			Platform_Shutdown();
+			return NativeConsole_Return(1);
+		}
+		if (arcadeLinkAutopilotOptions.raceTickLimit != 0u)
+		{
+			printf("[CTR Native] arcade link autopilot: race tick limit %u\n", (unsigned)arcadeLinkAutopilotOptions.raceTickLimit);
+		}
 		fflush(stdout);
 	}
 #endif

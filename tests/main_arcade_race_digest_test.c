@@ -10,7 +10,8 @@
  * digest pinned to the constant tools/arcade-roster-proof-check.ps1
  * requires), the bank carried through the request, the per-tick lifecycle
  * and sequence rules, the END failure, a clean race 2 after a race 1
- * poisoned by a forced runtime failure, and the NativePerf scope. The VIEW
+ * poisoned by a forced runtime failure, the NativePerf scope, and
+ * ProjectState's whole-state copy (LR-58). The VIEW
  * and RELEASE failures cannot be reached from outside (the module owns the
  * request it prepares, views, and releases); the isolation test pins that
  * both end the runtime's frame before latching.
@@ -472,6 +473,126 @@ static int TestPoisonedRaceThenCleanRace(void)
 	return 1;
 }
 
+/* ProjectState's outputs and their snapshots (file scope: the state is large). */
+static struct NativeCanonicalStateV4 s_state;
+static struct NativeCanonicalStateV4 s_stateBefore;
+
+/* ProjectState's state and tick are untouched: byte-identical to the fills
+ * taken before the call. */
+static int Untouched(const struct MainArcadeRaceDigestTick *tick, const struct MainArcadeRaceDigestTick *tickBefore)
+{
+	return (memcmp(tick, tickBefore, sizeof(*tick)) == 0) && (memcmp(&s_state, &s_stateBefore, sizeof(s_state)) == 0);
+}
+
+/* Fills the tick and the state with 0xA5 and snapshots both. */
+static void FillOutputs(struct MainArcadeRaceDigestTick *tick, struct MainArcadeRaceDigestTick *tickBefore)
+{
+	memset(tick, 0xA5, sizeof(*tick));
+	*tickBefore = *tick;
+	memset(&s_state, 0xA5, sizeof(s_state));
+	s_stateBefore = s_state;
+}
+
+/*
+ * ProjectState (LR-58): over the same sources its tick equals Project's, and
+ * its state is the tick's (frame number raceTick, the same combined and
+ * domain digests) and validates. It runs Project's lifecycle and sequence
+ * rules in one NativePerf scope per call. A NULL state is an ARGUMENT
+ * failure, latched like a NULL out, with the tick untouched; any failure
+ * leaves the tick and the state byte-identical.
+ */
+static int TestProjectState(void)
+{
+	struct Fixture *f = &s_fixture;
+	struct MainArcadeRaceDigestTick projected[4];
+	struct MainArcadeRaceDigestTick tick;
+	struct MainArcadeRaceDigestTick tickBefore;
+	struct NativeCanonicalStateV4 expected;
+	struct NativeDeterministicRngBankV1 foreign;
+	int perfBegin;
+
+	/* Race A through Project, race B over the same sources through ProjectState. */
+	CHECK(FixtureInit(f, 2315, 733));
+	for (uint32_t k = 0; k < 4u; k++)
+	{
+		CHECK(MainArcadeRaceDigest_Project(k, &f->sources, &projected[k]));
+		FixtureAdvance(f);
+	}
+	CHECK(MainArcadeRaceDigest_EndRace() == 1);
+	CHECK(FixtureInit(f, 2315, 733));
+	perfBegin = s_perfBegin;
+	for (uint32_t k = 0; k < 4u; k++)
+	{
+		FillOutputs(&tick, &tickBefore);
+		CHECK(MainArcadeRaceDigest_ProjectState(k, &f->sources, &tick, &s_state));
+		CHECK(MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_NONE);
+		CHECK(memcmp(&tick, &projected[k], sizeof(tick)) == 0);
+		CHECK(s_state.frameNumber == k && s_state.frameNumber == tick.frameNumber);
+		CHECK(s_state.combinedDigest == tick.combinedDigest);
+		CHECK(memcmp(s_state.domainDigests, tick.domainDigests, sizeof(tick.domainDigests)) == 0);
+		CHECK(NativeCanonicalStateV4_Validate(&s_state));
+		/* The independent expectation agrees, and the view was released. */
+		CHECK(Expected(f, k, &expected) && SameDigests(&tick, &expected));
+		CHECK(s_state.control.frameCounter == (int32_t)k && s_state.control.frameTimer == (int32_t)(2u * k));
+		CHECK(!MainCanonicalRuntime_Global()->prepared && !MainCanonicalRuntime_Global()->frameActive &&
+		      !MainCanonicalRuntime_Global()->poisoned);
+		FixtureAdvance(f);
+	}
+	CHECK(s_perfBegin == perfBegin + 4 && s_perfEnd == s_perfBegin && s_perfOpen == 0 && s_perfOther == 0);
+	CHECK(MainArcadeRaceDigest_EndRace() == 1);
+
+	/* A NULL state on race tick 0: ARGUMENT, the tick untouched, and the latch
+	 * holds for the next tick, whose tick and state stay untouched too. */
+	CHECK(FixtureInit(f, 100, 50));
+	FillOutputs(&tick, &tickBefore);
+	CHECK(!MainArcadeRaceDigest_ProjectState(0u, &f->sources, &tick, NULL));
+	CHECK(MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_ARGUMENT);
+	CHECK(Untouched(&tick, &tickBefore));
+	FixtureAdvance(f);
+	CHECK(!MainArcadeRaceDigest_ProjectState(1u, &f->sources, &tick, &s_state));
+	CHECK(MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_ARGUMENT && Untouched(&tick, &tickBefore));
+	CHECK(!MainArcadeRaceDigest_Project(1u, &f->sources, &tick) && Untouched(&tick, &tickBefore));
+	CHECK(!MainArcadeRaceDigest_EndRace());
+
+	/* A NULL state on a later tick of a running race: the same latch. */
+	CHECK(FixtureInit(f, 100, 50));
+	CHECK(MainArcadeRaceDigest_ProjectState(0u, &f->sources, &tick, &s_state));
+	FixtureAdvance(f);
+	FillOutputs(&tick, &tickBefore);
+	CHECK(!MainArcadeRaceDigest_ProjectState(1u, &f->sources, &tick, NULL));
+	CHECK(MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_ARGUMENT && Untouched(&tick, &tickBefore));
+	FixtureAdvance(f);
+	CHECK(!MainArcadeRaceDigest_ProjectState(2u, &f->sources, &tick, &s_state));
+	CHECK(MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_ARGUMENT && Untouched(&tick, &tickBefore));
+
+	/* Other failures write neither output: a skipped tick (SEQUENCE), a bank
+	 * the projector refuses (PREPARE), and a runtime failure forced inside
+	 * PrepareV4 on a later tick. */
+	CHECK(FixtureInit(f, 100, 50));
+	CHECK(MainArcadeRaceDigest_ProjectState(0u, &f->sources, &tick, &s_state));
+	FixtureAdvance(f);
+	FillOutputs(&tick, &tickBefore);
+	CHECK(!MainArcadeRaceDigest_ProjectState(2u, &f->sources, &tick, &s_state));
+	CHECK(MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_SEQUENCE && Untouched(&tick, &tickBefore));
+	CHECK(FixtureInit(f, 100, 50));
+	foreign = f->bank;
+	foreign.masterSeed ^= UINT64_C(1);
+	f->sources.bank = &foreign;
+	FillOutputs(&tick, &tickBefore);
+	CHECK(!MainArcadeRaceDigest_ProjectState(0u, &f->sources, &tick, &s_state));
+	CHECK(MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_PREPARE && Untouched(&tick, &tickBefore));
+	CHECK(FixtureInit(f, 100, 50));
+	CHECK(MainArcadeRaceDigest_ProjectState(0u, &f->sources, &tick, &s_state));
+	FixtureAdvance(f);
+	FillOutputs(&tick, &tickBefore);
+	MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT);
+	CHECK(!MainArcadeRaceDigest_ProjectState(1u, &f->sources, &tick, &s_state));
+	MainCanonicalRuntime_TestForceFailure(MAIN_CANONICAL_RUNTIME_FAILURE_NONE);
+	CHECK(MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_PREPARE && Untouched(&tick, &tickBefore));
+	CHECK(s_perfEnd == s_perfBegin && s_perfOpen == 0 && s_perfOther == 0);
+	return 1;
+}
+
 /* EndRace invalidates the runtime's topology context: a new epoch. A runtime
  * that refuses the invalidation latches END. */
 static int TestEndRace(void)
@@ -513,7 +634,8 @@ static int TestEndRace(void)
 
 int main(void)
 {
-	if (!TestControlProjection() || !TestRace() || !TestFailures() || !TestPoisonedRaceThenCleanRace() || !TestEndRace())
+	if (!TestControlProjection() || !TestRace() || !TestFailures() || !TestPoisonedRaceThenCleanRace() || !TestEndRace() ||
+	    !TestProjectState())
 	{
 		return 1;
 	}

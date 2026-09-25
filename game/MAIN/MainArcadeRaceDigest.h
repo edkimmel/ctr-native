@@ -19,6 +19,14 @@
  * lifecycle, every step on every tick: BeginFrame, PrepareV4, ViewV4 (the
  * digests are copied out of the view), and ReleaseV4.
  *
+ * MainArcadeRaceDigest_ProjectState is Project with the whole state as well:
+ * it copies the view whole, before ReleaseV4 zeroes it, into module-static
+ * scratch, and hands it to the caller only once the tick succeeded. It is
+ * the only way the module copies the state out, for the race caller's
+ * digest record, which validates the state (LR-58); the roster proof stays
+ * on Project. There is no heap: the scratch is part of the file-scope
+ * digest state (LR-21).
+ *
  * The domains (LR-10):
  * - CONTROL: the retail control values, with frameTimer
  *   (gGT->frameTimer_VsyncCallback) and frameCounter projected
@@ -60,11 +68,12 @@ struct sData;
 struct OverlayDATA_231;
 struct NativeMatchConfigV1;
 struct NativeDeterministicRngBankV1;
+struct NativeCanonicalStateV4;
 
 enum MainArcadeRaceDigestFailure
 {
 	MAIN_ARCADE_RACE_DIGEST_FAILURE_NONE = 0,
-	MAIN_ARCADE_RACE_DIGEST_FAILURE_ARGUMENT = 1,    /* a NULL source or output */
+	MAIN_ARCADE_RACE_DIGEST_FAILURE_ARGUMENT = 1,    /* a NULL source or output (ProjectState's state included) */
 	MAIN_ARCADE_RACE_DIGEST_FAILURE_SEQUENCE = 2,    /* not race tick 0, and not the tick after the last one */
 	MAIN_ARCADE_RACE_DIGEST_FAILURE_CONFIG = 3,      /* the config does not digest, or changed during the race */
 	MAIN_ARCADE_RACE_DIGEST_FAILURE_WORLD = 4,       /* a world extractor refused the game state */
@@ -112,6 +121,16 @@ struct MainArcadeRaceDigestTick
  */
 int MainArcadeRaceDigest_Project(uint32_t raceTick, const struct MainArcadeRaceDigestSources *sources,
 	struct MainArcadeRaceDigestTick *out);
+
+/*
+ * Project, with the same lifecycle, sequence rule, failure latch, and one
+ * NativePerf scope, that also fills *stateOut with the whole V4 state of the
+ * tick (its frameNumber is raceTick; its digests are *out's). stateOut NULL
+ * is an ARGUMENT failure, latched like a NULL out. On any failure *out and
+ * *stateOut are both untouched. The race caller's projection (LR-58).
+ */
+int MainArcadeRaceDigest_ProjectState(uint32_t raceTick, const struct MainArcadeRaceDigestSources *sources,
+	struct MainArcadeRaceDigestTick *out, struct NativeCanonicalStateV4 *stateOut);
 
 /* The race's end frame: invalidates the runtime's topology context. 1 on
  * success; 0 without a race in progress, after a latched failure (the next

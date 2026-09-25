@@ -112,6 +112,96 @@ static int TestOptions(void)
 		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
 		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(argv), argv, &options) == 1);
 		CHECK(options.enabled == 0u);
+		CHECK(options.raceTickLimit == 0u);
+	}
+	return 0;
+}
+
+/* --arcade-link-autopilot-race-ticks (docs/LOCKSTEP_RACE_MILESTONE.md LR-60). */
+static int TestRaceTicksOption(void)
+{
+	struct NativeArcadeLinkAutopilotOptions options;
+	char *valid[] = { "1", "300", "18000", "00300" };
+	const uint32_t validValues[] = { 1u, 300u, 18000u, 300u };
+	uint32_t i;
+
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_RACE_TICKS_MAX == 18000u);
+	/* Absent: 0, the default bound. */
+	memset(&options, 0xA5, sizeof(options));
+	NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+	CHECK(options.raceTickLimit == 0u);
+	{
+		char *argv[] = { "ctr_native", "--arcade-link", "cab1", "--arcade-link-autopilot", "r.txt" };
+
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(argv), argv, &options) == 1);
+		CHECK(options.enabled == 1u && options.raceTickLimit == 0u);
+	}
+	/* Valid values, before and after the autopilot option. */
+	for (i = 0u; i < (uint32_t)ARGC(valid); i++)
+	{
+		char *after[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", valid[i] };
+		char *before[] = { "ctr_native", "--arcade-link-autopilot-race-ticks", valid[i], "--arcade-link", "cab2", "--arcade-link-autopilot",
+			"r.txt" };
+
+		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(after), after, &options) == 1);
+		CHECK(options.enabled == 1u && options.raceTickLimit == validValues[i]);
+		CHECK(strcmp(options.reportPath, "r.txt") == 0);
+		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(before), before, &options) == 1);
+		CHECK(options.enabled == 1u && options.raceTickLimit == validValues[i]);
+		CHECK(strcmp(options.reportPath, "r.txt") == 0);
+	}
+	/* Errors leave the options untouched. */
+	{
+		char *zero[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "0" };
+		char *above[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "18001" };
+		char *sixDigits[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "000300" };
+		char *huge[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "4294967296" };
+		char *word[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "short" };
+		char *negative[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "-5" };
+		char *plus[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "+5" };
+		char *hex[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "0x12c" };
+		char *empty[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "" };
+		char *junk[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "300x" };
+		char *space[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "300 " };
+		char *missing[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks" };
+		char *nullValue[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", NULL };
+		char *option[] = { "ctr_native", "--arcade-link-autopilot-race-ticks", "--arcade-link-autopilot", "r.txt" };
+		char *twice[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "300",
+			"--arcade-link-autopilot-race-ticks", "300" };
+		char *twiceOther[] = { "ctr_native", "--arcade-link-autopilot-race-ticks", "300", "--arcade-link-autopilot", "r.txt",
+			"--arcade-link-autopilot-race-ticks", "5" };
+		char *alone[] = { "ctr_native", "--arcade-link", "cab1", "--arcade-link-autopilot-race-ticks", "300" };
+		char *aloneValue[] = { "ctr_native", "--arcade-link-autopilot-race-ticks", "300" };
+
+		CHECK(RejectsUntouched(ARGC(zero), zero));
+		CHECK(RejectsUntouched(ARGC(above), above));
+		CHECK(RejectsUntouched(ARGC(sixDigits), sixDigits));
+		CHECK(RejectsUntouched(ARGC(huge), huge));
+		CHECK(RejectsUntouched(ARGC(word), word));
+		CHECK(RejectsUntouched(ARGC(negative), negative));
+		CHECK(RejectsUntouched(ARGC(plus), plus));
+		CHECK(RejectsUntouched(ARGC(hex), hex));
+		CHECK(RejectsUntouched(ARGC(empty), empty));
+		CHECK(RejectsUntouched(ARGC(junk), junk));
+		CHECK(RejectsUntouched(ARGC(space), space));
+		CHECK(RejectsUntouched(ARGC(missing), missing));
+		CHECK(RejectsUntouched(ARGC(nullValue), nullValue));
+		CHECK(RejectsUntouched(ARGC(option), option));
+		CHECK(RejectsUntouched(ARGC(twice), twice));
+		CHECK(RejectsUntouched(ARGC(twiceOther), twiceOther));
+		CHECK(RejectsUntouched(ARGC(alone), alone));
+		CHECK(RejectsUntouched(ARGC(aloneValue), aloneValue));
+	}
+	/* The name is matched exactly: near names are other parsers' (ignored). */
+	{
+		char *argv[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks=5",
+			"--arcade-link-autopilot-race-tick", "5" };
+
+		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(argv), argv, &options) == 1);
+		CHECK(options.enabled == 1u && options.raceTickLimit == 0u);
 	}
 	return 0;
 }
@@ -969,6 +1059,7 @@ static int TestReport(void)
 int main(void)
 {
 	CHECK(TestOptions() == 0);
+	CHECK(TestRaceTicksOption() == 0);
 	CHECK(TestDecideEnter() == 0);
 	CHECK(TestDecideSelect() == 0);
 	CHECK(TestDecideResults() == 0);

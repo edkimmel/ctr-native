@@ -170,6 +170,12 @@
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_VALIDATED               4u
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_FAILED                  5u
 
+/* The driver slots whose flag words MainArcadeRaceLaunchCore_FinishedHumans
+ * reads, and a mirror of the retail finished bit ACTION_RACE_FINISHED
+ * (include/namespace_Vehicle.h); the race caller static-asserts the mirror. */
+#define MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS                  8u
+#define MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED          0x2000000u
+
 /* The loading stage, classified by the caller: IDLE is retail LOAD_IDLE,
  * REQUESTED is LOAD_REQUESTED, OTHER is any other stage (a load running). */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_IDLE                    0u
@@ -310,5 +316,18 @@ int MainArcadeRaceLaunchCore_LaunchResult(struct MainArcadeRaceLaunchCore *core,
 /* A stable name for a MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_* code ("UNKNOWN"
  * for any other value). */
 const char *MainArcadeRaceLaunchCore_FailureName(uint32_t failure);
+
+/*
+ * The finished-human count of the finish grace (the Task 8 race plan, LR-18,
+ * LR-59): how many of the slots 0 .. min(numPlyrCurrGame,
+ * DRIVER_SLOTS) - 1 have MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED set
+ * in their flag word. The caller copies each slot's actionsFlagSet in (0 for
+ * a slot with no driver). It counts by slot, not by kind: a finished human
+ * that retail converted to a bot (ACTION_BOT set too) still counts, and a
+ * finished bot in a slot at or above numPlyrCurrGame does not. Other bits
+ * are ignored. 0 for NULL.
+ */
+uint32_t MainArcadeRaceLaunchCore_FinishedHumans(const uint32_t actionsFlagSet[MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS],
+                                                 uint32_t numPlyrCurrGame);
 
 #endif
