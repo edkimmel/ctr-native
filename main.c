@@ -506,7 +506,8 @@ int main(int argc, char *argv[])
 		/* Proof-only fixed VBlank pacing: a slow host frame must not emit late
 		 * VBlanks, which would move elapsedTimeMS and the VBlank count and so
 		 * make the proof depend on host timing. Every other run keeps the
-		 * default pacing. */
+		 * default pacing, but for a linked race's own (the arcade-link host,
+		 * LR-7; the proof excludes the link). */
 		Platform_SetFixedVBlankPacing(1);
 #endif
 	}

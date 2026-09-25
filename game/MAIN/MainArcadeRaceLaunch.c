@@ -9,9 +9,12 @@
  * Every decision lives in the pure, unit-tested MAIN/MainArcadeRaceLaunchCore.c
  * (library ctr_native_arcade_race_launch_core, never unity-included); this
  * file samples one frame's facts into the core's input, steps the core, and
- * applies its decisions in the core's order: Arm and Launch (and the result
- * fed back on the same frame), then leaving the title, the host report, the
- * return to the main-menu level, the rehearsal pads, and the Disarm.
+ * applies its decisions in the core's order: Arm and Launch (then, only for
+ * a launched race, the host's NativeArcadeLinkHost_RaceBegin, which turns
+ * fixed VBlank pacing on, LR-7; and the result fed back on the same frame),
+ * then leaving the title, the host report, the return to the main-menu
+ * level, the rehearsal pads, and the Disarm (followed by the host's
+ * NativeArcadeLinkHost_RaceEnd, which turns that pacing off again).
  *
  * The host flow is read twice per frame, in two separate calls:
  * MainArcadeLink_Gather reads NativeArcadeLinkHost_Racing before the host
@@ -284,6 +287,13 @@ static void MainArcadeRaceLaunch_ArmAndLaunch(struct MainArcadeRaceLaunchCoreOut
 		state->planLevelValid = 1u;
 		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u launched (track %u laps %u)\n", (unsigned)output->raceNumber,
 			(unsigned)state->config.trackID, (unsigned)state->config.lapCount);
+		/* LR-7: fixed VBlank pacing from the Launch frame, before the
+		 * race-track load (and so before the setup's race-init pins), to the
+		 * Disarm frame. Only a launched race turns it on. */
+		if (!NativeArcadeLinkHost_RaceBegin())
+		{
+			Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u: the host did not begin the race pacing\n", (unsigned)output->raceNumber);
+		}
 	}
 	if (!MainArcadeRaceLaunchCore_LaunchResult(&state->core, result, output))
 	{
@@ -360,6 +370,9 @@ static void MainArcadeRaceLaunch_Apply(struct GameTracker *gGT, const struct Mai
 	if (output->disarm != 0u)
 	{
 		MainArcadeRaceSetup_Disarm();
+		/* LR-7: the race pacing ends on the Disarm frame; after an Arm or
+		 * Launch failure no race began, and this does nothing. */
+		NativeArcadeLinkHost_RaceEnd();
 		state->planLevel = 0;
 		state->planLevelValid = 0u;
 	}

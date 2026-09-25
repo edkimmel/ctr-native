@@ -853,9 +853,10 @@ global_variable u64 s_nextVBlankCounter = 0;
 global_variable u64 s_vblankRemainder = 0;
 global_variable int s_nativeVBlankCount = 0;
 /* Host-local fixed VBlank pacing (platform/native_vblank_pacing.h): off by
- * default, so every normal run keeps the retail-faithful catch-up. Only
- * Platform_SetFixedVBlankPacing writes it, and only Native_CatchUpDueVBlanks
- * reads it. */
+ * default, so every normal run keeps the retail-faithful catch-up; only the
+ * roster proof and a linked race (from its Launch frame to its Disarm frame)
+ * turn it on. Only Platform_SetFixedVBlankPacing writes it, and only
+ * Native_CatchUpDueVBlanks reads it. */
 global_variable int s_fixedVBlankPacing = 0;
 
 internal u64 Native_CounterFromMicroseconds(u64 freq, u64 microseconds)
@@ -958,9 +959,9 @@ internal int Native_CatchUpDueVBlanks(void)
 	// stalls, for example during window dragging or a debugger break. Replay a few
 	// late VBlanks normally, but rebase pathological stalls instead of bursting
 	// many callbacks into one host frame.
-	// Fixed pacing (proof-only, off by default) never replays a late VBlank: it
-	// re-anchors the schedule at now, so each wait emits exactly its own
-	// VBlanks (NativeVBlankPacing_Plan).
+	// Fixed pacing (off by default; on only for the roster proof and a linked
+	// race, LR-7) never replays a late VBlank: it re-anchors the schedule at
+	// now, so each wait emits exactly its own VBlanks (NativeVBlankPacing_Plan).
 	{
 		const u64 now = SDL_GetPerformanceCounter();
 		const u64 freq = SDL_GetPerformanceFrequency();
@@ -1059,18 +1060,17 @@ int Platform_GetVBlankCount(void)
 	return s_nativeVBlankCount;
 }
 
-#if defined(CTR_INTERNAL)
 /*
- * Host-local and proof-only (include/platform.h): main.c turns it on only for
- * the internal live roster proof, before CTR_Main. It changes only how the
- * pacer treats late VBlanks (NativeVBlankPacing_Plan); game code never
- * observes it.
+ * Host-local (include/platform.h). main.c turns it on for the internal live
+ * roster proof, before CTR_Main; the arcade-link host glue
+ * (platform/native_arcade_link_host.c) turns it on for a linked race and off
+ * again (docs/LOCKSTEP_RACE_MILESTONE.md LR-7). It changes only how the pacer
+ * treats late VBlanks (NativeVBlankPacing_Plan); game code never observes it.
  */
 void Platform_SetFixedVBlankPacing(int enabled)
 {
 	s_fixedVBlankPacing = (enabled != 0) ? 1 : 0;
 }
-#endif
 
 void Platform_WaitUntilVBlank(int targetVBlank)
 {

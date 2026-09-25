@@ -6,6 +6,7 @@
 
 #include "native_arcade_link_loopback_test_fixture.h"
 
+#include <platform.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -59,6 +60,15 @@
 #define BUTTON_CROSS ((uint32_t)NATIVE_ARCADE_MENU_BUTTON_CROSS)
 #define ACT_START_RACE ((uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)
 #define ACT_RETURN_TO_TITLE ((uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)
+
+/* The platform's fixed VBlank pacing switch (include/platform.h), which the
+ * host glue links against (docs/LOCKSTEP_RACE_MILESTONE.md LR-7). This test
+ * begins no race, so the host never calls it; a stub keeps the link whole.
+ * tests/native_arcade_link_host_test.c tests the switch itself. */
+void Platform_SetFixedVBlankPacing(int enabled)
+{
+	(void)enabled;
+}
 
 static int IsSelectScreen(uint32_t screen)
 {

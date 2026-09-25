@@ -17,6 +17,11 @@
 # forward-declares struct NativeMatchConfigV1 for the agreed-config copy
 # without including or naming the match-config header, and pins the
 # race-launch host API (agreed config, local race failure, racing query).
+# Since LR-S3 (docs/LOCKSTEP_RACE_MILESTONE.md LR-7) the .c also includes
+# <platform.h> for its one platform call, the fixed VBlank pacing switch, made
+# only by RaceBegin (on), RaceEnd (off), and Shutdown (off); the header
+# declares RaceBegin and RaceEnd (rule 3f; the call sites are pinned by
+# tests/native_vblank_pacing_isolation_test.cmake).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -73,8 +78,8 @@ endforeach()
 
 # 3. #include allowlists. The header: stdint.h and the three game-safe
 #    platform headers. The .c: string.h, stdint.h, stddef.h, its own header,
-#    the adapter header, and the flow, options, menu-input, and identity
-#    headers.
+#    the adapter header, the flow, options, menu-input, and identity
+#    headers, and <platform.h> (the pacing switch, LR-7).
 function(ctr_check_includes relative_path text allowed_pattern)
     string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${text}")
     list(LENGTH include_lines include_count)
@@ -91,7 +96,7 @@ endfunction()
 ctr_check_includes("${host_header}" "${header}"
     "<stdint\\.h>|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"")
 ctr_check_includes("${host_source}" "${source}"
-    "<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_link_host\\.h\"|\"platform/native_arcade_link_host_internal\\.h\"|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"")
+    "<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_link_host\\.h\"|\"platform/native_arcade_link_host_internal\\.h\"|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"|<platform\\.h>")
 
 # 3b. The host-side test read-back header (MS-8): the same header-only and
 #     category rules as the public header, it includes only stdint.h, and no
@@ -217,8 +222,40 @@ foreach(literal IN ITEMS
     endif()
 endforeach()
 
+# 3f. The race pacing switch (docs/LOCKSTEP_RACE_MILESTONE.md LR-7, LR-S3):
+#     the header declares RaceBegin and RaceEnd. The .c names exactly one
+#     platform function, Platform_SetFixedVBlankPacing (so platform.h brings
+#     in nothing else), and only its own g_racePacing flag gates the off
+#     calls, so a pacing the host did not turn on is never touched.
+foreach(literal IN ITEMS
+        "int NativeArcadeLinkHost_RaceBegin(void);"
+        "void NativeArcadeLinkHost_RaceEnd(void);")
+    string(FIND "${header}" "${literal}" literal_at)
+    if(literal_at EQUAL -1)
+        message(FATAL_ERROR "arcade link host isolation: required text '${literal}' missing from ${host_header}")
+    endif()
+endforeach()
+string(REGEX MATCHALL "Platform_[A-Za-z0-9_]*" platform_names "${source}")
+list(REMOVE_DUPLICATES platform_names)
+if(NOT "${platform_names}" STREQUAL "Platform_SetFixedVBlankPacing")
+    message(FATAL_ERROR "arcade link host isolation: ${host_source} may name only Platform_SetFixedVBlankPacing of the platform layer (found '${platform_names}')")
+endif()
+foreach(literal IN ITEMS
+        "static uint8_t g_racePacing;"
+        "if (g_racePacing == 0u)"
+        "if (g_racePacing != 0u)")
+    string(FIND "${source}" "${literal}" literal_at)
+    if(literal_at EQUAL -1)
+        message(FATAL_ERROR "arcade link host isolation: required text '${literal}' missing from ${host_source}")
+    endif()
+endforeach()
+
 # 4. ctr_native_arcade_link_host links exactly the adapter and the host
-#    options, in exactly one target_link_libraries call.
+#    options, in exactly one target_link_libraries call. Its one other
+#    link-time dependency (since LR-S3, LR-7) is not a library:
+#    Platform_SetFixedVBlankPacing (rule 3f), which only the ctr_native
+#    executable defines (platform/native_platform.c) and which every test
+#    that links this library stubs.
 ctr_read_source("CMakeLists.txt" cmake)
 set(target ctr_native_arcade_link_host)
 string(REGEX MATCHALL "target_link_libraries\\([ \t\r\n]*${target}[ \t\r\n][^)]*\\)" link_calls "${cmake}")

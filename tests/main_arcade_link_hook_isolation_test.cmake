@@ -1062,3 +1062,61 @@ math(EXPR disarm_length "${disarm_end} - ${disarm_begin} + 1")
 string(SUBSTRING "${apply_block}" ${disarm_begin} ${disarm_length} disarm_block)
 ctr_require_order("${caller_source_path} (disarm block)" "${disarm_block}"
     "MainArcadeRaceSetup_Disarm();" "state->planLevel = 0;" "state->planLevelValid = 0u;")
+
+# 16i. The race pacing switch (docs/LOCKSTEP_RACE_MILESTONE.md LR-7, LR-S3):
+#      the caller turns fixed VBlank pacing on through the host's RaceBegin
+#      exactly once, on the Launch frame, inside the LAUNCHED branch of
+#      MainArcadeRaceLaunch_ArmAndLaunch, after MainArcadeRaceSetup_Launch
+#      succeeded (so an Arm or Launch failure never turns it on), and off
+#      through RaceEnd exactly once, inside the disarm block after
+#      MainArcadeRaceSetup_Disarm (the first idle main-menu frame, or at once
+#      after an Arm or Launch failure, where the host's RaceEnd does
+#      nothing). No other source names either call: of game/, platform/,
+#      include/, tools/, and main.c, only this caller and the host's own
+#      platform/native_arcade_link_host.c and .h do (tests/ is not scanned).
+foreach(call IN ITEMS NativeArcadeLinkHost_RaceBegin NativeArcadeLinkHost_RaceEnd)
+    string(REGEX MATCHALL "${call}\\(" call_hits "${caller_code}")
+    list(LENGTH call_hits call_hit_count)
+    if(NOT call_hit_count EQUAL 1)
+        message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must call ${call} exactly once (found ${call_hit_count})")
+    endif()
+endforeach()
+ctr_find_block("${caller_source_path} (MainArcadeRaceLaunch_ArmAndLaunch)" "${arm_block}" "else if (!MainArcadeRaceSetup_Launch())"
+    launch_failed_begin launch_failed_end)
+string(SUBSTRING "${arm_block}" ${launch_failed_end} -1 launched_tail)
+if(NOT launched_tail MATCHES "^\\}[ \t\r\n]*else[ \t\r\n]*\\{")
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_ArmAndLaunch must follow its LAUNCH_FAILED branch with the LAUNCHED else branch")
+endif()
+ctr_find_block("${caller_source_path} (LAUNCHED branch)" "${launched_tail}" "else" launched_begin launched_end)
+math(EXPR launched_length "${launched_end} - ${launched_begin} + 1")
+string(SUBSTRING "${launched_tail}" ${launched_begin} ${launched_length} launched_block)
+ctr_require_order("${caller_source_path} (LAUNCHED branch)" "${launched_block}"
+    "result = MAIN_ARCADE_RACE_LAUNCH_CORE_RESULT_LAUNCHED;" "if (!NativeArcadeLinkHost_RaceBegin())")
+ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_ArmAndLaunch)" "${arm_block}"
+    "MainArcadeRaceSetup_Arm(" "MainArcadeRaceSetup_Launch()" "NativeArcadeLinkHost_RaceBegin()"
+    "MainArcadeRaceLaunchCore_LaunchResult(&state->core, result, output)")
+ctr_require_order("${caller_source_path} (disarm block)" "${disarm_block}"
+    "MainArcadeRaceSetup_Disarm();" "NativeArcadeLinkHost_RaceEnd();")
+file(GLOB_RECURSE race_pacing_scan_paths
+    "${repo}/game/*.c" "${repo}/game/*.h"
+    "${repo}/platform/*.c" "${repo}/platform/*.h"
+    "${repo}/include/*.c" "${repo}/include/*.h"
+    "${repo}/tools/*.c" "${repo}/tools/*.h")
+list(APPEND race_pacing_scan_paths "${repo}/main.c")
+set(race_pacing_owners "${caller_source_path}" "platform/native_arcade_link_host.c"
+    "include/platform/native_arcade_link_host.h")
+set(race_pacing_scanned 0)
+foreach(path IN LISTS race_pacing_scan_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    list(FIND race_pacing_owners "${relative_path}" owner_index)
+    if(NOT owner_index EQUAL -1)
+        continue()
+    endif()
+    math(EXPR race_pacing_scanned "${race_pacing_scanned} + 1")
+    file(READ "${path}" source)
+    ctr_forbid("${relative_path}" "${source}" "NativeArcadeLinkHost_RaceBegin")
+    ctr_forbid("${relative_path}" "${source}" "NativeArcadeLinkHost_RaceEnd")
+endforeach()
+if(race_pacing_scanned LESS 100)
+    message(FATAL_ERROR "arcade link hook isolation: the RaceBegin/RaceEnd caller scan saw only ${race_pacing_scanned} files; the scan is broken")
+endif()

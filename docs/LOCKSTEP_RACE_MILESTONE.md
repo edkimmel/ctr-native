@@ -133,12 +133,14 @@ order:
   frameTimer_VsyncCallback (ROSTER risk 7, docs/ROSTER_MILESTONE.md:978-990).
 - Fixed pacing never emits a late VBlank. It re-anchors the schedule
   instead (native_platform.c:931-943; the pure plan is
-  platform/native_vblank_pacing.c:5-20). It exists only in CTR_INTERNAL
-  builds: the setter is declared inside #if defined(CTR_INTERNAL) at
-  include/platform.h:32-56 and defined inside it at
-  native_platform.c:1024-1035. The only caller is main.c, and only for the
-  roster proof (main.c:509). tests/native_vblank_pacing_isolation_test.cmake:4-9
-  pins all of that (RS-18 calls it proof-only).
+  platform/native_vblank_pacing.c:5-20). Before LR-S3 (a) it existed only
+  in CTR_INTERNAL builds and its only caller was main.c, for the roster
+  proof (RS-18 calls it proof-only). Since LR-S3 (a) (LR-7) the setter is
+  outside CTR_INTERNAL: declared at include/platform.h:87 and defined at
+  native_platform.c:1070. It has two callers: main.c, still only for the
+  roster proof (main.c:511), and the arcade-link host glue for a linked
+  race (platform/native_arcade_link_host.c:175-215).
+  tests/native_vblank_pacing_isolation_test.cmake:4-18 pins all of that.
 - elapsedTimeMS is derived from VBlanks, not from wall time.
   Timer_GetTime_Total converts sdata->rcntTotalUnits to milliseconds as
   (units * 1000) / 0x147e in 32-bit signed arithmetic (game/Timer.c:31-43).
@@ -694,17 +696,25 @@ pacing. The caller's RaceBegin turns it on, through the host glue, on the
 Launch frame, before the race-track load and so before the RS-17 pins.
 RaceEnd turns it off on the Disarm frame, the first idle main-menu frame
 (RL-9). NativeArcadeLinkHost_Shutdown
-(include/platform/native_arcade_link_host.h:262) turns it off before a
-process exit. An Arm or Launch failure never turns it on.
+(include/platform/native_arcade_link_host.h:281) turns it off before a
+process exit. An Arm or Launch failure never turns it on. The off calls
+(RaceEnd, Shutdown) are gated by the host's own flag (g_racePacing) and
+touch only a pacing that RaceBegin turned on, so the host never switches
+off the roster proof's pacing, and normal boot never calls the setter.
+Shutdown is also reached mid-race, and then turns the race pacing off too:
+from a replacing Configure (unit-tested) and from AbortToTitle's defensive
+branch when the adapter fails to reinitialize. Both are harmless: the
+race's link is gone, so that race cannot go on.
 
 The switch becomes available outside CTR_INTERNAL: the setter's guards at
-include/platform.h:32-56 and native_platform.c:1024-1035 go. It stays
+include/platform.h and native_platform.c go (done in LR-S3 (a); it is now
+at include/platform.h:87 and native_platform.c:1070). It stays
 host-local and invisible to game code.
 tests/native_vblank_pacing_isolation_test.cmake changes from "main.c only"
 to exactly two caller files, with game/ still never naming it:
 
 - main.c, whose one call stays the roster proof's
-  Platform_SetFixedVBlankPacing(1) (main.c:509);
+  Platform_SetFixedVBlankPacing(1) (main.c:511);
 - platform/native_arcade_link_host.c, whose calls are RaceBegin's (on),
   RaceEnd's (off), and Shutdown's (off).
 
@@ -1741,8 +1751,62 @@ native_host_wait_isolation, and arcade_roster_proof_autopilot_isolation
 
 ### LR-S3 -- deterministic time for linked races
 
-Status: planned. Review required (the setup seam and the pacing switch).
-Run 1.
+Status: (a) LR-7 done, (b) LR-8 pending. Review required (the setup seam
+and the pacing switch). Run 1.
+
+(a) result (LR-7, the pacing switch only):
+
+- Platform_SetFixedVBlankPacing is outside CTR_INTERNAL
+  (include/platform.h:87, platform/native_platform.c:1070). Its store and
+  the pacer are unchanged.
+- New host calls in include/platform/native_arcade_link_host.h:
+  NativeArcadeLinkHost_RaceBegin (LINK only: turns fixed pacing on and
+  returns 1; otherwise 0 and nothing done) and NativeArcadeLinkHost_RaceEnd
+  (turns off what RaceBegin turned on). NativeArcadeLinkHost_Shutdown turns
+  it off first, the same way. A host-local flag, g_racePacing, gates both
+  off calls, so the host never touches a pacing it did not turn on (the
+  roster proof's, and the default off state). The flag never enters a
+  saved state, a recording, or canonical state. The design is deliberate:
+  a conditional off, rather than an unconditional one, is what keeps the
+  host from ever switching off the proof's pacing or calling the setter on
+  a normal boot. Shutdown is also reached mid-race (a replacing Configure,
+  or AbortToTitle's defensive init-failure branch) and then turns the race
+  pacing off with the link already gone (LR-7).
+- The host library ctr_native_arcade_link_host now has a link-time
+  dependency on Platform_SetFixedVBlankPacing, which only the ctr_native
+  executable defines; its two unit tests define a stub (CMakeLists.txt,
+  native_arcade_link_host_isolation rule 4).
+- Call sites in game/MAIN/MainArcadeRaceLaunch.c: RaceBegin in the
+  LAUNCHED branch of MainArcadeRaceLaunch_ArmAndLaunch, after
+  MainArcadeRaceSetup_Launch succeeded (:293); RaceEnd in the disarm block
+  after MainArcadeRaceSetup_Disarm (:375). After an Arm or Launch failure
+  only RaceEnd runs, and it does nothing. RaceBegin returning 0 on a
+  LAUNCHED race (unreachable today: the caller runs only in LINK mode) is
+  only logged; LR-S9 may want it to count as a launch failure.
+- Default runs are unchanged. With no arcade-link option the host is OFF,
+  RaceBegin is never reached (MainArcadeRaceLaunch_Frame returns first),
+  and neither Configure nor Shutdown calls the setter. The arcade link
+  excludes replay and the roster proof, and main.c's proof call is
+  unchanged.
+- Tests: native_arcade_link_host_unit (a counting pacing stub: RaceBegin,
+  RaceEnd, and Shutdown switch it; a replacing Configure turns it off;
+  OFF and PREVIEW never touch it; a RaceEnd with no RaceBegin, the Arm or
+  Launch failure path, leaves it off; a pacing the host did not turn on is
+  never touched; the stub resets at the test's start, so it does not
+  depend on test order); native_vblank_pacing_isolation (the setter outside
+  every conditional; exactly two caller files; the host's three call
+  bodies); native_arcade_link_host_isolation (the <platform.h> include, and
+  Platform_SetFixedVBlankPacing as the only platform name); and
+  main_arcade_link_hook_isolation rule 16i (the caller's two call sites;
+  of game/, platform/, include/, tools/, and main.c, only the caller and
+  the host's own .c and .h name either call).
+  main_arcade_link_view_layout_test gets a no-op setter stub to link.
+- arcade_link_launch ran non-skipped and passed (78.25 s, two races,
+  both validated). The run came from a clean-tree build of this change in
+  a throwaway clone, with the local memcards/ folder copied in. The same
+  clone at 1ed6b4daf also passed (77.16 s). Without memcards/ it failed
+  in the same way at 1ed6b4daf and with this change: Launch PRECONDITION,
+  "the game options are not loaded yet".
 
 Plan: LR-7 and LR-8.
 

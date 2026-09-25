@@ -257,8 +257,27 @@ void NativeArcadeLinkHost_AbortToTitle(void);
  * even though the link restarts its own select count there. */
 uint64_t NativeArcadeLinkHost_MixSelectEntropy(uint64_t entropy, uint64_t epoch);
 
-/* Closes any open link and returns to mode OFF. Idempotent and safe before
- * any Configure. */
+/* LINK only (linked-race plan LR-7): the race caller's Launch frame, called
+ * only after the race setup launched the race (never after an Arm or Launch
+ * failure). Turns the host-local fixed VBlank pacing on, so every race tick
+ * advances exactly the VBlanks it asks for whatever the host frame time, and
+ * returns 1. Otherwise (OFF, PREVIEW, or before any Configure) returns 0 with
+ * nothing done. */
+int NativeArcadeLinkHost_RaceBegin(void);
+
+/* The race caller's Disarm frame (the first idle main-menu frame after the
+ * race, or at once after an Arm or Launch failure at the title): turns off
+ * again the fixed pacing that RaceBegin turned on. When RaceBegin has not
+ * turned it on (no race began, or it already ended) it does nothing, so a
+ * pacing the host did not turn on is never touched. */
+void NativeArcadeLinkHost_RaceEnd(void);
+
+/* Closes any open link and returns to mode OFF. First, as RaceEnd does, it
+ * turns off a fixed pacing that RaceBegin turned on (before a process exit,
+ * LR-7). Shutdown is also reached mid-race, where it turns that pacing off
+ * too: from a replacing Configure, and from AbortToTitle's defensive branch
+ * when the adapter fails to reinitialize. Either way the race's link is gone,
+ * so that linked race cannot go on. Idempotent and safe before any Configure. */
 void NativeArcadeLinkHost_Shutdown(void);
 
 #endif

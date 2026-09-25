@@ -7,6 +7,7 @@
 
 #include "native_arcade_link_loopback_test_fixture.h"
 
+#include <platform.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -46,6 +47,9 @@
  * racing query, the host as CAB1 against a test-owned adapter as CAB2. */
 #define TEST_RACE_FAILURE_HOST_PORT 48511u
 #define TEST_RACE_FAILURE_PEER_PORT 48512u
+/* The race pacing switch (LR-7): LINK mode against a dead peer. */
+#define TEST_RACE_PACING_LOCAL_PORT 48513u
+#define TEST_RACE_PACING_DEAD_PEER_PORT 48514u
 
 /* Bounds every loop that waits for the loopback pair; generous, not tuned. */
 #define PAIR_BUDGET 4000u
@@ -59,6 +63,29 @@
 #define LOBBY_TICKS 5u
 
 #define ACT_NONE ((uint32_t)NATIVE_ARCADE_FLOW_ACTION_NONE)
+
+/*
+ * The platform's fixed VBlank pacing switch (include/platform.h), stubbed:
+ * the host glue's one platform call (docs/LOCKSTEP_RACE_MILESTONE.md LR-7).
+ * It keeps the switch as the platform does (off at process start) and counts
+ * every call, so a test sees both the state and whether the host touched it.
+ */
+static int g_pacing;
+static uint32_t g_pacingCalls;
+
+void Platform_SetFixedVBlankPacing(int enabled)
+{
+	g_pacing = (enabled != 0) ? 1 : 0;
+	g_pacingCalls++;
+}
+
+/* The switch is `pacing` and the host made no call since `calls`. */
+static int CheckPacingUntouched(int pacing, uint32_t calls)
+{
+	CHECK(g_pacing == pacing);
+	CHECK(g_pacingCalls == calls);
+	return 0;
+}
 
 /* No agreed config (RL-S6): 0, and *out untouched. */
 static int CheckNoAgreedConfig(void)
@@ -117,6 +144,15 @@ static int CheckInert(void)
 	CHECK(NativeArcadeLinkHost_GetView(NULL) == 0);
 	NativeArcadeLinkHost_AbortToTitle();
 	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF);
+	/* LR-7: no race begins, and the pacing switch is never touched. */
+	{
+		const int pacing = g_pacing;
+		const uint32_t calls = g_pacingCalls;
+
+		CHECK(NativeArcadeLinkHost_RaceBegin() == 0);
+		NativeArcadeLinkHost_RaceEnd();
+		CHECK(CheckPacingUntouched(pacing, calls) == 0);
+	}
 	return 0;
 }
 
@@ -1406,6 +1442,99 @@ static int TestLinkRaceFailureAndRacingQuery(void)
 	return 0;
 }
 
+/* ---- LR-7: the race pacing switch ---- */
+
+static int TestRacePacing(void)
+{
+	struct NativeArcadeLinkOptions linkOptions;
+	struct NativeArcadeLinkOptions previewOptions;
+	struct NativeIdentityV1 identity;
+	uint32_t calls;
+
+	/* Start from the platform's process-start state whatever ran before:
+	 * Shutdown ends any race pacing the host began, then the stub resets. */
+	NativeArcadeLinkHost_Shutdown();
+	g_pacing = 0;
+	g_pacingCalls = 0u;
+
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&linkOptions, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_RACE_PACING_LOCAL_PORT,
+		TEST_RACE_PACING_DEAD_PEER_PORT);
+	NativeArcadeLinkOptions_SetDefaults(&previewOptions);
+	previewOptions.preview = NATIVE_ARCADE_LINK_PREVIEW_REMATCH_WAIT;
+
+	/* PREVIEW: no race begins; nothing is touched. */
+	CHECK(NativeArcadeLinkHost_Configure(&previewOptions, NULL) == 1);
+	CHECK(NativeArcadeLinkHost_RaceBegin() == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckPacingUntouched(0, 0u) == 0);
+
+	/* LINK: Configure touches nothing. An Arm or Launch failure at the title
+	 * disarms at once without a RaceBegin: RaceEnd leaves the pacing off and
+	 * untouched. */
+	CHECK(NativeArcadeLinkHost_Configure(&linkOptions, &identity) == 1);
+	CHECK(CheckPacingUntouched(0, 0u) == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(CheckPacingUntouched(0, 0u) == 0);
+
+	/* A launched race: RaceBegin on the Launch frame turns it on, RaceEnd on
+	 * the Disarm frame turns it off, and a second RaceEnd does nothing. */
+	CHECK(NativeArcadeLinkHost_RaceBegin() == 1);
+	CHECK(CheckPacingUntouched(1, 1u) == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(CheckPacingUntouched(0, 2u) == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(CheckPacingUntouched(0, 2u) == 0);
+	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK);
+
+	/* The next race, and a failed launch after it: on, off, then untouched. */
+	CHECK(NativeArcadeLinkHost_RaceBegin() == 1);
+	CHECK(CheckPacingUntouched(1, 3u) == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(CheckPacingUntouched(0, 4u) == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(CheckPacingUntouched(0, 4u) == 0);
+
+	/* A process exit mid-race: Shutdown turns it off; a second Shutdown and
+	 * a RaceEnd after it touch nothing, and OFF begins no race. */
+	CHECK(NativeArcadeLinkHost_RaceBegin() == 1);
+	CHECK(CheckPacingUntouched(1, 5u) == 0);
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckPacingUntouched(0, 6u) == 0);
+	NativeArcadeLinkHost_Shutdown();
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(CheckPacingUntouched(0, 6u) == 0);
+	CHECK(CheckInert() == 0);
+	CHECK(CheckPacingUntouched(0, 6u) == 0);
+
+	/* A replacing Configure shuts down first, so it too turns it off. */
+	CHECK(NativeArcadeLinkHost_Configure(&linkOptions, &identity) == 1);
+	CHECK(NativeArcadeLinkHost_RaceBegin() == 1);
+	CHECK(CheckPacingUntouched(1, 7u) == 0);
+	CHECK(NativeArcadeLinkHost_Configure(&previewOptions, NULL) == 1);
+	CHECK(CheckPacingUntouched(0, 8u) == 0);
+	CHECK(NativeArcadeLinkHost_RaceBegin() == 0);
+	CHECK(CheckPacingUntouched(0, 8u) == 0);
+	NativeArcadeLinkHost_Shutdown();
+
+	/* A pacing the host did not turn on (the roster proof's, main.c) is
+	 * never touched: not by RaceEnd or Shutdown in OFF, and not by RaceEnd,
+	 * Shutdown, or a Configure in LINK without a RaceBegin. */
+	Platform_SetFixedVBlankPacing(1);
+	calls = g_pacingCalls;
+	NativeArcadeLinkHost_RaceEnd();
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckPacingUntouched(1, calls) == 0);
+	CHECK(NativeArcadeLinkHost_Configure(&linkOptions, &identity) == 1);
+	NativeArcadeLinkHost_RaceEnd();
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckPacingUntouched(1, calls) == 0);
+	Platform_SetFixedVBlankPacing(0);
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestInertBeforeConfigure() == 0);
@@ -1420,6 +1549,7 @@ int main(void)
 	CHECK(TestLinkSelectAndAgreedMatch() == 0);
 	CHECK(TestLinkLocalMenuEvent() == 0);
 	CHECK(TestLinkRaceFailureAndRacingQuery() == 0);
+	CHECK(TestRacePacing() == 0);
 	puts("native_arcade_link_host_test: passed");
 	return 0;
 }

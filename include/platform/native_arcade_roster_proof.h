@@ -130,11 +130,14 @@ struct NativeCanonicalStateV1;
  * race tick 0 saw them. The report ends with "end ticks <count>".
  *
  * Host timing. main.c turns on the host-local fixed VBlank pacing
- * (Platform_SetFixedVBlankPacing, include/platform.h) for the proof only: a
- * slow host frame then never emits late VBlanks, so every game tick advances
- * exactly the retail 2 VBlanks and gGT->elapsedTimeMS, and with it the whole
- * race, is independent of host timing. Every other run keeps the default
- * pacing.
+ * (Platform_SetFixedVBlankPacing, include/platform.h) for the whole proof
+ * run: a slow host frame then never emits late VBlanks, so every game tick
+ * advances exactly the retail 2 VBlanks and gGT->elapsedTimeMS, and with it
+ * the whole race, is independent of host timing. The only other user is a
+ * linked arcade race, which the arcade-link host glue runs with fixed pacing
+ * from its Launch frame to its Disarm frame (docs/LOCKSTEP_RACE_MILESTONE.md
+ * LR-7); the proof excludes the arcade link, so it never switches the
+ * proof's pacing. Every other run keeps the default pacing.
  *
  * Hold (LR-S2 (a), --arcade-roster-proof-hold). On the frame logged as race
  * tick HOLD_TICK, the game hook (MainArcadeRosterProof_Frame, which runs

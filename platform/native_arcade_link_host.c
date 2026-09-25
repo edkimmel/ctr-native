@@ -1,5 +1,6 @@
 #include "platform/native_arcade_link_host.h"
 
+#include <platform.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -132,6 +133,10 @@ static uint32_t g_previewTicks;
  * AbortToTitle, before the adapter is initialized. Shutdown never resets
  * it, so no two initializations in one process share an epoch. */
 static uint64_t g_epoch;
+/* 1 from a RaceBegin that turned the fixed VBlank pacing on until the
+ * RaceEnd or Shutdown that turns it off again (LR-7). Host-local: it never
+ * enters a saved state, a recording, or canonical state. */
+static uint8_t g_racePacing;
 
 uint64_t NativeArcadeLinkHost_MixSelectEntropy(uint64_t entropy, uint64_t epoch)
 {
@@ -167,8 +172,36 @@ static uint32_t NativeArcadeLinkHost_LinkScreen(void)
 	return view.screen;
 }
 
+int NativeArcadeLinkHost_RaceBegin(void)
+{
+	if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK)
+	{
+		return 0;
+	}
+	Platform_SetFixedVBlankPacing(1);
+	g_racePacing = 1u;
+	return 1;
+}
+
+void NativeArcadeLinkHost_RaceEnd(void)
+{
+	if (g_racePacing == 0u)
+	{
+		return;
+	}
+	Platform_SetFixedVBlankPacing(0);
+	g_racePacing = 0u;
+}
+
 void NativeArcadeLinkHost_Shutdown(void)
 {
+	/* Before a process exit (main.c, and its atexit registration in LINK
+	 * mode), a linked race's fixed pacing is turned off. */
+	if (g_racePacing != 0u)
+	{
+		Platform_SetFixedVBlankPacing(0);
+		g_racePacing = 0u;
+	}
 	if (g_mode == NATIVE_ARCADE_LINK_HOST_MODE_LINK)
 	{
 		NativeArcadeNetplay_Shutdown(&g_netplay);

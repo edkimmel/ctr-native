@@ -482,7 +482,11 @@ target_link_libraries(ctr_native_arcade_launch PUBLIC ctr_native_canonical_codec
 # 6b-1): a process-wide singleton owning one arcade-link host adapter (link
 # mode) or a scripted screen preview (preview mode), behind a small
 # game-safe API. Dormant unless configured. Linked into ctr_native, whose
-# main.c configures it from the host options (Task 6b-2).
+# main.c configures it from the host options (Task 6b-2). Since LR-S3
+# (docs/LOCKSTEP_RACE_MILESTONE.md LR-7) it also has a link-time dependency
+# on Platform_SetFixedVBlankPacing, which only the ctr_native executable
+# defines (platform/native_platform.c): a test that links this library
+# defines its own stub.
 add_library(ctr_native_arcade_link_host STATIC platform/native_arcade_link_host.c)
 set_target_properties(ctr_native_arcade_link_host PROPERTIES
     C_STANDARD 17
@@ -978,8 +982,10 @@ add_subdirectory(externals/SDL)
 
 # Pure VBlank pacing decision (include/platform/native_vblank_pacing.h): what
 # the native VBlank pacer in platform/native_platform.c does with late
-# VBlanks, by default (catch up) and under the proof-only fixed pacing
-# (re-anchor, never catch up). No clock, no I/O; linked into ctr_native.
+# VBlanks, by default (catch up) and under the host-local fixed pacing
+# (re-anchor, never catch up), which only the roster proof and a linked race
+# turn on (docs/LOCKSTEP_RACE_MILESTONE.md LR-7). No clock, no I/O; linked
+# into ctr_native.
 add_library(ctr_native_vblank_pacing STATIC platform/native_vblank_pacing.c)
 set_target_properties(ctr_native_vblank_pacing PROPERTIES
     C_STANDARD 17
@@ -1150,9 +1156,10 @@ if(BUILD_TESTING)
     target_link_libraries(native_g29_input_test PRIVATE ctr_native_g29_input)
     add_test(NAME native_g29_input_unit COMMAND $<TARGET_FILE:native_g29_input_test>)
 
-    # The VBlank pacing decision (R-6b): the default catch-up and the
-    # proof-only fixed pacing, with an injected host stall; the isolation test
-    # keeps the fixed-pacing switch proof-only and host-local.
+    # The VBlank pacing decision (R-6b): the default catch-up and the fixed
+    # pacing, with an injected host stall; the isolation test keeps the
+    # fixed-pacing switch host-local, out of game/, and called only by main.c
+    # (the roster proof) and the arcade-link host glue (a linked race, LR-7).
     add_executable(native_vblank_pacing_test tests/native_vblank_pacing_test.c)
     set_target_properties(native_vblank_pacing_test PROPERTIES
         C_STANDARD 17

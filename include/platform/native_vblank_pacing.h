@@ -17,7 +17,9 @@
  * after now (REBASE).
  *
  * Fixed pacing (a host-local switch, Platform_SetFixedVBlankPacing, which only
- * the internal live roster proof turns on): no late VBlank is ever emitted.
+ * the internal live roster proof and a linked arcade race, from its Launch
+ * frame to its Disarm frame through the arcade-link host glue, turn on;
+ * docs/LOCKSTEP_RACE_MILESTONE.md LR-7): no late VBlank is ever emitted.
  * On time, nothing is emitted before the wait (ON_TIME); late, the due
  * VBlanks are dropped and the schedule is re-anchored at now (REANCHOR), so
  * the wait that follows emits its VBlank at once and the next slot is one
