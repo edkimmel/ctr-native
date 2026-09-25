@@ -2651,8 +2651,8 @@ divergence found after the race's flow reached RESULTS (a finish linger's
 drain) is still recorded under that race's number. One found only by the
 Tick that closes the link, leaving RESULTS, can be missed: the link's
 session is gone before the helper runs. Stalls, faults, local failures,
-and clean finishes latch nothing. Game code names no lockstep token: the
-hook sees only the host's record. Pinned by
+and a finish with no digest disagreement latch nothing. Game code names
+no lockstep token: the hook sees only the host's record. Pinned by
 native_arcade_link_host_isolation 3i (the header record and take, the
 helper's whole body, its four names and three call sites, the take's
 body, the resets, and the hook as the one game caller) and
@@ -4789,37 +4789,56 @@ Result:
   with the unit cases that prove it (host: native_arcade_link_host_unit
   over a real loopback link with both sides' drives; drive:
   native_arcade_race_drive_unit; netplay: native_arcade_netplay_unit;
-  core: main_arcade_race_launch_core_unit). New cases are marked (new).
+  core: main_arcade_race_launch_core_unit). New cases are marked (new),
+  and those the review follow-ups added (review). The core sees only the
+  drive's result on each driveStep frame (GO, FINISHED, FAILED, or
+  OUTCOME), so its case for a row is the result that row ends with.
 
       LR-12 row / plan item      cases
       stall, held (resumes)      host TestDriveStepHoldEnd; drive
                                  TestDriveStallAndResume,
-                                 TestDriveHoldIterations
+                                 TestDriveHoldIterations; core
+                                 TestDriveResultProtocol (the GO that
+                                 ends a hold; the hold is the caller's
+                                 RaceHold loop, which the core never sees)
       stall timeout              host TestDriveTakeClassification (b);
                                  drive TestDriveStallTimeout,
-                                 TestDriveStallTimeoutSkipped
+                                 TestDriveStallTimeoutSkipped; core
+                                 TestDriveEnds (OUTCOME)
       peer never starts          host TestDriveStartWaitTimeout (new);
       (810 + 90)                 drive TestDriveStartWait,
                                  TestDriveStartWaitSkipped; core
                                  TestDriveEndOnRaceTickZero
       the linger through the     host TestDriveStartWaitLateCommit (new),
-      start wait (LR-69)         TestDriveStartWaitTimeout (new),
-                                 TestDriveHoldLaunchLinger; netplay
+      start wait (LR-69), and    TestDriveStartWaitTimeout (new),
+      its cap after it           TestDriveHoldLaunchLinger,
+                                 TestDriveCappedHoldPastStartWait
+                                 (review); netplay
                                  TestRaceServiceStartWait (new),
                                  TestRaceServiceNoOps; launch
                                  TestShouldSendUncapped (new)
       peer drop                  host TestDriveLocalFailureAndPeerDrop (b)
-                                 (new); drive TestDriveStallTimeout
+                                 (new); drive TestDriveStallTimeout; core
+                                 TestDriveEnds (OUTCOME)
       desync                     host TestDriveTakeClassification (a),
                                  TestDriveParkedDigestMismatch,
                                  TestDriveDivergenceRecord (new); drive
                                  TestDriveDesync,
                                  TestDriveParkedMismatchAtRecord; netplay
-                                 TestInRaceDivergenceFromPoll
-      desync only in F - 1 or F  host TestDriveFinishFrameDivergence (new)
+                                 TestInRaceDivergenceFromPoll; core
+                                 TestDriveEnds (OUTCOME)
+      desync only in F - 1 or F  host TestDriveFinishFrameDivergence (new;
+                                 both finish on F),
+                                 TestDrivePeerLeadsFinishDivergence
+                                 (review; the peer leads),
+                                 TestDriveHostOnlyFinishesOnF (review;
+                                 only the host finishes on F); core
+                                 TestDriveEnds (FINISHED; OUTCOME for
+                                 the side that stalls)
       protocol fault             host TestDriveProtocolFault (new); drive
                                  TestDriveFaultIsOutcome; netplay
-                                 TestInRaceFaultFromPoll
+                                 TestInRaceFaultFromPoll; core
+                                 TestDriveEnds (OUTCOME)
       local drive failure        host TestDriveTakeClassification (c),
                                  TestDriveLocalFailureAndPeerDrop (a)
                                  (new), TestDriveRefusalsAndResets; drive
@@ -4827,21 +4846,29 @@ Result:
                                  TestDriveEnds (FAILED); netplay
                                  TestLocalRaceFailure
       finish grace (LR-18)       host TestDriveFinishGrace (new); drive
-                                 TestDriveFinish
+                                 TestDriveFinish; core TestDriveEnds
+                                 (FINISHED)
       race-length bound          host TestDriveRaceLengthBoundBoth (new),
                                  TestDriveRaceTickLimit; drive
-                                 TestDriveFinish (18000)
+                                 TestDriveFinish (18000); core
+                                 TestDriveEnds (FINISHED)
       finish linger              host TestDriveStepHoldEnd, and every
                                  finish above (BothFinishWithLinger);
                                  drive TestDriveFinish,
                                  TestDriveLingerStops
       divergence log line        host TestDriveDivergenceRecord (new), the
       (LR-70)                    records in TestDriveTakeClassification,
-                                 TestDriveParkedDigestMismatch, and
-                                 TestDriveRefusalsAndResets; none for a
-                                 held stall, a stall timeout, a local
-                                 failure, a fault, a clean finish, or
-                                 outside LINK (CheckInert);
+                                 TestDriveParkedDigestMismatch,
+                                 TestDriveRefusalsAndResets,
+                                 TestDrivePeerLeadsFinishDivergence
+                                 (review), and TestDriveHostOnlyFinishesOnF
+                                 (review; a linger drain on RESULTS RACE
+                                 COMPLETE, and a record not taken replaced
+                                 by the next race's); none for a held
+                                 stall, a stall timeout, a local failure,
+                                 a fault, a finish with no digest
+                                 disagreement, or outside LINK
+                                 (CheckInert);
                                  main_arcade_link_hook_isolation 12c
       neutral pads from the end  core TestDriveEnds, TestDriveEndOnRaceTickZero,
       frame                      and the harness's every-frame rule (new)
@@ -4898,7 +4925,8 @@ Result:
   CONTROL only (mask 0x1, the whole-state digests equal), whole-state only
   (mask 0), and two domains (mask 0x11, the CONTROL digests).
   TestDriveProtocolFault: a corrupt current-identity bundle from the
-  peer's socket, LINK ERROR on the next Tick, nothing reported locally.
+  peer's socket, LINK ERROR on the host Tick that drains it (polled,
+  bounded), nothing reported locally.
   TestDriveLocalFailureAndPeerDrop: a local failure (LINK ERROR) whose
   peer holds on the host's missing frame and ends at its counted period
   90 (OPPONENT DISCONNECTED); a killed peer (its adapter shut down), the
@@ -4934,6 +4962,87 @@ Result:
 - Fast suite (-LE live): 154 of 154 passed. The live gate
   arcade_link_launch runs on the committed tree; its result is reported
   with the commit, not recorded here.
+
+Review follow-ups (the review of 031485c04). Test and doc changes only; no
+product code changed (one header comment reworded):
+
+- native_arcade_netplay_isolation 8b: the pin on Tick's
+  NativeArcadeNetplay_SendLaunch(netplay, 0) line is a regex whose line
+  end may be LF or CRLF, as strict as before (a whole tab-indented line),
+  with a self-check of the pattern on an LF, a CRLF, and a trailing-text
+  sample. (On this Windows toolchain, CMake 4.4's file(READ) already drops
+  the CRs of a CRLF file, so the old LF-only pin passed on a CRLF copy
+  too; the self-check makes the pin independent of that.) The other new
+  pins of 031485c04 (link host 3g, the Tick order, 3i; hook 12c) search
+  whitespace-flattened text or single-line terms and were already
+  line-end agnostic.
+- New host cases. TestDrivePeerLeadsFinishDivergence: the peer's state
+  differs from F - 1 = 29 and the peer leads; the host's step of F = 30
+  ends END_OF_RACE, and the Tick of pass 31 reports the finish and drains
+  the peer's digest of 29 together: RACE OUT OF SYNC (the link failure
+  outranks the same-tick finish), race 1's record at race tick 29, no
+  linger; the peer takes up to F + D - 1 = 31 and stalls into OPPONENT
+  DISCONNECTED. TestDriveHostOnlyFinishesOnF: in step, the state differs
+  only on F, and only the host finishes on F: RACE COMPLETE on the host;
+  the peer's digest of F, sent with its tick 31, is drained by the host's
+  next linger Tick on RESULTS and recorded under race 1 at race tick 30
+  while RESULTS stays RACE COMPLETE (LR-70), the linger stopping; the peer
+  stalls on F + D = 32 into OPPONENT DISCONNECTED. Then, in a new pairing,
+  race 1's record is left untaken, both rematch, race 2 diverges at race
+  tick 20, and exactly one record, race 2's, is taken. In step, a state
+  that differs from F - 1 does not give RACE COMPLETE on the finishing
+  side: the other side's bundle of F carries its digest of F - 1 and
+  reaches the finishing side before its pass F + 1 Tick, which shows RACE
+  OUT OF SYNC (observed with a probe). LR-12's "with the cabinets in step
+  ... RACE COMPLETE on one side and OPPONENT DISCONNECTED on the other"
+  therefore holds for a divergence only in F. TestDriveCappedHoldPastStartWait:
+  the peer commits from the host's start-wait records past the 300-tick
+  cap while every launch record of its own is lost (its sequence set to
+  its end, so Compose refuses), so the host's HEARD stays incomplete; the
+  start wait's held periods still send one record each, and after both
+  race past the cap, five held periods on race tick 12 send none while the
+  linger count runs on.
+- TestDriveProtocolFault polls host Ticks until one drains the corrupt
+  datagram (bounded by DRIVE_HOLD_SPINS) instead of relying on one poll.
+- include/platform/native_arcade_link_host.h and LR-70: "clean finishes
+  latch none" is now "a finish with no digest disagreement latches none".
+- The inventory cites the launch core's TestDriveEnds (OUTCOME for the
+  stall timeout, peer drop, desync, and fault rows; FINISHED for the
+  finish grace and race-length bound rows) and TestDriveResultProtocol for
+  the held stall, so every row has host and core cases.
+- native_arcade_link_host_isolation's Tick-order failure message cites
+  LR-70's latch as well as LR-46.
+- native_arcade_launch_isolation 12 (new): of game/, platform/, include/,
+  and main.c, only the launch module's own .c and .h and
+  platform/native_arcade_netplay.c name NativeArcadeLaunch_ShouldSendUncapped
+  in code (comments removed), the adapter exactly once.
+
+Probes, each reverted (the tree was byte-identical afterwards):
+
+- the glue passing START_WAIT on every race tick:
+  TestDriveCappedHoldPastStartWait failed (a launch record on a race tick
+  12 hold);
+- the flow letting a same-tick finish outrank a link failure (the case
+  run first): TestDrivePeerLeadsFinishDivergence failed (end reason);
+  TestLinkRaceFailureAndRacingQuery also fails on it in the normal order;
+- the latch skipping a race whose flow ended FINISHED (the case run first):
+  TestDriveHostOnlyFinishesOnF failed (no record of race 1);
+- the latch never replacing a pending record (the case run first):
+  TestDriveHostOnlyFinishesOnF failed (race 1's record taken in race 2);
+- the in-step helper with the state differing from F - 1: the host showed
+  RACE OUT OF SYNC, not RACE COMPLETE (the finding above);
+- TestDriveProtocolFault without the corrupt datagram: it failed after
+  the bounded poll (0.3 s), not hanging;
+- netplay 8b: platform/native_arcade_netplay.c converted to CRLF passed;
+  trailing text on the Tick send line failed; the pattern without \r?
+  failed its self-check;
+- launch 12: a code call in platform/native_arcade_link_host.c or
+  game/MAIN/MainArcadeLink.c failed, a second code name in
+  platform/native_arcade_netplay.c failed, a comment-only mention passed;
+- the host Tick latching before the drive's tick: the link host
+  isolation failed with the new message.
+
+Fast suite (-LE live) after the follow-ups: 154 of 154 passed.
 
 Plan: LR-11 to LR-14 and LR-18 end to end:
 

@@ -3839,9 +3839,10 @@ static int TestDriveDivergenceRecord(void)
 /*
  * LR-S12, LR-12's "protocol fault" row: in step to race tick 10, the peer's
  * socket sends the host a corrupt copy of one of the peer's own bundles
- * (current identity, one body byte flipped). The host's next Tick drains it:
- * the record's digest fails (BAD_DIGEST), the session faults, and the flow
- * shows LINK ERROR (LINK_ERROR); race 1's end record says so; nothing is
+ * (current identity, one body byte flipped). The host's Ticks, polled until
+ * one drains it (bounded; nothing else moves the flow off RACING without a
+ * step): the record's digest fails (BAD_DIGEST), the session faults, and the
+ * flow shows LINK ERROR (LINK_ERROR); race 1's end record says so; nothing is
  * reported as a local failure, and no divergence is recorded.
  */
 static int TestDriveProtocolFault(void)
@@ -3852,6 +3853,7 @@ static int TestDriveProtocolFault(void)
 	const struct NativeArcadeRaceDriveKeptBundle *kept;
 	uint8_t corrupt[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
 	const uint32_t frame = 10u + DRIVE_D - 1u;
+	uint32_t spins;
 
 	CHECK(StartDriveRace(TEST_DRIVE2_HOST_PORT, TEST_DRIVE2_PEER_PORT, UINT64_C(0xFA17000000000012)) == 0);
 	CHECK(RoundsBoth(10u) == 0);
@@ -3863,7 +3865,10 @@ static int TestDriveProtocolFault(void)
 	CHECK(link != NULL);
 	CHECK(NativeUdpTransport_MakeAddress(&host, "127.0.0.1", (uint16_t)TEST_DRIVE2_HOST_PORT) != 0);
 	CHECK(NativeUdpTransport_Send(&link->transport, &host, corrupt, sizeof(corrupt)) != 0);
-	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	for (spins = 0u; (spins < DRIVE_HOLD_SPINS) && (HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING); spins++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	}
 	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
 	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
 	CHECK(CheckRaceEnd(1u, NATIVE_ARCADE_FLOW_END_LINK_ERROR, 0u) == 0);
@@ -4145,6 +4150,305 @@ static int TestDriveFinishFrameDivergence(void)
 	return 0;
 }
 
+/*
+ * LR-S12 review, LR-12's "desync only in F - 1 or F" row when the peer leads
+ * (LR-11 "The finish"). In step to race tick F - 1 = 29, from which the
+ * peer's state differs. The host runs its pass 29 and the Tick of its pass
+ * 30; the peer then steps 29 and 30 (it leads), and the bundle it composes
+ * on 30 carries its digest of 29. The host's step of F = 30 sees END_OF_RACE
+ * and ends END_OF_RACE, finding nothing (a finish records and does not
+ * poll). The Tick of pass 31 reports the finish and drains that bundle in the
+ * same call: the digest of 29 is compared on arrival and diverges, and the
+ * link failure outranks the same-tick finish (native_arcade_flow.c, UX-6):
+ * RESULTS RACE OUT OF SYNC (DESYNC), race 1's end record says so, and that
+ * Tick latches race 1's one record at race tick 29. No finish linger runs
+ * (the session left RUNNING). The peer never sees the host's digests of 29
+ * or 30: it takes up to frame F + D - 1 = 31, holds on 32, which the host
+ * never composed, and ends at its stall timeout: OPPONENT DISCONNECTED.
+ */
+static int TestDrivePeerLeadsFinishDivergence(void)
+{
+	struct NativeArcadeLinkHostDriveState state;
+	const uint32_t finish = 30u;
+	uint32_t tick;
+
+	CHECK(StartDriveRace(TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, UINT64_C(0xF1F1000000000018)) == 0);
+	CHECK(RoundsBoth(finish - 1u) == 0);
+	g_peerKnob = 8u;
+	g_peerKnobFrom = finish - 1u;
+	/* The host's pass 29, and the Tick of its pass 30. */
+	CHECK(HostPass() == RACE_GO);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(g_driveBad == 0);
+	CHECK(CheckNoDivergence() == 0);
+	/* The peer's ticks 29 and 30. */
+	for (tick = 0u; tick < 2u; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_peer, 0u, 0u) == NATIVE_ARCADE_FLOW_ACTION_NONE);
+		CHECK(PeerSpin(PeerStep(0u)) == NATIVE_ARCADE_RACE_DRIVE_GO);
+	}
+	CHECK(g_peerNext == finish + 1u);
+	/* The host's step of F: a finish, still on RACING, nothing found. */
+	CHECK(HostStep(1u) == RACE_END);
+	CHECK(g_driveBad == 0);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_OF_RACE);
+	CHECK(state.endTick == finish);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(CheckNoDivergence() == 0);
+	/* Pass F + 1's Tick: the finish and the divergence together. */
+	CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_DESYNC);
+	CHECK(CheckRaceEndReason(1u, NATIVE_ARCADE_FLOW_END_DESYNC) == 0);
+	CHECK(CheckDivergence(1u, finish - 1u, DRIVE_KNOB_DOMAINS, 8u) == 0);
+	CHECK(CheckDriveReset() == 0);
+	CHECK(NativeArcadeLinkHost_InternalLocalRaceFailure() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 0u);
+	/* The peer stalls out. */
+	CHECK(PeerStallsOut() == NATIVE_ARCADE_NETPLAY_DEFAULT_STALL_TIMEOUT_TICKS);
+	CHECK(g_driveBad == 0);
+	CHECK(g_peerNext == finish + DRIVE_D);
+	CHECK(NativeArcadeRaceDrive_EndKind(&g_peerDrive) == NATIVE_ARCADE_RACE_DRIVE_END_OUTCOME);
+	CHECK(PeerScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(NativeArcadeNetplay_Tick(&g_peer, 0u, 0u) == NATIVE_ARCADE_FLOW_ACTION_NONE);
+	CHECK(PeerScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(CheckPeerRaceEnd(1u, NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT) == 0);
+	CHECK(NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_peer))) == NULL);
+	CHECK(CheckNoDivergence() == 0);
+
+	StopDriveRace();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
+/*
+ * In step to race tick F = 30, from which the peer's state differs (only in
+ * F, of F - 1 and F); only the host sees END_OF_RACE on F. Both steps of 30
+ * run in one pass, the host's a finish END, the peer's a GO whose bundle
+ * carries its digest of 29, which agrees. Pass 31's Tick reports the host's
+ * finish: RESULTS RACE COMPLETE (FINISHED), race raceNumber's end record says
+ * so, nothing is found, and the finish linger starts. The peer steps 31; its
+ * bundle carries its digest of 30. The host's next Tick, a linger tick on
+ * RESULTS, drains it: the divergence is found after the flow reached RESULTS
+ * (LR-70), so the flow stays on RESULTS RACE COMPLETE with no new end record,
+ * the linger stops (the session left RUNNING), and the drive is
+ * re-initialized. The record it latched is left untaken. (In step, a state
+ * that differs from F - 1 would not do: the peer's bundle of F carries its
+ * digest of F - 1 and reaches the host before pass 31's Tick, which then
+ * shows RACE OUT OF SYNC, the peer-leads case above.)
+ */
+static int HostOnlyFinishesOnF(uint32_t raceNumber, uint32_t knob)
+{
+	struct NativeArcadeLinkHostDriveState state;
+	uint32_t hostAction = ACT_NONE;
+	uint32_t peerAction = ACT_NONE;
+	const uint32_t finish = 30u;
+
+	CHECK(RoundsBoth(finish) == 0);
+	g_peerKnob = knob;
+	g_peerKnobFrom = finish;
+	NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+	CHECK((hostAction == ACT_NONE) && (peerAction == ACT_NONE));
+	CHECK(HostStep(1u) == RACE_END);
+	CHECK(PeerSpin(PeerStep(0u)) == NATIVE_ARCADE_RACE_DRIVE_GO);
+	CHECK(g_driveBad == 0);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_OF_RACE);
+	CHECK(state.endTick == finish);
+	/* Pass 31's Tick: RACE COMPLETE, nothing found. */
+	CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+	CHECK(CheckRaceEndReason(raceNumber, NATIVE_ARCADE_FLOW_END_FINISHED) == 0);
+	CHECK(CheckNoDivergence() == 0);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.lingerTicksLeft == NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS - 1u);
+	/* The peer's tick 31. */
+	CHECK(NativeArcadeNetplay_Tick(&g_peer, 0u, 0u) == NATIVE_ARCADE_FLOW_ACTION_NONE);
+	CHECK(PeerSpin(PeerStep(0u)) == NATIVE_ARCADE_RACE_DRIVE_GO);
+	CHECK(g_peerNext == finish + 2u);
+	/* The host's next Tick, a linger tick on RESULTS, finds it. */
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+	CHECK(CheckNoRaceEnd() == 0);
+	CHECK(CheckDriveReset() == 0);
+	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 0u);
+	return 0;
+}
+
+/*
+ * LR-S12 review, LR-12's "desync only in F - 1 or F" row when only the host
+ * finishes on F, and LR-70's linger drain. Pairing 1, race 1
+ * (HostOnlyFinishesOnF): the host shows RACE COMPLETE, and the divergence of
+ * F its linger drained is recorded under race 1 at race tick 30, once; later
+ * Ticks latch none. The peer holds on frame F + D = 32, which the host never
+ * composed, and ends at its stall timeout: OPPONENT DISCONNECTED, with no
+ * divergence found on its side. Pairing 2 (the header's "a record not taken
+ * is replaced by the next race's"): race 1 again, its record left untaken;
+ * the peer's own finish, REMATCH on both, and race 2 diverges at race tick
+ * 20, found by the host's Tick: exactly one record is taken, race 2's.
+ */
+static int TestDriveHostOnlyFinishesOnF(void)
+{
+	uint32_t tick;
+
+	/* Pairing 1. */
+	CHECK(StartDriveRace(TEST_DRIVE2_HOST_PORT, TEST_DRIVE2_PEER_PORT, UINT64_C(0xF1F1000000000019)) == 0);
+	CHECK(HostOnlyFinishesOnF(1u, 6u) == 0);
+	CHECK(CheckDivergence(1u, 30u, DRIVE_KNOB_DOMAINS, 6u) == 0);
+	for (tick = 0u; tick < 3u; tick++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+		CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+		CHECK(CheckNoDivergence() == 0);
+	}
+	CHECK(PeerStallsOut() == NATIVE_ARCADE_NETPLAY_DEFAULT_STALL_TIMEOUT_TICKS);
+	CHECK(g_driveBad == 0);
+	CHECK(g_peerNext == 30u + DRIVE_D);
+	CHECK(NativeArcadeRaceDrive_EndKind(&g_peerDrive) == NATIVE_ARCADE_RACE_DRIVE_END_OUTCOME);
+	CHECK(NativeArcadeNetplay_Tick(&g_peer, 0u, 0u) == NATIVE_ARCADE_FLOW_ACTION_NONE);
+	CHECK(PeerScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(CheckPeerRaceEnd(1u, NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT) == 0);
+	CHECK(NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_peer))) == NULL);
+	StopDriveRace();
+
+	/* Pairing 2: race 1's record is not taken. */
+	CHECK(StartDriveRace(TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, UINT64_C(0xF1F100000000001A)) == 0);
+	CHECK(HostOnlyFinishesOnF(1u, 6u) == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(g_pacing == 0);
+	CHECK(RematchToRace() == 0);
+	CHECK(BeginRaceDrives() == 0);
+	CHECK(RoundsBoth(20u) == 0);
+	g_peerKnob = 9u;
+	g_peerKnobFrom = 20u;
+	CHECK(HostPass() == RACE_GO);
+	for (tick = 0u; tick < 2u; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_peer, 0u, 0u) == NATIVE_ARCADE_FLOW_ACTION_NONE);
+		CHECK(PeerSpin(PeerStep(0u)) == NATIVE_ARCADE_RACE_DRIVE_GO);
+	}
+	CHECK(g_driveBad == 0);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_DESYNC);
+	CHECK(CheckRaceEndReason(2u, NATIVE_ARCADE_FLOW_END_DESYNC) == 0);
+	/* Exactly one record, race 2's (CheckDivergence takes it, then finds
+	 * none). */
+	CHECK(CheckDivergence(2u, 20u, DRIVE_KNOB_DOMAINS, 9u) == 0);
+
+	StopDriveRace();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
+/*
+ * LR-S12 review, LR-69's bound: outside the start wait the hold keeps the
+ * capped rule. As in the late-commit case, the host commits and races while
+ * the peer is still PENDING, and its held periods of race tick 0 send one
+ * launch record each, discarded at the peer, until one is sent at a count at
+ * or past the 300-tick cap. Every launch record the peer composes from the
+ * start is refused (its sequence is set to its end, so Compose refuses and
+ * the send is lossy, as a lost datagram is), so no record of the peer's,
+ * HEARD or not, reaches the host after that: the host's HEARD stays
+ * incomplete. The next held period's record is kept; the peer commits from it
+ * and starts its race; the host's following held periods, still on race tick
+ * 0, still send one record each (the uncapped rule, HEARD incomplete). Both
+ * drives run in step to race tick 10, past the cap; the peer pauses, the host
+ * runs D ticks ahead and holds on race tick 12, and five held periods there
+ * send no launch record while the linger count runs on (the capped rule,
+ * which the glue asks for off race tick 0).
+ */
+static int TestDriveCappedHoldPastStartWait(void)
+{
+	struct NativeArcadeLinkHostDriveState state;
+	uint32_t period;
+	uint32_t held;
+	uint32_t status;
+	uint32_t spins;
+	uint32_t sentAt = 0u;
+	uint32_t tick;
+
+	CHECK(HostRacesPeerPending(TEST_DRIVE2_HOST_PORT, TEST_DRIVE2_PEER_PORT, UINT64_C(0xCA99ED000000001B), UINT64_C(0xCA99ED)) == 0);
+	g_peer.launch.sequence = UINT32_MAX;
+	CHECK(BeginHostDrive() == 0);
+	CHECK(HostSpin(HostStep(0u), 0u) == RACE_HOLD);
+	for (period = 1u; period <= NATIVE_ARCADE_RACE_DRIVE_START_GRACE_PERIODS; period++)
+	{
+		sentAt = NativeArcadeLinkHost_InternalLaunchTicksSinceCommit();
+		CHECK(HostHold(period, 1) == RACE_HOLD);
+		CHECK(HostHold(period, 0) == RACE_HOLD);
+		CHECK(TakePeerAux(1u) == 1u);
+		if (sentAt >= NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS)
+		{
+			break;
+		}
+	}
+	CHECK(sentAt == NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
+	CHECK(period < NATIVE_ARCADE_RACE_DRIVE_START_GRACE_PERIODS);
+	/* The next period's record is kept: the peer commits from it. */
+	period += 1u;
+	CHECK(HostHold(period, 1) == RACE_HOLD);
+	CHECK(HostHold(period, 0) == RACE_HOLD);
+	CHECK(PeerAuxAfterPolls(1u) == 1u);
+	CHECK(NativeArcadeNetplay_Tick(&g_peer, 0u, 0u) == NATIVE_ARCADE_FLOW_ACTION_START_RACE);
+	CHECK(NativeArcadeLaunch_Status(&g_peer.launch) == (uint32_t)NATIVE_ARCADE_LAUNCH_COMMITTED);
+	CHECK(g_peer.launch.acceptedCount == 1u);
+	CHECK(g_peer.launch.heardSent == 0u);
+	/* HEARD incomplete: the start wait's held periods still send. */
+	for (held = 0u; held < 2u; held++)
+	{
+		period += 1u;
+		CHECK(HostHold(period, 1) == RACE_HOLD);
+		CHECK(HostHold(period, 0) == RACE_HOLD);
+		CHECK(TakePeerAux(1u) == 1u);
+	}
+	CHECK(g_driveBad == 0);
+
+	/* Both race, past the cap. */
+	CHECK(BeginPeerDrive() == 0);
+	CHECK(PeerSpin(PeerStep(0u)) == NATIVE_ARCADE_RACE_DRIVE_GO);
+	status = RACE_HOLD;
+	for (spins = 0u; (spins < DRIVE_HOLD_SPINS) && (status == RACE_HOLD); spins++)
+	{
+		status = HostHold(period, 0);
+	}
+	CHECK(status == RACE_GO);
+	CHECK(CheckCommitted(0u) == 0);
+	CHECK(RoundsBoth(10u) == 0);
+	CHECK(NativeArcadeLinkHost_InternalLaunchTicksSinceCommit() > NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
+	(void)PeerAuxAfterPolls(0u);
+	(void)TakePeerAux(0u);
+
+	/* The peer pauses: the host holds on race tick 10 + D, sending no launch
+	 * record. */
+	for (tick = 0u; tick < DRIVE_D; tick++)
+	{
+		CHECK(HostPass() == RACE_GO);
+	}
+	CHECK(HostPass() == RACE_HOLD);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.raceTick == 10u + DRIVE_D);
+	for (held = 1u; held <= 5u; held++)
+	{
+		sentAt = NativeArcadeLinkHost_InternalLaunchTicksSinceCommit();
+		CHECK(HostHold(held, 1) == RACE_HOLD);
+		CHECK(HostHold(held, 0) == RACE_HOLD);
+		CHECK(NativeArcadeLinkHost_InternalLaunchTicksSinceCommit() == sentAt + 1u);
+		CHECK(PeerAuxAfterPolls(0u) == 0u);
+	}
+	CHECK(g_driveBad == 0);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_NONE);
+	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 0u);
+
+	StopDriveRace();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestInertBeforeConfigure() == 0);
@@ -4174,6 +4478,9 @@ int main(void)
 	CHECK(TestDriveFinishGrace() == 0);
 	CHECK(TestDriveRaceLengthBoundBoth() == 0);
 	CHECK(TestDriveFinishFrameDivergence() == 0);
+	CHECK(TestDrivePeerLeadsFinishDivergence() == 0);
+	CHECK(TestDriveHostOnlyFinishesOnF() == 0);
+	CHECK(TestDriveCappedHoldPastStartWait() == 0);
 	puts("native_arcade_link_host_test: passed");
 	return 0;
 }

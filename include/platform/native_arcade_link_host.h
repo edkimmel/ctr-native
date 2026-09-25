@@ -297,7 +297,7 @@ int NativeArcadeLinkHost_TakeRaceEnd(struct NativeArcadeLinkHostRaceEnd *out);
  * PREVIEW, or nothing latched, including a record already taken) returns 0
  * with *out untouched. A record not taken is replaced by the next race's;
  * Shutdown and AbortToTitle drop it. Stalls, faults, local failures, and
- * clean finishes latch none. */
+ * a finish with no digest disagreement latch none. */
 int NativeArcadeLinkHost_TakeRaceDivergence(struct NativeArcadeLinkHostRaceDivergence *out);
 
 /* 1 iff the mode is LINK and the flow is on RACING (docs/RACE_LAUNCH_MILESTONE.md

@@ -502,7 +502,7 @@ ctr_require_in("${host_source} (TickDrive)" "${tick_drive_body}"
 ctr_body("${host_source}" "${source_code}" "uint32_t NativeArcadeLinkHost_Tick(" tick_body)
 string(FIND "${tick_body}" "action = (uint32_t)NativeArcadeNetplay_Tick(&g_netplay, heldMenuButtons, raceFinished); NativeArcadeLinkHost_TickDrive(); NativeArcadeLinkHost_LatchDivergence(); return action;" tick_order_at)
 if(tick_order_at EQUAL -1)
-    message(FATAL_ERROR "arcade link host isolation: NativeArcadeLinkHost_Tick must run the drive's tick right after the adapter's Tick (LR-46)")
+    message(FATAL_ERROR "arcade link host isolation: NativeArcadeLinkHost_Tick must run the drive's tick right after the adapter's Tick (LR-46), then latch the race's divergence record (LR-70), then return the action")
 endif()
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_TickDrive(" 2)
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_RaceEndDrive(" race_end_drive_body)

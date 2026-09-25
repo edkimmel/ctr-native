@@ -22,6 +22,10 @@
 # linger literally, each exactly once, the fault-cause enum values must
 # keep their numbers (append-only), and the status values stay PENDING 0 and
 # COMMITTED 1, so a change to any of them fails this test.
+#
+# Since LR-S12 (docs/LOCKSTEP_RACE_MILESTONE.md LR-69) the uncapped send rule,
+# NativeArcadeLaunch_ShouldSendUncapped, is named in code only by the module's
+# own two files and the netplay adapter's .c (rule 12).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade launch isolation")
@@ -277,4 +281,45 @@ endforeach()
 list(SORT dependents)
 if(NOT "${dependents}" STREQUAL "${allowed_dependents}")
     message(FATAL_ERROR "${prefix}: exactly ${allowed_dependents} may link ${target} (found '${dependents}')")
+endif()
+
+# 12. The uncapped send rule (docs/LOCKSTEP_RACE_MILESTONE.md LR-69): of the
+#     product sources (game/, platform/, include/, and main.c), only the
+#     module's own two files and the netplay adapter's .c name
+#     NativeArcadeLaunch_ShouldSendUncapped in code (comments removed, so
+#     prose may cite it); the adapter's .c names it exactly once (its one
+#     call, pinned by tests/native_arcade_netplay_isolation_test.cmake 8b).
+#     The start wait's extension stays the adapter's to bound.
+set(uncapped_name "NativeArcadeLaunch_ShouldSendUncapped")
+set(uncapped_caller "platform/native_arcade_netplay.c")
+file(GLOB_RECURSE uncapped_scan_paths
+    "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/game/*.inc"
+    "${repo}/platform/*.c" "${repo}/platform/*.h" "${repo}/include/*.h")
+list(APPEND uncapped_scan_paths "${repo}/main.c")
+set(uncapped_caller_seen 0)
+foreach(path IN LISTS uncapped_scan_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    list(FIND launch_files "${relative_path}" own_at)
+    if(NOT own_at EQUAL -1)
+        continue()
+    endif()
+    file(READ "${path}" scanned)
+    string(FIND "${scanned}" "${uncapped_name}" raw_at)
+    if(raw_at EQUAL -1 AND NOT relative_path STREQUAL uncapped_caller)
+        continue()
+    endif()
+    ctr_strip_comments("${relative_path}" "${scanned}" scanned_code)
+    string(REGEX MATCHALL "${uncapped_name}" uncapped_hits "${scanned_code}")
+    list(LENGTH uncapped_hits uncapped_count)
+    if(relative_path STREQUAL uncapped_caller)
+        if(NOT uncapped_count EQUAL 1)
+            message(FATAL_ERROR "${prefix}: ${uncapped_caller} must name ${uncapped_name} exactly once in code, its one call (found ${uncapped_count})")
+        endif()
+        set(uncapped_caller_seen 1)
+    elseif(NOT uncapped_count EQUAL 0)
+        message(FATAL_ERROR "${prefix}: ${relative_path} names ${uncapped_name} in code; only ${launch_source}, ${launch_header}, and ${uncapped_caller} may (LR-69)")
+    endif()
+endforeach()
+if(NOT uncapped_caller_seen)
+    message(FATAL_ERROR "${prefix}: ${uncapped_caller}, the one caller of ${uncapped_name}, was not scanned")
 endif()
