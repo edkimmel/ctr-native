@@ -98,6 +98,15 @@ Integration order:
     self-centering spring) through SDL haptics. It is host-local output,
     kept out of simulation identity, and needs the CAB1 G29 hardware for
     validation.
+13. Stretch goal: full-screen per-cabinet view. Not started. Linked races
+    ship with the retail 2P split screen on both cabinets (owner decision,
+    Task 8). The goal is for each cabinet to render only its own player,
+    full screen. The owner accepts graphics-only effects going out of sync
+    between cabinets. However, particles currently draw from the item RNG
+    (MixRNG), so a per-cabinet viewport would desync the simulation, not
+    just the graphics. That draw must first be split onto a
+    presentation-only RNG, and the lockstep digest must prove the
+    simulation still matches.
 
 ## Deterministic simulation
 
@@ -591,6 +600,16 @@ Task 7 (networked race launch) is complete and tracked in
    in `docs/LOCKSTEP_RACE_MILESTONE.md`. It has slices LR-S1..LR-S14
    (LR-S1, the plan, is done) and defaults LR-1..LR-17. Race-launch risk 10
    (the RETURN_TO_TITLE load race) is fixed.
+   - Owner decisions (apply to the plan in the next run):
+     - race end: the race ends when every human has finished, or 30 s
+       after the first human finishes. With 3-4 humans, the 30 s starts
+       when all but one have finished. This replaces the 10-minute-only
+       end for a player who never finishes; the 10-minute cap stays as a
+       backstop.
+     - input delay: 3 ticks, accepted pending a feel test on the
+       cabinets.
+     - the 2P split screen ships first; full-screen per cabinet is
+       stretch goal 13.
    - Next: the owner's ruling on LR-17 (may the live digest read the bot
      nav-path pointer `NavHeader.last`, which the lease rules reserve) and
      review of LR-1..LR-16.
