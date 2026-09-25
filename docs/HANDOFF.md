@@ -593,7 +593,7 @@ Task 7 (networked race launch) is complete and tracked in
   select.
 - The live ctest `arcade_link_launch` proves two races over loopback with
   two processes.
-- The suite is 154 tests. `ctest -LE live` skips the three live tests
+- The suite is 157 tests. `ctest -LE live` skips the three live tests
   (about 390 s of the ~450 s run).
 
 1. Task 8, in-race lockstep drive and failure handling
@@ -606,13 +606,16 @@ Task 7 (networked race launch) is complete and tracked in
      - LR-17 ruled (a): the NavHeader.last read is check-only;
      - input delay: 3 ticks, pending a feel test;
      - the split screen ships.
-   - Done: LR-S1 through LR-S6 (plan; the hold and autopilot spikes;
-     race VBlank pacing and the counter pin; live V4 projection; parked
-     early peer digests; dropping records from another match). The
-     suite is 154 tests.
-   - Next: LR-S7 (local sample seam), LR-S8 (pure drive core), and LR-S9
-     (host drive glue). After them come LR-S10 (the caller),
-     LR-S11..LR-S12, the LR-S13 gate, and LR-S14.
+   - Done: LR-S1 through LR-S9. That is the plan; the hold and autopilot
+     spikes; race VBlank pacing and the counter pin; the live V4
+     projection; parked early peer digests; dropping records from another
+     match; the local pad sample seam; the pure drive core; and the host
+     drive glue with the verbatim bundle send. Defaults now run to LR-57.
+     The suite is 157 tests, 154 of them in `-LE live`.
+   - Nothing in `game/` calls RaceStep or RaceHold yet.
+   - Next: LR-S10 (the caller replaces the rehearsal), LR-S11 (hold
+     presentation), LR-S12 (failure wiring to RESULTS), then the LR-S13
+     one-machine gate and the LR-S14 docs.
    - Hold banner: it is a host overlay, because DecalFont writes
      render-pass state (LR-S2 (a)). The owner asked why it does not use the
      game font. LR-S11 default: the host overlay draws the game font's
