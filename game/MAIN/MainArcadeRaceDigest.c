@@ -235,6 +235,13 @@ static int MainArcadeRaceDigest_ProjectTick(uint32_t raceTick, const struct Main
 	view = MainCanonicalRuntime_ViewV4(workspace, &state->request);
 	if ((view == NULL) || (view->frameNumber != raceTick))
 	{
+		/* End the frame before latching, so no failure leaves the workspace
+		 * prepared or frame-active: Release the prepared state, or Reset when
+		 * there is no view (Release refuses the same request View refused). */
+		if ((view == NULL) || !MainCanonicalRuntime_ReleaseV4(workspace, &state->request))
+		{
+			MainCanonicalRuntime_Reset(workspace);
+		}
 		return MainArcadeRaceDigest_Fail(MAIN_ARCADE_RACE_DIGEST_FAILURE_VIEW);
 	}
 	/* Copied out before Release, which zeroes the view. */
@@ -245,6 +252,8 @@ static int MainArcadeRaceDigest_ProjectTick(uint32_t raceTick, const struct Main
 	topologyUnavailable = (memcmp(&view->topology, &state->unavailable, sizeof(state->unavailable)) == 0);
 	if (!MainCanonicalRuntime_ReleaseV4(workspace, &state->request))
 	{
+		/* A refused Release leaves the state prepared: Reset ends it. */
+		MainCanonicalRuntime_Reset(workspace);
 		return MainArcadeRaceDigest_Fail(MAIN_ARCADE_RACE_DIGEST_FAILURE_RELEASE);
 	}
 	if (!topologyUnavailable)

@@ -159,7 +159,7 @@ $tickPattern = '^tick ([0-9]+) control ([0-9a-f]{16}) rcontrol ([0-9a-f]{16}) rn
 # tick (LR-10); tests/main_arcade_race_digest_test.c pins the same value and
 # tests/main_arcade_race_digest_isolation_test.cmake keeps the two equal.
 $unavailableTopologyDigest = 'd75d92ae427cd357'
-$countersPattern ='^timer (-?[0-9]+) frameCounter (-?[0-9]+) frameTimer (-?[0-9]+) frameTimerConfetti (-?[0-9]+)$'
+$countersPattern = '^timer (-?[0-9]+) frameCounter (-?[0-9]+) frameTimer (-?[0-9]+) frameTimerConfetti (-?[0-9]+)$'
 # The seeded line (v10): the five seeds, then the pin readback at the pinned
 # values, RS-17's timer and frameTimerConfetti and LR-8's rcntTotalUnits and
 # clockFrameStart.
@@ -860,7 +860,7 @@ try {
             $failures += "K differs from A outside its hold line (first difference: $kFirstDifference)"
         }
         else {
-            Write-Output "K = A: every report line but the hold line (the header, the setup evidence, and the control, rcontrol, rng, input, and drivers digests of all $Ticks ticks)"
+            Write-Output "K = A: every report line but the hold line (the header, the setup evidence, and the control, rcontrol, rng, input, drivers, and V4 combined and domain digests of all $Ticks ticks)"
         }
         $hold = $reportK.Hold
         $holdFailures = @()

@@ -42,7 +42,9 @@
  * in an earlier race never carries into this one) and captures the
  * race-relative base. Every later call must be the next race tick. Any
  * failure is latched until the next race tick 0, and every call after it
- * fails; the caller treats any failure as a local drive failure.
+ * fails; the caller treats any failure as a local drive failure. No failure
+ * leaves the runtime's frame open: a failure after PrepareV4 releases the
+ * prepared state, or resets the runtime when Release is refused.
  * MainArcadeRaceDigest_EndRace, on the race's end frame, invalidates the
  * runtime's topology context, because the next race loads a level that can
  * reuse addresses.
@@ -68,7 +70,7 @@ enum MainArcadeRaceDigestFailure
 	MAIN_ARCADE_RACE_DIGEST_FAILURE_WORLD = 4,       /* a world extractor refused the game state */
 	MAIN_ARCADE_RACE_DIGEST_FAILURE_BEGIN_FRAME = 5, /* the runtime refused BeginFrame */
 	MAIN_ARCADE_RACE_DIGEST_FAILURE_PREPARE = 6,     /* the runtime refused PrepareV4 (see the runtime reason) */
-	MAIN_ARCADE_RACE_DIGEST_FAILURE_VIEW = 7,        /* the runtime gave no view */
+	MAIN_ARCADE_RACE_DIGEST_FAILURE_VIEW = 7,        /* the runtime gave no view, or one of another frame */
 	MAIN_ARCADE_RACE_DIGEST_FAILURE_TOPOLOGY = 8,    /* the view's topology is not the unavailable summary */
 	MAIN_ARCADE_RACE_DIGEST_FAILURE_RELEASE = 9,     /* the runtime refused ReleaseV4 */
 	MAIN_ARCADE_RACE_DIGEST_FAILURE_END = 10         /* EndRace could not invalidate the topology context */

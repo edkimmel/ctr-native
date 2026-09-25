@@ -9,8 +9,11 @@
  * 32-bit wrap), the unavailable TOPOLOGY summary on every tick (its domain
  * digest pinned to the constant tools/arcade-roster-proof-check.ps1
  * requires), the bank carried through the request, the per-tick lifecycle
- * and sequence rules, a clean race 2 after a race 1 poisoned by a forced
- * runtime failure, and the NativePerf scope.
+ * and sequence rules, the END failure, a clean race 2 after a race 1
+ * poisoned by a forced runtime failure, and the NativePerf scope. The VIEW
+ * and RELEASE failures cannot be reached from outside (the module owns the
+ * request it prepares, views, and releases); the isolation test pins that
+ * both end the runtime's frame before latching.
  */
 #include "common.h"
 #include "MAIN/MainCanonicalDrivers.h"
@@ -308,8 +311,18 @@ static int TestRace(void)
 	f->tracker.frameTimer_VsyncCallback += 1;
 	CHECK(MainArcadeRaceDigest_Project(4u, &f->sources, &tick));
 	CHECK(Expected(f, 4u, &expected) && !SameDigests(&tick, &expected));
-	CHECK(tick.domainDigests[rngIndex] == expected.domainDigests[rngIndex]);
-	CHECK(tick.domainDigests[DomainIndex(NATIVE_CANONICAL_DOMAIN_CONTROL)] != expected.domainDigests[DomainIndex(NATIVE_CANONICAL_DOMAIN_CONTROL)]);
+	CHECK(tick.frameNumber == expected.frameNumber && tick.combinedDigest != expected.combinedDigest);
+	for (uint32_t index = 0; index < NATIVE_CANONICAL_DOMAIN_COUNT; index++)
+	{
+		if (NativeCanonicalDomainOrder[index] == NATIVE_CANONICAL_DOMAIN_CONTROL)
+		{
+			CHECK(tick.domainDigests[index] != expected.domainDigests[index]);
+		}
+		else
+		{
+			CHECK(tick.domainDigests[index] == expected.domainDigests[index]);
+		}
+	}
 	CHECK(MainArcadeRaceDigest_EndRace() == 1);
 
 	/* Another bank (another seed's config and bank) moves the RNG domain. */
@@ -459,7 +472,8 @@ static int TestPoisonedRaceThenCleanRace(void)
 	return 1;
 }
 
-/* EndRace invalidates the runtime's topology context: a new epoch. */
+/* EndRace invalidates the runtime's topology context: a new epoch. A runtime
+ * that refuses the invalidation latches END. */
 static int TestEndRace(void)
 {
 	struct Fixture *f = &s_fixture;
@@ -474,6 +488,26 @@ static int TestEndRace(void)
 	CHECK(!MainCanonicalRuntime_Global()->topologyContext.captureActive);
 	/* After the end frame the race is over: only race tick 0 starts one. */
 	CHECK(!MainArcadeRaceDigest_Project(1u, &f->sources, &tick) && MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_SEQUENCE);
+
+	/* The END failure: after a tick, a frame opened from outside makes the
+	 * runtime refuse the invalidation, and EndRace latches END. */
+	CHECK(FixtureInit(f, 10, 20));
+	CHECK(MainArcadeRaceDigest_Project(0u, &f->sources, &tick));
+	epoch = MainCanonicalRuntime_Global()->topologyContext.currentEpoch;
+	CHECK(MainCanonicalRuntime_BeginFrame(MainCanonicalRuntime_Global()));
+	CHECK(!MainArcadeRaceDigest_EndRace());
+	CHECK(MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_END);
+	CHECK(strcmp(MainArcadeRaceDigest_FailureName(MainArcadeRaceDigest_Failure()), "END") == 0);
+	CHECK(MainCanonicalRuntime_Global()->topologyContext.currentEpoch == epoch);
+	/* The latch holds: the race is over, and a later tick or end fails. */
+	CHECK(!MainArcadeRaceDigest_EndRace() && MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_END);
+	FixtureAdvance(f);
+	CHECK(!MainArcadeRaceDigest_Project(1u, &f->sources, &tick) && MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_END);
+	/* The next race tick 0 resets the runtime (the stray frame included). */
+	CHECK(FixtureInit(f, 10, 20));
+	CHECK(MainArcadeRaceDigest_Project(0u, &f->sources, &tick) && MainArcadeRaceDigest_Failure() == MAIN_ARCADE_RACE_DIGEST_FAILURE_NONE);
+	CHECK(!MainCanonicalRuntime_Global()->frameActive && !MainCanonicalRuntime_Global()->prepared);
+	CHECK(MainArcadeRaceDigest_EndRace() == 1);
 	return 1;
 }
 

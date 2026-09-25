@@ -11,11 +11,12 @@
 #     platform call, and no heap; its source and header name no lockstep
 #     token, comments included (LR-1); its includes are an allow-list; the
 #     .c is one CTR_NATIVE block;
-#  2. it runs the runtime's per-tick lifecycle, once each and in order
-#     (Reset on race tick 0, the unavailable topology summary, BeginFrame,
-#     PrepareV4 with the request carrying the caller's bank, ViewV4,
-#     ReleaseV4), invalidates the topology context only in EndRace, calls no
-#     other runtime entry, calls both world extractors, and wraps the whole
+#  2. it runs the runtime's per-tick lifecycle in order (Reset on race
+#     tick 0, the unavailable topology summary, BeginFrame, PrepareV4 with
+#     the request carrying the caller's bank, ViewV4, ReleaseV4), ends the
+#     frame before latching a VIEW or RELEASE failure (Release, else Reset),
+#     invalidates the topology context only in EndRace, calls no other
+#     runtime entry, calls both world extractors, and wraps the whole
 #     projection in its one NativePerf scope;
 #  3. MainArcadeRaceDigest_* is named only by the module and its callers:
 #     the roster proof (LR-S4; the race caller joins in LR-S10). platform/
@@ -27,7 +28,8 @@
 #     pulled member would define sdata twice);
 #  5. the LR-17 pin, for the owner's ruling (a): among the first-party
 #     game/MAIN/MainCanonical* and game/MAIN/MainArcade* sources, the only
-#     functions that name NavHeader and read a last member are
+#     functions that name a nav header (NavHeader, or the two ways to one,
+#     NavPath_ptrHeader and LevNavTable) and read a last member are
 #     MainCanonicalTopologyLease_ObservePostInit and
 #     MainCanonicalDrivers_BotNavIndex, and both do; the lease header no
 #     longer calls ObservePostInit the "sole API", and it and the runtime's
@@ -174,15 +176,19 @@ endfunction()
 
 # The LR-17 pin over one file's code: appends to out_readers the allowed
 # function names whose units read a NavHeader's last, and fails on any other
-# unit that names NavHeader and reads a last member.
+# unit that names a nav header and reads a last member. A unit names a nav
+# header when it names NavHeader or one of the two ways to reach one,
+# sdata's NavPath_ptrHeader and the level's LevNavTable, so a read such as
+# sourceData->NavPath_ptrHeader[p]->last is seen without the type's name.
 set(ctr_allowed_last_readers "MainCanonicalTopologyLease_ObservePostInit" "MainCanonicalDrivers_BotNavIndex")
 set(ctr_last_read_regex "(->|[.])[ \t\n]*last([^A-Za-z0-9_]|$)")
+set(ctr_nav_header_regex "NavHeader|NavPath_ptrHeader|LevNavTable")
 function(ctr_pin_last_readers label code out_readers)
     ctr_units("${label}" "${code}" units)
     set(readers "")
     foreach(unit IN LISTS units)
-        string(FIND "${unit}" "NavHeader" names_header)
-        if(names_header EQUAL -1)
+        string(REGEX MATCH "${ctr_nav_header_regex}" names_header "${unit}")
+        if("${names_header}" STREQUAL "")
             continue()
         endif()
         string(REGEX MATCH "${ctr_last_read_regex}" last_read "${unit}")
@@ -200,7 +206,7 @@ function(ctr_pin_last_readers label code out_readers)
         if("${allowed}" STREQUAL "")
             string(STRIP "${signature}" shown)
             string(REPLACE "@SEMI@" ";" shown "${shown}")
-            message(FATAL_ERROR "${prefix}: LR-17 pin: ${label} reads a NavHeader's last outside "
+            message(FATAL_ERROR "${prefix}: LR-17 pin: ${label} reads a nav header's last outside"
                 "MainCanonicalTopologyLease_ObservePostInit and MainCanonicalDrivers_BotNavIndex, in '${shown}'")
         endif()
         list(APPEND readers "${allowed}")
@@ -236,11 +242,13 @@ foreach(reader_line IN ITEMS
         "static int Leak(const struct NavHeader *h) { return h->last != 0; }"
         "int X(void) { struct NavHeader copy; return copy . last == 0; }"
         "int MainCanonicalDrivers_BotNavIndexCopy(const struct NavHeader *h) { return h->last != 0; }"
-        "int MainCanonicalDrivers_BotNavIndex(void); int Wrap(const struct NavHeader *h) { return h->\n last != 0; }")
+        "int MainCanonicalDrivers_BotNavIndex(void); int Wrap(const struct NavHeader *h) { return h->\n last != 0; }"
+        "int ByPath(const struct sData *s, int p) { return s->NavPath_ptrHeader[p]->last != 0; }"
+        "int ByTable(const struct GameTracker *g, int p) { return g->level1->LevNavTable[p]->last != 0; }")
     set(self_probe_failed 0)
     ctr_units("the self-check" "${reader_line}" probe_units)
     foreach(unit IN LISTS probe_units)
-        string(FIND "${unit}" "NavHeader" probe_names)
+        string(REGEX MATCH "${ctr_nav_header_regex}" probe_names "${unit}")
         string(REGEX MATCH "${ctr_last_read_regex}" probe_read "${unit}")
         ctr_unit_signature("${unit}" probe_signature)
         set(probe_allowed 0)
@@ -250,7 +258,7 @@ foreach(reader_line IN ITEMS
                 set(probe_allowed 1)
             endif()
         endforeach()
-        if((NOT probe_names EQUAL -1) AND (NOT "${probe_read}" STREQUAL "") AND (NOT probe_allowed))
+        if((NOT "${probe_names}" STREQUAL "") AND (NOT "${probe_read}" STREQUAL "") AND (NOT probe_allowed))
             set(self_probe_failed 1)
         endif()
     endforeach()
@@ -388,6 +396,36 @@ ctr_require_order("${digest_source} (MainArcadeRaceDigest_ProjectTick)" "${tick_
     "&state->topology)"
     "MainCanonicalRuntime_ViewV4(workspace, &state->request)"
     "MainCanonicalRuntime_ReleaseV4(workspace, &state->request)")
+# No failure leaves the runtime frame open: once PrepareV4 has succeeded, the
+# VIEW failure releases the prepared state (or resets when there is no view
+# to release), and a refused Release resets, each before latching; each
+# path runs one Reset and has no return but its latch.
+ctr_require_order("${digest_source} (the VIEW and RELEASE failure paths)" "${tick_body}"
+    "view = MainCanonicalRuntime_ViewV4(workspace, &state->request);"
+    "if ((view == NULL) || (view->frameNumber != raceTick))"
+    "if ((view == NULL) || !MainCanonicalRuntime_ReleaseV4(workspace, &state->request))"
+    "MainCanonicalRuntime_Reset(workspace);"
+    "return MainArcadeRaceDigest_Fail(MAIN_ARCADE_RACE_DIGEST_FAILURE_VIEW);"
+    "tick.frameNumber = view->frameNumber;"
+    "if (!MainCanonicalRuntime_ReleaseV4(workspace, &state->request))"
+    "MainCanonicalRuntime_Reset(workspace);"
+    "return MainArcadeRaceDigest_Fail(MAIN_ARCADE_RACE_DIGEST_FAILURE_RELEASE);")
+foreach(pair IN ITEMS
+        "if ((view == NULL) || (view->frameNumber != raceTick))@@MAIN_ARCADE_RACE_DIGEST_FAILURE_VIEW)"
+        "if (!MainCanonicalRuntime_ReleaseV4(workspace, &state->request))@@MAIN_ARCADE_RACE_DIGEST_FAILURE_RELEASE)")
+    string(REPLACE "@@" ";" pair "${pair}")
+    list(GET pair 0 opener)
+    list(GET pair 1 latch)
+    string(FIND "${tick_body}" "${opener}" opener_at)
+    string(SUBSTRING "${tick_body}" ${opener_at} -1 failure_path)
+    string(FIND "${failure_path}" "${latch}" latch_at)
+    string(SUBSTRING "${failure_path}" 0 ${latch_at} failure_path)
+    ctr_count_identifier("${failure_path}" "return" failure_returns)
+    ctr_count_identifier("${failure_path}" "MainCanonicalRuntime_Reset" failure_resets)
+    if(NOT failure_returns EQUAL 1 OR NOT failure_resets EQUAL 1)
+        message(FATAL_ERROR "${prefix}: ${digest_source}'s ${latch} path must end the frame (one Reset) before its one return")
+    endif()
+endforeach()
 ctr_require_order("${digest_source} (MainArcadeRaceDigest_Project)" "${project_body}"
     "NativePerf_BeginScope(NATIVE_PERF_BUCKET_ARCADE_RACE_DIGEST);"
     "MainArcadeRaceDigest_ProjectTick(raceTick, sources, out);"
@@ -395,8 +433,8 @@ ctr_require_order("${digest_source} (MainArcadeRaceDigest_Project)" "${project_b
 ctr_require("${digest_source} (MainArcadeRaceDigest_EndRace)" "${end_body}"
     "MainCanonicalRuntime_InvalidateTopology(MainCanonicalRuntime_Global())")
 foreach(pair IN ITEMS
-        "MainCanonicalRuntime_Reset|1" "MainCanonicalRuntime_BeginFrame|1" "MainCanonicalRuntime_PrepareV4|1"
-        "MainCanonicalRuntime_ViewV4|1" "MainCanonicalRuntime_ReleaseV4|1" "MainCanonicalRuntime_InvalidateTopology|1"
+        "MainCanonicalRuntime_Reset|3" "MainCanonicalRuntime_BeginFrame|1" "MainCanonicalRuntime_PrepareV4|1"
+        "MainCanonicalRuntime_ViewV4|1" "MainCanonicalRuntime_ReleaseV4|2" "MainCanonicalRuntime_InvalidateTopology|1"
         "MainCanonicalRuntime_Init|0" "NativeCanonicalTopologyV1_Init|2" "NativePerf_BeginScope|1" "NativePerf_EndScope|1"
         "MainCanonicalWorldCounters_ExtractV1|1" "MainCanonicalWorldMineRegistry_ExtractV1|1"
         "NativeDeterministicRngBankV1_Init|0" "NativeDeterministicRngBankV1_InitInPlace|0")
@@ -504,7 +542,7 @@ foreach(library IN ITEMS ctr_native_main_canonical_world_counters ctr_native_mai
     endif()
 endforeach()
 
-# 5. The LR-17 pin: the only NavHeader last readers.
+# 5. The LR-17 pin: the only nav header last readers.
 file(GLOB pin_files RELATIVE "${repo}"
     "${repo}/game/MAIN/MainCanonical*.c" "${repo}/game/MAIN/MainCanonical*.h"
     "${repo}/game/MAIN/MainArcade*.c" "${repo}/game/MAIN/MainArcade*.h")
@@ -515,8 +553,8 @@ endif()
 set(all_readers "")
 foreach(relative_path IN LISTS pin_files)
     ctr_read_source("${relative_path}" pin_source)
-    string(FIND "${pin_source}" "NavHeader" pin_names)
-    if(pin_names EQUAL -1)
+    string(REGEX MATCH "${ctr_nav_header_regex}" pin_names "${pin_source}")
+    if("${pin_names}" STREQUAL "")
         continue()
     endif()
     ctr_code("${relative_path}" "${pin_source}" pin_code)

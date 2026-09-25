@@ -1671,9 +1671,11 @@ static int RuntimeWorkspaceV4Test(void)
 
 	/* LR-10 (LR-19): a request that carries a bank projects a copy of that bank
 	 * (a linked race's post-setup bank, which has been drawn from) instead of a
-	 * fresh derivation; the pointer is part of the token; and the projector
-	 * still rejects a bank whose masterSeed or derivation version is not the
-	 * config's.  A NULL bank keeps the fresh derivation (every case above). */
+	 * fresh derivation; the pointer is part of the token; and PrepareV4 still
+	 * fails PROJECT on a bank whose masterSeed is not the config's (the
+	 * projector's config comparison) or whose derivation version is not the
+	 * supported one (the projector's bank validation).  A NULL bank keeps the
+	 * fresh derivation (every case above). */
 	{
 		struct NativeDeterministicRngBankV1 drawn=deterministicRng,other;uint32_t drawnValue=0;
 		RUNTIME_CHECK(NativeDeterministicRngBankV1_NextU32(&drawn,NATIVE_DETERMINISTIC_RNG_STREAM_MATCH_SETUP,NATIVE_DETERMINISTIC_RNG_GLOBAL_SLOT,NATIVE_DETERMINISTIC_RNG_GLOBAL_SLOT,&drawnValue));
@@ -1686,9 +1688,16 @@ static int RuntimeWorkspaceV4Test(void)
 		wrong=request;wrong.bank=&deterministicRng;beforeSubmission=submission;RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_GetSubmissionV4(&workspace,&wrong,&submission)&&!MainCanonicalRuntime_ReleaseV4(&workspace,&wrong)&&workspace.prepared);
 		wrong.bank=NULL;RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&wrong)==NULL);
 		RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&request)!=NULL&&MainCanonicalRuntime_ReleaseV4(&workspace,&request));
-		other=drawn;other.masterSeed^=UINT64_C(1);request.bank=&other;
+		/* A valid bank of another masterSeed: the projector's config comparison rejects it. */
+		other=drawn;other.masterSeed^=UINT64_C(1);request.bank=&other;RUNTIME_CHECK(NativeDeterministicRngBankV1_Validate(&other));
 		RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT);
+		/* A bank of another derivation version.  NativeDeterministicRngBankV1_Validate
+		 * (platform/native_deterministic_rng.c) rejects it before the projector's
+		 * config comparison: the bank and the validated config each accept only
+		 * derivation version 1, so no bank is valid yet mismatches the config's
+		 * version, and that comparison cannot be reached on its own here. */
 		MainCanonicalRuntime_Reset(&workspace);other=drawn;other.derivationVersion++;
+		RUNTIME_CHECK(!NativeDeterministicRngBankV1_Validate(&other));
 		RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT);
 		MainCanonicalRuntime_Reset(&workspace);request.bank=NULL;
 	}

@@ -943,9 +943,10 @@ a level that can reuse addresses. The domains:
   constant during the race, so "project" means the RNG domain proves every
   tick that both cabinets hold the same post-setup bank. PrepareV4 takes
   it from the request instead of re-deriving a fresh one
-  (MainCanonicalRuntime.c:316-317). The projector still checks masterSeed
-  and the derivation version against the config
-  (game/MAIN/MainCanonicalStateV4.c:61-62). The dormant MainArcadeSetupV4
+  (MainCanonicalRuntime_StageBankV4, MainCanonicalRuntime.c:49-59, called
+  at :337). The projector still checks masterSeed and the derivation
+  version against the config (game/MAIN/MainCanonicalStateV4.c:107-108,
+  the in-place projector the runtime calls). The dormant MainArcadeSetupV4
   boundary stays dormant: it re-plans the setup on every call.
 - Input. The four snapshots GameLogic k read, captured with
   Platform_InputCapturePadSnapshots before this tick's install and frozen
@@ -957,7 +958,8 @@ a level that can reuse addresses. The domains:
   read allowed on the live path, check-only (LR-17, ruled (a)), so this
   domain goes live.
 - World. MainCanonicalWorldCounters_ExtractV1 and
-  MainCanonicalWorldMineRegistry_ExtractV1, newly linked into ctr_native.
+  MainCanonicalWorldMineRegistry_ExtractV1, compiled into ctr_native
+  through the unity chain, not linked (LR-22).
 - Topology. Not compared in Task 8. MainArcadeRaceDigest supplies the
   unavailable summary, NativeCanonicalTopologyV1_Init's value (section
   2.5), on every tick. Its domain digest is the same constant on both
@@ -976,18 +978,21 @@ The per-tick runtime lifecycle is fixed by the runtime:
 
 1. MainCanonicalRuntime_BeginFrame. It is refused while a prepared state
    is outstanding or a frame is already active
-   (MainCanonicalRuntime.c:95-101).
+   (MainCanonicalRuntime.c:111-117).
 2. MainCanonicalRuntime_PrepareV4. Without an active frame it poisons the
-   workspace with FRAME_STATE (MainCanonicalRuntime.c:236-240).
-3. MainCanonicalRuntime_ViewV4 (MainCanonicalRuntime.h:149-151). The
+   workspace with FRAME_STATE (MainCanonicalRuntime.c:252-256).
+3. MainCanonicalRuntime_ViewV4 (MainCanonicalRuntime.h:162-164). The
    digests are recorded, or the state copied, from this view.
-4. MainCanonicalRuntime_ReleaseV4 (MainCanonicalRuntime.c:381-391). It
+4. MainCanonicalRuntime_ReleaseV4 (MainCanonicalRuntime.c:401-411). It
    zeroes the workspace's state and ends the frame, so nothing may read
    the view after it. The header's rule is that a prepared state is
-   released before another lifecycle mutation (MainCanonicalRuntime.h:109).
+   released before another lifecycle mutation (MainCanonicalRuntime.h:118).
 
 MainArcadeRaceDigest runs all four on every race tick, and a projection
-failure at any step is a local drive failure (LR-12).
+failure at any step is a local drive failure (LR-12). No failure leaves
+the frame open: a failed PrepareV4 poisons the workspace, which ends the
+frame; a VIEW failure releases the prepared state, or resets the runtime
+when there is no view; and a refused Release resets it.
 
 The per-tick cost is measured with NativePerf in LR-S4 (risk 3).
 Review required: this touches canonical state and the runtime's
@@ -1617,7 +1622,9 @@ through game/game_unity.h. It does not link their libraries: a pulled
 library member would define sdata a second time (LNK2005 against
 main.obj). The libraries remain for their own unit tests. The digest
 isolation test pins the unity includes and bans the two libraries from
-ctr_native's link line. This replaces LR-10's "newly linked".
+ctr_native's link line. This replaces the "newly linked into
+ctr_native" of LR-10's first draft; LR-10 and the LR-S4 plan now point
+here.
 
 LR-23 Sources from the caller. The caller passes gGT, sdata, the mine
 pool (&D231), the config, the bank (MainArcadeRaceSetup_Bank()), and the
@@ -1633,6 +1640,9 @@ arrive unnoticed.
 
 LR-25 Cost bucket. The whole projection runs inside one NativePerf
 scope, arcade_race_digest_ms. It is a no-op outside CTR_INTERNAL.
+NativePerf buckets are independent, so the race caller (LR-S10) must not
+call MainArcadeRaceDigest_Project inside the GAME_LOGIC scope, or its
+time is counted twice.
 
 LR-26 Report v11. Each tick line appends v4, v4control, v4rng, v4input,
 v4drivers, v4world, and v4topology, 16 hex digits each. A projection or
@@ -1644,11 +1654,13 @@ main_arcade_race_setup_isolation bans topology tokens in the game hook.
 LR-27 The LR-17 pin. main_arcade_race_digest_isolation splits every
 game/MAIN/MainCanonical* and game/MAIN/MainArcade* source (comments
 removed, literals blanked) into top-level brace units. A unit that
-names NavHeader and reads a last member must be
+names a nav header (NavHeader, or one of the two ways to reach one,
+NavPath_ptrHeader and LevNavTable) and reads a last member must be
 MainCanonicalTopologyLease_ObservePostInit or
 MainCanonicalDrivers_BotNavIndex, and both must read one. The scan is
-textual: a read through a pointer whose unit never names NavHeader is
-not seen. Review covers that case.
+textual: a read through a pointer whose unit names none of the three,
+such as a nav header pointer passed in untyped or from another file's
+helper, is not seen. Review covers that case.
 
 Review changes. The plan review (on befa152a9) changed these defaults:
 
@@ -2315,11 +2327,16 @@ Result:
   median 1.268 ms, p99 1.895 ms, max 2.346 ms, total 1165.6 ms. That is
   about 21% of those frames' mean work (6.23 ms), far inside the 33.3 ms
   tick. Its report was byte-identical to the ctest run's A.
+- Memory. The roster proof's tickLines array keeps its 6000 entries
+  (NATIVE_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_TICKS, unchanged); each entry
+  grew from 72 to 128 bytes with the seven v4 fields, so the array grew
+  from 432,000 to 768,000 bytes (336,000 more). It is file-scope static
+  storage (s_nativeArcadeRosterProof), not heap.
 - Tests. New main_arcade_race_digest_unit (race-relative control and its
   wrap, four ticks against an independent projection, the unavailable
   topology, a different boot phase giving identical ticks, a pacing fault
   changing only control, the SEQUENCE, ARGUMENT, CONFIG, WORLD, PREPARE,
-  and BEGIN_FRAME failures and their latch, EndRace, and a clean race 2
+  BEGIN_FRAME, and END failures and their latch, EndRace, and a clean race 2
   after a race 1 poisoned with MainCanonicalRuntime_TestForceFailure).
   New main_arcade_race_digest_isolation (read-only, lease-free, the
   include allow-list, the lifecycle order, the callers, the unity chain,
@@ -2348,6 +2365,16 @@ Result:
   these runs (no weapon is fired).
 - Normal boot and replay are unchanged: only the roster proof
   (CTR_INTERNAL) calls the module until LR-S10.
+- Review follow-ups. A VIEW failure now releases the prepared state (or
+  resets the runtime when there is no view) and a refused Release resets
+  it, before the failure latches, so no failure leaves the workspace
+  prepared or frame-active; main_arcade_race_digest_isolation pins the
+  order. Neither failure is reachable from outside the module, so the
+  unit test covers the reachable END failure instead. The LR-17 pin also
+  scans units that name NavPath_ptrHeader or LevNavTable (LR-27). The
+  mine registry's file-scope helpers carry the
+  MainCanonicalWorldMineRegistry_ prefix, since the file is now in the
+  unity chain.
 
 Plan: LR-10, and LR-17's ruling (a).
 
@@ -2356,7 +2383,8 @@ Plan: LR-10, and LR-17's ruling (a).
   ViewV4, ReleaseV4.
 - The PrepareV4 request carries the bank.
 - The unavailable TOPOLOGY summary on every tick; no topology reader.
-- The world extractors are linked into ctr_native.
+- The world extractors are compiled into ctr_native through the unity
+  chain, not linked (LR-22).
 - The race-relative control base is captured, and the runtime reset, on
   race tick 0.
 - LR-17's ruling (a): the corrected "sole API" comment
