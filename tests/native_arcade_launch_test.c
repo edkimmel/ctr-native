@@ -1187,6 +1187,79 @@ static int TestSaturation(void)
 	return 0;
 }
 
+/*
+ * The uncapped rule (the linked race's start wait, LR-69): ShouldSend without
+ * the lingerTicks cap. Equal to ShouldSend before the cap; past it, 1 until
+ * both HEARD halves are set, and 0 once they are; inactive and NULL are 0;
+ * PENDING is 1 whatever the tick count; it never changes the agreement.
+ */
+static int TestShouldSendUncapped(void)
+{
+	struct NativeArcadeLaunchAgreement a;
+	struct NativeArcadeLaunchAgreement before;
+	uint8_t digest[DIGEST_BYTES];
+	uint8_t bytes[RECORD_BYTES];
+
+	MakeDigest(digest, 0x45u);
+	CHECK(NativeArcadeLaunch_ShouldSendUncapped(NULL) == 0);
+	memset(&a, 0, sizeof(a));
+	CHECK(NativeArcadeLaunch_ShouldSendUncapped(&a) == 0);
+
+	/* PENDING: 1, also far past any cap. */
+	CHECK(NativeArcadeLaunch_Begin(&a, NATIVE_ARCADE_LAUNCH_ROLE_CAB1, digest, 3u));
+	CHECK(NativeArcadeLaunch_ShouldSendUncapped(&a) == 1);
+	a.ticksSinceCommit = 1000u;
+	CHECK(NativeArcadeLaunch_ShouldSendUncapped(&a) == 1);
+	a.ticksSinceCommit = 0u;
+
+	/* Committed, one HEARD record composed, the peer's HEARD not heard. */
+	CraftRecord(bytes, NATIVE_ARCADE_LAUNCH_ROLE_CAB2, 0u, 1u, digest);
+	CHECK(NativeArcadeLaunch_Accept(&a, bytes, RECORD_BYTES) == NATIVE_ARCADE_LAUNCH_ACCEPT_ACCEPTED);
+	CHECK(Compose(&a, bytes) == 0);
+	CHECK(a.heardSent == 1u && a.peerHeard == 0u);
+	for (uint32_t tick = 0; tick < 3u; tick++)
+	{
+		CHECK(NativeArcadeLaunch_ShouldSend(&a) == 1);
+		CHECK(NativeArcadeLaunch_ShouldSendUncapped(&a) == 1);
+		NativeArcadeLaunch_Tick(&a);
+	}
+	/* The cap: ShouldSend stops, the uncapped rule does not, and asking
+	 * changes nothing. */
+	CHECK(a.ticksSinceCommit == 3u);
+	before = a;
+	CHECK(NativeArcadeLaunch_ShouldSend(&a) == 0);
+	CHECK(NativeArcadeLaunch_ShouldSendUncapped(&a) == 1);
+	CHECK(memcmp(&a, &before, sizeof(a)) == 0);
+	for (uint32_t tick = 0; tick < 500u; tick++)
+	{
+		NativeArcadeLaunch_Tick(&a);
+		CHECK(NativeArcadeLaunch_ShouldSend(&a) == 0);
+		CHECK(NativeArcadeLaunch_ShouldSendUncapped(&a) == 1);
+	}
+	/* The peer's HEARD past the cap: both halves, so the uncapped rule
+	 * stops too. */
+	CraftRecord(bytes, NATIVE_ARCADE_LAUNCH_ROLE_CAB2, NATIVE_ARCADE_LAUNCH_FLAG_HEARD, 2u, digest);
+	CHECK(NativeArcadeLaunch_Accept(&a, bytes, RECORD_BYTES) == NATIVE_ARCADE_LAUNCH_ACCEPT_ACCEPTED);
+	CHECK(NativeArcadeLaunch_ShouldSendUncapped(&a) == 0);
+	CHECK(NativeArcadeLaunch_ShouldSend(&a) == 0);
+
+	/* peerHeard without heardSent past the cap: still one HEARD owed. */
+	CHECK(NativeArcadeLaunch_Begin(&a, NATIVE_ARCADE_LAUNCH_ROLE_CAB2, digest, 2u));
+	CraftRecord(bytes, NATIVE_ARCADE_LAUNCH_ROLE_CAB1, NATIVE_ARCADE_LAUNCH_FLAG_HEARD, 5u, digest);
+	CHECK(NativeArcadeLaunch_Accept(&a, bytes, RECORD_BYTES) == NATIVE_ARCADE_LAUNCH_ACCEPT_ACCEPTED);
+	NativeArcadeLaunch_Tick(&a);
+	NativeArcadeLaunch_Tick(&a);
+	CHECK(NativeArcadeLaunch_ShouldSend(&a) == 0);
+	CHECK(NativeArcadeLaunch_ShouldSendUncapped(&a) == 1);
+	CHECK(Compose(&a, bytes) == 0);
+	CHECK(NativeArcadeLaunch_ShouldSendUncapped(&a) == 0);
+
+	/* Reset is inactive: 0. */
+	NativeArcadeLaunch_Reset(&a);
+	CHECK(NativeArcadeLaunch_ShouldSendUncapped(&a) == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestGolden() == 0);
@@ -1205,6 +1278,7 @@ int main(void)
 	CHECK(TestReset() == 0);
 	CHECK(TestNullSafety() == 0);
 	CHECK(TestSaturation() == 0);
+	CHECK(TestShouldSendUncapped() == 0);
 	puts("native_arcade_launch_test: ok");
 	return 0;
 }

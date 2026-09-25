@@ -30,6 +30,11 @@ uint32_t NativeArcadeLinkHost_InternalDriveFailureReports(void);
  * clears it); 0 unless the mode is LINK. */
 uint32_t NativeArcadeLinkHost_InternalConsecutiveStalls(void);
 
+/* The link's launch linger count as it stands: ticks (and held tick
+ * periods) counted since the launch agreement committed (RL-4, LR-69); 0
+ * unless the mode is LINK. */
+uint32_t NativeArcadeLinkHost_InternalLaunchTicksSinceCommit(void);
+
 /* The race tick limit the host's race tick limit setter stored (0: the
  * default), in any mode (LR-60). */
 uint32_t NativeArcadeLinkHost_InternalRaceTickLimit(void);

@@ -29,7 +29,10 @@
  * later one, with its DriveResult due; the committed pads replace the
  * neutral ones only on a GO frame; every other result, and every other exit
  * from the drive phase, is a driveEnded frame, after which no drive step
- * comes until the next race tick 0. Each test then pins its own frames.
+ * comes until the next race tick 0; since LR-S12 it also counts the frames
+ * from a driveEnded frame on, each with the neutral pads and none with the
+ * committed ones until the next race tick 0. Each test then pins its own
+ * frames.
  */
 
 #define CHECK(expression)                                            \
@@ -173,6 +176,8 @@ struct Harness
 	uint32_t driveSteps;  /* driveStep frames so far */
 	uint32_t commits;     /* installCommitted frames so far */
 	uint32_t driveEnds;   /* driveEnded frames so far */
+	uint8_t driveEndSeen; /* a driveEnded frame since the last race tick 0 */
+	uint32_t neutralAfterEnd; /* neutral-pad frames from a driveEnded frame on (LR-12) */
 };
 
 static void HarnessInit(struct Harness *h)
@@ -219,6 +224,7 @@ static int FrameDrive(struct Harness *h, const Input *input, uint32_t result, ui
 		CHECK(h->driveOpen == 0u);
 		CHECK(out->driveStep == 1u);
 		h->driveOpen = 1u;
+		h->driveEndSeen = 0u;
 	}
 	if (out->driveStep != 0u)
 	{
@@ -260,6 +266,20 @@ static int FrameDrive(struct Harness *h, const Input *input, uint32_t result, ui
 		CHECK(h->driveOpen != 0u);
 		h->driveOpen = 0u;
 		h->driveEnds++;
+		h->driveEndSeen = 1u;
+	}
+	/* Neutral pads from the end frame (LR-12): from a driveEnded frame until
+	 * the next race tick 0, no frame installs committed pads or steps the
+	 * drive; each installs the neutral pads until the clear (race tick 0
+	 * cleared the flag above, before its own step's end set it). */
+	if (h->driveEndSeen != 0u)
+	{
+		CHECK(out->installCommitted == 0u);
+		CHECK((out->driveStep == 0u) || (out->driveEnded != 0u));
+		if (out->installPads != 0u)
+		{
+			h->neutralAfterEnd++;
+		}
 	}
 	/* The drive phase is left only on a driveEnded frame. */
 	CHECK((h->core.phase == P_DRIVE) == (h->driveOpen != 0u));
@@ -1904,6 +1924,8 @@ static int TestDriveEnds(uint32_t driveResult)
 	RUN(QuietOut(&h, &running, 40u, &out));
 	CHECK(out.installPads == 1u && out.installCommitted == 0u && out.driveStep == 0u);
 	CHECK(h.driveSteps == DRIVE_TICKS + 1u && h.driveEnds == 1u && h.commits == DRIVE_TICKS);
+	/* The end frame and the 40 after it, each neutral (LR-12). */
+	CHECK(h.neutralAfterEnd == 41u);
 	RUN(ReturnHome(&h, S_VALIDATED));
 	RUN(Quiet(&h, &results, 30u));
 	/* Race 2 starts at race tick 0 again. */
@@ -1936,6 +1958,8 @@ static int TestDriveEndOnRaceTickZero(void)
 	CHECK(h.core.phase == P_ENDED && h.commits == 0u);
 	RUN(Quiet(&h, &running, 10u));
 	CHECK(h.driveSteps == 1u);
+	/* The end frame and the 10 after it, each neutral (LR-12). */
+	CHECK(h.neutralAfterEnd == 11u);
 	RUN(ReturnHome(&h, S_VALIDATED));
 	return 0;
 }

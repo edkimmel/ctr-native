@@ -236,7 +236,7 @@ string(SUBSTRING "${race_service_tail}" 0 "${race_service_end}" race_service_bod
 foreach(required IN ITEMS
         "NativeArcadeNetplay_PollLobby(netplay);"
         "NativeArcadeNetplay_DriveLaunch(netplay);"
-        "NativeArcadeNetplay_SendLaunch(netplay);"
+        "NativeArcadeNetplay_SendLaunch(netplay, launchPeriod == NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT);"
         "NativeArcadeFlow_Screen(&netplay->flow) != NATIVE_ARCADE_FLOW_SCREEN_RACING"
         "launchPeriod != 0")
     string(FIND "${race_service_body}" "${required}" found_at)
@@ -266,4 +266,54 @@ string(REGEX MATCHALL "NativeArcadeNetplay_PollLobby[(]netplay[)]" poll_lobby_ca
 list(LENGTH poll_lobby_calls poll_lobby_call_count)
 if(NOT poll_lobby_call_count EQUAL 2)
     message(FATAL_ERROR "arcade netplay isolation: expected NativeArcadeNetplay_PollLobby called exactly twice (Tick and RaceService), found ${poll_lobby_call_count}")
+endif()
+
+# 8b. The start wait's launch send (docs/LOCKSTEP_RACE_MILESTONE.md LR-69).
+#     The header defines NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT as 2,
+#     literally and once. SendLaunch is called exactly twice: Tick passes 0
+#     (the capped RL-4 rule, always), and RaceService passes whether its
+#     launch period is the start wait's. SendLaunch picks the uncapped rule
+#     only on that flag, in exactly this one expression, and the adapter names
+#     NativeArcadeLaunch_ShouldSendUncapped nowhere else. The linger's other
+#     stops (the agreement's HEARD halves, an inactive agreement, a link that
+#     is not RUNNING) and its tick are unchanged.
+string(REGEX MATCHALL "#define NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT[ \t]" start_wait_defines "${header}")
+list(LENGTH start_wait_defines start_wait_define_count)
+if(NOT start_wait_define_count EQUAL 1)
+    message(FATAL_ERROR "arcade netplay isolation: ${netplay_header} must define NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT exactly once (found ${start_wait_define_count})")
+endif()
+ctr_require_regex("${netplay_header} (RACE_SERVICE_START_WAIT must stay 2)" "${header}"
+    "\n#define NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT 2\r?\n")
+string(REGEX MATCHALL "NativeArcadeNetplay_SendLaunch[(]netplay, [^;]*[)]" send_launch_calls "${netplay_source}")
+list(LENGTH send_launch_calls send_launch_call_count)
+string(REGEX MATCHALL "NativeArcadeNetplay_SendLaunch[(]" send_launch_names "${netplay_source}")
+list(LENGTH send_launch_names send_launch_name_count)
+if(NOT send_launch_call_count EQUAL 2 OR NOT send_launch_name_count EQUAL 3)
+    message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_SendLaunch must be defined once and called exactly twice (found ${send_launch_name_count} names, ${send_launch_call_count} calls)")
+endif()
+string(FIND "${netplay_source}" "\n\tNativeArcadeNetplay_SendLaunch(netplay, 0);\n" tick_send_at)
+if(tick_send_at EQUAL -1)
+    message(FATAL_ERROR "arcade netplay isolation: Tick must send its launch record with NativeArcadeNetplay_SendLaunch(netplay, 0); (the capped rule)")
+endif()
+string(FIND "${race_service_body}" "NativeArcadeNetplay_SendLaunch(netplay, launchPeriod == NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT);" service_send_at)
+if(service_send_at EQUAL -1)
+    message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_RaceService must send with NativeArcadeNetplay_SendLaunch(netplay, launchPeriod == NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT);")
+endif()
+string(REGEX MATCHALL "NativeArcadeLaunch_ShouldSendUncapped[(]" uncapped_calls "${netplay_source}")
+list(LENGTH uncapped_calls uncapped_call_count)
+string(REGEX MATCHALL "NativeArcadeLaunch_ShouldSend[(]" capped_calls "${netplay_source}")
+list(LENGTH capped_calls capped_call_count)
+if(NOT uncapped_call_count EQUAL 1 OR NOT capped_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade netplay isolation: the adapter must name NativeArcadeLaunch_ShouldSend and NativeArcadeLaunch_ShouldSendUncapped exactly once each (found ${capped_call_count} and ${uncapped_call_count})")
+endif()
+# (Each literal is searched on its own, not through a foreach list: the
+# literals hold ';', which a CMake list would split.)
+string(REGEX REPLACE "[ \t\r\n]+" " " netplay_flat "${netplay_source}")
+string(FIND "${netplay_flat}" "static void NativeArcadeNetplay_SendLaunch(struct NativeArcadeNetplay *netplay, int startWait)" send_launch_def_at)
+if(send_launch_def_at EQUAL -1)
+    message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_SendLaunch must take (struct NativeArcadeNetplay *netplay, int startWait)")
+endif()
+string(FIND "${netplay_flat}" "wantsToSend = (startWait != 0) ? NativeArcadeLaunch_ShouldSendUncapped(&netplay->launch) : NativeArcadeLaunch_ShouldSend(&netplay->launch); if ((wantsToSend != 0) && (NativeLockstepPeerLink_Mode(link) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING) && NativeArcadeLaunch_Compose(&netplay->launch, bytes, sizeof(bytes), &size)) { (void)NativeLockstepPeerLink_SendAux(link, bytes, size); } NativeArcadeLaunch_Tick(&netplay->launch); }" send_launch_body_at)
+if(send_launch_body_at EQUAL -1)
+    message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_SendLaunch must pick the uncapped rule only on startWait, then send and tick the linger exactly as before (LR-69)")
 endif()

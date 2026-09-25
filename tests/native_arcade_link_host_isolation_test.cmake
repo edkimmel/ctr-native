@@ -36,7 +36,11 @@
 # BeginDrive hands the drive, and only main.c's internal-build code sets it
 # (rule 3h). Since LR-S10 part 2 the race caller
 # (game/MAIN/MainArcadeRaceLaunch.c) is the one game source that names
-# RaceStep and RaceHold, once each (rule 3g).
+# RaceStep and RaceHold, once each (rule 3g). Since LR-S12 the hold's period
+# service keeps the launch linger sending through the start wait (race tick
+# 0, LR-69; rule 3g), and the host latches a pointer-free divergence record
+# once per race after every Tick, RaceStep, and RaceHold, which the header's
+# TakeRaceDivergence hands to the game hook's log (LR-70; rule 3i).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -326,7 +330,8 @@ endforeach()
 #       static-asserts that mirror, LR-S10).
 #     - The .c backs the drive's callbacks with exactly one verbatim bundle
 #       send over the adapter's link, exactly two RaceService calls (the poll
-#       with 0, the hold's period service with 1), and exactly one
+#       with 0, the hold's period service with 1, or with the start wait's value
+#       while the held drive is on race tick 0, LR-69), and exactly one
 #       OnTakeResult call whose "latched" is read back from the adapter's
 #       pending link failure.
 #     - One path reports a drive failure: a helper that reports only a
@@ -436,7 +441,11 @@ ctr_require_in("${host_source} (DriveSendBundle)" "${send_body}"
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_DrivePoll(" poll_body)
 ctr_require_in("${host_source} (DrivePoll)" "${poll_body}" "NativeArcadeNetplay_RaceService(&g_netplay, 0);")
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_DriveServicePeriod(" service_body)
-ctr_require_in("${host_source} (DriveServicePeriod)" "${service_body}" "NativeArcadeNetplay_RaceService(&g_netplay, 1);")
+# LR-69: the period service passes the start wait's value exactly when the
+# held drive is on race tick 0, else 1 (the capped rule).
+ctr_require_in("${host_source} (DriveServicePeriod)" "${service_body}"
+    "{ (void)context; NativeArcadeNetplay_RaceService(&g_netplay, (NativeArcadeRaceDrive_RaceTick(&g_drive) == 0u) ? NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT : 1);")
+ctr_require_count("${host_source}" "${source_flat}" "NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT" 1)
 ctr_body("${host_source}" "${source_code}" "static int NativeArcadeLinkHost_DriveTakeResult(" take_body)
 ctr_require_in("${host_source} (DriveTakeResult)" "${take_body}"
     "NativeArcadeNetplay_OnTakeResult(&g_netplay, result, frameIndex); return (g_netplay.pendingLinkFailure != NATIVE_ARCADE_FLOW_END_NONE) ? 1 : 0;")
@@ -491,7 +500,7 @@ ctr_require_in("${host_source} (TickDrive)" "${tick_drive_body}"
     "if ((screen != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) && (screen != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS)) { NativeArcadeLinkHost_ResetDrive(); return; }"
     "if (NativeArcadeRaceDrive_EndIsFinish(&g_drive)) { (void)NativeArcadeRaceDrive_LingerTick(&g_drive, (screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS) ? 1 : 0); if (NativeArcadeRaceDrive_LingerTicksLeft(&g_drive) == 0u) { NativeArcadeLinkHost_ResetDrive(); } }")
 ctr_body("${host_source}" "${source_code}" "uint32_t NativeArcadeLinkHost_Tick(" tick_body)
-string(FIND "${tick_body}" "action = (uint32_t)NativeArcadeNetplay_Tick(&g_netplay, heldMenuButtons, raceFinished); NativeArcadeLinkHost_TickDrive(); return action;" tick_order_at)
+string(FIND "${tick_body}" "action = (uint32_t)NativeArcadeNetplay_Tick(&g_netplay, heldMenuButtons, raceFinished); NativeArcadeLinkHost_TickDrive(); NativeArcadeLinkHost_LatchDivergence(); return action;" tick_order_at)
 if(tick_order_at EQUAL -1)
     message(FATAL_ERROR "arcade link host isolation: NativeArcadeLinkHost_Tick must run the drive's tick right after the adapter's Tick (LR-46)")
 endif()
@@ -674,6 +683,67 @@ foreach(path IN LISTS drive_scan_paths)
 endforeach()
 if(NOT limit_named_in_main)
     message(FATAL_ERROR "arcade link host isolation: main.c must set the race tick limit (NativeArcadeLinkHost_SetRaceTickLimit) in its internal autopilot handling")
+endif()
+
+# 3i. The divergence record (docs/LOCKSTEP_RACE_MILESTONE.md LR-11, LR-70,
+#     LR-S12). The header declares the take and the record with exactly its
+#     six fields (pointer-free). The .c latches it in one helper, which reads
+#     the race link's session only through NativeLockstepSession_FirstDivergence
+#     (named once), skips a race number already latched, and copies the
+#     report's frame, canonical domain mask, and digests (the lowest differing
+#     domain's, else the combined ones; the whole body is pinned) with the
+#     link's match count; it is called exactly three times: in Tick right after
+#     the drive's tick (pinned with the Tick order above), and in RaceStep and
+#     RaceHold right after the drive's call, before the status. The take
+#     copies the record field by field, zeroes reserved, and clears the
+#     pending flag, which only the helper sets. Shutdown and AbortToTitle drop
+#     it. Of game/ and main.c only the hook, game/MAIN/MainArcadeLink.c, names
+#     the take, exactly once, comments included (its one call, logged there,
+#     tests/main_arcade_link_hook_isolation_test.cmake 12c).
+ctr_require_in("${host_header}" "${header_flat}"
+    "int NativeArcadeLinkHost_TakeRaceDivergence(struct NativeArcadeLinkHostRaceDivergence *out);"
+    "struct NativeArcadeLinkHostRaceDivergence { uint32_t raceNumber; uint32_t raceTick; uint32_t domainMask; uint32_t reserved; uint64_t localDigest; uint64_t remoteDigest; };")
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_LatchDivergence(" latch_body)
+ctr_require_in("${host_source} (LatchDivergence)" "${latch_body}"
+    "{ const struct NativeLockstepDivergenceReport *report; uint32_t domain; if ((g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) || (g_netplay.matchCount == 0u) || (g_raceDivergenceRace == g_netplay.matchCount)) { return; } report = NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay))); if (report == NULL) { return; } memset(&g_raceDivergence, 0, sizeof(g_raceDivergence)); g_raceDivergence.raceNumber = g_netplay.matchCount; g_raceDivergence.raceTick = report->frameIndex; g_raceDivergence.domainMask = report->canonicalDomainMask; g_raceDivergence.localDigest = report->localCombinedDigest; g_raceDivergence.remoteDigest = report->remoteCombinedDigest; for (domain = 0u; domain < NATIVE_CANONICAL_DOMAIN_COUNT; domain++) { if ((report->canonicalDomainMask & (UINT32_C(1) << domain)) != 0u) { g_raceDivergence.localDigest = report->localDomainDigests[domain]; g_raceDivergence.remoteDigest = report->remoteDomainDigests[domain]; break; } } g_raceDivergencePending = 1u; g_raceDivergenceRace = g_netplay.matchCount;")
+ctr_require_count("${host_source}" "${source_flat}" "NativeLockstepSession_FirstDivergence(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_LatchDivergence(" 4)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_LatchDivergence(); return NativeArcadeLinkHost_DriveStatus(status, pads, padsOut);" 2)
+ctr_body("${host_source}" "${source_code}" "uint32_t NativeArcadeLinkHost_RaceStep(" step_body)
+ctr_require_in("${host_source} (RaceStep)" "${step_body}"
+    "(padsOut != NULL) ? pads : NULL); NativeArcadeLinkHost_LatchDivergence(); return NativeArcadeLinkHost_DriveStatus(status, pads, padsOut);")
+ctr_body("${host_source}" "${source_code}" "uint32_t NativeArcadeLinkHost_RaceHold(" hold_body)
+ctr_require_in("${host_source} (RaceHold)" "${hold_body}"
+    "status = NativeArcadeRaceDrive_Hold(&g_drive, periods, newPeriod, (padsOut != NULL) ? pads : NULL); NativeArcadeLinkHost_LatchDivergence(); return NativeArcadeLinkHost_DriveStatus(status, pads, padsOut);")
+ctr_body("${host_source}" "${source_code}" "int NativeArcadeLinkHost_TakeRaceDivergence(" take_divergence_body)
+ctr_require_in("${host_source} (TakeRaceDivergence)" "${take_divergence_body}"
+    "{ if ((out == NULL) || (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) || (g_raceDivergencePending == 0u)) { return 0; } out->raceNumber = g_raceDivergence.raceNumber; out->raceTick = g_raceDivergence.raceTick; out->domainMask = g_raceDivergence.domainMask; out->reserved = 0u; out->localDigest = g_raceDivergence.localDigest; out->remoteDigest = g_raceDivergence.remoteDigest; g_raceDivergencePending = 0u; return 1;")
+ctr_require_count("${host_source}" "${source_flat}" "g_raceDivergencePending = 1u;" 1)
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_ResetDivergence(" reset_divergence_body)
+ctr_require_in("${host_source} (ResetDivergence)" "${reset_divergence_body}"
+    "{ memset(&g_raceDivergence, 0, sizeof(g_raceDivergence)); g_raceDivergencePending = 0u; g_raceDivergenceRace = 0u;")
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_ResetDivergence(" 3)
+ctr_require_in("${host_source} (Shutdown)" "${shutdown_body}" "NativeArcadeLinkHost_ResetDrive(); NativeArcadeLinkHost_ResetDivergence();")
+ctr_require_in("${host_source} (AbortToTitle)" "${abort_body}" "NativeArcadeLinkHost_ResetDrive(); NativeArcadeLinkHost_ResetDivergence();")
+set(divergence_take_seen 0)
+foreach(path IN LISTS drive_scan_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    if(relative_path STREQUAL host_source OR relative_path STREQUAL host_header)
+        continue()
+    endif()
+    file(READ "${path}" scanned)
+    ctr_count("${scanned}" "NativeArcadeLinkHost_TakeRaceDivergence" divergence_take_count)
+    if(relative_path STREQUAL "game/MAIN/MainArcadeLink.c")
+        if(NOT divergence_take_count EQUAL 1)
+            message(FATAL_ERROR "arcade link host isolation: ${relative_path} must name NativeArcadeLinkHost_TakeRaceDivergence exactly once, its one call (found ${divergence_take_count})")
+        endif()
+        set(divergence_take_seen 1)
+    elseif(NOT divergence_take_count EQUAL 0)
+        message(FATAL_ERROR "arcade link host isolation: ${relative_path} names NativeArcadeLinkHost_TakeRaceDivergence; only the hook, game/MAIN/MainArcadeLink.c, may (LR-70)")
+    endif()
+endforeach()
+if(NOT divergence_take_seen)
+    message(FATAL_ERROR "arcade link host isolation: game/MAIN/MainArcadeLink.c, the hook, was not scanned")
 endif()
 
 # 4. ctr_native_arcade_link_host links exactly the adapter and the host

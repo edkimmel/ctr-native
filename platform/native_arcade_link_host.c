@@ -201,6 +201,16 @@ static uint32_t g_driveFailureReports;
  * lowered it. Host-local: it never enters a saved state, a recording,
  * canonical state, or the wire. Shutdown (and so Configure) resets it. */
 static uint32_t g_raceTickLimit;
+/* The divergence record (LR-11, LR-70): latched from the race link's session
+ * once per race, the first time a Tick, RaceStep, or RaceHold finds its
+ * divergence latched, and taken once. g_raceDivergenceRace is the race
+ * number (the link's match count) it was latched for, 0 for none, so a race
+ * latches at most once and the next race starts clean. Host-local and
+ * pointer-free: it never enters a saved state, a recording, canonical
+ * state, or the wire. Shutdown and AbortToTitle drop it. */
+static struct NativeArcadeLinkHostRaceDivergence g_raceDivergence;
+static uint8_t g_raceDivergencePending;
+static uint32_t g_raceDivergenceRace;
 
 uint64_t NativeArcadeLinkHost_MixSelectEntropy(uint64_t entropy, uint64_t epoch)
 {
@@ -266,11 +276,17 @@ static void NativeArcadeLinkHost_DrivePoll(void *context)
 }
 
 /* The hold's once-per-period service: the poll, then the adapter's launch
- * intake and launch send and linger tick (LR-9, LR-50). */
+ * intake and launch send and linger tick (LR-9, LR-50). The drive calls it
+ * only from a held period, so a race tick of 0 is the start wait: its launch
+ * send is not cut off by the linger's 300-tick cap, because a peer that has
+ * not committed yet needs our records to launch at all (LR-69). The start
+ * wait bounds it: it ends at GO or at its timeout, and an ended drive calls
+ * nothing. */
 static void NativeArcadeLinkHost_DriveServicePeriod(void *context)
 {
 	(void)context;
-	NativeArcadeNetplay_RaceService(&g_netplay, 1);
+	NativeArcadeNetplay_RaceService(&g_netplay,
+		(NativeArcadeRaceDrive_RaceTick(&g_drive) == 0u) ? NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT : 1);
 }
 
 /* onTakeResult: the adapter's OnTakeResult, which returns nothing, so the
@@ -448,6 +464,65 @@ static uint32_t NativeArcadeLinkHost_DriveStatus(enum NativeArcadeRaceDriveStatu
 	return NATIVE_ARCADE_LINK_HOST_RACE_END;
 }
 
+/* Drops the divergence record and its once-per-race latch: the link it came
+ * from is gone (Shutdown, AbortToTitle). */
+static void NativeArcadeLinkHost_ResetDivergence(void)
+{
+	memset(&g_raceDivergence, 0, sizeof(g_raceDivergence));
+	g_raceDivergencePending = 0u;
+	g_raceDivergenceRace = 0u;
+}
+
+/*
+ * The divergence record (LR-11, LR-70), once per race: after every call that
+ * polls the link or records into the session (Tick, RaceStep, RaceHold), a
+ * divergence latched in the race link's session is copied into a
+ * pointer-free record for the game hook's log. That covers every latch
+ * point: the adapter's own poll (Tick), the drive's poll and take, and a
+ * parked digest inside the drive's record (RaceStep). The race number is the
+ * link's match count, the same number the end-of-race record carries; a
+ * record for this race number is never latched twice, and a record not
+ * taken is replaced by the next race's. The report's frame is the divergent
+ * race tick and its canonical domain mask the domains. The digests are the
+ * two sides' digests of the lowest differing domain, so a divergence that
+ * leaves the whole-state digest alone (LR-16's CONTROL-only injection)
+ * still logs two different values; with no differing domain (only the
+ * whole-state digest differs) they are the whole-state digests.
+ */
+static void NativeArcadeLinkHost_LatchDivergence(void)
+{
+	const struct NativeLockstepDivergenceReport *report;
+	uint32_t domain;
+
+	if ((g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) || (g_netplay.matchCount == 0u) ||
+		(g_raceDivergenceRace == g_netplay.matchCount))
+	{
+		return;
+	}
+	report = NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay)));
+	if (report == NULL)
+	{
+		return;
+	}
+	memset(&g_raceDivergence, 0, sizeof(g_raceDivergence));
+	g_raceDivergence.raceNumber = g_netplay.matchCount;
+	g_raceDivergence.raceTick = report->frameIndex;
+	g_raceDivergence.domainMask = report->canonicalDomainMask;
+	g_raceDivergence.localDigest = report->localCombinedDigest;
+	g_raceDivergence.remoteDigest = report->remoteCombinedDigest;
+	for (domain = 0u; domain < NATIVE_CANONICAL_DOMAIN_COUNT; domain++)
+	{
+		if ((report->canonicalDomainMask & (UINT32_C(1) << domain)) != 0u)
+		{
+			g_raceDivergence.localDigest = report->localDomainDigests[domain];
+			g_raceDivergence.remoteDigest = report->remoteDomainDigests[domain];
+			break;
+		}
+	}
+	g_raceDivergencePending = 1u;
+	g_raceDivergenceRace = g_netplay.matchCount;
+}
+
 uint32_t NativeArcadeLinkHost_RaceStep(uint32_t raceTick, const struct NativeCanonicalStateV4 *state,
 	const struct NativeArcadeLinkHostPad *localSample, const struct NativeArcadeLinkHostRaceFacts *facts,
 	struct NativeArcadeLinkHostPad padsOut[4])
@@ -475,6 +550,7 @@ uint32_t NativeArcadeLinkHost_RaceStep(uint32_t raceTick, const struct NativeCan
 	memset(pads, 0, sizeof(pads));
 	status = NativeArcadeRaceDrive_Step(&g_drive, raceTick, state, (localSample != NULL) ? &sample : NULL,
 		(facts != NULL) ? &driveFacts : NULL, (padsOut != NULL) ? pads : NULL);
+	NativeArcadeLinkHost_LatchDivergence();
 	return NativeArcadeLinkHost_DriveStatus(status, pads, padsOut);
 }
 
@@ -489,6 +565,7 @@ uint32_t NativeArcadeLinkHost_RaceHold(uint32_t periods, int newPeriod, struct N
 	}
 	memset(pads, 0, sizeof(pads));
 	status = NativeArcadeRaceDrive_Hold(&g_drive, periods, newPeriod, (padsOut != NULL) ? pads : NULL);
+	NativeArcadeLinkHost_LatchDivergence();
 	return NativeArcadeLinkHost_DriveStatus(status, pads, padsOut);
 }
 
@@ -535,6 +612,11 @@ uint32_t NativeArcadeLinkHost_InternalDriveFailureReports(void)
 uint32_t NativeArcadeLinkHost_InternalConsecutiveStalls(void)
 {
 	return (g_mode == NATIVE_ARCADE_LINK_HOST_MODE_LINK) ? g_netplay.outcome.consecutiveStallFrames : 0u;
+}
+
+uint32_t NativeArcadeLinkHost_InternalLaunchTicksSinceCommit(void)
+{
+	return (g_mode == NATIVE_ARCADE_LINK_HOST_MODE_LINK) ? g_netplay.launch.ticksSinceCommit : 0u;
 }
 
 uint32_t NativeArcadeLinkHost_InternalRaceTickLimit(void)
@@ -591,6 +673,7 @@ void NativeArcadeLinkHost_Shutdown(void)
 		g_racePacing = 0u;
 	}
 	NativeArcadeLinkHost_ResetDrive();
+	NativeArcadeLinkHost_ResetDivergence();
 	g_driveFailureReports = 0u;
 	g_raceTickLimit = 0u;
 	if (g_mode == NATIVE_ARCADE_LINK_HOST_MODE_LINK)
@@ -714,6 +797,7 @@ uint32_t NativeArcadeLinkHost_Tick(uint32_t heldMenuButtons, uint8_t raceFinishe
 	}
 	action = (uint32_t)NativeArcadeNetplay_Tick(&g_netplay, heldMenuButtons, raceFinished);
 	NativeArcadeLinkHost_TickDrive();
+	NativeArcadeLinkHost_LatchDivergence();
 	return action;
 }
 
@@ -1046,6 +1130,22 @@ int NativeArcadeLinkHost_TakeRaceEnd(struct NativeArcadeLinkHostRaceEnd *out)
 	return 1;
 }
 
+int NativeArcadeLinkHost_TakeRaceDivergence(struct NativeArcadeLinkHostRaceDivergence *out)
+{
+	if ((out == NULL) || (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) || (g_raceDivergencePending == 0u))
+	{
+		return 0;
+	}
+	out->raceNumber = g_raceDivergence.raceNumber;
+	out->raceTick = g_raceDivergence.raceTick;
+	out->domainMask = g_raceDivergence.domainMask;
+	out->reserved = 0u;
+	out->localDigest = g_raceDivergence.localDigest;
+	out->remoteDigest = g_raceDivergence.remoteDigest;
+	g_raceDivergencePending = 0u;
+	return 1;
+}
+
 uint8_t NativeArcadeLinkHost_Racing(void)
 {
 	if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK)
@@ -1062,8 +1162,10 @@ void NativeArcadeLinkHost_AbortToTitle(void)
 		return;
 	}
 	NativeArcadeNetplay_Shutdown(&g_netplay);
-	/* The race's link is gone, so its drive goes with it. */
+	/* The race's link is gone, so its drive and its divergence record go
+	 * with it (the adapter restarts its race count). */
 	NativeArcadeLinkHost_ResetDrive();
+	NativeArcadeLinkHost_ResetDivergence();
 	/* Init restarts the adapter's select count, so a new epoch keeps the
 	 * next select's nonce from repeating an earlier one. */
 	NativeArcadeLinkHost_NextEpoch(g_options.selectEntropy);

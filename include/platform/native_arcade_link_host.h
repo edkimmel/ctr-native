@@ -200,6 +200,29 @@ struct NativeArcadeLinkHostRaceEnd
 	uint32_t foreignBundleDrops;
 };
 
+/* The divergence of one linked race, for the out-of-sync log line (the
+ * linked-race plan, LR-11 and LR-70): the first disagreement of the two
+ * cabinets' per-tick state digests that the link found in this race.
+ * Host-local and pointer-free. */
+struct NativeArcadeLinkHostRaceDivergence
+{
+	/* the race's number, as in its end-of-race record */
+	uint32_t raceNumber;
+	/* the race tick whose digests disagree */
+	uint32_t raceTick;
+	/* the differing state domains, bit i for domain i of the canonical
+	 * domain order (bit 0 CONTROL, 1 RNG, 2 INPUT, 3 DRIVERS, 4 WORLD,
+	 * 5 TOPOLOGY); 0 when only the whole-state digests differ */
+	uint32_t domainMask;
+	/* always 0 */
+	uint32_t reserved;
+	/* this cabinet's digest of that race tick for the lowest domain in
+	 * domainMask, or its whole-state digest when domainMask is 0 */
+	uint64_t localDigest;
+	/* the peer's digest of that race tick, of the same domain or whole */
+	uint64_t remoteDigest;
+};
+
 /*
  * Always shuts down first, so a second call replaces the first. NULL options
  * leave the mode OFF and return 0. Options with neither the link enabled nor
@@ -228,7 +251,8 @@ int NativeArcadeLinkHost_Enter(void);
  * PREVIEW return NONE. In LINK mode, after the adapter's tick, it runs one
  * tick of the drive's finish linger while the drive has a finish end, and
  * re-initializes the drive once the linger is done or stopped, and on every
- * tick whose flow is neither on RACING nor on RESULTS. */
+ * tick whose flow is neither on RACING nor on RESULTS; then it latches the
+ * race's divergence record if the link found one (TakeRaceDivergence). */
 uint32_t NativeArcadeLinkHost_Tick(uint32_t heldMenuButtons, uint8_t raceFinished);
 
 /* Fills *view and returns 1; returns 0 on NULL or in mode OFF. */
@@ -265,6 +289,16 @@ int NativeArcadeLinkHost_ReportRaceFailure(void);
  * (NULL, OFF, PREVIEW, or nothing latched, including a record already
  * taken) returns 0 with *out untouched. */
 int NativeArcadeLinkHost_TakeRaceEnd(struct NativeArcadeLinkHostRaceEnd *out);
+
+/* LINK only (the linked-race plan, LR-11 and LR-70): once per race, from
+ * the Tick, RaceStep, or RaceHold that first finds the race link's state
+ * digests in disagreement, fills *out with that race's divergence record,
+ * returns 1, and clears it; the caller logs it. Otherwise (NULL, OFF,
+ * PREVIEW, or nothing latched, including a record already taken) returns 0
+ * with *out untouched. A record not taken is replaced by the next race's;
+ * Shutdown and AbortToTitle drop it. Stalls, faults, local failures, and
+ * clean finishes latch none. */
+int NativeArcadeLinkHost_TakeRaceDivergence(struct NativeArcadeLinkHostRaceDivergence *out);
 
 /* 1 iff the mode is LINK and the flow is on RACING (docs/RACE_LAUNCH_MILESTONE.md
  * RL-8); 0 otherwise, including OFF, PREVIEW, and before any Configure. */
@@ -420,6 +454,8 @@ struct NativeArcadeLinkHostDriveState
  * runs is left to Tick untouched (END, nothing sent), so a stray call cannot
  * cut the linger short. After END the caller must not call RaceStep or
  * RaceHold again until the next RaceBegin (LR-54; LR-S10 pins the caller).
+ * After the drive's step it latches the race's divergence record if the
+ * link found one, as Tick does (TakeRaceDivergence, LR-70).
  */
 uint32_t NativeArcadeLinkHost_RaceStep(uint32_t raceTick, const struct NativeCanonicalStateV4 *state,
 	const struct NativeArcadeLinkHostPad *localSample, const struct NativeArcadeLinkHostRaceFacts *facts,
@@ -431,7 +467,10 @@ uint32_t NativeArcadeLinkHost_RaceStep(uint32_t raceTick, const struct NativeCan
  * far, and nonzero on the first iteration of each new period). Returns and
  * refuses as RaceStep does, and likewise leaves a running finish linger to
  * Tick. After END the caller must not call RaceHold or RaceStep again until
- * the next RaceBegin (LR-54; LR-S10 pins the caller).
+ * the next RaceBegin (LR-54; LR-S10 pins the caller). It latches the
+ * divergence record as RaceStep does. Its once-per-period service keeps the
+ * launch linger sending through the whole start wait (race tick 0), past
+ * the linger's 300-tick cap (LR-69).
  */
 uint32_t NativeArcadeLinkHost_RaceHold(uint32_t periods, int newPeriod, struct NativeArcadeLinkHostPad padsOut[4]);
 

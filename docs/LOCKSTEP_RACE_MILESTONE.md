@@ -531,7 +531,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-68; LR-17 is the owner's ruling)
+## 4. Decided design (defaults LR-1..LR-71; LR-17 is the owner's ruling)
 
 The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
 written, except that LR-18, the finish grace, amends LR-1, LR-12, LR-13,
@@ -542,8 +542,9 @@ several defaults; "Review changes" at the end of this section lists what
 changed, and "Owner decisions (2026-09-25)" after it lists the owner's
 decisions. LR-19..LR-27 were added by LR-S4, LR-28..LR-32 by LR-S5,
 LR-33..LR-36 by LR-S6, LR-37..LR-40 by LR-S7, LR-41..LR-48 by LR-S8,
-LR-49..LR-57 by LR-S9, LR-58..LR-60 by LR-S10 part 1, and LR-61..LR-68 by
-LR-S10 part 2; each records the mechanics its slice settled.
+LR-49..LR-57 by LR-S9, LR-58..LR-60 by LR-S10 part 1, LR-61..LR-68 by
+LR-S10 part 2, and LR-69..LR-71 by LR-S12; each records the mechanics its
+slice settled.
 
 LR-1 Placement. The race driver lives under platform/, because game code
 may not name lockstep (tests/native_lockstep_isolation_test.cmake:128-157
@@ -866,8 +867,9 @@ at all (RL-7). The linger counts one tick per period, as it would have
 counted game ticks. It is capped: it ends
 NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS = 300 ticks after the commit
 (RL-4), counting the adapter Ticks of the load and then the held periods
-alike, so the 900-period start wait can outlast it. The linger reaches a
-peer that needs it only within that cap.
+alike. Since LR-S12 (LR-69) the held periods of the start wait send
+without that cap, so the linger reaches a peer that needs it through the
+whole 900-period start wait; HEARD still stops it.
 
 On GO the loop returns, and the pass continues exactly as it would have.
 Fixed pacing re-anchors the next VSync instead of catching up (LR-7).
@@ -2172,7 +2174,8 @@ LR-53 The callbacks and the one failure-report path (LR-S9 part 2).
 sendBundle is NativeLockstepPeerLink_SendBundleVerbatim on
 NativeArcadeNetplay_Link(&g_netplay) (a NULL link refuses); poll is
 NativeArcadeNetplay_RaceService(&g_netplay, 0) and servicePeriod
-RaceService(&g_netplay, 1) (LR-50); onTakeResult calls
+RaceService(&g_netplay, 1) (LR-50; since LR-S12, 2 on race tick 0,
+LR-69); onTakeResult calls
 NativeArcadeNetplay_OnTakeResult and returns nonzero iff the adapter's
 pendingLinkFailure is not NATIVE_ARCADE_FLOW_END_NONE afterwards
 (OnTakeResult returns void; the LR-S9 note). The context is NULL: the
@@ -2587,6 +2590,89 @@ caller from its token ban, each named once: Platform_InputCapturePadSnapshots,
 NativeCanonicalInputV1, and NativeCanonicalStateV4. The caller's
 guard becomes one CTR_NATIVE block holding one CTR_INTERNAL ... #else ...
 #endif (hook 16a and setup rule 2).
+
+LR-69 The start wait's launch linger (LR-S12; amends LR-9's cap, LR-50,
+and LR-53). While the drive holds on race tick 0, the start wait, each
+new hold period sends the launch linger's record without the 300-tick
+cap. The host glue's servicePeriod passes RaceService the new value
+NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT (2) when
+NativeArcadeRaceDrive_RaceTick is 0, and 1 otherwise. For that value the
+adapter's SendLaunch asks the new NativeArcadeLaunch_ShouldSendUncapped,
+which is ShouldSend without the lingerTicks cap: nothing while the
+agreement is inactive, always while PENDING, and after the commit until
+HEARD went both ways (heardSent and peerHeard). The link must still be
+RUNNING. The adapter's Tick keeps the capped rule (it passes 0), and so do
+the held periods of every later race tick. The extension is bounded by
+the start wait: GO ends it, and so does the start wait's timeout (counted
+period 900, OPPONENT DISCONNECTED), so it adds at most 900 records. The
+count since the commit runs on unchanged (NativeArcadeLaunch_Tick), so
+the cap governs the Tick's linger again afterwards. No record, wire,
+handshake, or agreement state changes. It matters only when the peer is
+slower than the cap: the peer's own launch timeout counts its adapter
+Ticks since its relink, so under default timings a healthy peer commits
+or times out within 300 of its own ticks, and the uncapped records reach a
+peer whose host ran slow or stalled while ours held. Pinned by
+native_arcade_netplay_isolation 8 and 8b (the value is literally 2 and
+defined once; Tick passes 0; RaceService passes the start-wait test; each
+rule is asked exactly once) and native_arcade_link_host_isolation 3g (the
+glue's service body).
+
+LR-70 The divergence record and its log line (LR-S12; LR-11's line). The
+host latches a pointer-free record, struct
+NativeArcadeLinkHostRaceDivergence (raceNumber, raceTick, domainMask,
+reserved 0, localDigest, remoteDigest), in one helper called right after
+every Tick (after the drive's tick), RaceStep, and RaceHold. Those cover
+every latch point: the adapter's own poll (Tick), the drive's poll and
+take (RaceStep, RaceHold), and a parked digest inside the drive's record
+(RaceStep). The helper reads the race link's session only through
+NativeLockstepSession_FirstDivergence, non-NULL only once the session is
+DIVERGED. The record is keyed by the adapter's matchCount, the number the
+end-of-race record carries (LR-36): nothing is latched while it is 0 or
+for a number already latched, so the line is written at most once per
+race. raceTick is the report's frame (the divergent race tick, not the
+one that noticed it) and domainMask its canonicalDomainMask. The digests
+are those of the lowest differing domain, not the whole-state digests:
+LR-16's race 2 injection flips a CONTROL domain digest and leaves the
+whole-state digest alone, so whole-state digests would log two equal
+values. With no differing domain (only the whole-state digest differs)
+they are the whole-state digests. NativeArcadeLinkHost_TakeRaceDivergence
+returns the record once; a record not taken is replaced by the next
+race's, and Shutdown and AbortToTitle drop it (a new pairing restarts the
+count at 1). MainArcadeLink_LinkTick takes it right after the end-of-race
+take and its log line, so on a shared tick the end line comes first, and
+logs through Platform_Log:
+
+    [CTR Native] arcade link: race <n> out of sync at race tick <v> domains 0x<mask> local <hex16> remote <hex16>
+
+<mask> is %x, and each <hex16> is two lowercase %08x words, high word
+first, as the per-tick digest lines print them. Only the detecting
+cabinet logs: the other may not detect the divergence (LR-12). A
+divergence found after the race's flow reached RESULTS (a finish linger's
+drain) is still recorded under that race's number. One found only by the
+Tick that closes the link, leaving RESULTS, can be missed: the link's
+session is gone before the helper runs. Stalls, faults, local failures,
+and clean finishes latch nothing. Game code names no lockstep token: the
+hook sees only the host's record. Pinned by
+native_arcade_link_host_isolation 3i (the header record and take, the
+helper's whole body, its four names and three call sites, the take's
+body, the resets, and the hook as the one game caller) and
+main_arcade_link_hook_isolation 12c (the one call site, its order, and
+the format).
+
+LR-71 The failure rows' proof (LR-S12). Every row of the LR-12 table has
+a named unit case (the inventory in LR-S12's result). The host cases run
+both sides' drives over a real loopback link, the peer on a test-owned
+adapter with the glue's callbacks, including the start-wait service rule.
+The 18000-tick bound itself is proved on the drive core
+(TestDriveFinish); the host proves the same comparison on both cabinets
+with a lowered limit. A peer drop is the peer adapter's Shutdown (its
+socket closed), and a protocol fault is a corrupt copy of one of the
+peer's own current-identity bundles, sent from its socket. The host gains
+one test read-back, NativeArcadeLinkHost_InternalLaunchTicksSinceCommit
+(the launch agreement's count since the commit, in LINK; 0 otherwise), in
+the internal header that no game source or main.c names (rule 3b). The
+launch core's test harness checks neutral pads from the end frame on
+every frame.
 
 Review changes. The plan review (on befa152a9) changed these defaults:
 
@@ -4635,7 +4721,9 @@ game behaviour; they pin, assert, and document:
 - Fast suite (-LE live): 154 of 154 passed. The live gate
   arcade_link_launch runs on the committed follow-up tree; its result is
   reported with the commit, not recorded here (recording it would change
-  the tree the gate ran on).
+  the tree the gate ran on). It passed on 26d64ecd7 in 88.7 s, both races
+  on both cabinets ending "race tick limit at race tick 300", FINISHED,
+  and the full suite passed 157 of 157.
 
 Plan:
 
@@ -4692,7 +4780,160 @@ and are never committed.
 
 ### LR-S12 -- failure wiring to RESULTS
 
-Status: planned. Review required. Run 5.
+Status: done. Review required. Run 5. New defaults LR-69..LR-71
+(section 4).
+
+Result:
+
+- The inventory: each row of the LR-12 table, and the plan's other items,
+  with the unit cases that prove it (host: native_arcade_link_host_unit
+  over a real loopback link with both sides' drives; drive:
+  native_arcade_race_drive_unit; netplay: native_arcade_netplay_unit;
+  core: main_arcade_race_launch_core_unit). New cases are marked (new).
+
+      LR-12 row / plan item      cases
+      stall, held (resumes)      host TestDriveStepHoldEnd; drive
+                                 TestDriveStallAndResume,
+                                 TestDriveHoldIterations
+      stall timeout              host TestDriveTakeClassification (b);
+                                 drive TestDriveStallTimeout,
+                                 TestDriveStallTimeoutSkipped
+      peer never starts          host TestDriveStartWaitTimeout (new);
+      (810 + 90)                 drive TestDriveStartWait,
+                                 TestDriveStartWaitSkipped; core
+                                 TestDriveEndOnRaceTickZero
+      the linger through the     host TestDriveStartWaitLateCommit (new),
+      start wait (LR-69)         TestDriveStartWaitTimeout (new),
+                                 TestDriveHoldLaunchLinger; netplay
+                                 TestRaceServiceStartWait (new),
+                                 TestRaceServiceNoOps; launch
+                                 TestShouldSendUncapped (new)
+      peer drop                  host TestDriveLocalFailureAndPeerDrop (b)
+                                 (new); drive TestDriveStallTimeout
+      desync                     host TestDriveTakeClassification (a),
+                                 TestDriveParkedDigestMismatch,
+                                 TestDriveDivergenceRecord (new); drive
+                                 TestDriveDesync,
+                                 TestDriveParkedMismatchAtRecord; netplay
+                                 TestInRaceDivergenceFromPoll
+      desync only in F - 1 or F  host TestDriveFinishFrameDivergence (new)
+      protocol fault             host TestDriveProtocolFault (new); drive
+                                 TestDriveFaultIsOutcome; netplay
+                                 TestInRaceFaultFromPoll
+      local drive failure        host TestDriveTakeClassification (c),
+                                 TestDriveLocalFailureAndPeerDrop (a)
+                                 (new), TestDriveRefusalsAndResets; drive
+                                 TestDriveLocalFailures; core
+                                 TestDriveEnds (FAILED); netplay
+                                 TestLocalRaceFailure
+      finish grace (LR-18)       host TestDriveFinishGrace (new); drive
+                                 TestDriveFinish
+      race-length bound          host TestDriveRaceLengthBoundBoth (new),
+                                 TestDriveRaceTickLimit; drive
+                                 TestDriveFinish (18000)
+      finish linger              host TestDriveStepHoldEnd, and every
+                                 finish above (BothFinishWithLinger);
+                                 drive TestDriveFinish,
+                                 TestDriveLingerStops
+      divergence log line        host TestDriveDivergenceRecord (new), the
+      (LR-70)                    records in TestDriveTakeClassification,
+                                 TestDriveParkedDigestMismatch, and
+                                 TestDriveRefusalsAndResets; none for a
+                                 held stall, a stall timeout, a local
+                                 failure, a fault, a clean finish, or
+                                 outside LINK (CheckInert);
+                                 main_arcade_link_hook_isolation 12c
+      neutral pads from the end  core TestDriveEnds, TestDriveEndOnRaceTickZero,
+      frame                      and the harness's every-frame rule (new)
+
+- The API: NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT (2) for
+  NativeArcadeNetplay_RaceService, and
+
+      int NativeArcadeLaunch_ShouldSendUncapped(const struct NativeArcadeLaunchAgreement *agreement);
+      int NativeArcadeLinkHost_TakeRaceDivergence(struct NativeArcadeLinkHostRaceDivergence *out);
+      uint32_t NativeArcadeLinkHost_InternalLaunchTicksSinceCommit(void);
+
+  with struct NativeArcadeLinkHostRaceDivergence { uint32_t raceNumber;
+  uint32_t raceTick; uint32_t domainMask; uint32_t reserved; uint64_t
+  localDigest; uint64_t remoteDigest; }, and the log line
+  "[CTR Native] arcade link: race <n> out of sync at race tick <v>
+  domains 0x<mask> local <hex16> remote <hex16>".
+- The files: platform/native_arcade_launch.c and
+  include/platform/native_arcade_launch.h (the uncapped rule);
+  platform/native_arcade_netplay.c and include/platform/native_arcade_netplay.h
+  (SendLaunch's start-wait argument, the value); platform/native_arcade_link_host.c,
+  include/platform/native_arcade_link_host.h, and
+  include/platform/native_arcade_link_host_internal.h (the service's value,
+  the divergence latch and take, the read-back); game/MAIN/MainArcadeLink.c
+  (the take and the log line); the unit tests
+  tests/native_arcade_launch_test.c, tests/native_arcade_netplay_test.c,
+  tests/native_arcade_link_host_test.c, and
+  tests/main_arcade_race_launch_core_test.c; and the isolation tests
+  native_arcade_netplay (8, new 8b), native_arcade_link_host (3g, the Tick
+  order, new 3i), and main_arcade_link_hook (new 12c). No change to the
+  drive core, the session, the wire, any record, bundle, or handshake,
+  NativeMatchConfigV1, the canonical state, any checkpoint or replay
+  state, the retail simulation, or the lease; no heap.
+- The decisions: LR-69 (the start wait's launch linger, bounded by the
+  start wait, HEARD still stopping it); LR-70 (the divergence record,
+  latched after every Tick, RaceStep, and RaceHold, keyed by the match
+  count, with the lowest differing domain's digests because LR-16's
+  injection leaves the whole-state digest alone, and logged after the
+  end line); LR-71 (the proof, the read-back, and the harness rule).
+- The host cases (new): TestDriveStartWaitLateCommit: every launch record
+  the host's held periods send is discarded at the peer until the one
+  sent at a count above 300 since the commit, one past the cap sent and
+  discarded before it; the peer commits from that one record alone and
+  starts, its HEARD stops the host's records, and the hold ends GO with
+  equal pads on both sides, no stall counted. TestDriveStartWaitTimeout:
+  one launch record per held period for all 900 periods, no stall through
+  810, one per period after it, END as the outcome on race tick 0 at
+  counted period 900, then RESULTS OPPONENT DISCONNECTED with race 1's end
+  record, no divergence record, and nothing sent afterwards.
+  TestDriveDivergenceRecord: a clean race 1, then (the rematch) race 2's
+  divergence at race tick 20 found by the adapter's own poll in a Tick
+  (record race 2, tick 20, mask 0x10, the WORLD digests, once), then new
+  pairings: a parked digest at race tick 10, the bundle a hold waits for
+  carrying the divergence (the hold latches it), and tampered digests only:
+  CONTROL only (mask 0x1, the whole-state digests equal), whole-state only
+  (mask 0), and two domains (mask 0x11, the CONTROL digests).
+  TestDriveProtocolFault: a corrupt current-identity bundle from the
+  peer's socket, LINK ERROR on the next Tick, nothing reported locally.
+  TestDriveLocalFailureAndPeerDrop: a local failure (LINK ERROR) whose
+  peer holds on the host's missing frame and ends at its counted period
+  90 (OPPONENT DISCONNECTED); a killed peer (its adapter shut down), the
+  host ending at counted period 90 (OPPONENT DISCONNECTED).
+  TestDriveFinishGrace: one of two humans finished from race tick 20, both
+  drives end FINISH_GRACE on race tick 920, both RACE COMPLETE, both
+  lingers run. TestDriveRaceLengthBoundBoth: both drives capped at 40 end
+  RACE_TICK_LIMIT on 40, both RACE COMPLETE, both lingers run.
+  TestDriveFinishFrameDivergence: the peer's state differs only on F = 30,
+  then (the rematch) from F - 1 = 29; both finish on 30, both RACE
+  COMPLETE, both lingers run, and neither side records a divergence.
+- Probes, each reverted (the tree was byte-identical afterwards; the
+  build and suites below ran on the restored sources):
+  - SendLaunch ignoring its start-wait argument (always capped):
+    native_arcade_netplay_unit, native_arcade_netplay_isolation, and
+    native_arcade_link_host_unit failed;
+  - the glue passing 1 on race tick 0: native_arcade_link_host_unit and
+    native_arcade_link_host_isolation failed;
+  - Tick using the uncapped rule: native_arcade_netplay_unit,
+    native_arcade_netplay_isolation, and native_arcade_link_host_unit
+    failed;
+  - the uncapped rule ignoring HEARD: native_arcade_launch_unit,
+    native_arcade_netplay_unit, and native_arcade_link_host_unit failed;
+  - no latch after the Tick, after RaceStep, or after RaceHold; no
+    once-per-race guard; no reset in AbortToTitle; local and remote
+    digests swapped (domain or whole-state); the whole-state digests
+    always; the highest instead of the lowest domain: native_arcade_link_host_unit
+    and native_arcade_link_host_isolation failed each time;
+  - the log line printing the mask without 0x:
+    main_arcade_link_hook_isolation failed;
+  - the harness's end flag never cleared at race tick 0:
+    main_arcade_race_launch_core_unit failed.
+- Fast suite (-LE live): 154 of 154 passed. The live gate
+  arcade_link_launch runs on the committed tree; its result is reported
+  with the commit, not recorded here.
 
 Plan: LR-11 to LR-14 and LR-18 end to end:
 

@@ -310,6 +310,19 @@ int NativeArcadeLaunch_ShouldSend(const struct NativeArcadeLaunchAgreement *agre
 	return !(agreement->heardSent && agreement->peerHeard);
 }
 
+int NativeArcadeLaunch_ShouldSendUncapped(const struct NativeArcadeLaunchAgreement *agreement)
+{
+	if ((agreement == NULL) || !agreement->active)
+	{
+		return 0;
+	}
+	if (agreement->status != NATIVE_ARCADE_LAUNCH_COMMITTED)
+	{
+		return 1;
+	}
+	return !(agreement->heardSent && agreement->peerHeard);
+}
+
 int NativeArcadeLaunch_Compose(struct NativeArcadeLaunchAgreement *agreement, uint8_t *out, size_t capacity, size_t *sizeOut)
 {
 	struct NativeArcadeLaunchRecordV1 record;

@@ -288,6 +288,20 @@ static void MainArcadeLink_LogRaceEnd(const struct NativeArcadeLinkHostRaceEnd *
 		(unsigned)raceEnd->raceNumber, (unsigned)raceEnd->endReason, (unsigned)raceEnd->foreignBundleDrops);
 }
 
+/* Logs the divergence of a linked race (the linked-race plan, LR-11 and
+ * LR-70), once per race: its number, the race tick whose state digests
+ * disagree, the differing domains as the canonical domain mask (bit 0
+ * CONTROL), and both cabinets' digests of that tick (of the lowest
+ * differing domain, or the whole-state ones when no domain differs), each
+ * as 16 hex digits (high word first). */
+static void MainArcadeLink_LogRaceDivergence(const struct NativeArcadeLinkHostRaceDivergence *divergence)
+{
+	Platform_Log("[CTR Native] arcade link: race %u out of sync at race tick %u domains 0x%x local %08x%08x remote %08x%08x\n",
+		(unsigned)divergence->raceNumber, (unsigned)divergence->raceTick, (unsigned)divergence->domainMask,
+		(unsigned)(uint32_t)(divergence->localDigest >> 32), (unsigned)(uint32_t)(divergence->localDigest & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(divergence->remoteDigest >> 32), (unsigned)(uint32_t)(divergence->remoteDigest & 0xFFFFFFFFu));
+}
+
 /* The policy's class of the retail loading stage. */
 static uint32_t MainArcadeLink_StageClass(void)
 {
@@ -336,6 +350,7 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 {
 	struct NativeArcadeLinkHostMatch match;
 	struct NativeArcadeLinkHostRaceEnd raceEnd;
+	struct NativeArcadeLinkHostRaceDivergence divergence;
 	uint32_t action;
 
 	if (output->enterPressed != 0u)
@@ -354,6 +369,13 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 	if (NativeArcadeLinkHost_TakeRaceEnd(&raceEnd))
 	{
 		MainArcadeLink_LogRaceEnd(&raceEnd);
+	}
+	/* LR-11: the out-of-sync line, once per race, on the first tick after the
+	 * link found the two cabinets' state digests in disagreement (in this
+	 * tick, or in the race caller's step or hold since the last one). */
+	if (NativeArcadeLinkHost_TakeRaceDivergence(&divergence))
+	{
+		MainArcadeLink_LogRaceDivergence(&divergence);
 	}
 
 	if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)

@@ -119,7 +119,9 @@
  *   route while the agreement wants to send and the link is RUNNING: from
  *   the relink READY tick, through the commit, and after it (RACING
  *   included) until a HEARD record was sent and one received, or
- *   NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS ticks after the commit.
+ *   NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS ticks after the commit. While
+ *   the race drive holds on race tick 0 (its start wait), the hold's
+ *   RaceService lifts that cap until the wait ends (LR-69).
  * - The agreement is reset on RELINK, RESTART_LOBBY, CLOSE_LINK,
  *   BEGIN_SELECT, BEGIN_REMATCH, RETURN_TO_TITLE, Enter, and Shutdown. The
  *   record carries no link epoch. Every reset leaves the agreement inactive
@@ -516,7 +518,19 @@ void NativeArcadeNetplay_OnTakeResult(struct NativeArcadeNetplay *netplay, enum 
  * lobby-status mapping, select drive, outcome latch, race-end record, or
  * action. A no-op for NULL, an uninitialized adapter, and any screen other
  * than RACING (OFF included), the only screen the drive steps and holds on.
+ *
+ * The start wait (docs/LOCKSTEP_RACE_MILESTONE.md LR-69): launchPeriod
+ * NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT, which the caller passes for
+ * a held period of race tick 0 only, sends the period's launch record by the
+ * linger's rule without its NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS cap
+ * (NativeArcadeLaunch_ShouldSendUncapped): a peer that has not committed yet
+ * needs those records to launch at all (RL-7), and the start wait can hold
+ * for 810 + 90 periods, longer than the cap. HEARD (a HEARD record sent and
+ * one received) still stops them, and the start wait itself bounds them: it
+ * ends at GO, or at its timeout, after which the drive ends and calls
+ * nothing. Every other nonzero launchPeriod, and Tick, keep the capped rule.
  */
+#define NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT 2
 void NativeArcadeNetplay_RaceService(struct NativeArcadeNetplay *netplay, int launchPeriod);
 
 /* The end-of-race record (docs/LOCKSTEP_RACE_MILESTONE.md LR-14, LR-S6),

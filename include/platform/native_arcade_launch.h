@@ -235,6 +235,16 @@ void NativeArcadeLaunch_Tick(struct NativeArcadeLaunchAgreement *agreement);
 int NativeArcadeLaunch_ShouldSend(const struct NativeArcadeLaunchAgreement *agreement);
 
 /*
+ * RL-4 without the lingerTicks cap: ShouldSend, except that ticksSinceCommit
+ * never stops it. 0 for a NULL or inactive agreement. 1 while PENDING. While
+ * COMMITTED: 0 once both heardSent and peerHeard are set, else 1. The caller
+ * bounds how long it follows this rule instead of ShouldSend: the netplay
+ * adapter does only through a linked race's start wait (the linked-race
+ * plan, LR-69).
+ */
+int NativeArcadeLaunch_ShouldSendUncapped(const struct NativeArcadeLaunchAgreement *agreement);
+
+/*
  * Composes the next record into out. Requires an active agreement, non-NULL
  * out and sizeOut, capacity >= NATIVE_ARCADE_LAUNCH_RECORD_V1_ENCODED_BYTES,
  * and sequence below UINT32_MAX; otherwise returns 0 and changes nothing (the

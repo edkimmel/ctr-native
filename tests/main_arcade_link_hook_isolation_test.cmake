@@ -52,7 +52,8 @@
 # flag while a level load runs (16f2). Since LR-S6
 # (docs/LOCKSTEP_RACE_MILESTONE.md LR-14) the link tick logs the host's
 # end-of-race record, once per race, with its foreign-bundle drop count
-# (12b).
+# (12b). Since LR-S12 (LR-11, LR-70) it also logs the host's divergence
+# record, once per race, right after the end-of-race line (12c).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -683,6 +684,47 @@ math(EXPR race_end_log_length "${race_end_log_end} - ${race_end_log_begin} + 1")
 string(SUBSTRING "${hook_code}" ${race_end_log_begin} ${race_end_log_length} race_end_log_block)
 ctr_require_literal("${hook_source_path} (end-of-race log)" "${race_end_log_block}"
     "Platform_Log(\"[CTR Native] arcade link: race %u ended (reason %u); foreign bundles dropped %u")
+
+# 12c. The out-of-sync line (docs/LOCKSTEP_RACE_MILESTONE.md LR-11, LR-70,
+#      LR-S12): the only NativeArcadeLinkHost_TakeRaceDivergence call is in
+#      MainArcadeLink_LinkTick, right after the end-of-race take and its log,
+#      and its success block logs through the hook's Platform_Log helper in
+#      the format LR-11 names: the race number, the divergent race tick, the
+#      canonical domain mask as 0x%x, and the local and remote digests (the
+#      host picks them, LR-70) as 16 hex digits each (two %08x words, high
+#      first). The host latches the record once per race, so the line is
+#      written once per race.
+string(REGEX MATCHALL "NativeArcadeLinkHost_TakeRaceDivergence\\(" divergence_calls "${hook_code}")
+list(LENGTH divergence_calls divergence_call_count)
+if(NOT divergence_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call NativeArcadeLinkHost_TakeRaceDivergence exactly once (found ${divergence_call_count})")
+endif()
+ctr_require_order("${hook_source_path} (MainArcadeLink_LinkTick)" "${link_tick_block}"
+    "action = NativeArcadeLinkHost_Tick(" "MainArcadeLinkAutopilot_AfterTick(action);"
+    "if (NativeArcadeLinkHost_TakeRaceEnd(&raceEnd))" "MainArcadeLink_LogRaceEnd(&raceEnd);"
+    "if (NativeArcadeLinkHost_TakeRaceDivergence(&divergence))" "MainArcadeLink_LogRaceDivergence(&divergence);"
+    "if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)")
+ctr_find_block("${hook_source_path} (MainArcadeLink_LinkTick)" "${link_tick_block}"
+    "if (NativeArcadeLinkHost_TakeRaceDivergence(&divergence))" divergence_take_begin divergence_take_end)
+math(EXPR divergence_take_length "${divergence_take_end} - ${divergence_take_begin} + 1")
+string(SUBSTRING "${link_tick_block}" ${divergence_take_begin} ${divergence_take_length} divergence_take_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " divergence_take_block "${divergence_take_block}")
+if(NOT divergence_take_block STREQUAL "{ MainArcadeLink_LogRaceDivergence(&divergence); }")
+    message(FATAL_ERROR "arcade link hook isolation: the TakeRaceDivergence success block must only log the record (found '${divergence_take_block}')")
+endif()
+string(REGEX MATCHALL "MainArcadeLink_LogRaceDivergence\\(" divergence_log_calls "${hook_code}")
+list(LENGTH divergence_log_calls divergence_log_call_count)
+if(NOT divergence_log_call_count EQUAL 2)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must define MainArcadeLink_LogRaceDivergence and call it exactly once (found ${divergence_log_call_count} names)")
+endif()
+ctr_find_block("${hook_source_path}" "${hook_code}"
+    "static void MainArcadeLink_LogRaceDivergence(const struct NativeArcadeLinkHostRaceDivergence *divergence)"
+    divergence_log_begin divergence_log_end)
+math(EXPR divergence_log_length "${divergence_log_end} - ${divergence_log_begin} + 1")
+string(SUBSTRING "${hook_code}" ${divergence_log_begin} ${divergence_log_length} divergence_log_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " divergence_log_block "${divergence_log_block}")
+ctr_require_literal("${hook_source_path} (out-of-sync log)" "${divergence_log_block}"
+    "{ Platform_Log(\"[CTR Native] arcade link: race %u out of sync at race tick %u domains 0x%x local %08x%08x remote %08x%08x\\n\", (unsigned)divergence->raceNumber, (unsigned)divergence->raceTick, (unsigned)divergence->domainMask, (unsigned)(uint32_t)(divergence->localDigest >> 32), (unsigned)(uint32_t)(divergence->localDigest & 0xFFFFFFFFu), (unsigned)(uint32_t)(divergence->remoteDigest >> 32), (unsigned)(uint32_t)(divergence->remoteDigest & 0xFFFFFFFFu)); }")
 
 # 13. The host-side test read-back header is never included by game code:
 #     the hook's include allowlist above already excludes it; this also keeps

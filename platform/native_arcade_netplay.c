@@ -619,19 +619,26 @@ static void NativeArcadeNetplay_DriveLaunch(struct NativeArcadeNetplay *netplay)
 /* After the flow's action (RL-4): one launch record per tick while the
  * agreement wants to send and the link is RUNNING (the aux route carries
  * nothing otherwise, so nothing is composed), then one tick of the linger.
- * A failed compose or send is simply lossy. */
-static void NativeArcadeNetplay_SendLaunch(struct NativeArcadeNetplay *netplay)
+ * A failed compose or send is simply lossy. startWait (only RaceService
+ * passes it, for a held period of the race drive's start wait, LR-69): the
+ * agreement's rule without its lingerTicks cap, so a peer that has not
+ * committed yet still gets records through the whole start wait; HEARD still
+ * stops them. Tick always passes 0: the capped rule. */
+static void NativeArcadeNetplay_SendLaunch(struct NativeArcadeNetplay *netplay, int startWait)
 {
 	struct NativeLockstepPeerLink *link;
 	uint8_t bytes[NATIVE_ARCADE_LAUNCH_RECORD_V1_ENCODED_BYTES];
 	size_t size = 0u;
+	int wantsToSend;
 
 	if ((netplay->lobbyBegun == 0u) || !NativeArcadeLaunch_Active(&netplay->launch))
 	{
 		return;
 	}
 	link = NativeLobbyState_Link(&netplay->lobby);
-	if (NativeArcadeLaunch_ShouldSend(&netplay->launch) &&
+	wantsToSend = (startWait != 0) ? NativeArcadeLaunch_ShouldSendUncapped(&netplay->launch)
+		: NativeArcadeLaunch_ShouldSend(&netplay->launch);
+	if ((wantsToSend != 0) &&
 		(NativeLockstepPeerLink_Mode(link) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING) &&
 		NativeArcadeLaunch_Compose(&netplay->launch, bytes, sizeof(bytes), &size))
 	{
@@ -859,7 +866,7 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 
 	/* 8b. While a launch agreement is active (after the action, so a reset
 	 * sends nothing): this tick's launch record and linger tick (RL-4). */
-	NativeArcadeNetplay_SendLaunch(netplay);
+	NativeArcadeNetplay_SendLaunch(netplay, 0);
 
 	/* 9. START_RACE and RETURN_TO_TITLE are the caller's cue. */
 	return action;
@@ -871,7 +878,10 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
  * launch intake (step 5b; on RACING the select branch never runs) and its
  * launch send and linger tick (step 8b). Nothing else of Tick runs, so no
  * flow, menu, select, outcome, or race-end state moves while held. Only on
- * RACING, the one screen a race hold happens on.
+ * RACING, the one screen a race hold happens on. A START_WAIT period (a held
+ * period of race tick 0) sends by the launch linger's rule without its cap
+ * (LR-69); every other nonzero launchPeriod sends by the capped rule, as Tick
+ * does.
  */
 void NativeArcadeNetplay_RaceService(struct NativeArcadeNetplay *netplay, int launchPeriod)
 {
@@ -884,7 +894,7 @@ void NativeArcadeNetplay_RaceService(struct NativeArcadeNetplay *netplay, int la
 	if (launchPeriod != 0)
 	{
 		NativeArcadeNetplay_DriveLaunch(netplay);
-		NativeArcadeNetplay_SendLaunch(netplay);
+		NativeArcadeNetplay_SendLaunch(netplay, launchPeriod == NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT);
 	}
 }
 

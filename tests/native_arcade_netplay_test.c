@@ -6408,12 +6408,14 @@ static int TestRaceServiceNoOps(void)
 
 	NativeArcadeNetplay_RaceService(NULL, 0);
 	NativeArcadeNetplay_RaceService(NULL, 1);
+	NativeArcadeNetplay_RaceService(NULL, NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT);
 
 	memset(&g_probe, 0xA5, sizeof(g_probe));
 	g_probe.initialized = 0u;
 	memcpy(&g_sentinel, &g_probe, sizeof(g_probe));
 	NativeArcadeNetplay_RaceService(&g_probe, 0);
 	NativeArcadeNetplay_RaceService(&g_probe, 1);
+	NativeArcadeNetplay_RaceService(&g_probe, NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT);
 	CHECK(memcmp(&g_probe, &g_sentinel, sizeof(g_probe)) == 0);
 
 	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
@@ -6423,8 +6425,155 @@ static int TestRaceServiceNoOps(void)
 	memcpy(&g_sentinel, &g_probe, sizeof(g_probe));
 	NativeArcadeNetplay_RaceService(&g_probe, 0);
 	NativeArcadeNetplay_RaceService(&g_probe, 1);
+	NativeArcadeNetplay_RaceService(&g_probe, NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT);
 	CHECK(memcmp(&g_probe, &g_sentinel, sizeof(g_probe)) == 0);
 	NativeArcadeNetplay_Shutdown(&g_probe);
+	return 0;
+}
+
+/* One launch period of A: runs RaceService(A, launchPeriod) and checks that
+ * it counted one linger tick and sent sent records (0 or 1), and nothing
+ * else of Tick moved. */
+static int StartWaitPeriod(int launchPeriod, uint32_t sent)
+{
+	struct NativeArcadeLaunchAgreement launchBefore;
+
+	memcpy(&g_before, &g_a, sizeof(g_a));
+	memcpy(&launchBefore, &g_a.launch, sizeof(launchBefore));
+	NativeArcadeNetplay_RaceService(&g_a, launchPeriod);
+	CHECK(g_a.launch.sequence == launchBefore.sequence + sent);
+	CHECK(g_a.launch.ticksSinceCommit == launchBefore.ticksSinceCommit + 1u);
+	CHECK(KeptTickState(&g_a, &g_before) == 0);
+	return 0;
+}
+
+/*
+ * 38. LR-S12 (LR-69): the start wait's launch send. 33c's setup, as in 36: A
+ * commits and races while every launch record its Ticks send is dropped
+ * before B reads it, so B is still PENDING on SELECT_RESULT (and, not
+ * ticked, never reaches its own launch timeout). A's ordinary launch periods
+ * (1) send one record each until ticksSinceCommit reaches the 300-tick cap
+ * (NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS) and nothing after it, and
+ * neither does A's Tick. A start-wait period
+ * (NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT) past the cap sends one
+ * record and counts one linger tick; B, whose first usable record that is,
+ * commits from it and starts its race. A takes B's HEARD record through its
+ * next start-wait period, which already sends nothing, and every later one
+ * sends nothing: HEARD still stops the uncapped linger.
+ */
+static int TestRaceServiceStartWait(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 resolved;
+	struct NativeLockstepPeerLink *linkA;
+	struct NativeLockstepPeerLink *linkB;
+	enum NativeArcadeFlowAction actionA = ACT_NONE;
+	enum NativeArcadeFlowAction actionB = ACT_NONE;
+	uint32_t lastSequenceA;
+	uint32_t period;
+	uint32_t batch = 0u;
+	uint32_t spins;
+	uint32_t tick;
+	int startedA = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &resolved));
+	CHECK(PairToSelectResult(&fixture, TEST_RACE_SERVICE_A_PORT, TEST_RACE_SERVICE_B_PORT));
+	CHECK(TickAloneToRelink(&g_a));
+	CHECK(TickAloneToRelink(&g_b));
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	CHECK(DropLaunchRecordsTo(&g_b, TEST_RACE_SERVICE_B_PORT, &g_a, 1u));
+	lastSequenceA = g_a.launch.sequence;
+	for (tick = 0; (tick < DRIVE_BUDGET) && !startedA; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_b, 0u, 0u) == ACT_NONE);
+		CHECK(NativeArcadeLaunch_Status(&g_b.launch) == LAUNCH_PENDING);
+		actionA = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK((actionA == ACT_NONE) || (actionA == ACT_START_RACE));
+		startedA = (actionA == ACT_START_RACE);
+		CHECK(DropLaunchRecordsTo(&g_b, TEST_RACE_SERVICE_B_PORT, &g_a, g_a.launch.sequence - lastSequenceA));
+		lastSequenceA = g_a.launch.sequence;
+	}
+	CHECK(startedA);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+	CHECK(g_a.launch.peerHeard == 0u);
+	CHECK(g_a.launch.ticksSinceCommit < NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
+	CHECK(g_b.launch.acceptedCount == 0u);
+	linkA = NativeArcadeNetplay_Link(&g_a);
+	linkB = NativeArcadeNetplay_Link(&g_b);
+	CHECK((linkA != NULL) && (linkB != NULL));
+
+	/* The capped periods: one record each up to the cap, dropped at B (a
+	 * batch at a time, so B's socket never overflows). */
+	for (period = 0u; (period < DRIVE_BUDGET) && (g_a.launch.ticksSinceCommit < NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS); period++)
+	{
+		CHECK(StartWaitPeriod(1, 1u) == 0);
+		batch += 1u;
+		if (batch == 25u)
+		{
+			CHECK(CountLaunchRecordsBeforeMarker(&linkB->transport, &linkA->transport, TEST_RACE_SERVICE_B_PORT) == batch);
+			batch = 0u;
+		}
+	}
+	CHECK(g_a.launch.ticksSinceCommit == NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
+	CHECK(CountLaunchRecordsBeforeMarker(&linkB->transport, &linkA->transport, TEST_RACE_SERVICE_B_PORT) == batch);
+	CHECK(NativeArcadeLaunch_ShouldSend(&g_a.launch) == 0);
+	CHECK(NativeArcadeLaunch_ShouldSendUncapped(&g_a.launch) == 1);
+	/* Past the cap: an ordinary period, and A's own Tick, send nothing. */
+	for (period = 0u; period < 5u; period++)
+	{
+		CHECK(StartWaitPeriod(1, 0u) == 0);
+	}
+	lastSequenceA = g_a.launch.sequence;
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(g_a.launch.sequence == lastSequenceA);
+	CHECK(CountLaunchRecordsBeforeMarker(&linkB->transport, &linkA->transport, TEST_RACE_SERVICE_B_PORT) == 0u);
+	CHECK(g_a.launch.ticksSinceCommit > NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
+
+	/* A start-wait period sends one record past the cap; B commits on it. */
+	CHECK(StartWaitPeriod(NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT, 1u) == 0);
+	for (spins = 0u; (spins < RECEIVE_SPIN_BUDGET) && (NativeLockstepPeerLink_AuxCount(linkB) < 1u); spins++)
+	{
+		NativeLockstepPeerLink_Poll(linkB);
+	}
+	CHECK(NativeLockstepPeerLink_AuxCount(linkB) == 1u);
+	actionB = NativeArcadeNetplay_Tick(&g_b, 0u, 0u);
+	CHECK(actionB == ACT_START_RACE);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(NativeArcadeLaunch_Status(&g_b.launch) == LAUNCH_COMMITTED);
+	CHECK(g_b.launch.acceptedCount == 1u);
+	CHECK(g_b.launch.peerHeard == 1u);
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_b), &resolved, sizeof(resolved)) == 0);
+
+	/* B's HEARD reaches A through the poll; the start-wait period that takes
+	 * it already sends nothing, and so does every later one. */
+	for (spins = 0u; (spins < RECEIVE_SPIN_BUDGET) && (NativeLockstepPeerLink_AuxCount(linkA) == 0u); spins++)
+	{
+		NativeArcadeNetplay_RaceService(&g_a, 0);
+	}
+	CHECK(NativeLockstepPeerLink_AuxCount(linkA) >= 1u);
+	CHECK(g_a.launch.peerHeard == 0u);
+	CHECK(StartWaitPeriod(NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT, 0u) == 0);
+	CHECK(g_a.launch.peerHeard == 1u);
+	CHECK(NativeArcadeLaunch_ShouldSendUncapped(&g_a.launch) == 0);
+	for (period = 0u; period < 5u; period++)
+	{
+		CHECK(StartWaitPeriod(NATIVE_ARCADE_NETPLAY_RACE_SERVICE_START_WAIT, 0u) == 0);
+	}
+	CHECK(CountLaunchRecordsBeforeMarker(&linkB->transport, &linkA->transport, TEST_RACE_SERVICE_B_PORT) == 0u);
+
+	/* Both race on, and finish. */
+	TickBoth(0u, 0u, 1u, &actionA, &actionB);
+	CHECK((actionA == ACT_NONE) && (actionB == ACT_NONE));
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(ExpectRaceEnd(&g_a, 1u, NATIVE_ARCADE_FLOW_END_FINISHED, 0u) == 0);
+	CHECK(ExpectRaceEnd(&g_b, 1u, NATIVE_ARCADE_FLOW_END_FINISHED, 0u) == 0);
+	ShutdownBoth();
 	return 0;
 }
 
@@ -6482,6 +6631,7 @@ int main(void)
 	CHECK(TestRematchLinkLostKeepsStaleDrop() == 0);
 	CHECK(TestRaceServiceHold() == 0);
 	CHECK(TestRaceServiceNoOps() == 0);
+	CHECK(TestRaceServiceStartWait() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }
