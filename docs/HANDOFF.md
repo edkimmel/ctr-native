@@ -584,25 +584,18 @@ Task 7 (networked race launch) is complete and tracked in
   select.
 - The live ctest `arcade_link_launch` proves two races over loopback with
   two processes.
-- The suite is 144 tests. `ctest -LE live` skips the three live tests
+- The suite is 145 tests. `ctest -LE live` skips the three live tests
   (about 390 s of the ~450 s run).
 
-1. Task 8, in-race lockstep drive and failure handling. Nothing gates it
-   now that Task 7 is done; its first step is a plan
-   (`docs/GAME_LOOP_UI_MILESTONE.md` Task 8, and
-   `docs/RACE_LAUNCH_MILESTONE.md` section 7). It must:
-   - replace the neutral-pad rehearsal with lockstep-driven input;
-   - make VBlanks per tick deterministic (host timing feeds
-     `elapsedTimeMS` and `frameTimer_Confetti`);
-   - compare race-relative control (frameCounter and
-     frameTimer_VsyncCallback are boot-relative);
-   - project the post-setup RNG bank from `MainArcadeRaceSetup_Bank()`
-     into live V4;
-   - wire the in-race stall, desync, and peer-drop paths to RESULTS.
-
-   Fix race-launch risk 10 before input can change: `MainArcadeLink_LinkTick`
-   RETURN_TO_TITLE requests a main-menu load without checking
-   `Loading.stage`. Also fix the stale RL-8 citations (`MainArcadeLink.c:303-309`).
+1. Task 8, in-race lockstep drive and failure handling, planned and reviewed
+   in `docs/LOCKSTEP_RACE_MILESTONE.md`. It has slices LR-S1..LR-S14
+   (LR-S1, the plan, is done) and defaults LR-1..LR-17. Race-launch risk 10
+   (the RETURN_TO_TITLE load race) is fixed.
+   - Next: the owner's ruling on LR-17 (may the live digest read the bot
+     nav-path pointer `NavHeader.last`, which the lease rules reserve) and
+     review of LR-1..LR-16.
+   - LR-S2..LR-S3 can start without LR-17.
+   - LR-S4, LR-S10, LR-S12, and LR-S13 are blocked on LR-17.
 2. Real two-cabinet and G29 validation (actual wire, LAN switch,
    latency/loss, wheel input) needs cabinet access. It is the separately
    gated requirement for step 6 (CAB1 G29/kiosk gate) and step 7
