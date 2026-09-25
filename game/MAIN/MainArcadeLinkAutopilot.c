@@ -10,7 +10,7 @@
  * policy's own rule), the agreed match, and the race caller's RL-12
  * evidence, and hands the decision back to the arcade-link hook, which feeds
  * it to NativeArcadeLinkHost_Enter and NativeArcadeLinkHost_Tick. It never
- * touches a pad: the race caller's rehearsal owns the installed pads (RL-10).
+ * touches a pad: the race caller owns the installed pads (RL-10, LR-16).
  *
  * Native only; the autopilot exists only in internal builds (main.c rejects
  * the option elsewhere), so without CTR_INTERNAL the two frame entries are
@@ -64,9 +64,16 @@ void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOpt
 		return;
 	}
 	NativeArcadeLinkAutopilot_Init(&state->autopilot);
+	/* The report records the race tick cap main.c handed the link host. */
+	state->autopilot.raceTickLimit = options->raceTickLimit;
 	memcpy(state->reportPath, options->reportPath, sizeof(state->reportPath));
 	state->reportPath[sizeof(state->reportPath) - 1u] = '\0';
 	state->active = 1u;
+}
+
+uint8_t MainArcadeLinkAutopilot_Active(void)
+{
+	return s_mainArcadeLinkAutopilot.active;
 }
 
 /*

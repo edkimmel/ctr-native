@@ -9,6 +9,8 @@
  * advance, read into, or write the simulation, and the banner is drawn by
  * the platform over the presented image only, never through the game's
  * ordering table or primitive memory (tests/main_arcade_race_hold_isolation_test.cmake).
+ * The mode only decides whether step 3 (the banner) runs (LR-S10 part 2:
+ * the race caller holds without it until LR-S11).
  *
  * Unity-included (game/game_unity.h); the period core is a linked library.
  */
@@ -22,7 +24,7 @@
 #include "MAIN/MainArcadeRaceHold.h"
 #include "MAIN/MainArcadeRaceHoldCore.h"
 
-void MainArcadeRaceHold_Run(MainArcadeRaceHoldStepFn step, void *context, struct MainArcadeRaceHoldResult *result)
+void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, struct MainArcadeRaceHoldResult *result)
 {
 	struct MainArcadeRaceHoldCore core;
 	uint32_t bannersDue = 0u;
@@ -42,8 +44,9 @@ void MainArcadeRaceHold_Run(MainArcadeRaceHoldStepFn step, void *context, struct
 		{
 			break;
 		}
-		/* 3. After the grace, once per period: the banner over the displayed frame. */
-		if ((flags & MAIN_ARCADE_RACE_HOLD_DRAW_BANNER) != 0u)
+		/* 3. After the grace, once per period, unless the mode has no banner:
+		 * the banner over the displayed frame. */
+		if ((mode != MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER) && ((flags & MAIN_ARCADE_RACE_HOLD_DRAW_BANNER) != 0u))
 		{
 			bannersDue++;
 			if (Platform_PresentVRAMDisplayBanner(MAIN_ARCADE_RACE_HOLD_BANNER_TEXT) != 0)
@@ -66,6 +69,11 @@ void MainArcadeRaceHold_Run(MainArcadeRaceHoldStepFn step, void *context, struct
 		result->bannersDue = bannersDue;
 		result->bannersPresented = bannersPresented;
 	}
+}
+
+void MainArcadeRaceHold_Run(MainArcadeRaceHoldStepFn step, void *context, struct MainArcadeRaceHoldResult *result)
+{
+	MainArcadeRaceHold_RunMode(step, context, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, result);
 }
 
 #endif

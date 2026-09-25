@@ -22,10 +22,14 @@
 #     module's scratch before Release and hands it out only after the tick
 #     succeeded, LR-58);
 #  3. MainArcadeRaceDigest_* is named only by the module and its callers:
-#     the roster proof (LR-S4; the race caller joins in LR-S10). platform/
-#     and include/ never name it. The proof projects once per logged tick
-#     (through Project, never ProjectState) and ends the race once, with the
-#     setup's post-setup bank and the racing overlay's mine pool;
+#     the roster proof (LR-S4) and, since LR-S10 part 2, the race caller.
+#     platform/ and include/ never name it. The proof projects once per
+#     logged tick (through Project, never ProjectState) and ends the race
+#     once, with the setup's post-setup bank and the racing overlay's mine
+#     pool; the race caller projects through ProjectState only, once per
+#     drive tick, into its file-scope V4 state, with the armed config, the
+#     same bank and mine pool, and its frozen pads, and ends the race once,
+#     in its driveEnded block;
 #  4. the unity chain includes the world extractors and the module exactly
 #     once, in order; ctr_native links neither world extractor library (a
 #     pulled member would define sdata twice);
@@ -46,6 +50,7 @@ set(prefix "race digest isolation")
 set(digest_header "game/MAIN/MainArcadeRaceDigest.h")
 set(digest_source "game/MAIN/MainArcadeRaceDigest.c")
 set(proof_source "game/MAIN/MainArcadeRosterProof.c")
+set(caller_source "game/MAIN/MainArcadeRaceLaunch.c")
 set(lease_header "game/MAIN/MainCanonicalTopologyLeaseAuthority.h")
 set(runtime_header "game/MAIN/MainCanonicalRuntime.h")
 set(runtime_source "game/MAIN/MainCanonicalRuntime.c")
@@ -527,7 +532,7 @@ file(GLOB_RECURSE scan_files
     "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/game/*.inc"
     "${repo}/platform/*.c" "${repo}/platform/*.h" "${repo}/include/*.h")
 list(APPEND scan_files "${repo}/main.c")
-set(digest_callers "${proof_source}")
+set(digest_callers "${proof_source}" "${caller_source}")
 set(scanned 0)
 set(named_by "")
 foreach(path IN LISTS scan_files)
@@ -548,15 +553,46 @@ foreach(path IN LISTS scan_files)
     endif()
     list(FIND digest_callers "${relative_path}" caller_at)
     if(caller_at EQUAL -1)
-        message(FATAL_ERROR "${prefix}: ${relative_path} names the race digest API; only ${digest_callers} may (the race caller joins in LR-S10)")
+        message(FATAL_ERROR "${prefix}: ${relative_path} names the race digest API; only ${digest_callers} may")
     endif()
     list(APPEND named_by "${relative_path}")
 endforeach()
 if(scanned LESS 300)
     message(FATAL_ERROR "${prefix}: scanned only ${scanned} files; the scan is broken")
 endif()
-if(NOT "${named_by}" STREQUAL "${proof_source}")
-    message(FATAL_ERROR "${prefix}: the roster proof must name the race digest API (found in '${named_by}')")
+list(SORT named_by)
+if(NOT "${named_by}" STREQUAL "${caller_source};${proof_source}")
+    message(FATAL_ERROR "${prefix}: the race caller and the roster proof must name the race digest API (found in '${named_by}')")
+endif()
+# The race caller (LR-S10 part 2): one ProjectState per drive tick, never
+# Project, and one EndRace, on the drive's end frame (the core's
+# driveEnded); its sources are the armed config, the setup's post-setup
+# bank, the racing overlay's mine pool, and the pads frozen for the tick.
+ctr_read_source("${caller_source}" caller)
+ctr_code("${caller_source}" "${caller}" caller_code)
+foreach(pair IN ITEMS "MainArcadeRaceDigest_Project|0" "MainArcadeRaceDigest_ProjectState|1" "MainArcadeRaceDigest_EndRace|1")
+    string(REPLACE "|" ";" pair "${pair}")
+    list(GET pair 0 name)
+    list(GET pair 1 expected)
+    ctr_count_regex("${caller_code}" "${name}[ \t]*[(]" hits)
+    if(NOT hits EQUAL expected)
+        message(FATAL_ERROR "${prefix}: ${caller_source} calls ${name} ${hits} time(s), expected ${expected}")
+    endif()
+endforeach()
+foreach(term IN ITEMS "sources.gGT = gGT;" "sources.sourceData = sdata;" "sources.mineSource = &D231;" "sources.config = &state->config;"
+        "sources.bank = MainArcadeRaceSetup_Bank();" "sources.input = &frozen;"
+        "MainArcadeRaceDigest_ProjectState(output->raceTick, &sources, &tick, &s_mainArcadeRaceLaunchTickState)"
+        "static struct NativeCanonicalStateV4 s_mainArcadeRaceLaunchTickState;")
+    ctr_require("${caller_source} (code)" "${caller_code}" "${term}")
+endforeach()
+string(FIND "${caller_code}" "if (output->driveEnded != 0u)" drive_ended_at)
+if(drive_ended_at EQUAL -1)
+    message(FATAL_ERROR "${prefix}: ${caller_source} must end the race's digest on the core's driveEnded")
+endif()
+string(SUBSTRING "${caller_code}" ${drive_ended_at} 160 drive_ended_text)
+string(FIND "${drive_ended_text}" "MainArcadeRaceDigest_EndRace()" end_race_at)
+if(end_race_at EQUAL -1)
+    message(FATAL_ERROR "${prefix}: ${caller_source} must call MainArcadeRaceDigest_EndRace inside its driveEnded block")
 endif()
 ctr_read_source("${proof_source}" proof)
 ctr_code("${proof_source}" "${proof}" proof_code)

@@ -39,7 +39,8 @@
  * The run (RL-15): START on the attract screen, CROSS to confirm each select
  * item, REMATCH after race 1, EXIT after race 2, then exit with the result
  * code. The autopilot never touches a pad: installed pads belong to the race
- * caller's rehearsal (RL-10). It feeds the link host's own inputs instead:
+ * caller (RL-10), which steers its own local sample with Steering (below)
+ * while the autopilot runs. It feeds the link host's own inputs instead:
  * the game glue (game/MAIN/MainArcadeLinkAutopilot.c) replaces the arcade-link
  * hook's enter decision (NativeArcadeLinkHost_Enter) and the held menu
  * buttons the hook passes to NativeArcadeLinkHost_Tick with this module's
@@ -78,11 +79,12 @@
  *
  * Report (FormatReport; WriteReport is this module's only I/O):
  *
- *   arcade link autopilot v1
+ *   arcade link autopilot v2
  *   cab <1|2>
  *   result <NAME> (<code>)
  *   last screen <NAME> end reason <NAME>
  *   ticks <observed ticks>
+ *   race ticks <raceTickLimit: the configured race tick cap, 0 when absent>
  *   race <k> agreed match track ... (the hook's agreed-match log text)
  *   race <k> validated launch <n> config <64 hex> plan <64 hex> bots <64 hex> bank <64 hex>
  *   ...
@@ -91,7 +93,10 @@
  * k counts this cabinet's races in order (1-based); n is the race caller's
  * launch number, which may differ between cabinets (RL-S7 interpretation
  * (d)): the checker pairs the k-th lines, never equal n. A race line appears
- * only for a recorded match or validation.
+ * only for a recorded match or validation. The race ticks line is the
+ * autopilot's raceTickLimit, which the game-side glue copies from the options
+ * at Configure; the live gate requires the same nonzero cap on both cabinets
+ * (docs/LOCKSTEP_RACE_MILESTONE.md LR-S10 part 2).
  *
  * Process exit codes while the autopilot runs (enum
  * NativeArcadeLinkAutopilotResult, also the report's result). Exit code 0
@@ -230,6 +235,9 @@ struct NativeArcadeLinkAutopilot
 	uint32_t racesValidated;
 	uint32_t racesFinished;
 	uint32_t rematches;
+	/* the --arcade-link-autopilot-race-ticks cap the run was configured
+	 * with (0: absent, the default bound); reported only, never decides */
+	uint32_t raceTickLimit;
 	struct NativeArcadeLinkAutopilotRace races[NATIVE_ARCADE_LINK_AUTOPILOT_RACES];
 };
 

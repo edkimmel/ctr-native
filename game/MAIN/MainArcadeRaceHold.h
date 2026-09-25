@@ -52,10 +52,22 @@ struct MainArcadeRaceHoldResult
 	uint32_t reserved;
 };
 
+/* MainArcadeRaceHold_RunMode's mode: with the WAITING FOR OPPONENT banner
+ * (step 3 above), or without it (step 3 skipped: no banner is due or drawn,
+ * and bannersDue and bannersPresented stay 0). */
+#define MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER 0u
+#define MAIN_ARCADE_RACE_HOLD_MODE_BANNER 1u
+
 /*
  * Runs the hold until step returns 0 (a NULL step ends it at once, after
- * one pump). The result, when not NULL, is filled on return.
+ * one pump), in mode (MAIN_ARCADE_RACE_HOLD_MODE_*; any value other than
+ * NO_BANNER draws the banner). The result, when not NULL, is filled on
+ * return. The race caller holds without the banner until the Task 8 race
+ * plan's LR-S11 turns it on (LR-9).
  */
+void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, struct MainArcadeRaceHoldResult *result);
+
+/* MainArcadeRaceHold_RunMode with the banner (the roster proof's hold). */
 void MainArcadeRaceHold_Run(MainArcadeRaceHoldStepFn step, void *context, struct MainArcadeRaceHoldResult *result);
 
 #endif

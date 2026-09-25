@@ -172,6 +172,17 @@ static void MainArcadeRaceLaunchCore_StepEnded(struct MainArcadeRaceLaunchCore *
 	}
 }
 
+/* A drive frame: ask the caller for one drive tick of core->raceTick, whose
+ * result is due on this frame (DriveResult) against this frame's stage. */
+static void MainArcadeRaceLaunchCore_DriveStep(struct MainArcadeRaceLaunchCore *core, uint32_t loadingStage,
+                                               struct MainArcadeRaceLaunchCoreOutput *output)
+{
+	output->driveStep = 1u;
+	output->raceTick = core->raceTick;
+	core->driveDue = 1u;
+	core->driveStage = (uint8_t)loadingStage;
+}
+
 void MainArcadeRaceLaunchCore_Init(struct MainArcadeRaceLaunchCore *core)
 {
 	if (core != NULL)
@@ -193,7 +204,7 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 	{
 		return 0;
 	}
-	if ((core->phase == MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_LAUNCH_RESULT) || (core->phase > MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_ENDED) ||
+	if ((core->phase == MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_LAUNCH_RESULT) || (core->driveDue != 0u) || (core->phase > MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_ENDED) ||
 	    (input->setupStatus > MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_FAILED) || (input->loadingStage > MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_OTHER))
 	{
 		return 0;
@@ -286,8 +297,11 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 		else if ((input->onPlanLevel != 0u) && (input->loadingStage == MAIN_ARCADE_RACE_LAUNCH_CORE_STAGE_IDLE) && (input->loadingBit == 0u))
 		{
 			output->raceTickZero = 1u;
-			core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_REHEARSAL;
+			core->phase = MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_DRIVE;
 			core->waitTicks = 0u;
+			/* Race tick 0 is the drive's first tick. */
+			core->raceTick = 0u;
+			MainArcadeRaceLaunchCore_DriveStep(core, input->loadingStage, output);
 		}
 		else if (core->waitTicks >= MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_VALIDATE_TIMEOUT_TICKS)
 		{
@@ -295,24 +309,23 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 		}
 		break;
 	}
-	case MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_REHEARSAL:
+	case MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_DRIVE:
 	{
+		/* Every end of the drive phase is its driveEnded frame. */
 		if (input->hostRacing == 0u)
 		{
+			output->driveEnded = 1u;
 			MainArcadeRaceLaunchCore_End(core, input->loadingStage, output);
 			break;
 		}
-		core->waitTicks++;
 		if (status != MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_VALIDATED)
 		{
+			output->driveEnded = 1u;
 			MainArcadeRaceLaunchCore_Fail(core, input->loadingStage, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_SETUP_FAILED);
+			break;
 		}
-		else if (core->waitTicks >= MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_REHEARSAL_TICKS)
-		{
-			output->reportFinished = 1u;
-			core->finishedPending = 1u;
-			MainArcadeRaceLaunchCore_End(core, input->loadingStage, output);
-		}
+		core->raceTick++;
+		MainArcadeRaceLaunchCore_DriveStep(core, input->loadingStage, output);
 		break;
 	}
 	case MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_ENDED:
@@ -371,6 +384,46 @@ int MainArcadeRaceLaunchCore_LaunchResult(struct MainArcadeRaceLaunchCore *core,
 	return 1;
 }
 
+int MainArcadeRaceLaunchCore_DriveResult(struct MainArcadeRaceLaunchCore *core, uint32_t result, struct MainArcadeRaceLaunchCoreOutput *output)
+{
+	if ((core == NULL) || (output == NULL) || (core->driveDue == 0u) || (core->phase != MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_DRIVE))
+	{
+		return 0;
+	}
+	if ((result < MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_GO) || (result > MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_OUTCOME))
+	{
+		return 0;
+	}
+	core->driveDue = 0u;
+	if (result == MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_GO)
+	{
+		/* The committed pads replace the neutral ones on this frame only. */
+		output->installPads = 0u;
+		output->installCommitted = 1u;
+		return 1;
+	}
+	/* Every other result ends the drive phase on this frame. */
+	output->driveEnded = 1u;
+	if (result == MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_FINISHED)
+	{
+		output->reportFinished = 1u;
+		core->finishedPending = 1u;
+		MainArcadeRaceLaunchCore_End(core, core->driveStage, output);
+	}
+	else if (result == MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_FAILED)
+	{
+		MainArcadeRaceLaunchCore_Fail(core, core->driveStage, output, MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_DRIVE_FAILED);
+	}
+	else
+	{
+		/* OUTCOME: the host already latched it; nothing to report. */
+		MainArcadeRaceLaunchCore_End(core, core->driveStage, output);
+	}
+	output->installPads = core->padsInstalled;
+	output->raceFinishedInput = core->finishedPending;
+	return 1;
+}
+
 const char *MainArcadeRaceLaunchCore_FailureName(uint32_t failure)
 {
 	switch (failure)
@@ -389,6 +442,8 @@ const char *MainArcadeRaceLaunchCore_FailureName(uint32_t failure)
 		return "RACE_TICK_TIMEOUT";
 	case MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_SETUP_FAILED:
 		return "SETUP_FAILED";
+	case MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_DRIVE_FAILED:
+		return "DRIVE_FAILED";
 	default:
 		return "UNKNOWN";
 	}

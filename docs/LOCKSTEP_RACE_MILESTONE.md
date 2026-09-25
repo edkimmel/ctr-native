@@ -531,7 +531,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-60; LR-17 is the owner's ruling)
+## 4. Decided design (defaults LR-1..LR-68; LR-17 is the owner's ruling)
 
 The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
 written, except that LR-18, the finish grace, amends LR-1, LR-12, LR-13,
@@ -542,8 +542,8 @@ several defaults; "Review changes" at the end of this section lists what
 changed, and "Owner decisions (2026-09-25)" after it lists the owner's
 decisions. LR-19..LR-27 were added by LR-S4, LR-28..LR-32 by LR-S5,
 LR-33..LR-36 by LR-S6, LR-37..LR-40 by LR-S7, LR-41..LR-48 by LR-S8,
-LR-49..LR-57 by LR-S9, and LR-58..LR-60 by LR-S10 part 1; each records the
-mechanics its slice settled.
+LR-49..LR-57 by LR-S9, LR-58..LR-60 by LR-S10 part 1, and LR-61..LR-68 by
+LR-S10 part 2; each records the mechanics its slice settled.
 
 LR-1 Placement. The race driver lives under platform/, because game code
 may not name lockstep (tests/native_lockstep_isolation_test.cmake:128-157
@@ -2401,6 +2401,171 @@ LR-60 The internal race-tick-limit override (LR-S10 part 1, for LR-42).
 - The live gate's value is chosen in part 2, which also adds the option to
   tools/arcade-link-launch-check.ps1; part 1 leaves the script unchanged.
 
+LR-61 The drive phase and its result (LR-S10 part 2). The launch core's
+REHEARSAL phase becomes MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_DRIVE (value
+5, unchanged), LAUNCH_REHEARSAL_TICKS and the core's own 150-tick finish
+are gone, and the core gains
+
+    int MainArcadeRaceLaunchCore_DriveResult(struct MainArcadeRaceLaunchCore *core, uint32_t result,
+        struct MainArcadeRaceLaunchCoreOutput *output);
+
+- Every accepted drive-phase Step with the host RACING and the setup
+  VALIDATED sets output driveStep and raceTick: 0 on the raceTickZero
+  frame, then + 1 per frame (a new core field, raceTick; the core no
+  longer counts waitTicks in the drive phase). The result is then due
+  exactly once, on that frame, with that output: Step refuses (changing
+  nothing) while it is due, and DriveResult refuses a NULL core or output,
+  a call when nothing is due or outside the drive phase, and a result
+  outside 1..4, all leaving it due. The loading stage of the step is kept
+  (driveStage) for the end steps.
+- The results, append-only: GO 1u (installCommitted 1, installPads 0:
+  install the tick's committed pads instead of the neutral ones, this
+  frame only), FINISHED 2u (reportFinished and the finish latch, then the
+  end steps), FAILED 3u (the new FAILURE_DRIVE_FAILED 7u, "DRIVE_FAILED",
+  then the end steps), OUTCOME 4u (the end steps with no report: the link
+  already latched the outcome). installPads and raceFinishedInput are
+  recomputed after the result, so the latch set by FINISHED is this
+  frame's.
+- After any end there is no driveStep until the next race's raceTickZero,
+  and the neutral pads are installed from the end frame until the clear
+  (RL-10's clear rule is unchanged).
+- The caller's frame order becomes Gather, Step, ArmAndLaunch, the drive
+  tick (which calls DriveResult exactly once), the latch copy (moved after
+  the drive tick so a FINISHED result feeds the next host Tick), Apply,
+  LogElapsed.
+
+LR-62 driveEnded and the digest's end (LR-S10 part 2). The core output
+gains driveEnded, a one-frame event set on every end in the drive phase:
+the FINISHED, FAILED, and OUTCOME results, the flow seen off RACING, and
+SETUP_FAILED. The caller's Apply calls MainArcadeRaceDigest_EndRace on it
+(after the reports, before the return step) and logs "race <n>: the race
+digest did not end (<failure>)" when it fails, which is expected after a
+latched projection failure (the next race tick 0 resets the runtime
+anyway). No end outside the drive phase sets it, because no digest began.
+
+LR-63 The drive tick (LR-S10 part 2). MainArcadeRaceLaunch_Drive runs, on
+each driveStep frame, in this order:
+
+1. The facts (LR-18): endOfRace from gGT->gameMode1 & END_OF_RACE, humans
+   = gGT->numPlyrCurrGame, and finishedHumans =
+   MainArcadeRaceLaunchCore_FinishedHumans over the eight drivers'
+   actionsFlagSet (0 for a NULL driver). Reads only.
+2. The pads GameLogic of the tick read: Platform_InputCapturePadSnapshots,
+   then MainCanonicalState_FreezeInputV1 (no VBlank ran since GameLogic,
+   and installed pads stay until the next install).
+3. MainArcadeRaceDigest_ProjectState(raceTick, sources, &tick,
+   &s_mainArcadeRaceLaunchTickState), sources gGT, sdata, &D231, the armed
+   config (state->config), MainArcadeRaceSetup_Bank(), and the frozen
+   input. The V4 state is a file-scope static (too large for the stack),
+   host-local; the hook runs inside NativePerf's RENDER_FRAME scope, never
+   GAME_LOGIC.
+4. The local sample (LR-65).
+5. NativeArcadeLinkHost_RaceStep(raceTick, &state, &sample, &facts,
+   state->committed), then the hold on HOLD (LR-64).
+6. GO: DriveResult(GO); Apply installs the committed pads (LR-66), before
+   the VBlanks. END: NativeArcadeLinkHost_GetDriveState, then the end kind
+   OF_RACE, FINISH_GRACE, or RACE_TICK_LIMIT maps to FINISHED, OUTCOME to
+   OUTCOME, and LOCAL_FAILURE to FAILED with no second report (the host's
+   drive reported it, once per race).
+
+The failure path. A failed capture or freeze (logged "race <n>: the pads
+of race tick <t> could not be frozen"), a failed projection (logged "race
+<n>: the V4 projection failed at race tick <t> (<FailureName>, runtime
+reason <r>)"), an END whose kind is NONE (the drive did not run: not
+begun, or refused), and a failed GetDriveState all go through one helper,
+MainArcadeRaceLaunch_DriveFailed: NativeArcadeLinkHost_ReportRaceFailure
+once, then DriveResult(FAILED). The host's race step is not called after
+a projection failure. Apply logs every local failure as before but
+reports only when the failure is not DRIVE_FAILED, so each drive failure
+is reported exactly once.
+
+The log lines: "race <n> tick 0 (level <l>)" (the rehearsal wording is
+gone), one "race <n> drive end: <kind> at race tick <t>" per end (with
+" (<reason>)" after a local failure's kind, and "(the drive did not run)"
+for a kind-less end, whose tick is the core's), "race <n> race tick <t>
+held <p> tick periods (<us> us)" for a hold of at least one full period,
+"race <n> finished", and "race <n> race pads cleared". The LR-8 elapsed
+lines and the RL-12 line are unchanged.
+
+LR-64 The hold without the banner (LR-S10 part 2, LR-9). The hold module
+gains
+
+    void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode,
+        struct MainArcadeRaceHoldResult *result);
+
+with MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER 0u and
+MAIN_ARCADE_RACE_HOLD_MODE_BANNER 1u. The mode gates only step 3 of the
+iteration: with NO_BANNER no banner is due or drawn (bannersDue and
+bannersPresented stay 0); any other value draws it. MainArcadeRaceHold_Run
+is exactly RunMode with the banner, so the roster proof is unchanged. The
+race caller holds with RunMode(MainArcadeRaceLaunch_HoldStep, state,
+NO_BANNER, &hold) until LR-S11 turns the banner on; its step forwards
+(periods, newPeriod) unchanged to NativeArcadeLinkHost_RaceHold with the
+committed pads as the output, keeps the status, and returns 1 only while
+it is HOLD. After the loop the kept status is GO or END and is handled as
+a race step's.
+
+LR-65 The local sample and the steering pad (LR-S10 part 2, LR-4, LR-16).
+Platform_InputSampleLocalPad fills a PlatformInputPadSnapshot, converted
+field by field to NativeArcadeLinkHostPad (the drive normalizes it). In
+CTR_INTERNAL builds, while the new MainArcadeLinkAutopilot_Active()
+(defined only in the glue's internal part; it returns the active flag and
+nothing else) is 1, MainArcadeRaceLaunch_AutopilotSample replaces the
+sample with the steering pad; outside CTR_INTERNAL an inert stand-in
+returns 0. The steering reads, like the roster proof's autopilot, the
+local kart (driver 0 on cab 1, driver 1 on cab 2, from the host view's
+localCab) and gGT->level1's restart points (ptr_restart_points,
+cnt_restart_points below 0xFF): the target is the nearest point, reset at
+every race tick 0, moved past every point the kart has passed, and the aim
+one point beyond (lookahead 1; posCurr shifted by 8). The pad is CROSS plus
+NativeArcadeLinkAutopilot_Steer's turn: active low (0xFFFF with the held
+bits cleared, low byte first), status 0, id 0x41, analog 0x80, connected
+1. It is built from race tick k's facts as tick k's sample; the drive
+commits it for a later tick (LR-3). ptr_restart_points is named only in
+the caller's CTR_INTERNAL part.
+
+LR-66 The committed pads' install (LR-S10 part 2, LR-4). The committed
+pads of a GO go to the pad bus only through
+MainArcadeRaceLaunch_InstallCommitted, the one conversion from
+NativeArcadeLinkHostPad to PlatformInputPadSnapshot (field by field,
+reserved zeroed), called only in Apply's installCommitted block, which
+comes before, and excludes, the neutral install. A failed install is
+logged once per race (the neutral install's rule). The caller
+static-asserts the mirror: the same size and every field's offset, and
+NATIVE_ARCADE_LINK_HOST_RACE_PADS == PLATFORM_INPUT_PAD_COUNT.
+
+LR-67 The live gate's race tick cap (LR-S10 part 2, LR-60).
+tools/arcade-link-launch-check.ps1 passes --arcade-link-autopilot-race-ticks
+300 to both cabinets: at most 300 race ticks (10 s) per race, ending
+RACE_TICK_LIMIT, a finish kind, so both races still end FINISHED and the
+two-race gate stays short (the rehearsal ran 150 ticks). The autopilot
+report records the cap: struct NativeArcadeLinkAutopilot gains
+raceTickLimit, which MainArcadeLinkAutopilot_Configure copies from the
+options right after the Init (reported only; no decision reads it), and
+the report, now "arcade link autopilot v2", gains the line "race ticks
+<n>" right after "ticks <n>". The checker requires exactly one such line
+in each report, equal to the 300 it passed, and so the same nonzero cap on
+both cabinets (which LR-60 requires), and prints each race's drive end
+line from both stdouts.
+
+LR-68 The isolation of the race caller (LR-S10 part 2).
+main_arcade_link_hook_isolation 16j pins the drive tick's order, the one
+race step and one hold call (the hold only from the hold step, whose body
+is pinned), the committed pads' one conversion and their four names, the
+sample's conversion, the pad mirror's static asserts, the one report per
+drive failure, ptr_restart_points only in the CTR_INTERNAL part, and
+LR-18: no write of actionsFlagSet or gameMode1 in any spelling, no
+MainGameEnd_Initialize (comments included), and ACTION_RACE_FINISHED only
+in its mirror's static assert. native_arcade_link_host_isolation rule 3g
+allows exactly one game source to name RaceStep and RaceHold, the caller,
+once each, raw text. main_canonical_runtime_isolation: the caller names no
+MainCanonicalRuntime token and projects through ProjectState.
+main_arcade_race_setup_isolation exempts exactly three whole names in the
+caller from its token ban, each named once: Platform_InputCapturePadSnapshots,
+NativeCanonicalInputV1, and NativeCanonicalStateV4. The caller's
+guard becomes one CTR_NATIVE block holding one CTR_INTERNAL ... #else ...
+#endif (hook 16a and setup rule 2).
+
 Review changes. The plan review (on befa152a9) changed these defaults:
 
 - LR-11 no longer treats a lead as a desync. A peer digest for a frame
@@ -4151,9 +4316,9 @@ Tests:
 
 ### LR-S10 -- the caller: the rehearsal's replacement
 
-Status: part 1 done (the seams); part 2 (the caller) planned. Review
-required (simulation identity, the launch and race path). Run 4. New
-defaults LR-58..LR-60 (section 4).
+Status: done (both parts). Review required (simulation identity, the
+launch and race path). Run 4. New defaults LR-58..LR-60 (part 1) and
+LR-61..LR-68 (part 2) (section 4).
 
 Result, part 1:
 
@@ -4287,6 +4452,127 @@ Result, part 1:
 - Fast suite (-LE live): 154 of 154 passed. No live test was run: nothing
   on the live path calls the new seams, and a race begun without the
   option passes the drive the same default as before.
+
+Result, part 2:
+
+- The API: the launch core's MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_DRIVE (5,
+  replacing REHEARSAL; LAUNCH_REHEARSAL_TICKS is gone) and
+
+      int MainArcadeRaceLaunchCore_DriveResult(struct MainArcadeRaceLaunchCore *core, uint32_t result,
+          struct MainArcadeRaceLaunchCoreOutput *output);
+
+  with DRIVE_RESULT_GO 1u, FINISHED 2u, FAILED 3u, OUTCOME 4u, the new
+  FAILURE_DRIVE_FAILED 7u, and the output fields driveStep,
+  installCommitted, driveEnded, and raceTick; the hold's
+  MainArcadeRaceHold_RunMode with MODE_NO_BANNER 0u and MODE_BANNER 1u;
+  the glue's internal-only MainArcadeLinkAutopilot_Active; the autopilot's
+  raceTickLimit and the report's v2 "race ticks <n>" line. The race caller
+  now calls RaceStep, RaceHold, GetDriveState, ProjectState, EndRace,
+  FinishedHumans, FreezeInputV1, and Platform_InputSampleLocalPad.
+- The files: game/MAIN/MainArcadeRaceLaunch.{c,h} (the drive tick, the
+  sample and steering, the committed install, the new frame order and log
+  lines); game/MAIN/MainArcadeRaceLaunchCore.{c,h} (the drive phase and
+  result); game/MAIN/MainArcadeRaceHold.{c,h} (RunMode);
+  game/MAIN/MainArcadeLinkAutopilot.{c,h} (Active, the cap copy);
+  include/platform/native_arcade_link_autopilot.h and
+  platform/native_arcade_link_autopilot.c (the field, the v2 report);
+  tools/arcade-link-launch-check.ps1 (the cap, the report checks, the
+  drive-end lines); CMakeLists.txt (a comment); the unit tests
+  tests/main_arcade_race_launch_core_test.c,
+  tests/main_arcade_race_hold_test.c, and
+  tests/native_arcade_link_autopilot_test.c; and the isolation tests
+  main_arcade_link_hook (16a, 16b, 16b2, 16d, 16e, new 16j),
+  native_arcade_link_host (3g), main_arcade_race_digest (3),
+  main_canonical_runtime, main_arcade_race_setup (2, 4),
+  main_arcade_race_hold (2, 5, new 6), main_arcade_race_launch_core (new
+  7), native_arcade_link_autopilot (2, 3, 6, 7),
+  arcade_roster_proof_autopilot (2), and arcade_sound_identity (the race
+  caller, its core, the hold, and the autopilot module join the list).
+  No change to the host, the drive core, the session, the wire, the
+  canonical state, any checkpoint or replay state, or the lease; no
+  NavHeader read; no heap.
+- The decisions: LR-61 (the drive phase, the result due once, its four
+  values, the end steps, the frame order with the latch copy after the
+  drive tick); LR-62 (driveEnded and EndRace); LR-63 (the drive tick's
+  order, the failure path with one report per failure, the log lines);
+  LR-64 (the hold's mode, the forwarding step); LR-65 (the sample and the
+  internal steering pad); LR-66 (the committed install and the mirror's
+  static asserts); LR-67 (the gate cap 300 and the report line); LR-68
+  (the isolation). The plan's "the autopilot's steering facts to
+  RaceStep" is realized through the local sample: RaceStep (LR-51) takes
+  no steering facts, so in internal builds the caller passes the steering
+  pad as the sample, and each autopilot drives its own human (LR-16).
+- main_arcade_race_launch_core_unit: every frame of every case checks the
+  drive invariants (a driveStep only in the drive phase with ticks 0, 1,
+  ... in order; installCommitted only on a GO result's frame; no driveStep
+  after an end; driveEnded exactly on end frames). TestDriveResultProtocol:
+  DriveResult refuses when nothing is due (a fresh core, and outside the
+  drive phase), Step and LaunchResult refuse while a result is due, and
+  DriveResult refuses the results 0, 5, 6, and 0xFFFFFFFF, a NULL output,
+  and a NULL core, each leaving the result due and the core and output
+  byte-identical; a GO then installs the committed pads that frame only,
+  and a second DriveResult on the same frame is refused. TestDriveEnds,
+  for each of FINISHED, FAILED, and OUTCOME: the end on race tick 150
+  after 150 GO ticks, its report (the finish latch, DRIVE_FAILED, or
+  none), driveEnded, neutral pads from the end frame, the return, the
+  clear, the Disarm, and race 2 restarting at race tick 0.
+  TestDriveEndOnRaceTickZero: an OUTCOME on race tick 0's own drive step.
+  The finish path runs 20000 GO ticks, past the drive's 18000 bound,
+  before FINISHED (no core bound remains); the flow off RACING and a late
+  SETUP_FAILED in the drive phase set driveEnded with no driveStep.
+- main_arcade_race_hold_unit, TestModes: NO_BANNER draws and counts no
+  banner and pumps and waits exactly as Run; BANNER, 2, and 0xFFFFFFFF are
+  Run exactly; a NULL step without the banner ends after one pump.
+- native_arcade_link_autopilot_unit: the v2 header, "race ticks 300"
+  right after the ticks line of a passed run (11 lines), and "race ticks
+  0" after an Init.
+- Probes, each reverted (the tree was byte-identical afterwards; the
+  build and suites below ran on the restored sources):
+  - the committed pads installed a second way inside the drive tick, the
+    restart points read outside the CTR_INTERNAL part, a gameMode1 write,
+    ACTION_RACE_FINISHED outside its static assert, MainGameEnd_Initialize
+    in a comment, the LOCAL_FAILURE end reported again, a hold step that
+    always holds, the latch copy before the drive tick, and a statement
+    before the dormant return: main_arcade_link_hook_isolation failed each
+    time;
+  - the caller naming RaceStep in a comment, and MainArcadeLink.c naming
+    RaceHold in a comment: native_arcade_link_host_isolation failed;
+  - the caller naming MainCanonicalRuntime in a comment:
+    main_canonical_runtime_isolation failed;
+  - the word capture in a caller comment: main_arcade_race_setup_isolation
+    failed;
+  - the caller asking MainArcadeLinkAutopilot_Active outside its
+    CTR_INTERNAL part, the glue's Configure without the cap copy, and the
+    checker without the cap: native_arcade_link_autopilot_isolation failed
+    each time;
+  - a steering call in the caller's non-internal stand-in:
+    arcade_roster_proof_autopilot_isolation failed;
+  - the caller projecting through Project: main_arcade_race_digest_isolation
+    failed;
+  - the caller holding with MODE_BANNER, and the hold's banner guard
+    without the mode: main_arcade_race_hold_isolation failed;
+  - the word rehearsal in the launch core: its isolation failed;
+  - a sound ID in the caller: arcade_sound_identity_isolation failed;
+  - the word lockstep in a caller comment: native_lockstep_isolation
+    failed;
+  - the core's GO without installCommitted, its Step not refusing while a
+    result is due, and an end without driveEnded:
+    main_arcade_race_launch_core_unit failed each time;
+  - the hold ignoring the mode: main_arcade_race_hold_unit failed;
+  - the report without its race ticks line:
+    native_arcade_link_autopilot_unit failed.
+- Fast suite (-LE live): 154 of 154 passed.
+- Live gate, arcade_link_launch, on the committed tree: passed in 88.8 s
+  (cab1 87.8 s, cab2 88.0 s). Both reports: result PASS (0), race ticks
+  300, both races validated with equal agreed matches and digests, race 2
+  on a new config, and the LR-8 lines of race ticks 0..2 equal (32/0/0,
+  32/526/100, 32/1052/200). Each race on each cabinet ended "race tick
+  limit at race tick 300" (cab1 race 1 and race 2, cab2 race 1 and race
+  2), then "finished", the host's end record "ended (reason 1); foreign
+  bundles dropped 0", and the pad clear; no drive failure, no outcome end,
+  no digest-end failure, and no hold of a full tick period was logged. No
+  desync: 300 race ticks per race were committed on both cabinets with
+  the V4 digests exchanged.
 
 Plan:
 

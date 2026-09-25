@@ -22,7 +22,11 @@
 #  4. no lease, topology capture, checkpoint, replay, lockstep, or
 #     match-select token in the adapter, the proof hook, or the race caller
 #     (sources and headers; for the race caller also no NativeCanonical
-#     token, section 5 of docs/RACE_LAUNCH_MILESTONE.md), and neither they
+#     token, section 5 of docs/RACE_LAUNCH_MILESTONE.md; since LR-S10 part 2
+#     only its three drive-tick names Platform_InputCapturePadSnapshots,
+#     NativeCanonicalInputV1, and NativeCanonicalStateV4, once each, are
+#     exempt, and the caller is one CTR_NATIVE block holding one
+#     CTR_INTERNAL ... #else ... #endif), and neither they
 #     nor the decision core write levelID in any
 #     spelling (gGT->levelID, sdata->gGT->levelID, (*gGT).levelID, compound
 #     assignment, increment, or taking its address); the one levelID store
@@ -330,7 +334,19 @@ foreach(call IN ITEMS MainArcadeRaceSetup_Arm MainArcadeRaceSetup_Launch MainArc
         message(FATAL_ERROR "${prefix}: ${caller_source} must call ${call} exactly once (found ${caller_hits})")
     endif()
 endforeach()
-ctr_require_whole_file_guard("${caller_source}" "${caller}" "#if defined(CTR_NATIVE)")
+# Since LR-S10 part 2 the caller is one CTR_NATIVE block holding exactly one
+# nested #if defined(CTR_INTERNAL) ... #else ... #endif (the autopilot's
+# steering sample and its inert stand-in), and nothing else conditional.
+string(REGEX MATCHALL "#[ \t]*(if|ifdef|ifndef|elif|else|endif)[^\n]*" caller_directives "${caller_code}")
+if(NOT "${caller_directives}" STREQUAL "#if defined(CTR_NATIVE);#if defined(CTR_INTERNAL);#else;#endif;#endif")
+    message(FATAL_ERROR "${prefix}: ${caller_source} must be one #if defined(CTR_NATIVE) block holding one #if defined(CTR_INTERNAL) ... #else ... #endif (found '${caller_directives}')")
+endif()
+string(FIND "${caller}" "#if defined(CTR_NATIVE)" caller_guard_at)
+string(SUBSTRING "${caller}" 0 ${caller_guard_at} caller_before_guard)
+ctr_strip_comments("${caller_before_guard}" caller_before_guard)
+if(NOT caller_before_guard MATCHES "^[ \t\r\n]*$" OR NOT caller MATCHES "#endif[ \t\r\n]*$")
+    message(FATAL_ERROR "${prefix}: ${caller_source} must open with #if defined(CTR_NATIVE) and end with its #endif")
+endif()
 
 # 3. Guards, the proof's dormant early return, and its render-frame call.
 ctr_require_whole_file_guard("${adapter_source}" "${adapter}" "#if defined(CTR_NATIVE)")
@@ -366,8 +382,38 @@ set(banned_tokens
     Lockstep lockstep LOCKSTEP NativeMatchSelect native_match_select NATIVE_MATCH_SELECT
     Acquire Activate Publish Retire LOAD_Hub_ReadFile
     malloc calloc realloc "free(" alloca)
+# The race caller's drive tick (LR-S10 part 2) needs exactly three names the
+# bans below would catch, each exactly once in the whole file, comments
+# included: the pad-bus read of the pads GameLogic read
+# (Platform_InputCapturePadSnapshots), the frozen input's type
+# (NativeCanonicalInputV1), and the projected state's type
+# (NativeCanonicalStateV4). They are removed, as whole identifiers, from the
+# text the bans scan; nothing else is exempt.
+function(ctr_caller_scan_view source out_var)
+    string(REPLACE ";" "@SEMI@" view "${source}")
+    foreach(allowed IN ITEMS Platform_InputCapturePadSnapshots NativeCanonicalInputV1 NativeCanonicalStateV4)
+        string(REGEX MATCHALL "(^|[^A-Za-z0-9_])${allowed}([^A-Za-z0-9_]|$)" allowed_hits "${view}")
+        list(LENGTH allowed_hits allowed_count)
+        if(NOT allowed_count EQUAL 1)
+            message(FATAL_ERROR "${prefix}: ${caller_source} must name ${allowed} exactly once (found ${allowed_count})")
+        endif()
+        string(REGEX REPLACE "(^|[^A-Za-z0-9_])${allowed}([^A-Za-z0-9_]|$)" "\\1@ALLOWED@\\2" view "${view}")
+    endforeach()
+    set(${out_var} "${view}" PARENT_SCOPE)
+endfunction()
+# The view must itself work: it removes exactly the three whole names.
+ctr_caller_scan_view("a Platform_InputCapturePadSnapshots(x); struct NativeCanonicalInputV1 i; struct NativeCanonicalStateV4 s;" scan_probe)
+foreach(term IN ITEMS Capture NativeCanonical)
+    ctr_forbid("scan view self-check" "${scan_probe}" "${term}")
+endforeach()
+ctr_caller_scan_view("Platform_InputCapturePadSnapshots NativeCanonicalInputV1 NativeCanonicalStateV4 NativeCanonicalStateV4X" scan_probe)
+string(FIND "${scan_probe}" "NativeCanonicalStateV4X" scan_probe_kept)
+if(scan_probe_kept EQUAL -1)
+    message(FATAL_ERROR "${prefix}: the caller scan view removed more than the whole allowed names")
+endif()
+ctr_caller_scan_view("${caller}" caller_scan)
 foreach(pair "${adapter_source}|adapter" "${adapter_header}|adapter_h" "${proof_source}|proof" "${proof_header}|proof_h"
-        "${caller_source}|caller" "${caller_header}|caller_h")
+        "${caller_source}|caller_scan" "${caller_header}|caller_h")
     string(REPLACE "|" ";" pair_items "${pair}")
     list(GET pair_items 0 relative_path)
     list(GET pair_items 1 variable)
@@ -380,7 +426,7 @@ endforeach()
 # decision core's isolation applies it) on top of the list above, whole files
 # with comments: no topology-lease acquire, activate, capture, or publish
 # token, and no checkpoint, replay, or NativeCanonical token.
-foreach(pair "${caller_source}|caller" "${caller_header}|caller_h")
+foreach(pair "${caller_source}|caller_scan" "${caller_header}|caller_h")
     string(REPLACE "|" ";" pair_items "${pair}")
     list(GET pair_items 0 relative_path)
     list(GET pair_items 1 variable)

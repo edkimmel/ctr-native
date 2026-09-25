@@ -59,8 +59,9 @@ foreach(cli_unit IN ITEMS main_source mainmain_source scheduler_source)
 endforeach()
 # The runtime has one live caller file: the race digest module,
 # game/MAIN/MainArcadeRaceDigest.c (the Task 8 race plan, LR-10, slice
-# LR-S4). Its callers are the internal roster proof now and the race caller
-# from LR-S10 (tests/main_arcade_race_digest_isolation_test.cmake pins them).
+# LR-S4). Its callers are the internal roster proof and (since LR-S10 part 2)
+# the race caller (tests/main_arcade_race_digest_isolation_test.cmake pins them;
+# the race caller's own pin is at the end of this file).
 # No other first-party game, platform, include, or host source names a
 # MainCanonicalRuntime_ entry in code (comments removed), and the caller file
 # stays off the lease, replay, and MainMain paths.
@@ -110,4 +111,20 @@ endforeach()
 string(REGEX MATCH "(^|[^Ee])(lease|Lease|LEASE)" caller_lease "${caller_code}")
 if(NOT "${caller_lease}" STREQUAL "")
     message(FATAL_ERROR "main_canonical_runtime_isolation: ${runtime_caller} must not name the topology lease")
+endif()
+
+# The race caller (game/MAIN/MainArcadeRaceLaunch.c, the Task 8 race plan
+# LR-S10 part 2) reaches the runtime only through the race digest module: it
+# names no MainCanonicalRuntime token at all (comments included), and it
+# projects through MainArcadeRaceDigest_ProjectState.
+set(race_caller "game/MAIN/MainArcadeRaceLaunch.c")
+file(READ "${root}/${race_caller}" race_caller_source)
+string(FIND "${race_caller_source}" "MainCanonicalRuntime" race_caller_runtime_hit)
+if(NOT race_caller_runtime_hit EQUAL -1)
+    message(FATAL_ERROR "main_canonical_runtime_isolation: ${race_caller} must reach the runtime only through MainArcadeRaceDigest")
+endif()
+string(REGEX REPLACE "/\\*[^*]*\\*+([^/*][^*]*\\*+)*/|//[^\n]*" " " race_caller_code "${race_caller_source}")
+string(FIND "${race_caller_code}" "MainArcadeRaceDigest_ProjectState(" race_caller_project_hit)
+if(race_caller_project_hit EQUAL -1)
+    message(FATAL_ERROR "main_canonical_runtime_isolation: ${race_caller} must project its race ticks through MainArcadeRaceDigest_ProjectState")
 endif()

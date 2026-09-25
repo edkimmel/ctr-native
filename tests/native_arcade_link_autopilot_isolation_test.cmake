@@ -15,12 +15,15 @@
 #     never names the race setup, the roster proof, replay, checkpoint,
 #     canonical state, or the topology lease, and no stdio; each frame entry
 #     returns first when inactive; its only race-caller names are the
-#     read-only RL-12 evidence getters;
+#     read-only RL-12 evidence getters; since LR-S10 part 2 (the Task 8
+#     race plan) its internal part also defines MainArcadeLinkAutopilot_Active,
+#     which only returns the active flag, and Configure copies the race tick
+#     cap into the report state right after the Init;
 #  3. the arcade-link hook calls MainArcadeLinkAutopilot_Input exactly once,
 #     inside its LINK branch right before its owned-frame link tick, and
 #     MainArcadeLinkAutopilot_AfterTick exactly once, right after its host
 #     tick, which still takes output->heldButtons; nothing else outside the
-#     glue and main.c names the glue;
+#     glue, main.c, and the race caller names the glue;
 #  4. main.c parses the option after the roster proof checks and before any
 #     replay parser, rejects it in non-internal builds, rejects it without
 #     --arcade-link and together with replay options, --arcade-roster-proof,
@@ -30,10 +33,13 @@
 #  5. the unity chain includes the glue once, after the roster proof launcher
 #     and before the 231 overlay;
 #  6. the race caller's evidence getters only read: the caller writes its
-#     RL-15 fields only in its RL-12 log step;
+#     RL-15 fields only in its RL-12 log step; it names the glue only in its
+#     include and one MainArcadeLinkAutopilot_Active call, the first
+#     statement of its autopilot sample, inside its CTR_INTERNAL part;
 #  7. the live gate is registered: arcade_link_launch runs the checker on
 #     Windows with SKIP_RETURN_CODE 77, RUN_SERIAL TRUE, and the label live,
-#     and the checker uses the fixed loopback ports and the autopilot option.
+#     and the checker uses the fixed loopback ports and the autopilot option,
+#     passes the race tick cap 300, and reads the v2 report's race ticks line.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade link autopilot isolation")
@@ -282,10 +288,27 @@ string(FIND "${internal_tail}" "#else" internal_else)
 string(SUBSTRING "${internal_tail}" 0 ${internal_else} internal_part)
 string(SUBSTRING "${glue_code}" ${else_at} -1 else_part)
 # The implementation (configure, the exit request, the state) is internal only.
-foreach(term IN ITEMS "void MainArcadeLinkAutopilot_Configure(" "Platform_RequestExit(" "static struct MainArcadeLinkAutopilotState s_mainArcadeLinkAutopilot;")
+foreach(term IN ITEMS "void MainArcadeLinkAutopilot_Configure(" "Platform_RequestExit(" "static struct MainArcadeLinkAutopilotState s_mainArcadeLinkAutopilot;"
+        "uint8_t MainArcadeLinkAutopilot_Active(void)")
     ctr_require_literal("${glue_source} (CTR_INTERNAL part)" "${internal_part}" "${term}")
     ctr_forbid("${glue_source} (#else part)" "${else_part}" "${term}")
 endforeach()
+# LR-S10 part 2: Configure copies the race tick cap into the report state
+# right after the Init, and the active query only reads the flag.
+ctr_block_text("${glue_source}" "${internal_part}"
+    "void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOptions *options)" configure_block)
+ctr_require_order("${glue_source} (MainArcadeLinkAutopilot_Configure)" "${configure_block}"
+    "NativeArcadeLinkAutopilot_Init(&state->autopilot);" "state->autopilot.raceTickLimit = options->raceTickLimit;"
+    "state->active = 1u;")
+ctr_count("${glue_code}" "raceTickLimit" cap_hits)
+if(NOT cap_hits EQUAL 2)
+    message(FATAL_ERROR "${prefix}: ${glue_source} may name raceTickLimit only in Configure's one copy (found ${cap_hits})")
+endif()
+ctr_block_text("${glue_source}" "${internal_part}" "uint8_t MainArcadeLinkAutopilot_Active(void)" active_block)
+if(NOT active_block MATCHES "^\\{[ \t\r\n]*return s_mainArcadeLinkAutopilot\\.active;[ \t\r\n]*\\}$")
+    message(FATAL_ERROR "${prefix}: MainArcadeLinkAutopilot_Active must only return the active flag (found '${active_block}')")
+endif()
+ctr_require_literal("${glue_header}" "${glue_header_code}" "uint8_t MainArcadeLinkAutopilot_Active(void);")
 ctr_count("${glue_code}" "Platform_RequestExit\\(" exit_hits)
 if(NOT exit_hits EQUAL 1)
     message(FATAL_ERROR "${prefix}: ${glue_source} must request the exit exactly once (found ${exit_hits})")
@@ -368,7 +391,7 @@ foreach(path IN LISTS scan_files)
     file(RELATIVE_PATH relative_path "${repo}" "${path}")
     math(EXPR scanned "${scanned} + 1")
     if(relative_path STREQUAL glue_source OR relative_path STREQUAL glue_header OR relative_path STREQUAL hook_source OR
-            relative_path STREQUAL "main.c")
+            relative_path STREQUAL "main.c" OR relative_path STREQUAL "game/MAIN/MainArcadeRaceLaunch.c")
         continue()
     endif()
     file(READ "${path}" source)
@@ -453,7 +476,28 @@ ctr_require_order("${caller_source} (MainArcadeRaceLaunch_LogDigests)" "${log_bl
     "MainArcadeRaceSetup_Digests(digests[0], digests[1], digests[2], digests[3])"
     "MAIN_ARCADE_RACE_LAUNCH_LOG \"race %u validated config %s plan %s bots %s bank %s\\n\""
     "s_mainArcadeRaceLaunch.validatedDigests" "s_mainArcadeRaceLaunch.validatedRace = raceNumber;" "s_mainArcadeRaceLaunch.validatedRaces++;")
-ctr_forbid("${caller_source}" "${caller_code}" "MainArcadeLinkAutopilot")
+# Since LR-S10 part 2 the caller asks the glue one read-only question, and
+# only in internal builds: whether the autopilot runs (so its local sample is
+# the steering pad, LR-16). It names the glue only in the header include and
+# that one call, the first statement of MainArcadeRaceLaunch_AutopilotSample
+# inside its #if defined(CTR_INTERNAL) part.
+string(REGEX MATCHALL "MainArcadeLinkAutopilot[A-Za-z0-9_.]*" caller_glue_names "${caller_code}")
+if(NOT "${caller_glue_names}" STREQUAL "MainArcadeLinkAutopilot.h;MainArcadeLinkAutopilot_Active")
+    message(FATAL_ERROR "${prefix}: ${caller_source} may name the glue only in its include and one MainArcadeLinkAutopilot_Active call (found '${caller_glue_names}')")
+endif()
+string(FIND "${caller_code}" "#if defined(CTR_INTERNAL)" caller_internal_at)
+string(FIND "${caller_code}" "#else" caller_else_at)
+string(FIND "${caller_code}" "MainArcadeLinkAutopilot_Active()" caller_active_at)
+if(caller_internal_at EQUAL -1 OR caller_else_at LESS caller_internal_at OR caller_active_at LESS caller_internal_at OR
+        caller_active_at GREATER caller_else_at)
+    message(FATAL_ERROR "${prefix}: ${caller_source} must call MainArcadeLinkAutopilot_Active only inside its #if defined(CTR_INTERNAL) part")
+endif()
+ctr_block_text("${caller_source}" "${caller_code}"
+    "static int MainArcadeRaceLaunch_AutopilotSample(const struct GameTracker *gGT, uint32_t raceTick, struct NativeArcadeLinkHostPad *sample)"
+    sample_block)
+if(NOT sample_block MATCHES "^\\{([ \t\r\n]*(const )?(struct|uint32_t)[ \t]+[A-Za-z_][A-Za-z0-9_ ]*[ \t\\*]*[A-Za-z_][A-Za-z0-9_]*( = [A-Za-z0-9_>.-]+)?;)*[ \t\r\n]*if \\(MainArcadeLinkAutopilot_Active\\(\\) == 0u\\)[ \t\r\n]*\\{[ \t\r\n]*return 0;")
+    message(FATAL_ERROR "${prefix}: MainArcadeRaceLaunch_AutopilotSample must return 0 first, before touching anything, while the autopilot is inactive")
+endif()
 
 # 7. The live gate.
 string(FIND "${cmake}" "add_test(NAME arcade_link_launch" live_at)
@@ -474,7 +518,8 @@ ctr_require_order("CMakeLists.txt (arcade_link_launch)" "${live_block}"
     "set_tests_properties(arcade_link_launch PROPERTIES"
     "SKIP_RETURN_CODE 77" "TIMEOUT" "RUN_SERIAL TRUE" "LABELS live)")
 ctr_read_source("tools/arcade-link-launch-check.ps1" checker)
-foreach(literal IN ITEMS "--arcade-link-autopilot" "127.0.0.1:7002" "127.0.0.1:7001" "'7001'" "'7002'" "'cab1'" "'cab2'"
+foreach(literal IN ITEMS "--arcade-link-autopilot" "'--arcade-link-autopilot-race-ticks', \$raceTickCap" "\$raceTickCap = 300"
+        "^race ticks ([0-9]+)\$" "'arcade link autopilot v2'" "127.0.0.1:7002" "127.0.0.1:7001" "'7001'" "'7002'" "'cab1'" "'cab2'"
         "Start-Process" "exit \$skipExitCode" "--arcade-link-autopilot is available in internal builds only."
         "arcade link requires a known build and content identity." "No displays available")
     ctr_require_literal("tools/arcade-link-launch-check.ps1" "${checker}" "${literal}")

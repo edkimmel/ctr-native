@@ -23,13 +23,20 @@
 #     links only it and the link policy; since RL-S8b ctr_native links it
 #     too (the live race caller, game/MAIN/MainArcadeRaceLaunch.c, drives
 #     it);
-#  6. the three RL-8/RL-10 bounds are defined literally, exactly once:
-#     launchWindowTimeoutTicks 900, launchValidateTimeoutTicks 1800, and
-#     launchRehearsalTicks 150; and the setup status mirrors match the order
-#     of enum MainArcadeRaceSetupStatus. Since LR-S10 part 1 (LR-59) the
-#     driver slot count 8 and the finished bit mirror 0x2000000 are pinned
-#     the same way, the retail ACTION_RACE_FINISHED still has that value,
-#     and the race caller static-asserts the mirror.
+#  6. the two RL-8 bounds are defined literally, exactly once:
+#     launchWindowTimeoutTicks 900 and launchValidateTimeoutTicks 1800; and
+#     the setup status mirrors match the order of enum
+#     MainArcadeRaceSetupStatus. Since LR-S10 part 1 (LR-59) the driver slot
+#     count 8 and the finished bit mirror 0x2000000 are pinned the same way,
+#     the retail ACTION_RACE_FINISHED still has that value, and the race
+#     caller static-asserts the mirror;
+#  7. since LR-S10 part 2 (the drive replaced the RL-10 rehearsal) the core
+#     keeps no race length of its own: the rehearsal's count
+#     (LAUNCH_REHEARSAL_TICKS) and phase name are gone, the drive phase keeps
+#     the value 5, and the four drive results (GO 1, FINISHED 2, FAILED 3,
+#     OUTCOME 4), the appended DRIVE_FAILED failure (7), and the rest of the
+#     failure codes are pinned literally, once each (append-only: the codes
+#     are logged); FailureName names DRIVE_FAILED.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "race launch core isolation")
@@ -244,7 +251,19 @@ ctr_read_source("${module_header}" header)
 foreach(define IN ITEMS
         "MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_WINDOW_TIMEOUT_TICKS 900u"
         "MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_VALIDATE_TIMEOUT_TICKS 1800u"
-        "MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_REHEARSAL_TICKS 150u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_DRIVE 5u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_GO 1u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_FINISHED 2u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_FAILED 3u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_OUTCOME 4u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_NONE 0u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_ARM 1u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_LAUNCH 2u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_WINDOW_TIMEOUT 3u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_VALIDATE_TIMEOUT 4u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_RACE_TICK_TIMEOUT 5u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_SETUP_FAILED 6u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_DRIVE_FAILED 7u"
         "MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_IDLE 0u"
         "MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_ARMED 1u"
         "MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_LAUNCHED 2u"
@@ -261,12 +280,32 @@ foreach(define IN ITEMS
     if(NOT define_count EQUAL 1)
         message(FATAL_ERROR "${prefix}: ${define_name} must be defined exactly once in ${module_header} (found ${define_count})")
     endif()
-    # clang-format aligns the values, so any run of blanks may separate them.
-    string(REGEX MATCH "(^|\n)#define ${define_name}[ \t]+${define_value}\n" define_line "${header}")
+    # clang-format aligns the values, so any run of blanks may separate them;
+    # a trailing /* */ comment on the line is allowed.
+    string(REGEX MATCH "(^|\n)#define ${define_name}[ \t]+${define_value}([ \t]+/\\*[^\n]*\\*/)?\n" define_line "${header}")
     if("${define_line}" STREQUAL "")
         message(FATAL_ERROR "${prefix}: ${module_header} must define '${define}' literally")
     endif()
 endforeach()
+# 7. The drive replaced the rehearsal: no race length of the core's own.
+ctr_read_source("${module_source}" module_code_7)
+foreach(relative_path IN ITEMS "${module_header}" "${module_source}")
+    ctr_read_source("${relative_path}" source)
+    foreach(term IN ITEMS REHEARSAL Rehearsal rehearsal)
+        ctr_forbid("${relative_path}" "${source}" "${term}")
+    endforeach()
+endforeach()
+string(REGEX MATCHALL "#define MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_[A-Z_]+[ \t]" failure_defines "${header}")
+list(LENGTH failure_defines failure_define_count)
+if(NOT failure_define_count EQUAL 8)
+    message(FATAL_ERROR "${prefix}: ${module_header} must define exactly the eight failure codes NONE..DRIVE_FAILED (found ${failure_define_count})")
+endif()
+string(REGEX MATCHALL "#define MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_[A-Z_]+[ \t]" drive_result_defines "${header}")
+list(LENGTH drive_result_defines drive_result_define_count)
+if(NOT drive_result_define_count EQUAL 4)
+    message(FATAL_ERROR "${prefix}: ${module_header} must define exactly the four drive results (found ${drive_result_define_count})")
+endif()
+ctr_require("${module_source}" "${module_code_7}" "case MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_DRIVE_FAILED:\n\t\treturn \"DRIVE_FAILED\";")
 ctr_read_source("game/MAIN/MainArcadeRaceSetupCore.h" setup_core_header)
 ctr_require("game/MAIN/MainArcadeRaceSetupCore.h" "${setup_core_header}"
     "enum MainArcadeRaceSetupStatus\n{\n\tMAIN_ARCADE_RACE_SETUP_IDLE = 0,\n\tMAIN_ARCADE_RACE_SETUP_ARMED,\n\tMAIN_ARCADE_RACE_SETUP_LAUNCHED,\n\tMAIN_ARCADE_RACE_SETUP_SEEDED,\n\tMAIN_ARCADE_RACE_SETUP_VALIDATED,\n\tMAIN_ARCADE_RACE_SETUP_FAILED\n};")

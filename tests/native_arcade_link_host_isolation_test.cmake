@@ -34,7 +34,9 @@
 # drive core (rules 2, 3, 3d, 3g, and 4). Since LR-S10 part 1 (LR-60) the
 # header declares the internal race tick limit setter, whose host-local value
 # BeginDrive hands the drive, and only main.c's internal-build code sets it
-# (rule 3h).
+# (rule 3h). Since LR-S10 part 2 the race caller
+# (game/MAIN/MainArcadeRaceLaunch.c) is the one game source that names
+# RaceStep and RaceHold, once each (rule 3g).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -341,9 +343,11 @@ endforeach()
 #       once; the linger runs in Tick after the adapter's Tick; and the drive
 #       is re-initialized by Shutdown, AbortToTitle, RaceEnd, Tick, and the
 #       guard.
-#     - No game source or main.c names RaceStep or RaceHold yet (LR-S10 lifts
-#       this), and NativeArcadeNetplay_RaceService is named in no game source
-#       and, outside the adapter's own two files, only in this .c.
+#     - Of game/ and main.c only the race caller, game/MAIN/MainArcadeRaceLaunch.c,
+#       names RaceStep and RaceHold, each exactly once, comments included
+#       (LR-S10 part 2 lifted the ban), and NativeArcadeNetplay_RaceService is
+#       named in no game source and, outside the adapter's own two files,
+#       only in this .c.
 function(ctr_count text term out_var)
     set(count 0)
     set(rest "${text}")
@@ -515,12 +519,23 @@ file(GLOB_RECURSE drive_scan_paths
     "${repo}/include/*.h" "${repo}/tools/*.c" "${repo}/tools/*.h")
 list(APPEND drive_scan_paths "${repo}/main.c")
 set(drive_scanned 0)
+set(drive_caller_seen 0)
 set(race_service_owners "platform/native_arcade_netplay.c" "include/platform/native_arcade_netplay.h" "${host_source}")
 foreach(path IN LISTS drive_scan_paths)
     file(RELATIVE_PATH relative_path "${repo}" "${path}")
     math(EXPR drive_scanned "${drive_scanned} + 1")
     file(READ "${path}" scanned)
-    if(relative_path MATCHES "^game/" OR relative_path STREQUAL "main.c")
+    if(relative_path STREQUAL "game/MAIN/MainArcadeRaceLaunch.c")
+        # LR-S10 part 2: the race caller is the one game caller, naming each
+        # exactly once, comments included (its one call each).
+        foreach(term IN ITEMS NativeArcadeLinkHost_RaceStep NativeArcadeLinkHost_RaceHold)
+            ctr_count("${scanned}" "${term}" caller_term_count)
+            if(NOT caller_term_count EQUAL 1)
+                message(FATAL_ERROR "arcade link host isolation: ${relative_path} must name ${term} exactly once, its one call (found ${caller_term_count})")
+            endif()
+        endforeach()
+        set(drive_caller_seen 1)
+    elseif(relative_path MATCHES "^game/" OR relative_path STREQUAL "main.c")
         foreach(term IN ITEMS NativeArcadeLinkHost_RaceStep NativeArcadeLinkHost_RaceHold)
             ctr_forbid("${relative_path}" "${scanned}" "${term}")
         endforeach()
@@ -530,6 +545,9 @@ foreach(path IN LISTS drive_scan_paths)
         ctr_forbid("${relative_path}" "${scanned}" "NativeArcadeNetplay_RaceService")
     endif()
 endforeach()
+if(NOT drive_caller_seen)
+    message(FATAL_ERROR "arcade link host isolation: game/MAIN/MainArcadeRaceLaunch.c, the race caller, was not scanned")
+endif()
 if(drive_scanned LESS 300)
     message(FATAL_ERROR "arcade link host isolation: the RaceStep/RaceHold/RaceService scan saw only ${drive_scanned} files; the scan is broken")
 endif()

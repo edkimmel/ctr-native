@@ -5,11 +5,13 @@
 
 /*
  * Race launch decision core (docs/RACE_LAUNCH_MILESTONE.md section 4,
- * RL-8..RL-11, slice RL-S7). The per-frame decisions of the live race caller
- * (RL-S8b) for one networked race after another: the launch from the title
- * window, the bounded waits, race tick 0, the launch rehearsal, the return to
- * the main-menu level, the rehearsal pad install and clear, the Disarm point,
- * and the failure mapping. The caller samples one frame's facts into
+ * RL-8..RL-11, slice RL-S7; the drive phase since the Task 8 race plan's
+ * LR-S10 part 2). The per-frame decisions of the live race caller (RL-S8b)
+ * for one networked race after another: the launch from the title window,
+ * the bounded waits, race tick 0, the race drive's ticks and their results,
+ * the return to the main-menu level, the pad install (neutral or committed)
+ * and clear, the Disarm point, and the failure mapping. The caller samples
+ * one frame's facts into
  * struct MainArcadeRaceLaunchCoreInput, calls MainArcadeRaceLaunchCore_Step,
  * and applies the returned decisions; it decides nothing itself.
  *
@@ -35,8 +37,10 @@
  * MainArcadeRaceLaunchCore_LaunchResult on the same frame with the same
  * output struct, which adds that frame's remaining decisions:
  * - LAUNCHED: leaveTitle and installPads (the caller leaves the title, then
- *   installs the rehearsal pads). The pads are installed from this Launch
- *   frame on, on every frame, until the clear.
+ *   installs the neutral pads). Pads are installed from this Launch frame
+ *   on, on every frame, until the clear: the neutral pads, except that a GO
+ *   drive result installs the committed pads instead on its frame (see The
+ *   drive).
  * - ARM_FAILED or LAUNCH_FAILED: reportFailure (ARM or LAUNCH) and disarm on
  *   that frame (the RL-9 exception: a failed Launch wrote no field), and the
  *   return step as for every RL-11 failure (see End steps), judged by that
@@ -71,22 +75,49 @@
  * (mainMenuState MAIN_MENU_TITLE and the reload) is the recovery path when
  * the window stays closed.
  *
- * Rehearsal (RL-10). Frame 0 is race tick 0; on frame LAUNCH_REHEARSAL_TICKS
- * the core reports the race finished (reportFinished, an event on that frame
- * only).
+ * The drive (the Task 8 race plan, LR-2, LR-5, LR-13, LR-54; it replaced
+ * RL-10's neutral-pad race). From race tick 0 the core is in the drive
+ * phase. On every accepted Step of the drive phase with the flow on RACING
+ * and the
+ * setup VALIDATED, the race tick 0 frame included, it sets driveStep and
+ * raceTick (0 on the raceTickZero frame, then one more on each later drive
+ * frame): the caller runs one race tick of the host's drive and passes its
+ * result to MainArcadeRaceLaunchCore_DriveResult on the same frame with the
+ * same output struct. The race length is the drive's (its race tick limit):
+ * the core has no count of its own. The results:
+ * - GO (the committed pads): installCommitted 1 and installPads 0 on this
+ *   frame only; the race goes on.
+ * - FINISHED (a finish-kind end: end of race, the finish grace, or the race
+ *   tick limit): reportFinished and the finish latch, then the end steps.
+ * - FAILED (a local drive failure: the drive's own, or the caller's, such
+ *   as a failed projection): an RL-11 failure, FAILURE_DRIVE_FAILED, then
+ *   the end steps.
+ * - OUTCOME (the drive ended on the link's latched outcome: a desync, a
+ *   stall timeout, or a fault): the end steps without a report (the host
+ *   shows the outcome on its next Tick).
+ * A DriveResult is due exactly once after every driveStep frame; while it is
+ * due, Step refuses (returns 0 with a zeroed output) and changes nothing, and
+ * a result that is not a DRIVE_RESULT_* value is refused and stays due. Every
+ * end of the drive phase, the three above and the flow leaving RACING or the
+ * setup failing on a drive frame, sets driveEnded (an event on that frame
+ * only): the caller ends the race's digest there. After an end no later
+ * frame of that race sets driveStep, so the caller never steps or holds the
+ * drive again before the next race's launch; the neutral pads are installed
+ * from the end frame until the clear.
  *
  * The finish latch (raceFinishedInput). The host takes the finish as the
  * raceFinished input of its next Tick, which runs before the caller's next
  * Step, so the caller feeds the host the raceFinishedInput of its last
- * accepted Step. It is 1 from the finish frame (the reportFinished frame)
+ * accepted Step (after that frame's DriveResult, which sets it on a FINISHED
+ * result). It is 1 from the finish frame (the reportFinished frame)
  * until the first accepted Step with hostRacing 0 (the flow left RACING: the
  * finish was taken, or can no longer be) or with startRace 1 (a new race),
  * which clears it before that Step's decisions. So a finish never survives
  * into the next START_RACE, and race 2 never finishes on its first RACING
  * tick. A refused Step changes nothing, the latch included.
  *
- * Setup failure (RL-11). From the frame after Launch until the rehearsal
- * ends (the finish frame included, checked before the finish), a setup status
+ * Setup failure (RL-11). From the frame after Launch until the drive phase
+ * ends (checked before the drive step), a setup status
  * the race cannot be in is SETUP_FAILED: FAILED at any point; IDLE or ARMED
  * before VALIDATED; anything but VALIDATED from VALIDATED on. After the race
  * has ended (finished, failed, or aborted) the setup status is ignored, so a
@@ -97,13 +128,15 @@
  * frame of a race. Before Launch it ends the race quietly (nothing armed, no
  * report, no return, no Disarm), even on the window wait's last frame: the
  * quiet abort wins over WINDOW_TIMEOUT. From Launch on it ends the race
- * without a report (the host no longer takes one), the finish frame included,
- * and runs the end steps below. A failure is never reported for a race the
- * flow has left, and a race reports at most one of finished and failure.
+ * without a report (the host no longer takes one), a drive frame included
+ * (no driveStep then), and runs the end steps below. A failure is never
+ * reported for a race the flow has left, and a race reports at most one of
+ * finished and failure.
  *
- * End steps (RL-8, RL-10, RL-11), for the finish frame, every RL-11 failure
- * frame (ARM, LAUNCH, WINDOW_TIMEOUT, VALIDATE_TIMEOUT, RACE_TICK_TIMEOUT,
- * SETUP_FAILED), and the first frame seen off RACING after Launch (the end
+ * End steps (RL-8, RL-10, RL-11), for the finish frame (a FINISHED drive
+ * result), an OUTCOME drive result's frame, every RL-11 failure frame (ARM,
+ * LAUNCH, WINDOW_TIMEOUT, VALIDATE_TIMEOUT, RACE_TICK_TIMEOUT, SETUP_FAILED,
+ * DRIVE_FAILED), and the first frame seen off RACING after Launch (the end
  * frame):
  * - requestReturn (the caller sets boolDemoMode 0, numPlyrNextGame 1, and
  *   mainMenuState MAIN_MENU_TITLE, then requests the main-menu level load):
@@ -121,7 +154,8 @@
  *   frame after the return step's frame with the LOADING bit set or that is
  *   an idle main-menu frame, whichever comes first. Exactly once.
  *   installPads stays set on every frame before the clear (the end frame
- *   included) and is never set after it. Counting from the return step
+ *   included), except on a GO frame, which sets installCommitted instead,
+ *   and neither is ever set after it. Counting from the return step
  *   rather than the end frame is how a return deferred behind a race-track
  *   load keeps the neutral pads installed while the race level runs
  *   GameLogic between that load and the return load.
@@ -152,15 +186,16 @@
  *
  * The caller's order on one frame: the host's Tick; then sample the input
  * (hostRacing after that Tick); Step; if armAndLaunch, Arm, Launch, and
- * LaunchResult; then leaveTitle, reportFailure or reportFinished (the host's
- * inputs for its next Tick, the finish through raceFinishedInput),
- * requestReturn, installPads or clearPads, and disarm, as set.
+ * LaunchResult; if driveStep, the drive tick and DriveResult; then the host's
+ * raceFinished input from raceFinishedInput; then leaveTitle, reportFailure
+ * or reportFinished (the host's inputs for its next Tick, the finish through
+ * raceFinishedInput), requestReturn, installCommitted, installPads, or
+ * clearPads, driveEnded, and disarm, as set.
  */
 
-/* RL-8 and RL-10 bounds, in core steps (frames). */
+/* RL-8 bounds, in core steps (frames). */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_WINDOW_TIMEOUT_TICKS   900u
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_VALIDATE_TIMEOUT_TICKS 1800u
-#define MAIN_ARCADE_RACE_LAUNCH_CORE_LAUNCH_REHEARSAL_TICKS        150u
 
 /* Mirrors of enum MainArcadeRaceSetupStatus (game/MAIN/MainArcadeRaceSetupCore.h). */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_IDLE                    0u
@@ -187,6 +222,13 @@
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_RESULT_ARM_FAILED             2u /* Arm returned 0 (Launch not called) */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_RESULT_LAUNCH_FAILED          3u /* Arm returned 1, Launch returned 0 */
 
+/* The outcome of the caller's drive tick on a driveStep frame (see The
+ * drive). Append-only. */
+#define MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_GO               1u /* the committed pads: install them */
+#define MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_FINISHED         2u /* a finish-kind end */
+#define MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_FAILED           3u /* a local drive failure */
+#define MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_OUTCOME          4u /* an end on the link's latched outcome */
+
 /* The RL-11 local failure reasons. Append-only: the codes are logged. */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_NONE                  0u
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_ARM                   1u /* Arm failed at the title */
@@ -195,6 +237,7 @@
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_VALIDATE_TIMEOUT      4u /* no VALIDATED in time after Launch */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_RACE_TICK_TIMEOUT     5u /* no race tick 0 in time after VALIDATED */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_SETUP_FAILED          6u /* the setup status failed the race */
+#define MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_DRIVE_FAILED          7u /* the race drive failed locally */
 
 /* The core's phases (struct MainArcadeRaceLaunchCore.phase). */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_IDLE                    0u /* no race */
@@ -202,7 +245,7 @@
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_LAUNCH_RESULT           2u /* armAndLaunch emitted; LaunchResult due this frame */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_WAIT_VALIDATED          3u /* launched; waiting for VALIDATED */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_WAIT_RACE_TICK          4u /* validated; waiting for race tick 0 */
-#define MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_REHEARSAL               5u /* race tick 0 seen; counting to the finish */
+#define MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_DRIVE                   5u /* race tick 0 seen; the drive runs the race */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_ENDED                   6u /* ended; return, clear, or Disarm pending */
 
 /* Caller-owned state. The fields are the core's; the caller only zeroes it. */
@@ -219,7 +262,9 @@ struct MainArcadeRaceLaunchCore
 	uint8_t disarmPending;   /* 1 from the Launch frame until the Disarm */
 	uint8_t launchStage;     /* the loading stage of the last armAndLaunch frame */
 	uint8_t finishedPending; /* the finish latch (see raceFinishedInput) */
-	uint8_t reserved[2];
+	uint8_t driveDue;        /* 1 from a driveStep frame's Step until its DriveResult */
+	uint8_t driveStage;      /* the loading stage of the last driveStep frame */
+	uint32_t raceTick;       /* the race tick of the last driveStep frame */
 };
 
 /* One frame's facts. Every flag must be 0 or 1: any other value is refused
@@ -266,7 +311,7 @@ struct MainArcadeRaceLaunchCoreOutput
 	uint8_t armAndLaunch;
 	/* Leave the title (the caller's copy of the roster proof's LeaveTitle). */
 	uint8_t leaveTitle;
-	/* Install the neutral rehearsal pads this frame. */
+	/* Install the neutral pads this frame. */
 	uint8_t installPads;
 	/* Clear the installed pads (Platform_InputClearInstalledPadSnapshots). */
 	uint8_t clearPads;
@@ -286,7 +331,17 @@ struct MainArcadeRaceLaunchCoreOutput
 	 * its next Tick (see The finish latch). Unlike the events above it holds
 	 * across frames. */
 	uint8_t raceFinishedInput;
-	uint8_t reserved[1];
+	/* Run one drive tick for raceTick, then call
+	 * MainArcadeRaceLaunchCore_DriveResult on this frame (see The drive). */
+	uint8_t driveStep;
+	/* Install the committed pads of this frame's drive tick instead of the
+	 * neutral ones (a GO result; this frame only). */
+	uint8_t installCommitted;
+	/* Event: the drive phase ended on this frame (end the race's digest). */
+	uint8_t driveEnded;
+	uint8_t reserved[2];
+	/* The race tick of this frame's driveStep (0 otherwise). */
+	uint32_t raceTick;
 };
 
 /* Zeroes *core (idle, no race started). Does nothing for NULL. */
@@ -297,8 +352,8 @@ void MainArcadeRaceLaunchCore_Init(struct MainArcadeRaceLaunchCore *core);
  * with *output zeroed (when output is not NULL) and *core unchanged when a
  * pointer is NULL, when setupStatus or loadingStage is out of range, when an
  * input flag is neither 0 nor 1, when startRace is 1 with hostRacing 0
- * (hostRacing was sampled before the host Tick), or when a launch result is
- * due (see LaunchResult).
+ * (hostRacing was sampled before the host Tick), or when a launch result or a
+ * drive result is due (see LaunchResult and DriveResult).
  */
 int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const struct MainArcadeRaceLaunchCoreInput *input,
                                   struct MainArcadeRaceLaunchCoreOutput *output);
@@ -312,6 +367,17 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
  * result is not a RESULT_* value; the result stays due until a valid one.
  */
 int MainArcadeRaceLaunchCore_LaunchResult(struct MainArcadeRaceLaunchCore *core, uint32_t result, struct MainArcadeRaceLaunchCoreOutput *output);
+
+/*
+ * The result of the caller's drive tick on the frame Step set driveStep
+ * (MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_*; see The drive). Adds that
+ * frame's remaining decisions to *output, which must be the struct that
+ * frame's Step filled (its other fields are kept), and returns 1. Returns 0,
+ * touching nothing, when a pointer is NULL, when no drive result is due, or
+ * when result is not a DRIVE_RESULT_* value; the result stays due until a
+ * valid one.
+ */
+int MainArcadeRaceLaunchCore_DriveResult(struct MainArcadeRaceLaunchCore *core, uint32_t result, struct MainArcadeRaceLaunchCoreOutput *output);
 
 /* A stable name for a MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_* code ("UNKNOWN"
  * for any other value). */

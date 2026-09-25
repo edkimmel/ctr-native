@@ -28,12 +28,21 @@ param(
 # each with --arcade-link-autopilot <report>, which drives the link host's own
 # inputs (never a pad): START on the attract screen, CROSS on each select
 # item, race 1, REMATCH, race 2, EXIT, then the exit with the result code
-# (include/platform/native_arcade_link_autopilot.h).  It requires:
+# (include/platform/native_arcade_link_autopilot.h), and with
+# --arcade-link-autopilot-race-ticks 300.  Since LR-S10 part 2
+# (docs/LOCKSTEP_RACE_MILESTONE.md) each race runs on the linked race drive:
+# every race tick goes through the link host (its committed pads installed,
+# a blocking hold while the peer's input is missing), each cabinet's local
+# pad sample being the autopilot's steering pad; the cap ends each race
+# RACE_TICK_LIMIT (a finish) after 300 race ticks at the latest.  It
+# requires:
 #   - both processes exit 0;
-#   - each report is "arcade link autopilot v1" for its cabinet with
-#     "result PASS (0)" and two races, each with its agreed-match line and
-#     its validated line (the RL-12 config, plan, bots, and bank digests),
-#     ending "end races 2";
+#   - each report is "arcade link autopilot v2" for its cabinet with
+#     "result PASS (0)" (so both races ended FINISHED on RESULTS), one
+#     "race ticks <n>" line with n the cap passed (300, so the same nonzero
+#     cap on both cabinets), and two races, each with its agreed-match line
+#     and its validated line (the RL-12 config, plan, bots, and bank
+#     digests), ending "end races 2";
 #   - the agreed-match line and the four digests of the k-th race are equal
 #     across the two processes.  The k-th race of each report is compared,
 #     never equal launch numbers: the race caller's launch number counts
@@ -57,6 +66,8 @@ param(
 #     previous race's "validated" line (or the start) and this race's, and
 #     it is exactly the pin readback "pinned rcntTotalUnits 0
 #     clockFrameStart -200; read back 0 -200"; no other such line appears.
+# It also prints each race's "drive end" line from both stdouts (the end
+# kind and its race tick), for the log only.
 #
 # Skips (77) without the disc image, without a display, with a non-internal
 # build (the option is rejected), or with an unknown build identity (a build
@@ -74,6 +85,11 @@ $notInternalMarker = '--arcade-link-autopilot is available in internal builds on
 # skip reason below names the build identity, the usual cause.
 $unknownIdentityMarker = 'arcade link requires a known build and content identity.'
 $races = 2
+# The Task 8 race drive's internal race-length cap (LR-42, LR-60): each race
+# ends RACE_TICK_LIMIT (a finish) after this many race ticks at the latest.
+$raceTickCap = 300
+$raceTicksPattern = '^race ticks ([0-9]+)$'
+$stdoutDriveEndPattern = '^\[CTR Native\] arcade link: race ([0-9]+) drive end: (.*)$'
 $agreedPattern = '^race ([0-9]+) (agreed match track [0-9]+ laps [0-9]+ seed 0x[0-9A-F]{16} slots( [0-9]+){8} \([12B-]{8}\))$'
 $validatedPattern = '^race ([0-9]+) validated launch ([0-9]+) config ([0-9a-f]{64}) plan ([0-9a-f]{64}) bots ([0-9a-f]{64}) bank ([0-9a-f]{64})$'
 $stdoutAgreedPattern = '^\[CTR Native\] arcade link: (agreed match .*)$'
@@ -143,7 +159,7 @@ function Stop-StartedRuns($Runs) {
 
 function Start-Run($Run) {
     $arguments = @('--arcade-link', $Run.Cab, '--arcade-link-port', $Run.Port, '--arcade-link-peer', $Run.Peer,
-        '--arcade-link-autopilot', $Run.ReportPath)
+        '--arcade-link-autopilot', $Run.ReportPath, '--arcade-link-autopilot-race-ticks', $raceTickCap)
     $argumentLine = ($arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
     # A run that cannot start fails the check at once, not at the timeout.
     $process = $null
@@ -191,7 +207,7 @@ function Wait-Runs($Runs) {
                 Stop-StartedRuns $Runs
                 if (Test-Path -LiteralPath $run.ReportPath -PathType Leaf) {
                     foreach ($line in [System.IO.File]::ReadAllLines($run.ReportPath)) {
-                        if ($line -match '^(result|last screen|ticks) ') {
+                        if ($line -match '^(result|last screen|ticks|race ticks) ') {
                             Write-Output "  $($run.Name) report: $line"
                         }
                     }
@@ -222,9 +238,10 @@ function Read-Report($Run) {
         Lines = $lines
         Agreed = @()
         Validated = @()
+        RaceTicks = @()
         Problems = @()
     }
-    $expectedHeader = @('arcade link autopilot v1', "cab $($Run.CabNumber)", 'result PASS (0)')
+    $expectedHeader = @('arcade link autopilot v2', "cab $($Run.CabNumber)", 'result PASS (0)')
     for ($i = 0; $i -lt $expectedHeader.Count; $i++) {
         $found = ''
         if ($i -lt $lines.Count) {
@@ -235,7 +252,10 @@ function Read-Report($Run) {
         }
     }
     foreach ($line in $lines) {
-        if ($line -match $agreedPattern) {
+        if ($line -match $raceTicksPattern) {
+            $report.RaceTicks += [int]$Matches[1]
+        }
+        elseif ($line -match $agreedPattern) {
             $report.Agreed += [pscustomobject]@{ K = [int]$Matches[1]; Text = $Matches[2]; Line = $line }
         }
         elseif ($line -match $validatedPattern) {
@@ -247,6 +267,12 @@ function Read-Report($Run) {
         elseif ($line -match '^race ') {
             $report.Problems += "malformed race line '$line'"
         }
+    }
+    if ($report.RaceTicks.Count -ne 1) {
+        $report.Problems += "$($report.RaceTicks.Count) race ticks lines, expected 1"
+    }
+    elseif ($report.RaceTicks[0] -ne $raceTickCap) {
+        $report.Problems += "the race tick cap is $($report.RaceTicks[0]), expected $raceTickCap (the value this check passed)"
     }
     if ($report.Agreed.Count -ne $races) {
         $report.Problems += "$($report.Agreed.Count) agreed-match lines, expected $races"
@@ -435,7 +461,7 @@ try {
         }
         elseif ($exitCode -ne 0) {
             foreach ($line in [System.IO.File]::ReadAllLines($run.ReportPath)) {
-                if ($line -match '^(result|last screen|ticks) ') {
+                if ($line -match '^(result|last screen|ticks|race ticks) ') {
                     Write-Output "  $($run.Name) report: $line"
                 }
             }
@@ -498,6 +524,21 @@ try {
         }
         Write-Output "race ${number}: LR-8 elapsedTimeMS/rcntTotalUnits/clockFrameStart race ticks 0..2: cab1 $elapsed1, cab2 $elapsed2"
     }
+    # The same nonzero race tick cap on both cabinets (each report was also
+    # checked against the value passed).
+    if (($cab1.RaceTicks[0] -eq 0) -or ($cab1.RaceTicks[0] -ne $cab2.RaceTicks[0])) {
+        $failures += "the race tick cap differs or is 0: cab1 $($cab1.RaceTicks[0]), cab2 $($cab2.RaceTicks[0])"
+    }
+    Write-Output "race tick cap: cab1 $($cab1.RaceTicks[0]), cab2 $($cab2.RaceTicks[0])"
+    # For the log: how each race's drive ended on each cabinet (the reports'
+    # PASS already requires both races to end FINISHED).
+    foreach ($run in $runs) {
+        foreach ($line in ((Read-SharedText $run.StdoutPath) -split "`r?`n")) {
+            if ($line -match $stdoutDriveEndPattern) {
+                Write-Output "$($run.Name): race $($Matches[1]) drive end: $($Matches[2])"
+            }
+        }
+    }
     # The rematch went through a new select: a new config.
     foreach ($pair in @(@('cab1', $cab1), @('cab2', $cab2))) {
         if ($pair[1].Validated[1].Config -eq $pair[1].Validated[0].Config) {
@@ -510,6 +551,7 @@ try {
         Write-Output "both reports agree with their stdout (agreed-match and RL-12 lines)"
         Write-Output "races 1 and 2: LR-8 elapsedTimeMS, rcntTotalUnits, and clockFrameStart of race ticks 0..2 equal across cab1 and cab2"
         Write-Output "races 1 and 2: the setup's LR-8 pin readback ('pinned rcntTotalUnits 0 clockFrameStart -200; read back 0 -200') once per race on both cabinets"
+        Write-Output "both reports: race tick cap $raceTickCap"
     }
     Write-Output ''
     if ($failures.Count -ne 0) {

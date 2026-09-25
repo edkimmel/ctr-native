@@ -1,5 +1,6 @@
 /*
- * Unit test of the stall hold loop itself, MainArcadeRaceHold_Run
+ * Unit test of the stall hold loop itself, MainArcadeRaceHold_Run and (since
+ * LR-S10 part 2) MainArcadeRaceHold_RunMode
  * (game/MAIN/MainArcadeRaceHold.c; docs/LOCKSTEP_RACE_MILESTONE.md LR-9,
  * slice LR-S2 (a)), over stubbed platform calls: a simulated host clock that
  * only the host wait advances, a counting event pump, and a banner present
@@ -257,6 +258,61 @@ static int TestFullHold(int bannerReturn, uint32_t expectedPresented)
 	return 0;
 }
 
+/* The race caller's hold (LR-S10 part 2): MainArcadeRaceHold_RunMode without
+ * the banner holds exactly as Run does (same periods, pumps, waits, and the
+ * LR-9 order of the other host work), but no banner is due or presented,
+ * even across the grace; with the banner mode (or any other nonzero mode)
+ * it is Run. */
+static int TestModes(void)
+{
+	static const uint32_t bannerModes[3] = {MAIN_ARCADE_RACE_HOLD_MODE_BANNER, 2u, 0xFFFFFFFFu};
+	struct StepState step;
+	struct MainArcadeRaceHoldResult result;
+	struct MainArcadeRaceHoldResult reference;
+	uint32_t referencePumps;
+
+	CHECK(MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER == 0u && MAIN_ARCADE_RACE_HOLD_MODE_BANNER == 1u);
+	/* The reference: Run, 45 periods, every banner presented. */
+	StubReset(1);
+	memset(&step, 0, sizeof(step));
+	step.limit = 45u;
+	MainArcadeRaceHold_Run(Step, &step, &reference);
+	referencePumps = s_pumps;
+	CHECK(reference.bannersDue == 35u && reference.bannersPresented == 35u);
+
+	/* Without the banner. */
+	StubReset(1);
+	memset(&step, 0, sizeof(step));
+	memset(&result, 0xA5, sizeof(result));
+	step.limit = 45u;
+	MainArcadeRaceHold_RunMode(Step, &step, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, &result);
+	CHECK(s_bannerCalls == 0u && s_bannerPresented == 0u);
+	CHECK(result.bannersDue == 0u && result.bannersPresented == 0u);
+	CHECK(strchr(s_trace, 'B') == NULL);
+	CHECK(s_orderOk == 1 && s_lastEvent == 'S');
+	CHECK(result.periods == 45u && step.newPeriods == 45u && step.calls == s_pumps);
+	CHECK(s_pumps == referencePumps && result.pumps == reference.pumps && result.wallUs == reference.wallUs);
+	CHECK(result.minPeriodPumps == reference.minPeriodPumps && result.reserved == 0u);
+	CHECK(s_waits == s_pumps - 1u);
+
+	/* With the banner mode, or any other nonzero mode: Run's result. */
+	for (uint32_t i = 0; i < 3u; i++)
+	{
+		StubReset(1);
+		memset(&step, 0, sizeof(step));
+		step.limit = 45u;
+		MainArcadeRaceHold_RunMode(Step, &step, bannerModes[i], &result);
+		CHECK(memcmp(&result, &reference, sizeof(result)) == 0);
+		CHECK(s_bannerCalls == 35u && s_bannerTextOk == 1 && s_orderOk == 1);
+	}
+
+	/* A NULL step and a NULL result, without the banner: one pump. */
+	StubReset(1);
+	MainArcadeRaceHold_RunMode(NULL, NULL, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, NULL);
+	CHECK(s_pumps == 1u && s_waits == 0u && s_bannerCalls == 0u);
+	return 0;
+}
+
 int main(void)
 {
 	if (TestNullStep() != 0)
@@ -280,6 +336,10 @@ int main(void)
 		return 1;
 	}
 	if (TestFullHold(2, 18u) != 0)
+	{
+		return 1;
+	}
+	if (TestModes() != 0)
 	{
 		return 1;
 	}

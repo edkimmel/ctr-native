@@ -9,7 +9,10 @@
 #    session, the launch record, netplay, lobby, lockstep, bot rules,
 #    canonical codecs, the deterministic RNG, identity, the race setup plan,
 #    facts, core, and setup adapter, the race digest, the roster, the bot
-#    setup, setup v4, and the MainCanonical* encoders) name no sound-ID
+#    setup, setup v4, the MainCanonical* encoders, and, since the Task 8
+#    race plan's LR-S10 part 2, the race drive's game side: the race
+#    caller, its launch core, the hold loop, and the autopilot whose
+#    steering pad feeds the race in the live gate) name no sound-ID
 #    identifier: countSounds,
 #    CountSounds, any identifier starting with OtherFX_ (OtherFX_Play,
 #    OtherFX_Play_LowLevel, OtherFX_RecycleNew, ...), EngineAudio_,
@@ -138,6 +141,7 @@ endforeach()
 set(identity_files
     platform/native_arcade_bot_rules.c
     platform/native_arcade_launch.c
+    platform/native_arcade_link_autopilot.c
     platform/native_arcade_netplay.c
     platform/native_canonical_codec.c
     platform/native_canonical_driver_behavior.c
@@ -169,6 +173,7 @@ set(identity_files
     platform/native_match_select_session.c
     include/platform/native_arcade_bot_rules.h
     include/platform/native_arcade_launch.h
+    include/platform/native_arcade_link_autopilot.h
     include/platform/native_arcade_netplay.h
     include/platform/native_canonical_codec.h
     include/platform/native_canonical_driver_behavior.h
@@ -203,6 +208,12 @@ set(identity_files
     game/MAIN/MainArcadeBotSetup.h
     game/MAIN/MainArcadeRaceDigest.c
     game/MAIN/MainArcadeRaceDigest.h
+    game/MAIN/MainArcadeRaceHold.c
+    game/MAIN/MainArcadeRaceHold.h
+    game/MAIN/MainArcadeRaceLaunch.c
+    game/MAIN/MainArcadeRaceLaunch.h
+    game/MAIN/MainArcadeRaceLaunchCore.c
+    game/MAIN/MainArcadeRaceLaunchCore.h
     game/MAIN/MainArcadeRaceSetup.c
     game/MAIN/MainArcadeRaceSetup.h
     game/MAIN/MainArcadeRaceSetupCore.c

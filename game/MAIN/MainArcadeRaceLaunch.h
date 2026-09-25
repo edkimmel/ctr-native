@@ -9,11 +9,15 @@
  * only with CTR_NATIVE and is dormant unless the arcade-link host is in LINK
  * mode. It turns the host's START_RACE into a networked race: it arms and
  * launches MainArcadeRaceSetup with the agreed config from the title launch
- * window, leaves the title, runs the RL-10 launch rehearsal on neutral pads,
- * logs the RL-12 setup digests, reports the finish or an RL-11 local failure
- * to the host, returns to the main-menu level, clears the pads, and Disarms.
- * Every decision is the pure MAIN/MainArcadeRaceLaunchCore.h's; this module
- * samples the frame's facts, steps the core, and applies its decisions.
+ * window, leaves the title, logs the RL-12 setup digests, drives every race
+ * tick through the arcade-link host's race drive (the Task 8 race plan's
+ * LR-S10: the tick's projected state, the local pad sample, and the tick's
+ * facts in; the committed pads installed, or a blocking hold, or the drive's
+ * end out), reports the finish or an RL-11 local failure to the host,
+ * returns to the main-menu level, clears the pads, and Disarms. Every
+ * decision is the pure MAIN/MainArcadeRaceLaunchCore.h's; this module
+ * samples the frame's facts, steps the core, runs the drive tick the core
+ * asks for, and applies its decisions.
  */
 
 struct GameTracker;
@@ -29,7 +33,7 @@ void MainArcadeRaceLaunch_StartRace(void);
 /*
  * The host's raceFinished input for the arcade-link hook's host tick: the
  * launch core's finish latch (raceFinishedInput) as of its last accepted
- * step, 1 from the frame the rehearsal reported the race finished until the
+ * step, 1 from the frame the drive reported the race finished until the
  * core first sees the flow off RACING or a new START_RACE, else 0.
  */
 uint8_t MainArcadeRaceLaunch_RaceFinished(void);

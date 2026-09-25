@@ -592,10 +592,10 @@ target_include_directories(ctr_native_arcade_race_setup_core PUBLIC ${CMAKE_SOUR
 target_link_libraries(ctr_native_arcade_race_setup_core PUBLIC ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts)
 
 # Race launch decision core (docs/RACE_LAUNCH_MILESTONE.md RL-8..RL-11, slice
-# RL-S7): the per-frame launch, bounded-wait, race tick 0, rehearsal, return,
-# pad, Disarm, and failure decisions of the live race caller, pure, with
-# caller-owned state. Never unity-included; the RL-S8b caller links it. It
-# links nothing.
+# RL-S7): the per-frame launch, bounded-wait, race tick 0, drive
+# (docs/LOCKSTEP_RACE_MILESTONE.md LR-S10), return, pad, Disarm, and failure
+# decisions of the live race caller, pure, with caller-owned state. Never
+# unity-included; the RL-S8b caller links it. It links nothing.
 add_library(ctr_native_arcade_race_launch_core STATIC game/MAIN/MainArcadeRaceLaunchCore.c)
 set_target_properties(ctr_native_arcade_race_launch_core PROPERTIES
     C_STANDARD 17

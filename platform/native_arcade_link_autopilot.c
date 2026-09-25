@@ -528,13 +528,14 @@ int NativeArcadeLinkAutopilot_FormatReport(const struct NativeArcadeLinkAutopilo
 	text.ok = 1;
 	buffer[0] = '\0';
 
-	NativeArcadeLinkAutopilot_Append(&text, "arcade link autopilot v1\n");
+	NativeArcadeLinkAutopilot_Append(&text, "arcade link autopilot v2\n");
 	NativeArcadeLinkAutopilot_Append(&text, "cab %u\n", (unsigned)autopilot->localCab);
 	NativeArcadeLinkAutopilot_Append(&text, "result %s (%u)\n", NativeArcadeLinkAutopilot_ResultName(autopilot->result),
 		(unsigned)autopilot->result);
 	NativeArcadeLinkAutopilot_Append(&text, "last screen %s end reason %s\n", NativeArcadeLinkAutopilot_ScreenName(autopilot->lastScreen),
 		NativeArcadeLinkAutopilot_EndReasonName(autopilot->lastEndReason));
 	NativeArcadeLinkAutopilot_Append(&text, "ticks %u\n", (unsigned)autopilot->ticks);
+	NativeArcadeLinkAutopilot_Append(&text, "race ticks %u\n", (unsigned)autopilot->raceTickLimit);
 	for (uint32_t k = 0; k < NATIVE_ARCADE_LINK_AUTOPILOT_RACES; k++)
 	{
 		const struct NativeArcadeLinkAutopilotRace *race = &autopilot->races[k];

@@ -25,7 +25,14 @@
 #     and before the roster proof that calls it;
 #  5. MainArcadeRaceHold_Run is named only by the hold module and the roster
 #     proof hook (LR-S2 (a)), and the proof calls it only from its hold
-#     helper, which MainArcadeRosterProof_Frame calls in its VALIDATED case.
+#     helper, which MainArcadeRosterProof_Frame calls in its VALIDATED case;
+#  6. since LR-S10 part 2 the loop is MainArcadeRaceHold_RunMode, whose mode
+#     only gates step 3 (the banner): mode is named in the loop only in the
+#     banner guard, the two mode values are defined literally,
+#     MainArcadeRaceHold_Run is exactly RunMode with the banner (the roster
+#     proof keeps its banner), and RunMode is named only by the hold module
+#     and the race caller (game/MAIN/MainArcadeRaceLaunch.c), which calls it
+#     exactly once, without the banner, until LR-S11 turns it on.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "race hold isolation")
@@ -35,6 +42,7 @@ set(core_header "game/MAIN/MainArcadeRaceHoldCore.h")
 set(core_source "game/MAIN/MainArcadeRaceHoldCore.c")
 set(core_target ctr_native_arcade_race_hold_core)
 set(proof_source "game/MAIN/MainArcadeRosterProof.c")
+set(launch_source "game/MAIN/MainArcadeRaceLaunch.c")
 
 function(ctr_read_source relative_path out_var)
     set(path "${repo}/${relative_path}")
@@ -198,8 +206,9 @@ if(NOT hold_trimmed MATCHES "^#if defined\\(CTR_NATIVE\\)\n" OR NOT hold_trimmed
 endif()
 
 # 2. The LR-9 order of one iteration.
-ctr_block("${hold_source}" "${hold_code}" "void MainArcadeRaceHold_Run(" run_body)
-ctr_block("${hold_source} (MainArcadeRaceHold_Run)" "${run_body}" "for (;;)" loop_body)
+ctr_require("${hold_source}" "${hold_code}" "void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, struct MainArcadeRaceHoldResult *result)")
+ctr_block("${hold_source}" "${hold_code}" "void MainArcadeRaceHold_RunMode(" run_body)
+ctr_block("${hold_source} (MainArcadeRaceHold_RunMode)" "${run_body}" "for (;;)" loop_body)
 ctr_require_order("${hold_source} (the hold loop)" "${loop_body}"
     "Platform_PollHostEvents();"
     "MainArcadeRaceHoldCore_Pump(&core, Platform_HostClockUs())"
@@ -216,6 +225,34 @@ foreach(name IN ITEMS Platform_PollHostEvents Platform_HostWaitMs Platform_Prese
 endforeach()
 ctr_require("${hold_header}" "${hold_h_code}" "#define MAIN_ARCADE_RACE_HOLD_BANNER_TEXT \"WAITING FOR OPPONENT\"")
 ctr_require("${hold_header}" "${hold_h_code}" "#define MAIN_ARCADE_RACE_HOLD_WAIT_MS 1u")
+
+# 6. The mode gates only the banner (LR-S10 part 2).
+ctr_require("${hold_header}" "${hold_h_code}" "#define MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER 0u\n")
+ctr_require("${hold_header}" "${hold_h_code}" "#define MAIN_ARCADE_RACE_HOLD_MODE_BANNER 1u\n")
+ctr_require("${hold_header}" "${hold_h_code}"
+    "void MainArcadeRaceHold_RunMode(MainArcadeRaceHoldStepFn step, void *context, uint32_t mode, struct MainArcadeRaceHoldResult *result);")
+ctr_require("${hold_header}" "${hold_h_code}"
+    "void MainArcadeRaceHold_Run(MainArcadeRaceHoldStepFn step, void *context, struct MainArcadeRaceHoldResult *result);")
+set(banner_guard "if ((mode != MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER) && ((flags & MAIN_ARCADE_RACE_HOLD_DRAW_BANNER) != 0u))")
+ctr_block("${hold_source} (the hold loop)" "${loop_body}" "${banner_guard}" banner_block)
+string(REGEX REPLACE "[ \t\n]+" " " banner_flat "${banner_block}")
+if(NOT banner_flat STREQUAL "{ bannersDue++; if (Platform_PresentVRAMDisplayBanner(MAIN_ARCADE_RACE_HOLD_BANNER_TEXT) != 0) { bannersPresented++; } }")
+    message(FATAL_ERROR "${prefix}: the banner guard of ${hold_source} must hold the banner count and present only (found '${banner_flat}')")
+endif()
+ctr_count_identifier("${run_body}" "mode" run_mode_hits)
+ctr_count_identifier("${hold_code}" "mode" hold_mode_hits)
+if(NOT run_mode_hits EQUAL 1 OR NOT hold_mode_hits EQUAL 2)
+    message(FATAL_ERROR "${prefix}: ${hold_source} may name mode only in RunMode's parameter and its banner guard (found ${run_mode_hits} in the body, ${hold_mode_hits} in the file)")
+endif()
+ctr_block("${hold_source}" "${hold_code}" "void MainArcadeRaceHold_Run(MainArcadeRaceHoldStepFn step" run_wrapper)
+string(REGEX REPLACE "[ \t\n]+" " " run_wrapper_flat "${run_wrapper}")
+if(NOT run_wrapper_flat STREQUAL "{ MainArcadeRaceHold_RunMode(step, context, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, result); }")
+    message(FATAL_ERROR "${prefix}: MainArcadeRaceHold_Run must be exactly RunMode with the banner (found '${run_wrapper_flat}')")
+endif()
+ctr_count_identifier("${hold_code}" "MainArcadeRaceHold_RunMode" hold_run_mode_hits)
+if(NOT hold_run_mode_hits EQUAL 2)
+    message(FATAL_ERROR "${prefix}: ${hold_source} must define MainArcadeRaceHold_RunMode and call it once, from Run (found ${hold_run_mode_hits})")
+endif()
 
 # 3. The period core is pure.
 set(core_call_tokens Platform_ platform.h platform/ native_ Native NATIVE_ MainArcadeRaceHold_ MainArcadeRosterProof
@@ -318,7 +355,25 @@ foreach(path IN LISTS scan_files)
     if(run_hits GREATER 0 AND NOT relative_path MATCHES "^game/MAIN/MainArcadeRaceHold\\.(c|h)$" AND NOT relative_path STREQUAL "${proof_source}")
         message(FATAL_ERROR "${prefix}: ${relative_path} names MainArcadeRaceHold_Run; only the hold module and ${proof_source} may")
     endif()
+    ctr_count_identifier("${code}" "MainArcadeRaceHold_RunMode" run_mode_name_hits)
+    if(run_mode_name_hits GREATER 0 AND NOT relative_path MATCHES "^game/MAIN/MainArcadeRaceHold\\.(c|h)$" AND NOT relative_path STREQUAL "${launch_source}")
+        message(FATAL_ERROR "${prefix}: ${relative_path} names MainArcadeRaceHold_RunMode; only the hold module and ${launch_source} may")
+    endif()
 endforeach()
+# 6 (cont). The race caller holds once, without the banner.
+ctr_read_source("${launch_source}" launch)
+ctr_strip_comments("${launch_source}" "${launch}" launch_code)
+ctr_count_identifier("${launch_code}" "MainArcadeRaceHold_RunMode" launch_run_mode_hits)
+ctr_count_identifier("${launch_code}" "MainArcadeRaceHold_Run" launch_run_hits)
+if(NOT launch_run_mode_hits EQUAL 1 OR NOT launch_run_hits EQUAL 0)
+    message(FATAL_ERROR "${prefix}: ${launch_source} must call MainArcadeRaceHold_RunMode exactly once and never MainArcadeRaceHold_Run (found ${launch_run_mode_hits} and ${launch_run_hits})")
+endif()
+string(REGEX MATCH "MainArcadeRaceHold_RunMode\\([^;]*\\);" launch_hold_call "${launch_code}")
+if(NOT launch_hold_call MATCHES "^MainArcadeRaceHold_RunMode\\([A-Za-z0-9_]+, [^,]+, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, [^,]+\\);$")
+    message(FATAL_ERROR "${prefix}: ${launch_source} must hold with MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER (found '${launch_hold_call}')")
+endif()
+ctr_forbid("${launch_source}" "${launch_code}" "MAIN_ARCADE_RACE_HOLD_MODE_BANNER")
+ctr_forbid("${launch_source}" "${launch_code}" "Platform_PresentVRAMDisplayBanner")
 if(scanned LESS 300)
     message(FATAL_ERROR "${prefix}: scanned only ${scanned} files; the scan is broken")
 endif()

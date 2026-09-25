@@ -11,8 +11,9 @@
  * return at once and touch nothing. The decisions are the pure
  * include/platform/native_arcade_link_autopilot.h's.
  *
- * The autopilot never touches a pad (the race caller's rehearsal owns the
- * installed pads, RL-10). It feeds the link host's own inputs through the
+ * The autopilot never touches a pad (the race caller owns the installed
+ * pads, RL-10; while the autopilot is active the caller steers its own
+ * sample with the pure steering, LR-16). It feeds the link host's own inputs through the
  * arcade-link hook (MAIN/MainArcadeLink.c): on the frames the hook owns in
  * LINK mode it replaces the hook's enter decision and held menu buttons, the
  * values the hook passes to NativeArcadeLinkHost_Enter and
@@ -31,6 +32,14 @@ struct NativeArcadeLinkAutopilotOptions;
  * NULL or disabled options leave the autopilot inactive.
  */
 void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOptions *options);
+
+/*
+ * Internal builds only (defined only with CTR_INTERNAL): 1 once Configure
+ * activated the autopilot (it stays 1 after the report, until the exit), 0
+ * otherwise. Read only: the race caller asks it whether to replace its local
+ * pad sample with the steering pad (Task 8 race plan LR-16, LR-S10).
+ */
+uint8_t MainArcadeLinkAutopilot_Active(void);
 
 /*
  * The arcade-link hook calls it on every frame it owns in LINK mode, right

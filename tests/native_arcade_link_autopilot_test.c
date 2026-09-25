@@ -974,6 +974,9 @@ static int TestReport(void)
 	view.localCab = 2u;
 	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE) == 1);
 	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_PASS);
+	/* The glue copies the configured cap at Configure; no decision reads it. */
+	CHECK(autopilot.raceTickLimit == 0u);
+	autopilot.raceTickLimit = 300u;
 	for (uint32_t k = 0; k < 2u; k++)
 	{
 		for (uint32_t i = 0; i < NATIVE_ARCADE_LINK_AUTOPILOT_DIGEST_BYTES; i++)
@@ -988,8 +991,10 @@ static int TestReport(void)
 	/* Race k's digests are 0x10k + i over the 128 bytes; the first two of
 	 * the four are checked in full, the last two by prefix below. */
 	CHECK(strncmp(text,
-		      "arcade link autopilot v1\ncab 2\nresult PASS (0)\nlast screen OFF end reason NONE\nticks ",
-		      strlen("arcade link autopilot v1\ncab 2\nresult PASS (0)\nlast screen OFF end reason NONE\nticks ")) == 0);
+		      "arcade link autopilot v2\ncab 2\nresult PASS (0)\nlast screen OFF end reason NONE\nticks ",
+		      strlen("arcade link autopilot v2\ncab 2\nresult PASS (0)\nlast screen OFF end reason NONE\nticks ")) == 0);
+	/* The race tick cap line follows the ticks line (the cap is 300 here). */
+	CHECK(strstr(text, "\nrace ticks 300\nrace 1 agreed match ") != NULL);
 	(void)snprintf(expected, sizeof(expected), "race 1 agreed match track 4 laps 3 seed 0x0123456789ABCDEF slots 0 1 6 4 2 3 0 0 (12BBBB--)\n"
 		"race 1 validated launch 1 config %s plan %s bots ", digestHex[0], digestHex[1]);
 	CHECK(strstr(text, expected) != NULL);
@@ -998,7 +1003,7 @@ static int TestReport(void)
 	CHECK(strstr(text, expected) != NULL);
 	expectedLength = strlen("end races 2\n");
 	CHECK((length > expectedLength) && (strcmp(text + length - expectedLength, "end races 2\n") == 0));
-	/* Exactly 5 header lines, 4 race lines, and the end line. */
+	/* Exactly 6 header lines, 4 race lines, and the end line. */
 	{
 		uint32_t lines = 0u;
 
@@ -1006,7 +1011,7 @@ static int TestReport(void)
 		{
 			lines += (text[i] == '\n') ? 1u : 0u;
 		}
-		CHECK(lines == 10u);
+		CHECK(lines == 11u);
 	}
 	/* The race 1 validated line holds all four digests, each 64 hex digits. */
 	{
@@ -1030,7 +1035,7 @@ static int TestReport(void)
 	ResultsView(&view, NATIVE_ARCADE_FLOW_END_LINK_ERROR, 0u, 0u);
 	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
 	CHECK(NativeArcadeLinkAutopilot_FormatReport(&autopilot, text, sizeof(text), &length) == 1);
-	CHECK(strcmp(text, "arcade link autopilot v1\ncab 1\nresult RACE_FAILED (41)\nlast screen RESULTS end reason LINK_ERROR\nticks 1\n"
+	CHECK(strcmp(text, "arcade link autopilot v2\ncab 1\nresult RACE_FAILED (41)\nlast screen RESULTS end reason LINK_ERROR\nticks 1\nrace ticks 0\n"
 			   "race 1 agreed match track 3 laps 3 seed 0x0000000000000009 slots 0 1 6 4 2 3 0 0 (12BBBB--)\nend races 0\n") == 0);
 
 	/* The writer: the formatted bytes, replaced on a second write. */

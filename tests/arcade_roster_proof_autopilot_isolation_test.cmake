@@ -8,7 +8,11 @@
 #     with extensions off and links nothing;
 #  2. the steering entries (NativeArcadeLinkAutopilot_Angle, _Steer, _Passed)
 #     are called, outside the module and its unit test, only by the roster
-#     proof hook, game/MAIN/MainArcadeRosterProof.c;
+#     proof hook, game/MAIN/MainArcadeRosterProof.c, and (since LR-S10 part 2)
+#     by the race caller, game/MAIN/MainArcadeRaceLaunch.c, which calls
+#     _Passed and _Steer once each, only inside its #if defined(CTR_INTERNAL)
+#     part (its restart point read is pinned by
+#     main_arcade_link_hook_isolation_test.cmake);
 #  3. in the proof hook (one CTR_NATIVE && CTR_INTERNAL file), the restart
 #     point read (ptr_restart_points) happens only in the autopilot's helpers
 #     and step, never in the report, digest, tick-line, or pad-install code;
@@ -165,6 +169,8 @@ endif()
 
 # 2. Who calls the steering entries.
 set(proof_source "game/MAIN/MainArcadeRosterProof.c")
+set(race_caller_source "game/MAIN/MainArcadeRaceLaunch.c")
+set(race_caller_steers 0)
 file(GLOB_RECURSE scan_files
     "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/platform/*.c" "${repo}/platform/*.h" "${repo}/include/*.h")
 list(APPEND scan_files "${repo}/main.c")
@@ -181,11 +187,38 @@ foreach(path IN LISTS scan_files)
         continue()
     endif()
     ctr_strip_comments("${source}" code)
+    if(relative_path STREQUAL race_caller_source)
+        # LR-S10 part 2: the race caller steers its internal-build sample;
+        # every steering call must sit inside its CTR_INTERNAL part.
+        string(REPLACE "\r\n" "\n" code "${code}")
+        string(FIND "${code}" "#if defined(CTR_INTERNAL)" internal_at)
+        string(FIND "${code}" "#else" internal_else_at)
+        if(internal_at EQUAL -1 OR internal_else_at LESS internal_at)
+            message(FATAL_ERROR "${prefix}: ${race_caller_source} calls the autopilot steering without a #if defined(CTR_INTERNAL) ... #else part")
+        endif()
+        math(EXPR internal_length "${internal_else_at} - ${internal_at}")
+        string(SUBSTRING "${code}" 0 ${internal_at} before_internal)
+        string(SUBSTRING "${code}" ${internal_else_at} -1 after_internal)
+        string(REGEX MATCH "NativeArcadeLinkAutopilot_(Angle|Steer|Passed)[ \t]*\\(" outside_hit "${before_internal}${after_internal}")
+        if(NOT "${outside_hit}" STREQUAL "")
+            message(FATAL_ERROR "${prefix}: ${race_caller_source} calls the autopilot steering (${outside_hit}) outside its CTR_INTERNAL part")
+        endif()
+        string(SUBSTRING "${code}" ${internal_at} ${internal_length} internal_part)
+        string(REGEX MATCHALL "NativeArcadeLinkAutopilot_(Angle|Steer|Passed)[ \t]*\\(" internal_hits "${internal_part}")
+        if(NOT "${internal_hits}" STREQUAL "NativeArcadeLinkAutopilot_Passed(;NativeArcadeLinkAutopilot_Steer(")
+            message(FATAL_ERROR "${prefix}: ${race_caller_source} must call NativeArcadeLinkAutopilot_Passed and then NativeArcadeLinkAutopilot_Steer once each (found '${internal_hits}')")
+        endif()
+        set(race_caller_steers 1)
+        continue()
+    endif()
     string(REGEX MATCH "NativeArcadeLinkAutopilot_(Angle|Steer|Passed)[ \t]*\\(" code_hit "${code}")
     if(NOT "${code_hit}" STREQUAL "")
-        message(FATAL_ERROR "${prefix}: ${relative_path} calls the autopilot steering (${code_hit}); only ${proof_source} may")
+        message(FATAL_ERROR "${prefix}: ${relative_path} calls the autopilot steering (${code_hit}); only ${proof_source} and ${race_caller_source} may")
     endif()
 endforeach()
+if(NOT race_caller_steers)
+    message(FATAL_ERROR "${prefix}: ${race_caller_source} must steer its internal-build sample (LR-S10 part 2)")
+endif()
 if(scanned LESS 300)
     message(FATAL_ERROR "${prefix}: scanned only ${scanned} files; the scan is broken")
 endif()
