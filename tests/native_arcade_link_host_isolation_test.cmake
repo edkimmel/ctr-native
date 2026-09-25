@@ -24,6 +24,14 @@
 # tests/native_vblank_pacing_isolation_test.cmake). Since LR-S6 the header
 # also pins the end-of-race take, NativeArcadeLinkHost_TakeRaceEnd, and its
 # record's exact three fields, which the .c copies field by field.
+# Since LR-S9 (docs/LOCKSTEP_RACE_MILESTONE.md) the host runs the linked-race
+# drive: the header forward-declares struct NativeCanonicalStateV4 for
+# RaceStep (its include allowlist is unchanged), declares RaceStep,
+# RaceHold, the host pad, race facts, and drive state, and names the
+# drive's status and end-kind values itself (each static-asserted in the
+# .c); the .c also includes the drive core's header, may name the two
+# canonical type names the drive takes, and the library also links the
+# drive core (rules 2, 3, 3d, 3g, and 4).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -67,11 +75,41 @@ set(lease_tokens TopologyLease Acquire Activate Publish Retire LOAD_Hub_ReadFile
 set(state_tokens NativeReplay Checkpoint checkpoint NativeCanonical NativeIdentity_Get)
 
 ctr_read_source("${host_source}" source)
+
+# 2a (LR-S9). The canonical-state token is banned in both files except the
+#     linked-race drive's inputs. The header names it exactly twice: the
+#     forward declaration of struct NativeCanonicalStateV4, once on its own
+#     line, and RaceStep's state parameter (pinned in 3g). The .c may name
+#     only the two whole type names the drive takes, NativeCanonicalStateV4
+#     and NativeCanonicalInputPadV1, so a longer name
+#     (NativeCanonicalStateV4_Validate) or any other canonical token still
+#     trips the ban below.
+string(FIND "${header}" "struct NativeCanonicalStateV4;" canonical_forward_first)
+string(FIND "${header}" "struct NativeCanonicalStateV4;" canonical_forward_last REVERSE)
+string(REGEX MATCH "(^|[\r\n])struct NativeCanonicalStateV4;[ \t]*[\r\n]" canonical_forward_line "${header}")
+if(canonical_forward_first EQUAL -1 OR NOT canonical_forward_first EQUAL canonical_forward_last OR canonical_forward_line STREQUAL "")
+    message(FATAL_ERROR "arcade link host isolation: ${host_header} must forward-declare 'struct NativeCanonicalStateV4;' exactly once, on its own line")
+endif()
+string(REGEX MATCHALL "NativeCanonical" header_canonical_hits "${header}")
+list(LENGTH header_canonical_hits header_canonical_count)
+if(NOT header_canonical_count EQUAL 2)
+    message(FATAL_ERROR "arcade link host isolation: ${host_header} must name NativeCanonical exactly twice (the forward declaration and RaceStep's state parameter), found ${header_canonical_count}")
+endif()
+string(REPLACE "struct NativeCanonicalStateV4;" "struct ALLOWED_STATE_FORWARD;" header_scan "${header}")
+string(REGEX REPLACE "const[ \t\r\n]+struct[ \t\r\n]+NativeCanonicalStateV4[ \t\r\n]*\\*[ \t\r\n]*state[ \t\r\n]*," "const struct ALLOWED_STATE *state,"
+    header_scan "${header_scan}")
+# Twice, since each match consumes the character after the name, so two
+# names one character apart need a second pass.
+string(REGEX REPLACE "(^|[^A-Za-z0-9_])NativeCanonical(StateV4|InputPadV1)([^A-Za-z0-9_]|$)" "\\1ALLOWED_DRIVE_TYPE\\3"
+    source_scan "${source}")
+string(REGEX REPLACE "(^|[^A-Za-z0-9_])NativeCanonical(StateV4|InputPadV1)([^A-Za-z0-9_]|$)" "\\1ALLOWED_DRIVE_TYPE\\3"
+    source_scan "${source_scan}")
+
 foreach(relative_path IN ITEMS "${host_header}" "${host_source}")
     if(relative_path STREQUAL host_header)
-        set(text "${header}")
+        set(text "${header_scan}")
     else()
-        set(text "${source}")
+        set(text "${source_scan}")
     endif()
     foreach(term IN LISTS network_tokens clock_game_tokens alloc_tokens lease_tokens state_tokens)
         ctr_forbid("${relative_path}" "${text}" "${term}")
@@ -81,7 +119,8 @@ endforeach()
 # 3. #include allowlists. The header: stdint.h and the three game-safe
 #    platform headers. The .c: string.h, stdint.h, stddef.h, its own header,
 #    the adapter header, the flow, options, menu-input, and identity
-#    headers, and <platform.h> (the pacing switch, LR-7).
+#    headers, <platform.h> (the pacing switch, LR-7), and the race drive
+#    core's header (LR-S9). The header's allowlist is unchanged by LR-S9.
 function(ctr_check_includes relative_path text allowed_pattern)
     string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${text}")
     list(LENGTH include_lines include_count)
@@ -98,7 +137,7 @@ endfunction()
 ctr_check_includes("${host_header}" "${header}"
     "<stdint\\.h>|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"")
 ctr_check_includes("${host_source}" "${source}"
-    "<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_link_host\\.h\"|\"platform/native_arcade_link_host_internal\\.h\"|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"|<platform\\.h>")
+    "<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_link_host\\.h\"|\"platform/native_arcade_link_host_internal\\.h\"|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"|\"platform/native_arcade_race_drive\\.h\"|<platform\\.h>")
 
 # 3b. The host-side test read-back header (MS-8): the same header-only and
 #     category rules as the public header, it includes only stdint.h, and no
@@ -154,7 +193,10 @@ foreach(definition IN ITEMS
         "SELECT_STATUS_PICKING=0u" "SELECT_STATUS_WAITING=1u" "SELECT_STATUS_RESOLVED=2u"
         "SELECT_STATUS_CONFIRMED=3u" "SELECT_STATUS_FAILED=4u"
         "ROLE_INACTIVE=0u" "ROLE_CAB1=1u" "ROLE_CAB2=2u" "ROLE_BOT=3u"
-        "MAX_HUMANS=4u" "MAX_BOTS=8u")
+        "MAX_HUMANS=4u" "MAX_BOTS=8u"
+        "RACE_GO=1u" "RACE_HOLD=2u" "RACE_END=3u"
+        "DRIVE_END_NONE=0u" "DRIVE_END_OF_RACE=1u" "DRIVE_END_FINISH_GRACE=2u" "DRIVE_END_RACE_TICK_LIMIT=3u"
+        "DRIVE_END_OUTCOME=4u" "DRIVE_END_LOCAL_FAILURE=5u" "NO_TICK=0xFFFFFFFFu" "RACE_PADS=4u")
     string(REPLACE "=" ";" definition_parts "${definition}")
     list(GET definition_parts 0 name)
     list(GET definition_parts 1 literal)
@@ -269,6 +311,222 @@ foreach(literal IN ITEMS
     endif()
 endforeach()
 
+# 3g. The race drive glue (docs/LOCKSTEP_RACE_MILESTONE.md LR-S9). Judged on
+#     the code with comments removed, so the documentation may name what it
+#     describes.
+#     - The header declares RaceStep and RaceHold (RaceHold takes the hold
+#       loop's own arguments), the drive-state read, and the host pad and
+#       race facts with exactly their fields (the pad mirrors the platform
+#       input layer's pad snapshot byte for byte; the race caller
+#       static-asserts that mirror, LR-S10).
+#     - The .c backs the drive's callbacks with exactly one verbatim bundle
+#       send over the adapter's link, exactly two RaceService calls (the poll
+#       with 0, the hold's period service with 1), and exactly one
+#       OnTakeResult call whose "latched" is read back from the adapter's
+#       pending link failure.
+#     - One path reports a drive failure: a helper that reports only a
+#       LOCAL_FAILURE end, once per race, and is the only other caller of the
+#       adapter's ReportLocalRaceFailure besides the public
+#       ReportRaceFailure.
+#     - RaceStep and RaceHold first pass the glue's guard, which refuses
+#       outside a begun drive or off RACING and re-initializes the drive
+#       there; the drive's Step, Hold, Begin, and LingerTick are each called
+#       once; the linger runs in Tick after the adapter's Tick; and the drive
+#       is re-initialized by Shutdown, AbortToTitle, RaceEnd, Tick, and the
+#       guard.
+#     - No game source or main.c names RaceStep or RaceHold yet (LR-S10 lifts
+#       this), and NativeArcadeNetplay_RaceService is named in no game source
+#       and, outside the adapter's own two files, only in this .c.
+function(ctr_count text term out_var)
+    set(count 0)
+    set(rest "${text}")
+    string(LENGTH "${term}" term_length)
+    while(TRUE)
+        string(FIND "${rest}" "${term}" at)
+        if(at EQUAL -1)
+            break()
+        endif()
+        math(EXPR count "${count} + 1")
+        math(EXPR next "${at} + ${term_length}")
+        string(SUBSTRING "${rest}" ${next} -1 rest)
+    endwhile()
+    set(${out_var} ${count} PARENT_SCOPE)
+endfunction()
+
+function(ctr_require_count relative_path text term expected)
+    ctr_count("${text}" "${term}" found)
+    if(NOT found EQUAL expected)
+        message(FATAL_ERROR "arcade link host isolation: ${relative_path} must contain '${term}' exactly ${expected} time(s), found ${found}")
+    endif()
+endfunction()
+
+# The body of the function whose definition starts with opener, up to its
+# closing brace at the start of a line; whitespace collapsed to one space.
+function(ctr_body relative_path text opener out_var)
+    string(FIND "${text}" "${opener}" at)
+    if(at EQUAL -1)
+        message(FATAL_ERROR "arcade link host isolation: ${relative_path} must define '${opener}'")
+    endif()
+    string(SUBSTRING "${text}" ${at} -1 tail)
+    string(FIND "${tail}" "\n}" end)
+    if(end EQUAL -1)
+        message(FATAL_ERROR "arcade link host isolation: cannot find the end of '${opener}' in ${relative_path}")
+    endif()
+    string(SUBSTRING "${tail}" 0 ${end} body)
+    string(REGEX REPLACE "[ \t\r\n]+" " " body "${body}")
+    set(${out_var} "${body}" PARENT_SCOPE)
+endfunction()
+
+# Every term after the first two arguments must appear in text. The terms
+# are read one argument at a time (ARGVn), not as a CMake list, because most
+# hold a ';'.
+function(ctr_require_in relative_path text)
+    if(ARGC LESS 3)
+        message(FATAL_ERROR "arcade link host isolation: ctr_require_in needs a term")
+    endif()
+    math(EXPR last "${ARGC} - 1")
+    foreach(index RANGE 2 ${last})
+        set(term "${ARGV${index}}")
+        if(term STREQUAL "")
+            message(FATAL_ERROR "arcade link host isolation: ctr_require_in got an empty term; the scan is broken")
+        endif()
+        string(FIND "${text}" "${term}" at)
+        if(at EQUAL -1)
+            message(FATAL_ERROR "arcade link host isolation: ${relative_path} must contain '${term}'")
+        endif()
+    endforeach()
+endfunction()
+
+string(REGEX REPLACE "/\\*([^*]|\\*+[^*/])*\\*+/" " " header_code "${header}")
+string(REGEX REPLACE "//[^\r\n]*" "" header_code "${header_code}")
+string(REGEX REPLACE "[ \t\r\n]+" " " header_flat "${header_code}")
+string(REGEX REPLACE "/\\*([^*]|\\*+[^*/])*\\*+/" " " source_code "${source}")
+string(REGEX REPLACE "//[^\r\n]*" "" source_code "${source_code}")
+string(REGEX REPLACE "[ \t\r\n]+" " " source_flat "${source_code}")
+
+ctr_require_in("${host_header}" "${header_flat}"
+    "uint32_t NativeArcadeLinkHost_RaceStep(uint32_t raceTick, const struct NativeCanonicalStateV4 *state, const struct NativeArcadeLinkHostPad *localSample, const struct NativeArcadeLinkHostRaceFacts *facts, struct NativeArcadeLinkHostPad padsOut[4]);"
+    "uint32_t NativeArcadeLinkHost_RaceHold(uint32_t periods, int newPeriod, struct NativeArcadeLinkHostPad padsOut[4]);"
+    "int NativeArcadeLinkHost_GetDriveState(struct NativeArcadeLinkHostDriveState *out);"
+    "struct NativeArcadeLinkHostPad { uint8_t status; uint8_t id; uint8_t buttons[2]; uint8_t analog[4]; uint8_t connected; uint8_t reserved[3]; };"
+    "struct NativeArcadeLinkHostRaceFacts { uint32_t endOfRace; uint32_t finishedHumans; uint32_t humans; };")
+string(REGEX MATCH "struct[ \t\r\n]+NativeCanonicalStateV4[ \t\r\n]*\\{" canonical_definition "${header}")
+if(NOT canonical_definition STREQUAL "")
+    message(FATAL_ERROR "arcade link host isolation: ${host_header} must not define struct NativeCanonicalStateV4")
+endif()
+
+# The callbacks.
+ctr_require_count("${host_source}" "${source_flat}" "NativeLockstepPeerLink_SendBundleVerbatim(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeNetplay_RaceService(" 2)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeNetplay_OnTakeResult(" 1)
+ctr_body("${host_source}" "${source_code}" "static int NativeArcadeLinkHost_DriveSendBundle(" send_body)
+ctr_require_in("${host_source} (DriveSendBundle)" "${send_body}"
+    "return NativeLockstepPeerLink_SendBundleVerbatim(NativeArcadeNetplay_Link(&g_netplay), bytes, size);")
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_DrivePoll(" poll_body)
+ctr_require_in("${host_source} (DrivePoll)" "${poll_body}" "NativeArcadeNetplay_RaceService(&g_netplay, 0);")
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_DriveServicePeriod(" service_body)
+ctr_require_in("${host_source} (DriveServicePeriod)" "${service_body}" "NativeArcadeNetplay_RaceService(&g_netplay, 1);")
+ctr_body("${host_source}" "${source_code}" "static int NativeArcadeLinkHost_DriveTakeResult(" take_body)
+ctr_require_in("${host_source} (DriveTakeResult)" "${take_body}"
+    "NativeArcadeNetplay_OnTakeResult(&g_netplay, result, frameIndex); return (g_netplay.pendingLinkFailure != NATIVE_ARCADE_FLOW_END_NONE) ? 1 : 0;")
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_BeginDrive(" begin_body)
+ctr_require_in("${host_source} (BeginDrive)" "${begin_body}"
+    "NativeArcadeLinkHost_ResetDrive();"
+    "callbacks.sendBundle = NativeArcadeLinkHost_DriveSendBundle;"
+    "callbacks.poll = NativeArcadeLinkHost_DrivePoll;"
+    "callbacks.onTakeResult = NativeArcadeLinkHost_DriveTakeResult;"
+    "callbacks.servicePeriod = NativeArcadeLinkHost_DriveServicePeriod;"
+    "NativeArcadeRaceDrive_Begin(&g_drive, NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay)), &g_driveKept, &callbacks, 0u)"
+    "NativeArcadeLinkHost_ReportDriveFailure();")
+
+# The one failure-report path.
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeNetplay_ReportLocalRaceFailure(" 2)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_ReportDriveFailure(" 3)
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_ReportDriveFailure(" report_body)
+ctr_require_in("${host_source} (ReportDriveFailure)" "${report_body}"
+    "if ((g_driveFailureReported != 0u) || (NativeArcadeRaceDrive_EndKind(&g_drive) != NATIVE_ARCADE_RACE_DRIVE_END_LOCAL_FAILURE)) { return; }"
+    "g_driveFailureReported = 1u;"
+    "(void)NativeArcadeNetplay_ReportLocalRaceFailure(&g_netplay);")
+ctr_body("${host_source}" "${source_code}" "static uint32_t NativeArcadeLinkHost_DriveStatus(" status_body)
+ctr_require_in("${host_source} (DriveStatus)" "${status_body}" "NativeArcadeLinkHost_ReportDriveFailure(); return NATIVE_ARCADE_LINK_HOST_RACE_END;")
+
+# The guard, the drive calls, the linger, and the re-initialization points.
+ctr_require_in("${host_source}" "${source_flat}"
+    "static struct NativeArcadeRaceDrive g_drive;"
+    "static struct NativeArcadeRaceDriveKept g_driveKept;")
+ctr_body("${host_source}" "${source_code}" "static int NativeArcadeLinkHost_DriveMayRun(" guard_body)
+ctr_require_in("${host_source} (DriveMayRun)" "${guard_body}"
+    "if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) { return 0; }"
+    "if ((g_driveBegun == 0u) || (NativeArcadeLinkHost_LinkScreen() != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING)) { NativeArcadeLinkHost_ResetDrive(); return 0; }")
+foreach(opener IN ITEMS "uint32_t NativeArcadeLinkHost_RaceStep(" "uint32_t NativeArcadeLinkHost_RaceHold(")
+    ctr_body("${host_source}" "${source_code}" "${opener}" api_body)
+    # (FIND, not a '^' REGEX REPLACE: CMake retries '^' after each match.)
+    string(FIND "${api_body}" "{ " api_open)
+    math(EXPR api_open "${api_open} + 2")
+    string(SUBSTRING "${api_body}" ${api_open} -1 api_statements)
+    string(FIND "${api_statements}" "if (!NativeArcadeLinkHost_DriveMayRun()) { return NATIVE_ARCADE_LINK_HOST_RACE_END; }" guard_at)
+    string(REGEX MATCH "^(struct|enum)[^;]*;( (struct|enum)[^;]*;)* if \\(!NativeArcadeLinkHost_DriveMayRun\\(\\)\\)" guard_first "${api_statements}")
+    if(guard_at EQUAL -1 OR guard_first STREQUAL "")
+        message(FATAL_ERROR "arcade link host isolation: ${host_source} (${opener}) must pass NativeArcadeLinkHost_DriveMayRun() before anything else")
+    endif()
+endforeach()
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_DriveMayRun(" 3)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeRaceDrive_Step(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeRaceDrive_Hold(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeRaceDrive_Begin(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeRaceDrive_LingerTick(" 1)
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_TickDrive(" tick_drive_body)
+ctr_require_in("${host_source} (TickDrive)" "${tick_drive_body}"
+    "if ((screen != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) && (screen != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS)) { NativeArcadeLinkHost_ResetDrive(); return; }"
+    "if (NativeArcadeRaceDrive_EndIsFinish(&g_drive)) { (void)NativeArcadeRaceDrive_LingerTick(&g_drive, (screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS) ? 1 : 0); if (NativeArcadeRaceDrive_LingerTicksLeft(&g_drive) == 0u) { NativeArcadeLinkHost_ResetDrive(); } }")
+ctr_body("${host_source}" "${source_code}" "uint32_t NativeArcadeLinkHost_Tick(" tick_body)
+string(FIND "${tick_body}" "action = (uint32_t)NativeArcadeNetplay_Tick(&g_netplay, heldMenuButtons, raceFinished); NativeArcadeLinkHost_TickDrive(); return action;" tick_order_at)
+if(tick_order_at EQUAL -1)
+    message(FATAL_ERROR "arcade link host isolation: NativeArcadeLinkHost_Tick must run the drive's tick right after the adapter's Tick (LR-46)")
+endif()
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_TickDrive(" 2)
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_RaceEndDrive(" race_end_drive_body)
+ctr_require_in("${host_source} (RaceEndDrive)" "${race_end_drive_body}"
+    "NativeArcadeRaceDrive_EndIsFinish(&g_drive)"
+    "(NativeArcadeRaceDrive_LingerTicksLeft(&g_drive) > 0u)"
+    "(NativeArcadeLinkHost_LinkScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS)"
+    "{ g_driveBegun = 0u; return; } NativeArcadeLinkHost_ResetDrive();")
+ctr_body("${host_source}" "${source_code}" "void NativeArcadeLinkHost_Shutdown(" shutdown_body)
+ctr_require_in("${host_source} (Shutdown)" "${shutdown_body}" "NativeArcadeLinkHost_ResetDrive();")
+ctr_body("${host_source}" "${source_code}" "void NativeArcadeLinkHost_AbortToTitle(" abort_body)
+ctr_require_in("${host_source} (AbortToTitle)" "${abort_body}" "NativeArcadeNetplay_Shutdown(&g_netplay); NativeArcadeLinkHost_ResetDrive();")
+ctr_body("${host_source}" "${source_code}" "int NativeArcadeLinkHost_Configure(" configure_body)
+string(FIND "${configure_body}" "{ struct NativeMatchConfigV1 fixture; uint32_t i; NativeArcadeLinkHost_Shutdown();" configure_first)
+if(configure_first EQUAL -1)
+    message(FATAL_ERROR "arcade link host isolation: NativeArcadeLinkHost_Configure must shut down (and so re-initialize the drive) first")
+endif()
+
+# Who names the new calls.
+file(GLOB_RECURSE drive_scan_paths
+    "${repo}/game/*.c" "${repo}/game/*.h" "${repo}/game/*.inc"
+    "${repo}/platform/*.c" "${repo}/platform/*.h" "${repo}/platform/*.inc"
+    "${repo}/include/*.h" "${repo}/tools/*.c" "${repo}/tools/*.h")
+list(APPEND drive_scan_paths "${repo}/main.c")
+set(drive_scanned 0)
+set(race_service_owners "platform/native_arcade_netplay.c" "include/platform/native_arcade_netplay.h" "${host_source}")
+foreach(path IN LISTS drive_scan_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    math(EXPR drive_scanned "${drive_scanned} + 1")
+    file(READ "${path}" scanned)
+    if(relative_path MATCHES "^game/" OR relative_path STREQUAL "main.c")
+        foreach(term IN ITEMS NativeArcadeLinkHost_RaceStep NativeArcadeLinkHost_RaceHold)
+            ctr_forbid("${relative_path}" "${scanned}" "${term}")
+        endforeach()
+    endif()
+    list(FIND race_service_owners "${relative_path}" race_service_owner)
+    if(race_service_owner EQUAL -1)
+        ctr_forbid("${relative_path}" "${scanned}" "NativeArcadeNetplay_RaceService")
+    endif()
+endforeach()
+if(drive_scanned LESS 300)
+    message(FATAL_ERROR "arcade link host isolation: the RaceStep/RaceHold/RaceService scan saw only ${drive_scanned} files; the scan is broken")
+endif()
+
 # 4. ctr_native_arcade_link_host links exactly the adapter and the host
 #    options, in exactly one target_link_libraries call. Its one other
 #    link-time dependency (since LR-S3, LR-7) is not a library:
@@ -287,7 +545,7 @@ string(REGEX REPLACE "^target_link_libraries\\([ \t\r\n]*${target}[ \t\r\n]+" ""
 string(REGEX REPLACE "\\)$" "" link_body "${link_body}")
 string(REGEX REPLACE "[ \t\r\n]+" ";" link_items "${link_body}")
 list(REMOVE_ITEM link_items "" PUBLIC PRIVATE INTERFACE)
-set(expected_link_items ctr_native_arcade_netplay ctr_native_arcade_link_options)
+set(expected_link_items ctr_native_arcade_netplay ctr_native_arcade_link_options ctr_native_arcade_race_drive)
 foreach(expected IN LISTS expected_link_items)
     list(FIND link_items "${expected}" expected_index)
     if(expected_index EQUAL -1)
@@ -297,12 +555,12 @@ endforeach()
 foreach(item IN LISTS link_items)
     list(FIND expected_link_items "${item}" item_index)
     if(item_index EQUAL -1)
-        message(FATAL_ERROR "arcade link host isolation: ${target} links unexpected item '${item}'; only ctr_native_arcade_netplay and ctr_native_arcade_link_options are allowed")
+        message(FATAL_ERROR "arcade link host isolation: ${target} links unexpected item '${item}'; only ctr_native_arcade_netplay, ctr_native_arcade_link_options, and ctr_native_arcade_race_drive are allowed")
     endif()
 endforeach()
 list(LENGTH link_items link_item_count)
-if(NOT link_item_count EQUAL 2)
-    message(FATAL_ERROR "arcade link host isolation: ${target} must link exactly two libraries, found ${link_item_count} ('${link_items}')")
+if(NOT link_item_count EQUAL 3)
+    message(FATAL_ERROR "arcade link host isolation: ${target} must link exactly three libraries, found ${link_item_count} ('${link_items}')")
 endif()
 
 # 5. C17, no extensions, in order, on the host glue target.

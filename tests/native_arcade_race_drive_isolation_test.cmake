@@ -12,7 +12,7 @@
 # platform/native_lockstep_session.h, and platform/native_match_config.h;
 # the library stays portable C17 with extensions off and links exactly the
 # lockstep session library. Only the allowed targets (drive_allowed_linkers:
-# the unit test until LR-S9) may link the core.
+# the unit test and, since LR-S9, the host glue) may link the core.
 #
 # The send order (LR-2, LR-29) is pinned structurally as far as text can:
 # the source makes exactly one ComposeBundle call and one sendBundle call,
@@ -27,7 +27,8 @@
 # (NativeCanonicalStateV4_Validate) still trips the ban. The scan asserts it
 # found both files and the API, so it cannot pass trivially.
 #
-# LR-S9 adds the host glue to drive_allowed_linkers.
+# LR-S9 added the host glue (ctr_native_arcade_link_host) to
+# drive_allowed_linkers: it runs the drive over the adapter (LR-1).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade race drive isolation")
@@ -108,8 +109,9 @@ set(drive_allowed_includes
 # the match config the core's FindRoleSlot call needs).
 set(drive_allowed_links ctr_native_lockstep_session)
 
-# The only targets that may link the core (the unit test until LR-S9).
-set(drive_allowed_linkers native_arcade_race_drive_test)
+# The only targets that may link the core: the unit test and the host glue
+# (LR-S9).
+set(drive_allowed_linkers native_arcade_race_drive_test ctr_native_arcade_link_host)
 
 # Code each file must contain after comment stripping, so a scan that lost
 # the code (or the wrong file) fails.

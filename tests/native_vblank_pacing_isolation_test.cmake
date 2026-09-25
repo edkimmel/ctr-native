@@ -12,7 +12,10 @@
 #     - platform/native_arcade_link_host.c, which has no conditional,
 #       exactly three times: RaceBegin's (1), only in LINK mode, and the (0)
 #       of RaceEnd and of Shutdown, each only while the host's own
-#       g_racePacing flag says RaceBegin turned it on.
+#       g_racePacing flag says RaceBegin turned it on. Since LR-S9 RaceBegin
+#       ends with one call to the race drive's begin and RaceEnd starts with
+#       one call to the drive's reset, outside the pacing logic, which is
+#       otherwise pinned unchanged.
 #     No other file names it, and nothing in game/ does (the race caller
 #     reaches it only through the host's RaceBegin and RaceEnd; their call
 #     sites are pinned by tests/main_arcade_link_hook_isolation_test.cmake);
@@ -298,12 +301,14 @@ foreach(spec
 endforeach()
 ctr_block("${host_path}" "${host_code}" "int NativeArcadeLinkHost_RaceBegin(void)\n{" race_begin_body)
 string(REGEX REPLACE "[ \t\n]+" " " race_begin_normalized "${race_begin_body}")
-if(NOT race_begin_normalized STREQUAL "{ if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) { return 0; } Platform_SetFixedVBlankPacing(1); g_racePacing = 1u; return 1; }")
+# LR-S9: the drive begins after the pacing is on, and the return stays 1.
+if(NOT race_begin_normalized STREQUAL "{ if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) { return 0; } Platform_SetFixedVBlankPacing(1); g_racePacing = 1u; NativeArcadeLinkHost_BeginDrive(); return 1; }")
     message(FATAL_ERROR "${prefix}: NativeArcadeLinkHost_RaceBegin must turn the pacing on only in LINK mode and record it (found '${race_begin_normalized}')")
 endif()
 ctr_block("${host_path}" "${host_code}" "void NativeArcadeLinkHost_RaceEnd(void)\n{" race_end_body)
 string(REGEX REPLACE "[ \t\n]+" " " race_end_normalized "${race_end_body}")
-if(NOT race_end_normalized STREQUAL "{ if (g_racePacing == 0u) { return; } Platform_SetFixedVBlankPacing(0); g_racePacing = 0u; }")
+# LR-S9: the drive's reset runs first, whatever the pacing.
+if(NOT race_end_normalized STREQUAL "{ NativeArcadeLinkHost_RaceEndDrive(); if (g_racePacing == 0u) { return; } Platform_SetFixedVBlankPacing(0); g_racePacing = 0u; }")
     message(FATAL_ERROR "${prefix}: NativeArcadeLinkHost_RaceEnd must turn off only the pacing RaceBegin turned on (found '${race_end_normalized}')")
 endif()
 ctr_block("${host_path}" "${host_code}" "void NativeArcadeLinkHost_Shutdown(void)\n{" shutdown_body)

@@ -131,7 +131,10 @@ struct NativeArcadeRaceDriveKept
  *
  * sendBundle: sends size (always NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES)
  *   bytes verbatim, the bundle for frameIndex; returns 1 if sent, 0 if
- *   refused (the link or the session is not RUNNING). Required.
+ *   refused: the link or the session is not RUNNING, the bytes do not decode
+ *   as this session's bundle (identity, protocol version, or D), their
+ *   sender slot is not the session's local slot, or the transport failed
+ *   (LR-49). Required.
  * poll: drains the link into the session (AcceptBundle). Required.
  * onTakeResult: the adapter's OnTakeResult for a take of frameIndex; returns
  *   nonzero once the adapter's outcome is latched. Required.

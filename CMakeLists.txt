@@ -502,7 +502,8 @@ target_link_libraries(ctr_native_arcade_race_drive PUBLIC ctr_native_lockstep_se
 # (docs/LOCKSTEP_RACE_MILESTONE.md LR-7) it also has a link-time dependency
 # on Platform_SetFixedVBlankPacing, which only the ctr_native executable
 # defines (platform/native_platform.c): a test that links this library
-# defines its own stub.
+# defines its own stub. Since LR-S9 it also links the linked-race drive core
+# (ctr_native_arcade_race_drive), whose drive it runs over the adapter.
 add_library(ctr_native_arcade_link_host STATIC platform/native_arcade_link_host.c)
 set_target_properties(ctr_native_arcade_link_host PROPERTIES
     C_STANDARD 17
@@ -510,7 +511,8 @@ set_target_properties(ctr_native_arcade_link_host PROPERTIES
     C_EXTENSIONS OFF
 )
 target_include_directories(ctr_native_arcade_link_host PUBLIC ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(ctr_native_arcade_link_host PUBLIC ctr_native_arcade_netplay ctr_native_arcade_link_options)
+target_link_libraries(ctr_native_arcade_link_host PUBLIC ctr_native_arcade_netplay ctr_native_arcade_link_options
+    ctr_native_arcade_race_drive)
 
 # Internal two-process gate autopilot (docs/RACE_LAUNCH_MILESTONE.md RL-15,
 # RL-S10): the --arcade-link-autopilot option parser, the pure menu decision

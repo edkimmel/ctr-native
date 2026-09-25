@@ -15,4 +15,13 @@
  * selectEntropy and the host epoch); 0 unless the mode is LINK. */
 uint64_t NativeArcadeLinkHost_InternalSelectEntropy(void);
 
+/* The link's local race-failure latch (RL-11) as it stands: 1 from an
+ * accepted local race failure until the next Tick consumes it; 0 unless the
+ * mode is LINK. */
+uint8_t NativeArcadeLinkHost_InternalLocalRaceFailure(void);
+
+/* Local drive failures the host reported to the link since the last
+ * Configure or Shutdown (at most one per race, LR-S9). */
+uint32_t NativeArcadeLinkHost_InternalDriveFailureReports(void);
+
 #endif
