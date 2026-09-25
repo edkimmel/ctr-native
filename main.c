@@ -236,7 +236,7 @@ int main(int argc, char *argv[])
 	NativeArcadeRosterProofOptions_SetDefaults(&rosterProofOptions);
 	if (!NativeArcadeRosterProofOptions_ApplyArgs(argc, argv, &rosterProofOptions))
 	{
-		fprintf(stderr, "[CTR Native] invalid arcade roster proof option; expected --arcade-roster-proof <log path> [--arcade-roster-proof-seed <u64, decimal or 0x hex>] [--arcade-roster-proof-dwell <0-7200>] [--arcade-roster-proof-ticks <1-3600>] [--arcade-roster-proof-profile <two-cab|one-cab>] [--arcade-roster-proof-hold (needs more than 300 ticks)].\n");
+		fprintf(stderr, "[CTR Native] invalid arcade roster proof option; expected --arcade-roster-proof <log path> [--arcade-roster-proof-seed <u64, decimal or 0x hex>] [--arcade-roster-proof-dwell <0-7200>] [--arcade-roster-proof-ticks <1-3600, or 1-6000 with the autopilot>] [--arcade-roster-proof-profile <two-cab|one-cab>] [--arcade-roster-proof-hold (needs more than 300 ticks)] [--arcade-roster-proof-autopilot (two-cab only)].\n");
 		return NativeConsole_Return(1);
 	}
 #if !defined(CTR_INTERNAL)
@@ -485,10 +485,11 @@ int main(int argc, char *argv[])
 			Platform_Shutdown();
 			return NativeConsole_Return(1);
 		}
-		printf("[CTR Native] arcade roster proof: profile %s seed 0x%08X%08X dwell %u ticks %u%s report %s\n",
+		printf("[CTR Native] arcade roster proof: profile %s seed 0x%08X%08X dwell %u ticks %u%s%s report %s\n",
 		       NativeArcadeRosterProof_ProfileName(rosterProofOptions.profile), (unsigned)(uint32_t)(rosterProofOptions.seed >> 32),
 		       (unsigned)(uint32_t)(rosterProofOptions.seed & 0xFFFFFFFFu), (unsigned)rosterProofOptions.dwellTicks,
-		       (unsigned)rosterProofOptions.tickCount, (rosterProofOptions.hold != 0u) ? " hold" : "", rosterProofOptions.logPath);
+		       (unsigned)rosterProofOptions.tickCount, (rosterProofOptions.hold != 0u) ? " hold" : "",
+		       (rosterProofOptions.autopilot != 0u) ? " autopilot" : "", rosterProofOptions.logPath);
 		fflush(stdout);
 #if defined(CTR_INTERNAL)
 		/* Scripted pads from the first frame to exit: no host input reaches

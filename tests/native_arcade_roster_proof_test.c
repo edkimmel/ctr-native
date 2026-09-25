@@ -358,6 +358,105 @@ static int TestHoldOption(void)
 	return 0;
 }
 
+/* --arcade-roster-proof-autopilot (LR-S2 (b)): a flag, only with the proof,
+ * once, two-cab only; it alone allows a tick count up to AUTOPILOT_MAX_TICKS. */
+static int TestAutopilotOption(void)
+{
+	struct NativeArcadeRosterProofOptions options;
+	char *noAutopilot[] = {"ctr_native", "--arcade-roster-proof", "r.txt"};
+	char *autopilot[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-autopilot"};
+	char *autopilotRace[] = {"ctr_native", "--arcade-roster-proof-autopilot", "--arcade-roster-proof-ticks", "6000", "--arcade-roster-proof",
+		"r.txt", "--arcade-roster-proof-seed", "0x5EED", "--arcade-roster-proof-profile", "two-cab"};
+	char *autopilotHold[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-autopilot", "--arcade-roster-proof-hold"};
+	char *autopilotAlone[] = {"ctr_native", "--arcade-roster-proof-autopilot"};
+	char *autopilotRepeated[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-autopilot",
+		"--arcade-roster-proof-autopilot"};
+	char *autopilotOneCab[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-autopilot",
+		"--arcade-roster-proof-profile", "one-cab"};
+	char *autopilotTooMany[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-autopilot",
+		"--arcade-roster-proof-ticks", "6001"};
+	char *ticksWithoutAutopilot[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-ticks", "3601"};
+	char *ticksMaxWithoutAutopilot[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-ticks", "6000"};
+	/* The flag takes no value: a following word is another parser's. */
+	char *autopilotValue[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-autopilot", "1"};
+	char *autopilotEquals[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-autopilot=1"};
+
+	CHECK(NATIVE_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_TICKS == 6000u && NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS == 3600u);
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(options.autopilot == 0u);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(noAutopilot), noAutopilot, &options) == 1);
+	CHECK(options.enabled == 1u && options.autopilot == 0u);
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(autopilot), autopilot, &options) == 1);
+	CHECK(options.enabled == 1u && options.autopilot == 1u && options.hold == 0u && options.tickCount == 900u);
+	CHECK(options.profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB);
+	CHECK(IsAllByte(options.reserved, sizeof(options.reserved), 0u));
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(autopilotRace), autopilotRace, &options) == 1);
+	CHECK(options.autopilot == 1u && options.tickCount == 6000u && options.seed == UINT64_C(0x5EED));
+	/* The hold combines with the autopilot under its own tick rule. */
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(autopilotHold), autopilotHold, &options) == 1);
+	CHECK(options.autopilot == 1u && options.hold == 1u);
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	options.tickCount = 300u;
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(autopilotHold), autopilotHold, &options) == 0);
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(autopilotValue), autopilotValue, &options) == 1);
+	CHECK(options.autopilot == 1u);
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(autopilotEquals), autopilotEquals, &options) == 1);
+	CHECK(options.enabled == 1u && options.autopilot == 0u);
+	CHECK(ExpectReject(ARGC(autopilotAlone), autopilotAlone) == 0);
+	CHECK(ExpectReject(ARGC(autopilotRepeated), autopilotRepeated) == 0);
+	CHECK(ExpectReject(ARGC(autopilotOneCab), autopilotOneCab) == 0);
+	CHECK(ExpectReject(ARGC(autopilotTooMany), autopilotTooMany) == 0);
+	CHECK(ExpectReject(ARGC(ticksWithoutAutopilot), ticksWithoutAutopilot) == 0);
+	CHECK(ExpectReject(ARGC(ticksMaxWithoutAutopilot), ticksMaxWithoutAutopilot) == 0);
+
+	/* Configure: the same rules; the accessor reports the option; the tick
+	 * lines of a 6000-tick autopilot run are all kept. */
+	{
+		struct NativeIdentityV1 identity;
+		struct NativeArcadeRosterProofTickLine line;
+
+		TestIdentity(&identity);
+		NativeArcadeRosterProofOptions_SetDefaults(&options);
+		CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(autopilotRace), autopilotRace, &options) == 1);
+		CHECK(NativeArcadeRosterProof_Autopilot() == 0u);
+		CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 1);
+		CHECK(NativeArcadeRosterProof_Autopilot() == 1u && NativeArcadeRosterProof_Ticks() == 6000u);
+		memset(&line, 0, sizeof(line));
+		for (uint32_t tick = 0; tick < 6000u; tick++)
+		{
+			line.tick = tick;
+			CHECK(NativeArcadeRosterProof_RecordTick(&line) == 1);
+		}
+		line.tick = 6000u;
+		CHECK(NativeArcadeRosterProof_RecordTick(&line) == 0);
+		CHECK(NativeArcadeRosterProof_TickCount() == 6000u);
+		NativeArcadeRosterProof_Shutdown();
+		CHECK(NativeArcadeRosterProof_Autopilot() == 0u);
+		options.autopilot = 0u;
+		CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 0); /* 6000 ticks without the autopilot */
+		options.tickCount = NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS;
+		CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 1);
+		CHECK(NativeArcadeRosterProof_Autopilot() == 0u);
+		options.autopilot = 1u;
+		options.tickCount = NATIVE_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_TICKS + 1u;
+		CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 0);
+		CHECK(NativeArcadeRosterProof_Active() == 0 && NativeArcadeRosterProof_Autopilot() == 0u);
+		options.tickCount = 900u;
+		options.profile = NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB;
+		CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 0);
+		options.profile = NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB;
+		options.autopilot = 2u;
+		CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 0);
+		NativeArcadeRosterProof_Shutdown();
+	}
+	return 0;
+}
+
 /* --arcade-roster-proof-profile (RS-23): two-cab by default, one-cab, or an error. */
 static int TestProfileOption(void)
 {
@@ -1503,6 +1602,7 @@ int main(void)
 	CHECK(TestExitCodes() == 0);
 	CHECK(TestProfileOption() == 0);
 	CHECK(TestHoldOption() == 0);
+	CHECK(TestAutopilotOption() == 0);
 	CHECK(TestConfigBuilder() == 0);
 	CHECK(TestOneCabConfigBuilder() == 0);
 	CHECK(TestSeedsAndFinalResult() == 0);

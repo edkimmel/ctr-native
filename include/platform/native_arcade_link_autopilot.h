@@ -9,7 +9,8 @@
 /*
  * Internal arcade-link autopilot for the two-process live gate
  * (docs/RACE_LAUNCH_MILESTONE.md section 4 RL-15, slice RL-S10): the option
- * parser, the pure menu decision, the progress bookkeeping, and the report.
+ * parser, the pure menu decision, the progress bookkeeping, and the report;
+ * and the race autopilot's pure steering decision (Steering, below).
  * Internal builds only: main.c rejects the option in any other build.
  *
  *   --arcade-link-autopilot <report path>   drive this link cabinet through
@@ -104,6 +105,30 @@
  *
  * Pure except WriteReport: caller-owned state, no heap use, no hidden state,
  * no pad access, and fully deterministic.
+ *
+ * Steering (docs/LOCKSTEP_RACE_MILESTONE.md LR-16, spiked in LR-S2 (b)): the
+ * race autopilot's closed-loop pad profile. It holds CROSS (accelerate) and
+ * steers LEFT or RIGHT toward an aim point, the restart point ahead of the
+ * kart. It is pure over pointer-free facts the game side reads (the kart's
+ * position and heading, and restart point positions); it never sees game
+ * state, and it returns a button word the caller installs itself.
+ * - Positions are level world units on the ground plane (x, z); only
+ *   differences are used.
+ * - Angles are 12-bit: a full turn is ANGLE_UNITS, 0 faces +z, and a quarter
+ *   turn (1024) faces +x. NativeArcadeLinkAutopilot_Angle(dx, dz) is the
+ *   direction of (dx, dz) in those units (an integer atan2, within 3 units).
+ * - Steer: the heading error is the aim direction minus the heading, wrapped
+ *   to [-ANGLE_UNITS / 2, ANGLE_UNITS / 2). Within STEER_DEADBAND of 0 (or with
+ *   the aim point on the kart) the kart goes straight: CROSS alone. A
+ *   positive error adds STEER_POSITIVE, the button that raises the heading,
+ *   and a negative error adds STEER_NEGATIVE.
+ * - Passed: the kart is done with a restart point (the caller moves its
+ *   target to the next one) once it is within PASS_RADIUS of the point, or
+ *   past the line through the point square to the approach (the segment from
+ *   the previous restart point): a positive dot product of (kart - point)
+ *   and (point - previous).
+ * The buttons are the PSX pad's active-high bits (a set bit is held); a pad
+ * word is active low, so the caller clears them from an all-released word.
  */
 
 #define NATIVE_ARCADE_LINK_AUTOPILOT_PATH_BYTES 512u
@@ -118,6 +143,20 @@
 #define NATIVE_ARCADE_LINK_AUTOPILOT_DIGEST_COUNT 4u
 /* The report buffer FormatReport needs at most. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_BYTES 2048u
+
+/* Steering (LR-16): the PSX pad bits of the steering pad profile. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_RIGHT 0x0020u
+#define NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_LEFT 0x0080u
+#define NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_CROSS 0x4000u
+/* The button that raises the kart's heading, and the one that lowers it. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_STEER_POSITIVE NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_LEFT
+#define NATIVE_ARCADE_LINK_AUTOPILOT_STEER_NEGATIVE NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_RIGHT
+/* A full turn in the 12-bit angle units. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS 4096
+/* Heading errors within this many angle units steer straight. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_STEER_DEADBAND 48
+/* A restart point this close (world units) counts as passed. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_PASS_RADIUS 256
 
 enum NativeArcadeLinkAutopilotResult
 {
@@ -189,6 +228,27 @@ struct NativeArcadeLinkAutopilotOutput
 	uint8_t reserved[3];
 };
 
+/* The steering facts of one kart for one tick (see Steering above). */
+struct NativeArcadeLinkAutopilotSteerFacts
+{
+	int32_t kartX;
+	int32_t kartZ;
+	int32_t heading; /* 12-bit angle; any value, taken modulo ANGLE_UNITS */
+	int32_t aimX;
+	int32_t aimZ;
+};
+
+/* The restart point facts of the passed rule (see Steering above). */
+struct NativeArcadeLinkAutopilotPassFacts
+{
+	int32_t kartX;
+	int32_t kartZ;
+	int32_t pointX;
+	int32_t pointZ;
+	int32_t previousX;
+	int32_t previousZ;
+};
+
 /* NULL is a no-op. Otherwise zeroes the options: disabled, empty path. */
 void NativeArcadeLinkAutopilotOptions_SetDefaults(struct NativeArcadeLinkAutopilotOptions *options);
 
@@ -257,5 +317,16 @@ int NativeArcadeLinkAutopilot_FormatReport(const struct NativeArcadeLinkAutopilo
 
 /* Writes the report to path (created or replaced). Returns 1 on success. */
 int NativeArcadeLinkAutopilot_WriteReport(const char *path, const struct NativeArcadeLinkAutopilot *autopilot);
+
+/* The direction of (dx, dz) in 12-bit angle units, 0..ANGLE_UNITS - 1; 0 for (0, 0). */
+int32_t NativeArcadeLinkAutopilot_Angle(int32_t dx, int32_t dz);
+
+/* The steering buttons for one tick (active-high BUTTON_* bits): CROSS, plus
+ * STEER_POSITIVE or STEER_NEGATIVE outside the deadband; 0 for NULL. */
+uint32_t NativeArcadeLinkAutopilot_Steer(const struct NativeArcadeLinkAutopilotSteerFacts *facts);
+
+/* 1 when the kart passed the restart point (see Steering above); 0 otherwise
+ * and for NULL. A zero approach segment leaves only the radius. */
+int NativeArcadeLinkAutopilot_Passed(const struct NativeArcadeLinkAutopilotPassFacts *facts);
 
 #endif

@@ -25,7 +25,8 @@ struct NativeCanonicalStateV1;
  *                                           written to this path
  *   --arcade-roster-proof-seed <u64>        decimal, or 0x/0X hex; default 1
  *   --arcade-roster-proof-dwell <ticks>     decimal 0..7200; default 0
- *   --arcade-roster-proof-ticks <N>         decimal 1..3600; default 900: the
+ *   --arcade-roster-proof-ticks <N>         decimal 1..3600 (1..6000 with the
+ *                                           autopilot); default 900: the
  *                                           race ticks logged before PASS
  *   --arcade-roster-proof-profile <name>    two-cab or one-cab (exactly, in
  *                                           lowercase); default two-cab: the
@@ -36,6 +37,13 @@ struct NativeCanonicalStateV1;
  *                                           (docs/LOCKSTEP_RACE_MILESTONE.md
  *                                           LR-S2 (a)); needs a tick count
  *                                           above HOLD_TICK
+ *   --arcade-roster-proof-autopilot         no value: players 0 and 1 run on
+ *                                           the steering autopilot instead of
+ *                                           the scripted pattern
+ *                                           (docs/LOCKSTEP_RACE_MILESTONE.md
+ *                                           LR-S2 (b)); two-cab only; allows
+ *                                           a tick count up to
+ *                                           AUTOPILOT_MAX_TICKS (6000)
  *
  * The report path is opened as given when the report is written: a relative
  * path resolves against the base directory, because main.c changes into
@@ -43,15 +51,16 @@ struct NativeCanonicalStateV1;
  * working directory. Pass an absolute path to write elsewhere.
  *
  * Parsing is transactional: on any error the caller's options are left
- * untouched. Arguments that are not one of these six options are ignored,
+ * untouched. Arguments that are not one of these seven options are ignored,
  * because other host parsers own them. An option whose value is missing (end
  * of argv, a NULL entry, or a next argument starting with '-'), repeated, or
- * malformed is an error, and so is a seed, dwell, tick count, profile, or
- * hold without --arcade-roster-proof, and a hold with a tick count of
- * HOLD_TICK or less. main.c rejects the proof together with any
- * arcade-link or replay option, and with --exit-after-frame (any frame-capture
- * exit option; NativeArcadeRosterProof_NamesExitOption), which would end the
- * run on a frame count instead of the proof result.
+ * malformed is an error, and so is a seed, dwell, tick count, profile, hold,
+ * or autopilot without --arcade-roster-proof, a hold with a tick count of
+ * HOLD_TICK or less, a tick count above MAX_TICKS without the autopilot, and
+ * the autopilot with the one-cab profile. main.c rejects the proof together
+ * with any arcade-link or replay option, and with --exit-after-frame (any
+ * frame-capture exit option; NativeArcadeRosterProof_NamesExitOption), which
+ * would end the run on a frame count instead of the proof result.
  *
  * Dwell and launch window. The game hook waits for the title's menu-ready
  * frame, then the dwell (in proof ticks), then launches from the first
@@ -89,6 +98,19 @@ struct NativeCanonicalStateV1;
  *   player 0 holds CROSS, and also RIGHT while (n mod STEER_PERIOD) is in
  *   [STEER_BEGIN, STEER_END); player 1 stays neutral.
  * After the proof reported, the pads are neutral again until the exit.
+ *
+ * Autopilot (LR-S2 (b), --arcade-roster-proof-autopilot, TWO_CAB only). The
+ * frame of race tick n >= 1 runs players 0 and 1 on the steering decision of
+ * include/platform/native_arcade_link_autopilot.h (CROSS, and LEFT or RIGHT
+ * toward the restart point ahead) instead of the scripted pattern; pads 2
+ * and 3 are as above. The game hook forms the decision after race tick
+ * n - 1 was simulated, from that tick's kart positions and headings and the
+ * level's restart points. Those facts are read internally only and never
+ * reach a digest or the report; only the pads they produce reach the game
+ * (and so the input digest). The hook logs, to the process log, the race
+ * tick at which each of players 0 and 1 first shows the race finished and
+ * the race tick at which the race first shows END_OF_RACE; the report format
+ * is unchanged.
  *
  * Per-tick digests. From race tick 0, for `ticks` race ticks, the game hook
  * appends one line per tick after its frame was simulated:
@@ -221,6 +243,8 @@ struct NativeCanonicalStateV1;
 #define NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL 7200u
 #define NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_TICKS 900u
 #define NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS 3600u
+/* The tick count cap with the autopilot (LR-S2 (b)): room for a 3-lap race. */
+#define NATIVE_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_TICKS 6000u
 #define NATIVE_ARCADE_ROSTER_PROOF_NONCE_MIX UINT64_C(0x9E3779B97F4A7C15)
 #define NATIVE_ARCADE_ROSTER_PROOF_BUILD_TAG "CTRN arcade roster proof build v1"
 #define NATIVE_ARCADE_ROSTER_PROOF_SLOT_COUNT NATIVE_MATCH_CONFIG_V1_SLOT_COUNT
@@ -262,7 +286,8 @@ struct NativeArcadeRosterProofOptions
 {
 	uint8_t enabled; /* --arcade-roster-proof given */
 	uint8_t hold;    /* --arcade-roster-proof-hold given */
-	uint8_t reserved[2];
+	uint8_t autopilot; /* --arcade-roster-proof-autopilot given */
+	uint8_t reserved[1];
 	uint32_t dwellTicks;
 	uint64_t seed;
 	uint32_t tickCount; /* race ticks to log */
@@ -442,7 +467,7 @@ struct NativeArcadeRosterProofReport
 };
 
 /* NULL is a no-op. Otherwise: disabled, seed 1, dwell 0, 900 ticks, profile
- * TWO_CAB, no hold, empty path. */
+ * TWO_CAB, no hold, no autopilot, empty path. */
 void NativeArcadeRosterProofOptions_SetDefaults(struct NativeArcadeRosterProofOptions *options);
 
 /* Returns 1 and updates *options on success; 0 with *options untouched otherwise. */
@@ -532,12 +557,14 @@ int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofT
 	size_t bufferSize, size_t *length);
 
 /* The configured config, profile, dwell, tick count, hold (1 when
- * requested), seed, and log path; NULL/0/empty when inactive. */
+ * requested), autopilot (1 when requested), seed, and log path;
+ * NULL/0/empty when inactive. */
 const struct NativeMatchConfigV1 *NativeArcadeRosterProof_Config(void);
 uint32_t NativeArcadeRosterProof_Profile(void);
 uint32_t NativeArcadeRosterProof_Dwell(void);
 uint32_t NativeArcadeRosterProof_Ticks(void);
 uint32_t NativeArcadeRosterProof_Hold(void);
+uint32_t NativeArcadeRosterProof_Autopilot(void);
 uint64_t NativeArcadeRosterProof_Seed(void);
 const char *NativeArcadeRosterProof_LogPath(void);
 

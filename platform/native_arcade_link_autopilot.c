@@ -547,3 +547,126 @@ int NativeArcadeLinkAutopilot_WriteReport(const char *path, const struct NativeA
 	ok = (fclose(file) == 0) && ok;
 	return ok;
 }
+
+/* Steering (LR-16). Differences are clamped to +-2^30 so every product and
+ * sum below fits in 64 bits. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_DELTA_LIMIT (INT64_C(1) << 30)
+/* 45 degrees in angle units, and the arctangent's correction term
+ * (0.273 rad in angle units): atan(t) ~ pi/4 t + 0.273 t (1 - t) on [0, 1]. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_EIGHTH 512u
+#define NATIVE_ARCADE_LINK_AUTOPILOT_ATAN_CORRECTION 178u
+#define NATIVE_ARCADE_LINK_AUTOPILOT_Q12 4096u
+
+static int64_t NativeArcadeLinkAutopilot_Delta(int32_t to, int32_t from)
+{
+	int64_t delta = (int64_t)to - (int64_t)from;
+
+	if (delta > NATIVE_ARCADE_LINK_AUTOPILOT_DELTA_LIMIT)
+	{
+		return NATIVE_ARCADE_LINK_AUTOPILOT_DELTA_LIMIT;
+	}
+	if (delta < -NATIVE_ARCADE_LINK_AUTOPILOT_DELTA_LIMIT)
+	{
+		return -NATIVE_ARCADE_LINK_AUTOPILOT_DELTA_LIMIT;
+	}
+	return delta;
+}
+
+/* atan(small / large) in angle units, 0..512, for 0 <= small <= large, large > 0. */
+static uint32_t NativeArcadeLinkAutopilot_AtanUnit(uint64_t small, uint64_t large)
+{
+	const uint64_t t = (small * NATIVE_ARCADE_LINK_AUTOPILOT_Q12) / large;
+	const uint64_t linear = NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_EIGHTH * t;
+	const uint64_t correction =
+		(NATIVE_ARCADE_LINK_AUTOPILOT_ATAN_CORRECTION * t * (NATIVE_ARCADE_LINK_AUTOPILOT_Q12 - t)) / NATIVE_ARCADE_LINK_AUTOPILOT_Q12;
+
+	return (uint32_t)((linear + correction + (NATIVE_ARCADE_LINK_AUTOPILOT_Q12 / 2u)) / NATIVE_ARCADE_LINK_AUTOPILOT_Q12);
+}
+
+int32_t NativeArcadeLinkAutopilot_Angle(int32_t dx, int32_t dz)
+{
+	const uint64_t ax = (dx < 0) ? (uint64_t)(-(int64_t)dx) : (uint64_t)dx;
+	const uint64_t az = (dz < 0) ? (uint64_t)(-(int64_t)dz) : (uint64_t)dz;
+	uint32_t angle;
+
+	if ((ax == 0u) && (az == 0u))
+	{
+		return 0;
+	}
+	/* The angle from +z toward +x in the first quadrant, 0..1024. */
+	if (ax <= az)
+	{
+		angle = NativeArcadeLinkAutopilot_AtanUnit(ax, az);
+	}
+	else
+	{
+		angle = (2u * NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_EIGHTH) - NativeArcadeLinkAutopilot_AtanUnit(az, ax);
+	}
+	if (dz < 0)
+	{
+		angle = (4u * NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_EIGHTH) - angle;
+	}
+	if (dx < 0)
+	{
+		angle = (uint32_t)NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS - angle;
+	}
+	return (int32_t)(angle & ((uint32_t)NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS - 1u));
+}
+
+uint32_t NativeArcadeLinkAutopilot_Steer(const struct NativeArcadeLinkAutopilotSteerFacts *facts)
+{
+	const uint32_t mask = (uint32_t)NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS - 1u;
+	int64_t dx;
+	int64_t dz;
+	uint32_t wrapped;
+	int32_t error;
+
+	if (facts == NULL)
+	{
+		return 0u;
+	}
+	dx = NativeArcadeLinkAutopilot_Delta(facts->aimX, facts->kartX);
+	dz = NativeArcadeLinkAutopilot_Delta(facts->aimZ, facts->kartZ);
+	if ((dx == 0) && (dz == 0))
+	{
+		return NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_CROSS;
+	}
+	wrapped = ((uint32_t)NativeArcadeLinkAutopilot_Angle((int32_t)dx, (int32_t)dz) - (uint32_t)facts->heading) & mask;
+	error = (int32_t)wrapped;
+	if (error >= (NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS / 2))
+	{
+		error -= NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS;
+	}
+	if (error > NATIVE_ARCADE_LINK_AUTOPILOT_STEER_DEADBAND)
+	{
+		return NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_CROSS | NATIVE_ARCADE_LINK_AUTOPILOT_STEER_POSITIVE;
+	}
+	if (error < -NATIVE_ARCADE_LINK_AUTOPILOT_STEER_DEADBAND)
+	{
+		return NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_CROSS | NATIVE_ARCADE_LINK_AUTOPILOT_STEER_NEGATIVE;
+	}
+	return NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_CROSS;
+}
+
+int NativeArcadeLinkAutopilot_Passed(const struct NativeArcadeLinkAutopilotPassFacts *facts)
+{
+	int64_t kx;
+	int64_t kz;
+	int64_t ax;
+	int64_t az;
+	const int64_t radius = NATIVE_ARCADE_LINK_AUTOPILOT_PASS_RADIUS;
+
+	if (facts == NULL)
+	{
+		return 0;
+	}
+	kx = NativeArcadeLinkAutopilot_Delta(facts->kartX, facts->pointX);
+	kz = NativeArcadeLinkAutopilot_Delta(facts->kartZ, facts->pointZ);
+	if (((kx * kx) + (kz * kz)) <= (radius * radius))
+	{
+		return 1;
+	}
+	ax = NativeArcadeLinkAutopilot_Delta(facts->pointX, facts->previousX);
+	az = NativeArcadeLinkAutopilot_Delta(facts->pointZ, facts->previousZ);
+	return ((kx * ax) + (kz * az)) > 0;
+}

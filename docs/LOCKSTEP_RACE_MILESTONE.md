@@ -1301,17 +1301,25 @@ cabinets. The natural finish is then proven only by the drive core test
 and a recorded manual two-process run (risk 1).
 
 Time budget. Today's gate takes about 79 s, of which the two 150-tick
-rehearsals are 10 s. Estimates, to be measured in LR-S2 and recorded in
-LR-S13:
+rehearsals are 10 s. Race 1 was measured in LR-S2 (b); the rest are
+estimates, to be recorded in LR-S13:
 
-- race 1: about 3,600 to 4,500 ticks (120 to 150 s), set by the slower of
-  the two autopilots, since both must finish;
+- race 1: the limit is 6000 race ticks (200.6 s of wall time at the real
+  33435 us tick period). The measured typical length is about 3,760
+  ticks: 5 seeds of the proof's Crash Cove race reached END_OF_RACE at
+  3,588 to 3,753 race ticks (120.0 to 125.5 s of wall time; 119.6 to
+  125.1 s at a nominal 30 Hz), set by the slower of the two autopilots,
+  since both must finish. The typical length is an estimate for the
+  totals below, not a basis for a cap or a timeout: the gate's seeds come
+  from the select, not from these 5;
 - race 2: about 10 s to the desync;
 - race 3: about 13 s to the timeout;
 - a third select, load, and RESULTS: about 25 s.
 
-That puts the gate near 270 s, so it adds about 190 s. The full suite
-goes from about 450 s to about 640 s. `ctest -LE live` does not change.
+That puts the gate near 245 s, so it adds about 165 s. The full suite
+goes from about 450 s to about 615 s. `ctest -LE live` does not change.
+A race 1 that runs to the 6000-tick limit puts the gate near 320 s,
+still inside TIMEOUT 900.
 
 LR-17 Lease ruling on the bot nav-index read (OWNER DECISION REQUIRED).
 This is not a default the plan can decide. AGENTS.md holds the topology
@@ -1525,6 +1533,12 @@ cabinet-local (docs/REPLAYS.md, render-scale sweep).
   - a new tests/native_host_wait_isolation_test.cmake: the new platform
     wait emits no VBlank (it names no VBlank emit, callback, or audio
     step), and only the hold module calls it (LR-S2);
+  - a new tests/arcade_roster_proof_autopilot_isolation_test.cmake: the
+    spike's steering decision is pure (include allow-list, no game state,
+    lease, lockstep, replay, or checkpoint token, C17), only the roster
+    proof calls it, and the proof reads ptr_restart_points and names the
+    autopilot's state only in its autopilot code, never into a digest, a
+    tick line, or the report (LR-S2);
   - a new tests/main_arcade_race_digest_isolation_test.cmake: the digest
     module is read-only (const game state only) and lease-free (no lease,
     topology fact reader, NavHeader, ptr_restart_points, replay, or
@@ -1581,7 +1595,7 @@ for the owner.
 
 ### LR-S2 -- spikes: the hold and the autopilot finish
 
-Status: (a) done, (b) pending. Internal only. Review required (it
+Status: done. Internal only. Review required (it
 introduces the hold module, MainArcadeRaceHold, and the host-local
 platform wait, both of which later ship). Run 1.
 
@@ -1631,7 +1645,69 @@ arcade-link layout's font and style" but in a built-in host block font
   main_arcade_race_hold_isolation, native_host_wait_isolation, and the
   proof unit test's hold option and v9 hold line.
 
-(b) is not started.
+(b) result. Pass: in 5 of 5 seeds the 3 laps of Crash Cove reach
+END_OF_RACE with both players finished, the slowest at race tick 3753 of
+the 6000 allowed. No tuning was needed: the first parameters passed.
+
+- The steering decision is pure, in platform/native_arcade_link_autopilot.{c,h}
+  (the RL-S10 autopilot module, library ctr_native_arcade_link_autopilot):
+  NativeArcadeLinkAutopilot_Angle (an integer atan2 in 12-bit angle
+  units, 0 facing +z, within 3 units), NativeArcadeLinkAutopilot_Steer
+  (CROSS, plus LEFT or RIGHT when the heading error is outside a 48-unit
+  deadband; LEFT raises the heading, as measured in the game), and
+  NativeArcadeLinkAutopilot_Passed, the target advance rule: a restart
+  point is passed within 256 world units of it, or once the kart is past
+  the line through it square to its approach from the previous point.
+  Its facts are pointer-free: kart x, z, and heading, and restart point
+  x, z.
+- The internal option --arcade-roster-proof-autopilot (TWO_CAB only;
+  rejected without --arcade-roster-proof, and so in non-internal builds)
+  replaces the scripted pads of players 0 and 1 from race tick 1. Only
+  this option raises the tick cap, from 3600 to 6000
+  (NATIVE_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_TICKS). After a tick line is
+  kept, MainArcadeRosterProof_EndFrame reads each kart's posCurr (>> 8)
+  and angle, and gGT->level1->ptr_restart_points. angle is the yaw the kart
+  steers by: rotCurr.y adds the turn and wobble render offsets to it. The
+  target starts at the nearest restart point and moves forward past every
+  passed point. The kart aims one point beyond its target. BeginFrame
+  installs the buttons for the next race tick. The read is internal-only
+  and non-canonical: no restart point value enters a digest, a tick line,
+  or the report, and the report stays v9. The finish ticks go to the
+  process log. No NavHeader read, no lease call, and no game code outside
+  the proof changed.
+- Crash Cove has 72 restart points, about 768 world units apart.
+- The runs (ticks are race ticks; seconds at a nominal 30 Hz; at the
+  real 33435 us tick period, 3753 ticks are about 125.5 s of wall time):
+
+  | seed | END_OF_RACE | player 0 finished | player 1 finished |
+  | --- | --- | --- | --- |
+  | 1 | 3588 (119.6 s) | 3588 | 3583 |
+  | 2 | 3648 (121.6 s) | 3613 | 3648 |
+  | 0x5EED | 3675 (122.5 s) | 3568 | 3675 |
+  | 0xC0FFEE | 3686 (122.9 s) | 3686 | 3682 |
+  | 1234567 | 3753 (125.1 s) | 3654 | 3753 |
+
+  END_OF_RACE is set on the tick the second player finishes, as the
+  ARCADE_MODE rule requires. Each run logged all 6000 race ticks and
+  reported PASS. The spike's autopilot keeps holding CROSS and steering
+  after END_OF_RACE, up to race tick 6000; the measurement does not depend
+  on it, and the LR-16 race drive decides the pads on RESULTS. A second run of seed 1 wrote a byte-identical report.
+  Command line, with the report under build-msvc-x86 (never committed):
+  `ctr_native.exe --arcade-roster-proof <report> --arcade-roster-proof-seed <seed> --arcade-roster-proof-ticks 6000 --arcade-roster-proof-autopilot`.
+- Default runs are unchanged: runs A, D, and F give byte-identical
+  reports from the base commit and from this change (both under the fixed
+  proof build identity), and arcade_roster_determinism passes.
+- Tests: native_arcade_link_autopilot_unit (the angle on the axes, the
+  diagonals, and every direction; straight, left, and right; the
+  deadband; angle wrap; the just-behind case; clamped extremes; the passed
+  rule), native_arcade_roster_proof_unit (the option), and
+  arcade_roster_proof_autopilot_isolation. The isolation test checks that
+  the steering stays pure and that only the proof calls it. It also
+  checks that the proof reads the restart points only in its autopilot
+  helpers, never into a digest, a tick line, or the report; that the
+  autopilot's state, which holds restart point indices, is named only in
+  its declaration, the autopilot's helpers and step, and the gated branch
+  of the pad install; and that runs A to K never pass the option.
 
 Plan: two spikes on the roster proof, which already runs a real race on
 installed pads under fixed pacing.
@@ -1659,8 +1735,9 @@ installed pads under fixed pacing.
   - Fail: the gate falls back to the internal race-tick cap (LR-16).
 
 Tests: the K run in tools/arcade-roster-proof-check.ps1; a unit test of the
-steering decision; main_arcade_race_hold_isolation and
-native_host_wait_isolation (section 5).
+steering decision; main_arcade_race_hold_isolation,
+native_host_wait_isolation, and arcade_roster_proof_autopilot_isolation
+(section 5).
 
 ### LR-S3 -- deterministic time for linked races
 
@@ -2004,7 +2081,12 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
    reliably: walls, jumps, or items can hit it, and both players must
    finish. LR-S2 (b) decides. On failure, the gate uses an internal
    race-tick cap. The natural END_OF_RACE path is then proven only by the
-   drive core test and a recorded manual run.
+   drive core test and a recorded manual run. LR-S2 (b) decided: the
+   autopilot passed. Both players finished and END_OF_RACE was reached in
+   5 of 5 seeds, by race tick 3753 of 6000 (LR-S2, "(b) result"), so the
+   gate keeps the natural finish and the race-tick cap fallback is not
+   needed. The risk remains for the gate's own races, whose seeds come
+   from the select.
 2. The hold mechanism and audio. A blocking hold in the hook is new, and
    so is drawing a banner onto the displayed frame. SDL or GL presentation
    behaviour during a long hold is host-local but visible. Audio can

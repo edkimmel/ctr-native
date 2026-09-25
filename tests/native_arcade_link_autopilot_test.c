@@ -4,6 +4,7 @@
 #include "platform/native_arcade_link_host.h"
 #include "platform/native_arcade_menu_input.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -665,6 +666,197 @@ static int TestNames(void)
 	return 0;
 }
 
+/* sin and cos of x in [-pi, pi] by their Taylor series (no libm needed). */
+static void SinCos(double x, double *s, double *c)
+{
+	double termS = x;
+	double termC = 1.0;
+
+	*s = 0.0;
+	*c = 0.0;
+	for (int n = 0; n < 30; n++)
+	{
+		*s += termS;
+		*c += termC;
+		termS *= -(x * x) / (double)((2 * n + 2) * (2 * n + 3));
+		termC *= -(x * x) / (double)((2 * n + 1) * (2 * n + 2));
+	}
+}
+
+static int32_t Round(double value)
+{
+	return (int32_t)((value >= 0.0) ? (value + 0.5) : (value - 0.5));
+}
+
+/* The unit vector of a 12-bit angle, scaled to 10000 (0 faces +z, 1024 +x). */
+static void Direction(int32_t angle, int32_t *dx, int32_t *dz)
+{
+	const int32_t wrapped = angle & (NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS - 1);
+	const int32_t centred = (wrapped > (NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS / 2)) ? (wrapped - NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS)
+	                                                                                   : wrapped;
+	const double radians = ((double)centred * 6.283185307179586) / (double)NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS;
+	double s;
+	double c;
+
+	SinCos(radians, &s, &c);
+	*dx = Round(s * 10000.0);
+	*dz = Round(c * 10000.0);
+}
+
+/* The circular distance of two 12-bit angles. */
+static int32_t AngleDistance(int32_t a, int32_t b)
+{
+	int32_t d = (a - b) & (NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS - 1);
+
+	return (d > (NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS / 2)) ? (NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS - d) : d;
+}
+
+/* The steering buttons for a kart at the origin with heading, aiming along angle aim. */
+static uint32_t SteerToward(int32_t heading, int32_t aim)
+{
+	struct NativeArcadeLinkAutopilotSteerFacts facts;
+
+	memset(&facts, 0, sizeof(facts));
+	facts.heading = heading;
+	Direction(aim, &facts.aimX, &facts.aimZ);
+	return NativeArcadeLinkAutopilot_Steer(&facts);
+}
+
+static int TestSteerAngle(void)
+{
+	const uint32_t cross = NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_CROSS;
+	const uint32_t positive = cross | NATIVE_ARCADE_LINK_AUTOPILOT_STEER_POSITIVE;
+	const uint32_t negative = cross | NATIVE_ARCADE_LINK_AUTOPILOT_STEER_NEGATIVE;
+
+	/* The pad bits (PSX active-high), and LEFT raises the heading. */
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_CROSS == 0x4000u);
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_LEFT == 0x0080u);
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_RIGHT == 0x0020u);
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_STEER_POSITIVE == NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_LEFT);
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_STEER_NEGATIVE == NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_RIGHT);
+
+	/* The angle: the axes, the diagonals, the origin, and the extremes. */
+	CHECK(NativeArcadeLinkAutopilot_Angle(0, 0) == 0);
+	CHECK(NativeArcadeLinkAutopilot_Angle(0, 100) == 0);
+	CHECK(NativeArcadeLinkAutopilot_Angle(100, 0) == 1024);
+	CHECK(NativeArcadeLinkAutopilot_Angle(0, -100) == 2048);
+	CHECK(NativeArcadeLinkAutopilot_Angle(-100, 0) == 3072);
+	CHECK(NativeArcadeLinkAutopilot_Angle(100, 100) == 512);
+	CHECK(NativeArcadeLinkAutopilot_Angle(100, -100) == 1536);
+	CHECK(NativeArcadeLinkAutopilot_Angle(-100, -100) == 2560);
+	CHECK(NativeArcadeLinkAutopilot_Angle(-100, 100) == 3584);
+	CHECK(NativeArcadeLinkAutopilot_Angle(INT32_MIN, 0) == 3072);
+	CHECK(NativeArcadeLinkAutopilot_Angle(INT32_MAX, 0) == 1024);
+	CHECK(NativeArcadeLinkAutopilot_Angle(0, INT32_MIN) == 2048);
+	CHECK(NativeArcadeLinkAutopilot_Angle(INT32_MIN, INT32_MIN) == 2560);
+	/* Every direction, within 3 units, always in range. */
+	for (int32_t angle = 0; angle < NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS; angle++)
+	{
+		int32_t dx;
+		int32_t dz;
+		int32_t measured;
+
+		Direction(angle, &dx, &dz);
+		measured = NativeArcadeLinkAutopilot_Angle(dx, dz);
+		CHECK((measured >= 0) && (measured < NATIVE_ARCADE_LINK_AUTOPILOT_ANGLE_UNITS));
+		CHECK(AngleDistance(measured, angle) <= 3);
+	}
+
+	/* Straight, left (positive), and right (negative) of the heading. */
+	CHECK(NativeArcadeLinkAutopilot_Steer(NULL) == 0u);
+	CHECK(SteerToward(0, 0) == cross);
+	CHECK(SteerToward(0, 512) == positive);
+	CHECK(SteerToward(0, 3584) == negative);
+	CHECK(SteerToward(1024, 1024) == cross);
+	CHECK(SteerToward(1024, 1536) == positive);
+	CHECK(SteerToward(1024, 512) == negative);
+	/* The deadband: 40 units off goes straight, 60 steers. */
+	CHECK(SteerToward(0, 40) == cross);
+	CHECK(SteerToward(0, -40 & 4095) == cross);
+	CHECK(SteerToward(0, 60) == positive);
+	CHECK(SteerToward(0, 4036) == negative);
+	/* Angle wrap: across 0 in both directions, and any heading value. */
+	CHECK(SteerToward(4000, 100) == positive);
+	CHECK(SteerToward(100, 4000) == negative);
+	CHECK(SteerToward(-96, 100) == positive);
+	CHECK(SteerToward(4000 + 4096, 100) == positive);
+	CHECK(SteerToward(-96 - (4 * 4096), 4000) == cross);
+	CHECK(SteerToward(4090, 10) == cross);
+	/* Just behind: the error wraps to its most negative value. */
+	CHECK(SteerToward(0, 2048) == negative);
+	CHECK(SteerToward(0, 2000) == positive);
+	CHECK(SteerToward(0, 2100) == negative);
+	/* The aim point on the kart: straight. */
+	{
+		struct NativeArcadeLinkAutopilotSteerFacts facts;
+
+		memset(&facts, 0, sizeof(facts));
+		facts.kartX = -5000;
+		facts.kartZ = 7000;
+		facts.aimX = -5000;
+		facts.aimZ = 7000;
+		facts.heading = 1234;
+		CHECK(NativeArcadeLinkAutopilot_Steer(&facts) == cross);
+		/* Only differences matter. */
+		facts.aimX = -4000;
+		facts.aimZ = 8000;
+		facts.heading = 0;
+		CHECK(NativeArcadeLinkAutopilot_Steer(&facts) == positive);
+		/* Extreme positions are clamped, not overflowed. */
+		facts.kartX = INT32_MIN;
+		facts.kartZ = 0;
+		facts.aimX = INT32_MAX;
+		facts.aimZ = 0;
+		facts.heading = 1024;
+		CHECK(NativeArcadeLinkAutopilot_Steer(&facts) == cross);
+		facts.heading = 0;
+		CHECK(NativeArcadeLinkAutopilot_Steer(&facts) == positive);
+	}
+	return 0;
+}
+
+static int Passed(int32_t kartX, int32_t kartZ, int32_t pointX, int32_t pointZ, int32_t previousX, int32_t previousZ)
+{
+	struct NativeArcadeLinkAutopilotPassFacts facts;
+
+	facts.kartX = kartX;
+	facts.kartZ = kartZ;
+	facts.pointX = pointX;
+	facts.pointZ = pointZ;
+	facts.previousX = previousX;
+	facts.previousZ = previousZ;
+	return NativeArcadeLinkAutopilot_Passed(&facts);
+}
+
+static int TestPassed(void)
+{
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_PASS_RADIUS == 256);
+	CHECK(NativeArcadeLinkAutopilot_Passed(NULL) == 0);
+	/* Approach from -z to the point at the origin. */
+	CHECK(Passed(0, -1000, 0, 0, 0, -1000) == 0);
+	CHECK(Passed(0, -300, 0, 0, 0, -1000) == 0);
+	CHECK(Passed(0, -257, 0, 0, 0, -1000) == 0);
+	CHECK(Passed(0, -256, 0, 0, 0, -1000) == 1); /* on the radius */
+	CHECK(Passed(0, -100, 0, 0, 0, -1000) == 1);
+	CHECK(Passed(0, 0, 0, 0, 0, -1000) == 1);
+	/* Wide of the point: past the line square to the approach, or not. */
+	CHECK(Passed(2000, 10, 0, 0, 0, -1000) == 1);
+	CHECK(Passed(2000, 0, 0, 0, 0, -1000) == 0);
+	CHECK(Passed(-2000, -10, 0, 0, 0, -1000) == 0);
+	CHECK(Passed(-2000, 1, 0, 0, 0, -1000) == 1);
+	/* The same away from the origin, on a diagonal approach. */
+	CHECK(Passed(5000 + 400, 5000 - 390, 5000, 5000, 4000, 4000) == 1);
+	CHECK(Passed(5000 + 400, 5000 - 410, 5000, 5000, 4000, 4000) == 0);
+	/* No approach (previous on the point): the radius alone. */
+	CHECK(Passed(0, 300, 0, 0, 0, 0) == 0);
+	CHECK(Passed(0, 200, 0, 0, 0, 0) == 1);
+	/* Extreme positions are clamped, not overflowed. */
+	CHECK(Passed(INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN, INT32_MIN, INT32_MIN) == 0);
+	CHECK(Passed(INT32_MAX, INT32_MAX, 0, 0, INT32_MIN, INT32_MIN) == 1);
+	CHECK(Passed(INT32_MIN, INT32_MIN, 0, 0, INT32_MIN, INT32_MIN) == 0);
+	return 0;
+}
+
 static int TestReport(void)
 {
 	static const char expectedMatch[] = "agreed match track 4 laps 3 seed 0x0123456789ABCDEF slots 0 1 6 4 2 3 0 0 (12BBBB--)";
@@ -785,6 +977,8 @@ int main(void)
 	CHECK(TestFailures() == 0);
 	CHECK(TestNames() == 0);
 	CHECK(TestReport() == 0);
+	CHECK(TestSteerAngle() == 0);
+	CHECK(TestPassed() == 0);
 	puts("native_arcade_link_autopilot_test: ok");
 	return 0;
 }

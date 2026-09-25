@@ -21,6 +21,17 @@
  * measurements and the VSync counter around it as the report's hold
  * evidence.
  *
+ * LR-S2 (b)'s autopilot (--arcade-roster-proof-autopilot): after each logged
+ * race tick, MainArcadeRosterProof_EndFrame reads the steering facts of
+ * players 0 and 1 (kart position and heading, and the level's restart
+ * points, gGT->level1->ptr_restart_points) and keeps the pure steering
+ * decision (include/platform/native_arcade_link_autopilot.h) as the buttons
+ * BeginFrame installs for the next race tick. The facts are read here only,
+ * internal-only and non-canonical: no restart point value enters a digest, a
+ * tick line, or the report. Only the installed pads reach the game. The
+ * finish evidence (each player's finish tick and the END_OF_RACE tick) goes
+ * to the process log.
+ *
  * Unity-included after the 230 overlay sources and the arcade-link hook,
  * because it reads and closes the retail title (MM_Title_*, MM_MENU_MAIN)
  * and asks the arcade-link hook for its menu-ready condition; and after
@@ -36,6 +47,7 @@
 #include "MAIN/MainArcadeRaceSetup.h"
 #include "MAIN/MainArcadeRosterProof.h"
 #include "MAIN/MainCanonicalDrivers.h"
+#include "platform/native_arcade_link_autopilot.h"
 #include "platform/native_arcade_roster_proof.h"
 #include "platform/native_canonical_codec.h"
 #include "platform/native_canonical_drivers_detailed.h"
@@ -105,6 +117,28 @@ struct MainArcadeRosterProofDriversScratch
 };
 
 static struct MainArcadeRosterProofDriversScratch s_mainArcadeRosterProofDrivers;
+
+/* LR-S2 (b): the autopilot drives players 0 and 1 (pads 0 and 1). */
+#define MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_PLAYERS 2u
+/* The kart aims this many restart points beyond its target. */
+#define MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_LOOKAHEAD 1u
+/* posCurr is in 1/256 world units (VehLap.c reads it the same way). */
+#define MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_WORLD_SHIFT 8
+/* A restart point link at or above the count (0xFF: none) is no link. */
+#define MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_POINTS 0xFF
+
+/* The autopilot's state: local only, never in a digest or the report. */
+struct MainArcadeRosterProofAutopilotState
+{
+	uint32_t started;           /* 1 once the ticks below were initialized */
+	uint32_t endOfRaceTick;     /* the first race tick showing END_OF_RACE; TICK_NONE before */
+	uint32_t held[MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_PLAYERS];        /* buttons for the next race tick */
+	uint32_t targetValid[MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_PLAYERS]; /* 1 once target holds a restart point */
+	uint32_t target[MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_PLAYERS];      /* the restart point the kart heads for */
+	uint32_t finishTick[MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_PLAYERS];  /* the first race tick showing the player finished */
+};
+
+static struct MainArcadeRosterProofAutopilotState s_mainArcadeRosterProofAutopilot;
 
 static void MainArcadeRosterProof_CopyName(char out[NATIVE_ARCADE_ROSTER_PROOF_NAME_BYTES], const char *name)
 {
@@ -543,13 +577,26 @@ void MainArcadeRosterProof_Frame(struct GameTracker *gGT, struct GamepadSystem *
 }
 
 /* Installs the configured profile's scripted pads for raceTick (TICK_NONE:
- * neutral). */
+ * neutral). With the autopilot option, the autopilot's buttons replace pads
+ * 0 and 1 on race ticks. */
 static int MainArcadeRosterProof_InstallPads(uint32_t raceTick)
 {
 	struct NativeArcadeRosterProofPad pads[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT];
 	struct PlatformInputPadSnapshot snapshots[PLATFORM_INPUT_PAD_COUNT];
 
 	NativeArcadeRosterProof_ScriptedPads(NativeArcadeRosterProof_Profile(), raceTick, pads);
+	/* LR-S2 (b): players 0 and 1 run on the autopilot's buttons instead of
+	 * the pattern (active low: a held button clears its bit). */
+	if ((raceTick != NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE) && (NativeArcadeRosterProof_Autopilot() != 0u))
+	{
+		for (uint32_t pad = 0; pad < MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_PLAYERS; pad++)
+		{
+			const uint32_t word = NATIVE_ARCADE_ROSTER_PROOF_BUTTONS_NONE & ~s_mainArcadeRosterProofAutopilot.held[pad];
+
+			pads[pad].buttons[0] = (uint8_t)(word & 0xFFu);
+			pads[pad].buttons[1] = (uint8_t)(word >> 8);
+		}
+	}
 	memset(snapshots, 0, sizeof(snapshots));
 	for (uint32_t pad = 0; pad < NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT; pad++)
 	{
@@ -585,9 +632,11 @@ int MainArcadeRosterProof_BeginFrame(void)
 	{
 		return 0;
 	}
-	/* Race tick n >= 1 runs on the pattern for n; every earlier frame, race
-	 * tick 0's included, and every frame after the report is neutral. A
-	 * failed install is caught by the input digest (the frozen pads). */
+	/* Race tick n >= 1 runs on the pattern for n (with the autopilot option,
+	 * pads 0 and 1 run on the autopilot's buttons instead); every earlier
+	 * frame, race tick 0's included, and every frame after the report is
+	 * neutral. A failed install is caught by the input digest (the frozen
+	 * pads). */
 	(void)MainArcadeRosterProof_InstallPads(
 		(state->phase == MAIN_ARCADE_ROSTER_PROOF_VALIDATED) ? state->raceTick : NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE);
 	return 1;
@@ -642,6 +691,153 @@ static int MainArcadeRosterProof_DriversDigest(uint8_t digest[NATIVE_SHA256_DIGE
 	NativeSha256_Update(&sha, scratch->stream, sizeof(scratch->stream));
 	NativeSha256_Final(&sha, digest);
 	return 1;
+}
+
+/* The restart point after index (forward); index itself when it has no valid link. */
+static uint32_t MainArcadeRosterProof_AutopilotNext(const struct Level *level, uint32_t count, uint32_t index)
+{
+	const uint32_t next = level->ptr_restart_points[index].nextIndex_forward;
+
+	return (next < count) ? next : index;
+}
+
+/* The restart point nearest to the kart (x, y, z in world units). */
+static uint32_t MainArcadeRosterProof_AutopilotNearest(const struct Level *level, uint32_t count, int32_t x, int32_t y, int32_t z)
+{
+	uint32_t nearest = 0u;
+	int64_t nearestDistance = INT64_MAX;
+
+	for (uint32_t index = 0; index < count; index++)
+	{
+		const int64_t dx = (int64_t)level->ptr_restart_points[index].pos.x - x;
+		const int64_t dy = (int64_t)level->ptr_restart_points[index].pos.y - y;
+		const int64_t dz = (int64_t)level->ptr_restart_points[index].pos.z - z;
+		const int64_t distance = (dx * dx) + (dy * dy) + (dz * dz);
+
+		if (distance < nearestDistance)
+		{
+			nearest = index;
+			nearestDistance = distance;
+		}
+	}
+	return nearest;
+}
+
+/* One player's steering buttons for the next race tick, from this tick's facts. */
+static uint32_t MainArcadeRosterProof_AutopilotSteer(const struct Level *level, uint32_t count, const struct Driver *driver,
+	uint32_t player)
+{
+	struct MainArcadeRosterProofAutopilotState *autopilot = &s_mainArcadeRosterProofAutopilot;
+	struct NativeArcadeLinkAutopilotPassFacts pass;
+	struct NativeArcadeLinkAutopilotSteerFacts steer;
+	const int32_t kartX = (int32_t)CTR_MipsSra(driver->posCurr.x, MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_WORLD_SHIFT);
+	const int32_t kartY = (int32_t)CTR_MipsSra(driver->posCurr.y, MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_WORLD_SHIFT);
+	const int32_t kartZ = (int32_t)CTR_MipsSra(driver->posCurr.z, MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_WORLD_SHIFT);
+	uint32_t target;
+	uint32_t aim;
+
+	if ((autopilot->targetValid[player] == 0u) || (autopilot->target[player] >= count))
+	{
+		autopilot->target[player] = MainArcadeRosterProof_AutopilotNearest(level, count, kartX, kartY, kartZ);
+		autopilot->targetValid[player] = 1u;
+	}
+	target = autopilot->target[player];
+	/* Move the target on past every restart point the kart has passed. */
+	for (uint32_t guard = 0; guard < count; guard++)
+	{
+		const uint32_t previous = level->ptr_restart_points[target].nextIndex_backward;
+		const uint32_t from = (previous < count) ? previous : target;
+
+		pass.kartX = kartX;
+		pass.kartZ = kartZ;
+		pass.pointX = level->ptr_restart_points[target].pos.x;
+		pass.pointZ = level->ptr_restart_points[target].pos.z;
+		pass.previousX = level->ptr_restart_points[from].pos.x;
+		pass.previousZ = level->ptr_restart_points[from].pos.z;
+		if (!NativeArcadeLinkAutopilot_Passed(&pass))
+		{
+			break;
+		}
+		target = MainArcadeRosterProof_AutopilotNext(level, count, target);
+	}
+	autopilot->target[player] = target;
+	aim = target;
+	for (uint32_t step = 0; step < MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_LOOKAHEAD; step++)
+	{
+		aim = MainArcadeRosterProof_AutopilotNext(level, count, aim);
+	}
+	steer.kartX = kartX;
+	steer.kartZ = kartZ;
+	steer.heading = (int32_t)driver->angle;
+	steer.aimX = level->ptr_restart_points[aim].pos.x;
+	steer.aimZ = level->ptr_restart_points[aim].pos.z;
+	return NativeArcadeLinkAutopilot_Steer(&steer);
+}
+
+/* A race tick for the log: the tick, or -1 when never reached. */
+static long MainArcadeRosterProof_AutopilotLogTick(uint32_t tick)
+{
+	return (tick == NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE) ? -1L : (long)tick;
+}
+
+/*
+ * LR-S2 (b): after race tick raceTick was simulated, notes the finish
+ * evidence and forms the autopilot's buttons for the next race tick. Reads
+ * only; nothing here enters a digest, a tick line, or the report.
+ */
+static void MainArcadeRosterProof_AutopilotStep(const struct GameTracker *gGT, uint32_t raceTick)
+{
+	struct MainArcadeRosterProofAutopilotState *autopilot = &s_mainArcadeRosterProofAutopilot;
+	const struct Level *level = gGT->level1;
+	uint32_t count = 0u;
+
+	if (autopilot->started == 0u)
+	{
+		autopilot->endOfRaceTick = NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE;
+		for (uint32_t player = 0; player < MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_PLAYERS; player++)
+		{
+			autopilot->finishTick[player] = NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE;
+		}
+		autopilot->started = 1u;
+	}
+	if ((autopilot->endOfRaceTick == NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE) && ((gGT->gameMode1 & END_OF_RACE) != 0))
+	{
+		autopilot->endOfRaceTick = raceTick;
+		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "autopilot: END_OF_RACE at race tick %u\n", (unsigned)raceTick);
+	}
+	if ((level != NULL) && (level->ptr_restart_points != NULL) && (level->cnt_restart_points > 0) &&
+	    (level->cnt_restart_points < MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_POINTS))
+	{
+		count = (uint32_t)level->cnt_restart_points;
+	}
+	for (uint32_t player = 0; player < MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_PLAYERS; player++)
+	{
+		const struct Driver *driver = gGT->drivers[player];
+
+		autopilot->held[player] = NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_CROSS;
+		if (driver == NULL)
+		{
+			continue;
+		}
+		if ((autopilot->finishTick[player] == NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE) &&
+		    ((driver->actionsFlagSet & ACTION_RACE_FINISHED) != 0))
+		{
+			autopilot->finishTick[player] = raceTick;
+			Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "autopilot: player %u finished at race tick %u\n", (unsigned)player,
+				(unsigned)raceTick);
+		}
+		if (count != 0u)
+		{
+			autopilot->held[player] = MainArcadeRosterProof_AutopilotSteer(level, count, driver, player);
+		}
+	}
+	if ((raceTick + 1u) >= NativeArcadeRosterProof_Ticks())
+	{
+		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "autopilot: seed 0x%08X%08X END_OF_RACE tick %ld player 0 finish tick %ld player 1 finish tick %ld (-1: never; %u race ticks)\n",
+			(unsigned)(uint32_t)(NativeArcadeRosterProof_Seed() >> 32), (unsigned)(uint32_t)(NativeArcadeRosterProof_Seed() & 0xFFFFFFFFu),
+			MainArcadeRosterProof_AutopilotLogTick(autopilot->endOfRaceTick), MainArcadeRosterProof_AutopilotLogTick(autopilot->finishTick[0]),
+			MainArcadeRosterProof_AutopilotLogTick(autopilot->finishTick[1]), (unsigned)(raceTick + 1u));
+	}
 }
 
 void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct NativeCanonicalStateV1 *frameState)
@@ -748,6 +944,11 @@ void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct Native
 	{
 		MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED);
 		return;
+	}
+	/* LR-S2 (b): after the tick line, so nothing it reads can reach it. */
+	if (NativeArcadeRosterProof_Autopilot() != 0u)
+	{
+		MainArcadeRosterProof_AutopilotStep(gGT, state->raceTick);
 	}
 	state->raceTick++;
 	if (state->raceTick >= NativeArcadeRosterProof_Ticks())

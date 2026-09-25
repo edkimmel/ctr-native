@@ -1496,6 +1496,14 @@ if(BUILD_TESTING)
     add_test(NAME native_arcade_link_autopilot_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_link_autopilot_isolation_test.cmake")
 
+    # The LR-S2 (b) autopilot finish spike (docs/LOCKSTEP_RACE_MILESTONE.md
+    # LR-16): the steering decision stays pure, only the roster proof calls
+    # it, and the proof reads the restart points only in its autopilot
+    # helpers, never into a digest, a tick line, or the report. The unit test
+    # of the steering decision is native_arcade_link_autopilot_unit.
+    add_test(NAME arcade_roster_proof_autopilot_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/arcade_roster_proof_autopilot_isolation_test.cmake")
+
     # Match-select resolution rules (docs/MATCH_SELECT_MILESTONE.md section
     # 2.1, MS-2): pure; the isolation test checks the retail table mirrors.
     add_executable(native_match_select_rules_test tests/native_match_select_rules_test.c)

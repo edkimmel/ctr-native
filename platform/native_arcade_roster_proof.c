@@ -31,6 +31,7 @@ static const char k_dwellOption[] = "--arcade-roster-proof-dwell";
 static const char k_ticksOption[] = "--arcade-roster-proof-ticks";
 static const char k_profileOption[] = "--arcade-roster-proof-profile";
 static const char k_holdOption[] = "--arcade-roster-proof-hold";
+static const char k_autopilotOption[] = "--arcade-roster-proof-autopilot";
 static const char k_profileTwoCab[] = "two-cab";
 static const char k_profileOneCab[] = "one-cab";
 static const char k_exitAfterFrameOption[] = "--exit-after-frame";
@@ -45,7 +46,7 @@ struct NativeArcadeRosterProofSingleton
 	struct NativeArcadeRosterProofOptions options;
 	struct NativeMatchConfigV1 config;
 	uint32_t tickLineCount;
-	struct NativeArcadeRosterProofTickLine tickLines[NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS];
+	struct NativeArcadeRosterProofTickLine tickLines[NATIVE_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_TICKS];
 };
 
 static struct NativeArcadeRosterProofSingleton s_nativeArcadeRosterProof;
@@ -194,6 +195,7 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 	int seenTicks = 0;
 	int seenProfile = 0;
 	int seenHold = 0;
+	int seenAutopilot = 0;
 
 	if ((options == NULL) || (argc < 0) || ((argc > 0) && (argv == NULL)))
 	{
@@ -254,7 +256,7 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 		{
 			value = NativeArcadeRosterProof_Value(argc, argv, index);
 			if ((value == NULL) || seenTicks ||
-			    !NativeArcadeRosterProof_ParseDecimal(value, 1u, NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS, &candidate.tickCount))
+			    !NativeArcadeRosterProof_ParseDecimal(value, 1u, NATIVE_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_TICKS, &candidate.tickCount))
 			{
 				return 0;
 			}
@@ -281,9 +283,28 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 			candidate.hold = 1u;
 			seenHold = 1;
 		}
+		else if (strcmp(arg, k_autopilotOption) == 0)
+		{
+			/* A flag: it takes no value. */
+			if (seenAutopilot)
+			{
+				return 0;
+			}
+			candidate.autopilot = 1u;
+			seenAutopilot = 1;
+		}
 	}
-	/* A seed, dwell, tick count, profile, or hold without the proof would be silently ignored. */
-	if ((seenSeed || seenDwell || seenTicks || seenProfile || seenHold) && !seenProof)
+	/* A seed, dwell, tick count, profile, hold, or autopilot without the proof would be silently ignored. */
+	if ((seenSeed || seenDwell || seenTicks || seenProfile || seenHold || seenAutopilot) && !seenProof)
+	{
+		return 0;
+	}
+	/* Only the autopilot's race runs past MAX_TICKS, and it drives both TWO_CAB humans. */
+	if ((candidate.autopilot == 0u) && (candidate.tickCount > NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS))
+	{
+		return 0;
+	}
+	if ((candidate.autopilot != 0u) && (candidate.profile != NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB))
 	{
 		return 0;
 	}
@@ -465,7 +486,9 @@ int NativeArcadeRosterProof_Configure(const struct NativeArcadeRosterProofOption
 	}
 	if ((options->logPath[0] == '\0') || (memchr(options->logPath, '\0', sizeof(options->logPath)) == NULL) ||
 	    (options->dwellTicks > NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL) || (options->tickCount == 0u) ||
-	    (options->tickCount > NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS) || (options->hold > 1u) ||
+	    (options->tickCount > NATIVE_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_TICKS) || (options->autopilot > 1u) ||
+	    ((options->autopilot == 0u) && (options->tickCount > NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS)) ||
+	    ((options->autopilot != 0u) && (options->profile != NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB)) || (options->hold > 1u) ||
 	    ((options->hold != 0u) && (options->tickCount <= NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK)) ||
 	    !NativeArcadeRosterProof_BuildConfig(identity, options->profile, options->seed, &config))
 	{
@@ -533,6 +556,11 @@ uint32_t NativeArcadeRosterProof_Ticks(void)
 uint32_t NativeArcadeRosterProof_Hold(void)
 {
 	return ((s_nativeArcadeRosterProof.active != 0u) && (s_nativeArcadeRosterProof.options.hold != 0u)) ? 1u : 0u;
+}
+
+uint32_t NativeArcadeRosterProof_Autopilot(void)
+{
+	return ((s_nativeArcadeRosterProof.active != 0u) && (s_nativeArcadeRosterProof.options.autopilot != 0u)) ? 1u : 0u;
 }
 
 void NativeArcadeRosterProof_ScriptedPads(uint32_t profile, uint32_t raceTick,
@@ -603,7 +631,7 @@ int NativeArcadeRosterProof_RecordTick(const struct NativeArcadeRosterProofTickL
 	struct NativeArcadeRosterProofSingleton *proof = &s_nativeArcadeRosterProof;
 
 	if ((line == NULL) || (proof->active == 0u) || (line->tick != proof->tickLineCount) ||
-	    (proof->tickLineCount >= proof->options.tickCount) || (proof->tickLineCount >= NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS))
+	    (proof->tickLineCount >= proof->options.tickCount) || (proof->tickLineCount >= NATIVE_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_TICKS))
 	{
 		return 0;
 	}
