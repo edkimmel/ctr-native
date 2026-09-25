@@ -610,11 +610,13 @@ Task 7 (networked race launch) is complete and tracked in
        cabinets.
      - the 2P split screen ships first; full-screen per cabinet is
        stretch goal 13.
-   - Next: the owner's ruling on LR-17 (may the live digest read the bot
-     nav-path pointer `NavHeader.last`, which the lease rules reserve) and
-     review of LR-1..LR-16.
-   - LR-S2..LR-S3 can start without LR-17.
-   - LR-S4, LR-S10, LR-S12, and LR-S13 are blocked on LR-17.
+   - LR-17 ruled (a): the live lockstep digest may read the bot nav-path
+     pointer `NavHeader.last` check-only, as the roster proof already does.
+     It is never written, and never used to acquire, activate, capture, or
+     publish the lease.
+   - Next: fold these decisions into `docs/LOCKSTEP_RACE_MILESTONE.md`, then
+     LR-S4 onward. LR-1..LR-16 stand as written unless changed above.
+   - LR-S2..LR-S3 are in progress.
 2. Real two-cabinet and G29 validation (actual wire, LAN switch,
    latency/loss, wheel input) needs cabinet access. It is the separately
    gated requirement for step 6 (CAB1 G29/kiosk gate) and step 7
