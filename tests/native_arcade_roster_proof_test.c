@@ -1444,6 +1444,70 @@ static int TestSetTickLineV4(void)
 	return 0;
 }
 
+/* LR-74: FormatV4Digests is the tick line's V4 tail (mapped by name as
+ * SetTickLineV4 maps it, printed as FormatTickLine prints it), the text of
+ * the race caller's per-tick digest line. */
+static int TestFormatV4Digests(void)
+{
+	struct NativeArcadeRosterProofTickLine line;
+	uint64_t digests[NATIVE_CANONICAL_DOMAIN_COUNT];
+	char text[NATIVE_ARCADE_ROSTER_PROOF_V4_DIGESTS_BYTES];
+	char tickText[1024];
+	char small[64];
+	size_t length = 0;
+	size_t tickLength = 0;
+
+	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+	{
+		/* The digest of domain d is 0xA0..d..F0 + d, wherever d sits in the order. */
+		digests[i] = (UINT64_C(0x0101010101010101) * NativeCanonicalDomainOrder[i]) ^ UINT64_C(0xA0000000000000F0);
+	}
+	CHECK(NativeArcadeRosterProof_FormatV4Digests(UINT64_C(0x0123456789ABCDEF), digests, text, sizeof(text), &length) == 1);
+	CHECK(strcmp(text, " v4 0123456789abcdef v4control a1010101010101f1 v4rng a2020202020202f2 v4input a3030303030303f3"
+	                   " v4drivers a4040404040404f4 v4world a5050505050505f5 v4topology a6060606060606f6") == 0);
+	CHECK(length == strlen(text));
+	/* The same text as the tick line's tail, for any digests. */
+	for (uint32_t trial = 0; trial < 8u; trial++)
+	{
+		const uint64_t combined = UINT64_C(0x9E3779B97F4A7C15) * (uint64_t)(trial + 3u);
+		const char *tail;
+
+		for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+		{
+			digests[i] = (UINT64_C(0xD1B54A32D192ED03) * (uint64_t)(trial * 8u + i + 1u)) ^ (combined >> (i + 1u));
+		}
+		memset(&line, 0, sizeof(line));
+		CHECK(NativeArcadeRosterProof_SetTickLineV4(&line, combined, digests) == 1);
+		CHECK(NativeArcadeRosterProof_FormatTickLine(&line, tickText, sizeof(tickText), &tickLength) == 1);
+		CHECK(NativeArcadeRosterProof_FormatV4Digests(combined, digests, text, sizeof(text), &length) == 1);
+		tail = strstr(tickText, " v4 ");
+		CHECK(tail != NULL);
+		CHECK(strlen(tail) == length + 1u);
+		CHECK(strncmp(tail, text, length) == 0 && tail[length] == '\n');
+	}
+	/* The widest text fits the documented buffer. */
+	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+	{
+		digests[i] = UINT64_MAX;
+	}
+	CHECK(NativeArcadeRosterProof_FormatV4Digests(UINT64_MAX, digests, text, sizeof(text), &length) == 1);
+	CHECK(length == strlen(text) && length < sizeof(text));
+	/* Too small, or NULL: 0, an empty buffer, and the length untouched. */
+	length = 7u;
+	CHECK(NativeArcadeRosterProof_FormatV4Digests(1u, digests, small, sizeof(small), &length) == 0);
+	CHECK(small[0] == '\0' && length == 7u);
+	text[0] = 'x';
+	CHECK(NativeArcadeRosterProof_FormatV4Digests(1u, NULL, text, sizeof(text), &length) == 0);
+	CHECK(text[0] == '\0' && length == 7u);
+	CHECK(NativeArcadeRosterProof_FormatV4Digests(1u, digests, NULL, sizeof(text), &length) == 0);
+	text[0] = 'x';
+	CHECK(NativeArcadeRosterProof_FormatV4Digests(1u, digests, text, 0u, &length) == 0);
+	CHECK(text[0] == 'x');
+	CHECK(NativeArcadeRosterProof_FormatV4Digests(1u, digests, text, sizeof(text), NULL) == 0);
+	CHECK(text[0] == '\0');
+	return 0;
+}
+
 static int TestSingletonAndReport(void)
 {
 	struct NativeIdentityV1 identity;
@@ -1679,6 +1743,7 @@ int main(void)
 	CHECK(TestTickLines() == 0);
 	CHECK(TestRaceControlDigest() == 0);
 	CHECK(TestSetTickLineV4() == 0);
+	CHECK(TestFormatV4Digests() == 0);
 	CHECK(TestSingletonAndReport() == 0);
 	puts("native_arcade_roster_proof_test: ok");
 	return 0;

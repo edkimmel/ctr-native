@@ -66,6 +66,9 @@ void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOpt
 	NativeArcadeLinkAutopilot_Init(&state->autopilot);
 	/* The report records the race tick cap main.c handed the link host. */
 	state->autopilot.raceTickLimit = options->raceTickLimit;
+	/* The fault injections' race ticks (LR-73), for FaultAt only. */
+	state->autopilot.freezeTick = options->freezeTick;
+	state->autopilot.desyncTick = options->desyncTick;
 	memcpy(state->reportPath, options->reportPath, sizeof(state->reportPath));
 	state->reportPath[sizeof(state->reportPath) - 1u] = '\0';
 	state->active = 1u;
@@ -74,6 +77,15 @@ void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOpt
 uint8_t MainArcadeLinkAutopilot_Active(void)
 {
 	return s_mainArcadeLinkAutopilot.active;
+}
+
+uint32_t MainArcadeLinkAutopilot_Fault(uint32_t raceTick)
+{
+	if (s_mainArcadeLinkAutopilot.active == 0u)
+	{
+		return NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE;
+	}
+	return NativeArcadeLinkAutopilot_FaultAt(&s_mainArcadeLinkAutopilot.autopilot, raceTick);
 }
 
 /*

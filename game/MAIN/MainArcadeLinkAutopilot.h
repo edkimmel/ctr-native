@@ -42,6 +42,15 @@ void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOpt
 uint8_t MainArcadeLinkAutopilot_Active(void);
 
 /*
+ * Internal builds only (defined only with CTR_INTERNAL): the fault injection
+ * of the projected race tick raceTick (the Task 8 race plan LR-73), the pure NativeArcadeLinkAutopilot_FaultAt over the run's state:
+ * NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_* (include/platform/native_arcade_link_autopilot.h),
+ * NONE while inactive. Read only: the race caller asks it once per drive
+ * tick and carries the injection out itself.
+ */
+uint32_t MainArcadeLinkAutopilot_Fault(uint32_t raceTick);
+
+/*
  * The arcade-link hook calls it on every frame it owns in LINK mode, right
  * before its link tick, with this frame's policy input and output. Inactive:
  * returns at once. Active: replaces output->heldButtons and

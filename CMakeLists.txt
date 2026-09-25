@@ -517,10 +517,15 @@ target_link_libraries(ctr_native_arcade_link_host PUBLIC ctr_native_arcade_netpl
 # Internal two-process gate autopilot (docs/RACE_LAUNCH_MILESTONE.md RL-15,
 # RL-S10): the --arcade-link-autopilot option parser, the pure menu decision
 # and progress bookkeeping over a host view, and the report formatter; the
-# report writer is its only I/O. Uses only the host view and flow headers,
-# so it links nothing. Linked into ctr_native, whose main.c parses it and
-# whose unity-included game glue (game/MAIN/MainArcadeLinkAutopilot.c) runs
-# it in internal builds.
+# report writer is its only I/O. Since LR-S13 part A
+# (docs/LOCKSTEP_RACE_MILESTONE.md LR-73, LR-74) it also parses the fault
+# options --arcade-link-autopilot-freeze and --arcade-link-autopilot-desync,
+# decides the race 1 freeze and race 2 digest-XOR injections
+# (NativeArcadeLinkAutopilot_FaultAt), which the race caller carries out
+# next to its per-tick digest line. Uses only the host view and flow
+# headers, so it links nothing. Linked into ctr_native, whose main.c parses it and whose
+# unity-included game glue (game/MAIN/MainArcadeLinkAutopilot.c) runs it in
+# internal builds.
 add_library(ctr_native_arcade_link_autopilot STATIC platform/native_arcade_link_autopilot.c)
 set_target_properties(ctr_native_arcade_link_autopilot PROPERTIES
     C_STANDARD 17
@@ -1520,14 +1525,16 @@ if(BUILD_TESTING)
     # bookkeeping, and the report format; the isolation test pins its
     # purity, the hook and main.c wiring (the option is rejected with replay
     # options), the glue that never touches a pad, and the live gate's
-    # ctest registration.
+    # ctest registration. Since LR-S13 part A the unit test also links the
+    # canonical codec, to pin the desync injection's CONTROL digest index
+    # against NativeCanonicalDomainOrder (LR-73).
     add_executable(native_arcade_link_autopilot_test tests/native_arcade_link_autopilot_test.c)
     set_target_properties(native_arcade_link_autopilot_test PROPERTIES
         C_STANDARD 17
         C_STANDARD_REQUIRED ON
         C_EXTENSIONS OFF
     )
-    target_link_libraries(native_arcade_link_autopilot_test PRIVATE ctr_native_arcade_link_autopilot)
+    target_link_libraries(native_arcade_link_autopilot_test PRIVATE ctr_native_arcade_link_autopilot ctr_native_canonical_codec)
     add_test(NAME native_arcade_link_autopilot_unit COMMAND $<TARGET_FILE:native_arcade_link_autopilot_test>)
 
     add_test(NAME native_arcade_link_autopilot_isolation

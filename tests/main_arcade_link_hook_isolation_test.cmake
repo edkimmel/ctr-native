@@ -53,7 +53,11 @@
 # (docs/LOCKSTEP_RACE_MILESTONE.md LR-14) the link tick logs the host's
 # end-of-race record, once per race, with its foreign-bundle drop count
 # (12b). Since LR-S12 (LR-11, LR-70) it also logs the host's divergence
-# record, once per race, right after the end-of-race line (12c).
+# record, once per race, right after the end-of-race line (12c). Since LR-S13
+# part A (LR-73, LR-74) the race caller's internal part logs one digest line
+# per projected race tick and carries out the autopilot's freeze and desync
+# injections, called once per drive tick between the projection and the
+# sample (16j, 16m).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -781,7 +785,8 @@ ctr_require_literal("${hook_source_path}" "${hook_code}" "case NATIVE_ARCADE_LIN
 # 16a. Native only and dormant by default: the whole source is one
 #      #if defined(CTR_NATIVE) block (since LR-S10 part 2 holding exactly one
 #      #if defined(CTR_INTERNAL) ... #else ... #endif, the autopilot's
-#      steering sample and its inert stand-in), the header includes only
+#      steering sample and, since LR-S13 part A, its tick, each with an inert
+#      stand-in), the header includes only
 #      stdint.h, and
 #      in MainArcadeRaceLaunch_Frame nothing but plain declarations precede
 #      the dormant check (host not in LINK mode and the core idle), which
@@ -1212,7 +1217,8 @@ endif()
 # 16j. The drive tick (docs/LOCKSTEP_RACE_MILESTONE.md LR-S10 part 2; LR-1,
 #      LR-4, LR-9, LR-16, LR-18):
 #      - MainArcadeRaceLaunch_Drive runs in this order: the facts, the pad
-#        freeze, the projection (ProjectState), the local sample, the host's
+#        freeze, the projection (ProjectState), the autopilot tick (since
+#        LR-S13 part A; 16m), the local sample, the host's
 #        race step with this tick's state, sample, facts, and the committed
 #        pads as its output, the banner's glyph read and the hold with the
 #        banner (LR-S11; without it before), the GO result, and
@@ -1239,7 +1245,9 @@ endif()
 #        runs after a reported failure;
 #      - LR-16: ptr_restart_points, level1, and cnt_restart_points are named
 #        only inside the #if defined(CTR_INTERNAL) part, which also asks
-#        MainArcadeLinkAutopilot_Active;
+#        MainArcadeLinkAutopilot_Active (twice since LR-S13 part A: the
+#        steering sample and the autopilot tick); no glue call is outside
+#        it;
 #      - LR-18: the caller never writes actionsFlagSet or gameMode1 (no
 #        assignment, compound assignment, increment, or address taken),
 #        never names MainGameEnd_Initialize (comments included), and names
@@ -1256,6 +1264,7 @@ ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_Drive)" "${drive_
     "MainArcadeRaceLaunch_DriveFailed(output);"
     "MainArcadeRaceDigest_ProjectState(output->raceTick, &sources, &tick, &s_mainArcadeRaceLaunchTickState)"
     "MainArcadeRaceLaunch_DriveFailed(output);"
+    "MainArcadeRaceLaunch_AutopilotTick(output);"
     "MainArcadeRaceLaunch_Sample(gGT, output->raceTick, &sample);"
     "status = NativeArcadeLinkHost_RaceStep(output->raceTick, &s_mainArcadeRaceLaunchTickState, &sample, &facts, state->committed);"
     "if (status == NATIVE_ARCADE_LINK_HOST_RACE_HOLD)"
@@ -1279,13 +1288,21 @@ if(NOT drive_failed_call_count EQUAL 2 OR NOT drive_failed_return_count EQUAL 2)
     message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_Drive must call MainArcadeRaceLaunch_DriveFailed exactly twice, each followed directly by 'return; }' (found ${drive_failed_call_count} calls, ${drive_failed_return_count} with the return)")
 endif()
 foreach(name IN ITEMS NativeArcadeLinkHost_RaceStep NativeArcadeLinkHost_RaceHold MainArcadeRaceDigest_ProjectState
-        Platform_InputCapturePadSnapshots MainCanonicalState_FreezeInputV1 Platform_InputSampleLocalPad MainArcadeLinkAutopilot_Active)
+        Platform_InputCapturePadSnapshots MainCanonicalState_FreezeInputV1 Platform_InputSampleLocalPad)
     string(REGEX MATCHALL "${name}\\(" name_hits "${caller_code}")
     list(LENGTH name_hits name_hit_count)
     if(NOT name_hit_count EQUAL 1)
         message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must call ${name} exactly once (found ${name_hit_count})")
     endif()
 endforeach()
+# Since LR-S13 part A the autopilot's active query is asked twice, by the
+# steering sample and by the autopilot tick (16m), both in the CTR_INTERNAL
+# part (checked below).
+string(REGEX MATCHALL "MainArcadeLinkAutopilot_Active\\(" active_hits "${caller_code}")
+list(LENGTH active_hits active_hit_count)
+if(NOT active_hit_count EQUAL 2)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must call MainArcadeLinkAutopilot_Active exactly twice, in the steering sample and the autopilot tick (found ${active_hit_count})")
+endif()
 ctr_find_block("${caller_source_path}" "${caller_code}"
     "static int MainArcadeRaceLaunch_HoldStep(void *context, uint32_t periods, int newPeriod)" hold_step_begin hold_step_end)
 math(EXPR hold_step_length "${hold_step_end} - ${hold_step_begin} + 1")
@@ -1388,6 +1405,12 @@ foreach(part IN ITEMS caller_before_internal caller_after_internal)
 endforeach()
 foreach(term IN ITEMS "ptr_restart_points" "level1" "cnt_restart_points" "MainArcadeLinkAutopilot_Active()")
     ctr_require_literal("${caller_source_path} (CTR_INTERNAL part)" "${caller_internal_part}" "${term}")
+endforeach()
+foreach(part IN ITEMS caller_before_internal caller_after_internal)
+    string(FIND "${${part}}" "MainArcadeLinkAutopilot_" outside_glue_at)
+    if(NOT outside_glue_at EQUAL -1)
+        message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} asks the autopilot glue outside its CTR_INTERNAL part")
+    endif()
 endforeach()
 # LR-18: reads only. The scan must itself catch every write spelling.
 set(lr18_write "(actionsFlagSet|gameMode1)[ \t\r\n]*(=[^=]|[-+*/%&|^]=|<<=|>>=|\\+\\+|--)")
@@ -1662,4 +1685,141 @@ string(REGEX MATCHALL "memset\\(" glyph_memsets "${glyph_block}")
 list(LENGTH glyph_memsets glyph_memset_count)
 if(NOT glyph_memset_count EQUAL 1)
     message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_BannerGlyphs may clear only its table, once (found ${glyph_memset_count} memset calls)")
+endif()
+
+# 16m. The autopilot's per-tick digest line and fault injections
+#      (docs/LOCKSTEP_RACE_MILESTONE.md LR-S13 part A; LR-73, LR-74):
+#      - MainArcadeRaceLaunch_AutopilotTick is defined twice (the
+#        CTR_INTERNAL helper and its #else stand-in, whose body only
+#        discards its argument) and called exactly once, in the drive tick,
+#        directly after the projection's failure return and directly before
+#        the sample (16j pins it in the drive tick's order);
+#      - the helper returns first while the autopilot is inactive
+#        (native_arcade_link_autopilot_isolation 6b), then runs in this
+#        order: the per-tick line (the roster proof's V4 text over the
+#        projected state's combined and domain digests, logged as "race %u
+#        race tick %u digests%s"), the one fault query, the freeze (the hold
+#        loop without the banner or a table, with the freeze step) and its
+#        line, and the desync (1 XORed into the CONTROL domain digest) and
+#        its line;
+#      - the line's formatter, the freeze hold, the XOR, the fault values,
+#        and the three log texts are named only in the CTR_INTERNAL part
+#        (the formatter, the hold, the XOR, and the texts exactly once); the
+#        #else part names no hold, digest, log, glue, roster proof, or
+#        freeze step;
+#      - the freeze step only counts FREEZE_PERIODS: its body is pinned, and
+#        it names no link host, netplay, or peer token, so the frozen cabinet
+#        sends and takes nothing;
+#      - the projected state's digests are written only by the one XOR: no
+#        other store to domainDigests and none to combinedDigest (the write
+#        scan checks itself).
+set(autopilot_tick_signature "static void MainArcadeRaceLaunch_AutopilotTick(const struct MainArcadeRaceLaunchCoreOutput *output)")
+string(REGEX MATCHALL "(^|[^A-Za-z0-9_])MainArcadeRaceLaunch_AutopilotTick([^A-Za-z0-9_]|$)" autopilot_tick_names "${caller_code}")
+list(LENGTH autopilot_tick_names autopilot_tick_name_count)
+string(REGEX MATCHALL "MainArcadeRaceLaunch_AutopilotTick\\(output\\)" autopilot_tick_calls "${caller_code}")
+list(LENGTH autopilot_tick_calls autopilot_tick_call_count)
+string(REGEX MATCHALL "MainArcadeRaceLaunch_AutopilotTick\\(output\\)" autopilot_tick_drive_calls "${drive_block}")
+list(LENGTH autopilot_tick_drive_calls autopilot_tick_drive_call_count)
+if(NOT autopilot_tick_name_count EQUAL 3 OR NOT autopilot_tick_call_count EQUAL 1 OR NOT autopilot_tick_drive_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must define MainArcadeRaceLaunch_AutopilotTick twice (the internal helper and its stand-in) and call it once, in MainArcadeRaceLaunch_Drive (found ${autopilot_tick_name_count} names, ${autopilot_tick_call_count} calls, ${autopilot_tick_drive_call_count} in the drive tick)")
+endif()
+ctr_require_literal("${caller_source_path} (MainArcadeRaceLaunch_Drive)" "${drive_flat}"
+    "MainArcadeRaceLaunch_DriveFailed(output); return; } MainArcadeRaceLaunch_AutopilotTick(output); MainArcadeRaceLaunch_Sample(gGT, output->raceTick, &sample);")
+# The #else part, up to the #endif that closes the CTR_INTERNAL block.
+string(SUBSTRING "${caller_code}" ${internal_else_at} -1 caller_else_tail)
+string(FIND "${caller_else_tail}" "#endif" caller_else_end)
+string(SUBSTRING "${caller_else_tail}" 0 ${caller_else_end} caller_else_part)
+ctr_find_block("${caller_source_path} (#else part)" "${caller_else_part}" "${autopilot_tick_signature}" stand_in_begin stand_in_end)
+math(EXPR stand_in_length "${stand_in_end} - ${stand_in_begin} + 1")
+string(SUBSTRING "${caller_else_part}" ${stand_in_begin} ${stand_in_length} stand_in_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " stand_in_flat "${stand_in_block}")
+if(NOT stand_in_flat STREQUAL "{ (void)output; }")
+    message(FATAL_ERROR "arcade link hook isolation: the #else stand-in of MainArcadeRaceLaunch_AutopilotTick must be inert (found '${stand_in_flat}')")
+endif()
+foreach(term IN ITEMS "MainArcadeRaceHold_" "domainDigests" "combinedDigest" "Platform_Log" "MainArcadeLinkAutopilot_" "NativeArcadeRosterProof_"
+        "MainArcadeRaceLaunch_FreezeStep")
+    ctr_forbid("${caller_source_path} (#else part)" "${caller_else_part}" "${term}")
+endforeach()
+# The internal helper, in order.
+ctr_find_block("${caller_source_path} (CTR_INTERNAL part)" "${caller_internal_part}" "${autopilot_tick_signature}" helper_begin helper_end)
+math(EXPR helper_length "${helper_end} - ${helper_begin} + 1")
+string(SUBSTRING "${caller_internal_part}" ${helper_begin} ${helper_length} helper_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " helper_flat "${helper_block}")
+set(tick_line_log "Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG \"race %u race tick %u digests%s\\n\", (unsigned)output->raceNumber, (unsigned)output->raceTick, digests);")
+set(freeze_hold "MainArcadeRaceHold_RunMode(MainArcadeRaceLaunch_FreezeStep, NULL, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, NULL, &freeze);")
+set(freeze_log "Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG \"race %u race tick %u froze %u tick periods (%llu us)\\n\", (unsigned)output->raceNumber, (unsigned)output->raceTick, (unsigned)freeze.periods, (unsigned long long)freeze.wallUs);")
+set(desync_xor "s_mainArcadeRaceLaunchTickState.domainDigests[NATIVE_ARCADE_LINK_AUTOPILOT_CONTROL_DIGEST] ^= 1u;")
+set(desync_log "Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG \"race %u race tick %u: autopilot desync injection flipped bit 0 of the CONTROL domain digest\\n\", (unsigned)output->raceNumber, (unsigned)output->raceTick);")
+ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_AutopilotTick)" "${helper_flat}"
+    "if (MainArcadeLinkAutopilot_Active() == 0u) { return; }"
+    "if (NativeArcadeRosterProof_FormatV4Digests(s_mainArcadeRaceLaunchTickState.combinedDigest, s_mainArcadeRaceLaunchTickState.domainDigests, digests, sizeof(digests), &length)) { ${tick_line_log} }"
+    "fault = MainArcadeLinkAutopilot_Fault(output->raceTick);"
+    "if (fault == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_FREEZE) { memset(&freeze, 0, sizeof(freeze)); ${freeze_hold} ${freeze_log} }"
+    "else if (fault == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_DESYNC) { ${desync_xor} ${desync_log} }")
+# Named only in the CTR_INTERNAL part (inside the helper), and the formatter,
+# the hold, the XOR, and the texts exactly once.
+string(REGEX REPLACE "[ \t\r\n]+" " " caller_code_flat "${caller_code}")
+foreach(term IN ITEMS "NativeArcadeRosterProof_FormatV4Digests(" "${tick_line_log}" "${freeze_hold}" "${freeze_log}" "${desync_xor}" "${desync_log}"
+        "MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER" "NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_" "^=")
+    string(FIND "${helper_flat}" "${term}" helper_at)
+    if(helper_at EQUAL -1)
+        message(FATAL_ERROR "arcade link hook isolation: '${term}' is missing from MainArcadeRaceLaunch_AutopilotTick")
+    endif()
+    foreach(part IN ITEMS caller_before_internal caller_after_internal)
+        string(REGEX REPLACE "[ \t\r\n]+" " " part_flat "${${part}}")
+        string(FIND "${part_flat}" "${term}" outside_at)
+        if(NOT outside_at EQUAL -1)
+            message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} names '${term}' outside its CTR_INTERNAL part (LR-73, LR-74)")
+        endif()
+    endforeach()
+endforeach()
+foreach(term IN ITEMS "NativeArcadeRosterProof_FormatV4Digests(" "MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER" "^=" "autopilot desync injection flipped"
+        "froze %u" "digests%s")
+    string(FIND "${caller_code_flat}" "${term}" first_at)
+    string(FIND "${caller_code_flat}" "${term}" last_at REVERSE)
+    if(first_at EQUAL -1 OR NOT first_at EQUAL last_at)
+        message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must name '${term}' exactly once, in MainArcadeRaceLaunch_AutopilotTick")
+    endif()
+endforeach()
+# The freeze step: counts periods, nothing else.
+set(freeze_signature "static int MainArcadeRaceLaunch_FreezeStep(void *context, uint32_t periods, int newPeriod)")
+ctr_find_block("${caller_source_path} (CTR_INTERNAL part)" "${caller_internal_part}" "${freeze_signature}" freeze_begin freeze_end)
+math(EXPR freeze_length "${freeze_end} - ${freeze_begin} + 1")
+string(SUBSTRING "${caller_internal_part}" ${freeze_begin} ${freeze_length} freeze_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " freeze_flat "${freeze_block}")
+if(NOT freeze_flat STREQUAL "{ (void)context; (void)newPeriod; return (periods < NATIVE_ARCADE_LINK_AUTOPILOT_FREEZE_PERIODS) ? 1 : 0; }")
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_FreezeStep must only hold for NATIVE_ARCADE_LINK_AUTOPILOT_FREEZE_PERIODS periods (found '${freeze_flat}')")
+endif()
+foreach(term IN ITEMS NativeArcadeLinkHost_ NativeArcadeNetplay netplay Netplay NativeLobby NativeUdp Platform_ "state->")
+    ctr_forbid("${caller_source_path} (MainArcadeRaceLaunch_FreezeStep)" "${freeze_block}" "${term}")
+endforeach()
+string(REGEX MATCHALL "(^|[^A-Za-z0-9_])MainArcadeRaceLaunch_FreezeStep([^A-Za-z0-9_]|$)" freeze_names "${caller_code}")
+list(LENGTH freeze_names freeze_name_count)
+if(NOT freeze_name_count EQUAL 2)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must define MainArcadeRaceLaunch_FreezeStep and hold with it once (found ${freeze_name_count})")
+endif()
+# The projected state's digests: the one XOR is their only write.
+set(digest_write "(domainDigests|combinedDigest)(\\[[A-Za-z0-9_ ]*\\])?[ \t\r\n]*(=[^=]|[-+*/%&|^]=|<<=|>>=|\\+\\+|--)")
+set(digest_pre "(\\+\\+|--)[ \t]*[(]?[ \t]*[A-Za-z_][A-Za-z0-9_]*(->|\\.)(domainDigests|combinedDigest)")
+foreach(probe IN ITEMS "s.domainDigests[0] ^= 1u;" "s.combinedDigest = 0;" "s.domainDigests[i]++;" "p->combinedDigest |= 1u;" "++s.domainDigests[2];"
+        "s.domainDigests[K_X] = 1;")
+    string(REGEX MATCHALL "${digest_write}" probe_writes "${probe}")
+    string(REGEX MATCHALL "${digest_pre}" probe_pre "${probe}")
+    if("${probe_writes}${probe_pre}" STREQUAL "")
+        message(FATAL_ERROR "arcade link hook isolation: the digest write scan misses '${probe}'")
+    endif()
+endforeach()
+foreach(probe IN ITEMS "x = s.domainDigests[0];" "if (a == s.combinedDigest)" "f(s.combinedDigest, s.domainDigests, d)" "y = (s.domainDigests[1] != 0u);")
+    string(REGEX MATCHALL "${digest_write}" probe_writes "${probe}")
+    string(REGEX MATCHALL "${digest_pre}" probe_pre "${probe}")
+    if(NOT "${probe_writes}${probe_pre}" STREQUAL "")
+        message(FATAL_ERROR "arcade link hook isolation: the digest write scan flags the read '${probe}'")
+    endif()
+endforeach()
+string(REGEX MATCHALL "${digest_write}" caller_digest_writes "${caller_code}")
+string(REGEX MATCHALL "${digest_pre}" caller_digest_pre "${caller_code}")
+list(LENGTH caller_digest_writes caller_digest_write_count)
+list(LENGTH caller_digest_pre caller_digest_pre_count)
+if(NOT caller_digest_write_count EQUAL 1 OR NOT caller_digest_pre_count EQUAL 0 OR NOT "${caller_digest_writes}" MATCHES "^domainDigests\\[NATIVE_ARCADE_LINK_AUTOPILOT_CONTROL_DIGEST\\] \\^=$")
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} may write the projected state's digests only in the desync injection's one XOR (found '${caller_digest_writes}${caller_digest_pre}')")
 endif()

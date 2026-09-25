@@ -3,6 +3,7 @@
 #include "platform/native_arcade_flow.h"
 #include "platform/native_arcade_link_host.h"
 #include "platform/native_arcade_menu_input.h"
+#include "platform/native_canonical_codec.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -202,6 +203,228 @@ static int TestRaceTicksOption(void)
 		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
 		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(argv), argv, &options) == 1);
 		CHECK(options.enabled == 1u && options.raceTickLimit == 0u);
+	}
+	return 0;
+}
+
+/* LR-73: the freeze and desync options, each with the race tick count's value rule. */
+static int TestFaultOptions(void)
+{
+	char *names[] = { "--arcade-link-autopilot-freeze", "--arcade-link-autopilot-desync" };
+	struct NativeArcadeLinkAutopilotOptions options;
+	char *valid[] = { "1", "600", "18000", "00300", "07" };
+	const uint32_t validValues[] = { 1u, 600u, 18000u, 300u, 7u };
+	uint32_t n;
+	uint32_t i;
+
+	/* Absent: 0, no injection. */
+	memset(&options, 0xA5, sizeof(options));
+	NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+	CHECK(options.freezeTick == 0u && options.desyncTick == 0u);
+	{
+		char *argv[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "300" };
+
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(argv), argv, &options) == 1);
+		CHECK(options.freezeTick == 0u && options.desyncTick == 0u && options.raceTickLimit == 300u);
+	}
+	/* Both, with the race tick count, in any order. */
+	{
+		char *argv[] = { "ctr_native", "--arcade-link-autopilot-desync", "300", "--arcade-link-autopilot", "r.txt",
+			"--arcade-link-autopilot-freeze", "600", "--arcade-link-autopilot-race-ticks", "900" };
+
+		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(argv), argv, &options) == 1);
+		CHECK(options.enabled == 1u && strcmp(options.reportPath, "r.txt") == 0);
+		CHECK(options.freezeTick == 600u && options.desyncTick == 300u && options.raceTickLimit == 900u);
+	}
+	for (n = 0u; n < 2u; n++)
+	{
+		char *name = names[n];
+
+		/* Valid values, before and after the autopilot option; the other stays 0. */
+		for (i = 0u; i < (uint32_t)ARGC(valid); i++)
+		{
+			char *after[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, valid[i] };
+			char *before[] = { "ctr_native", name, valid[i], "--arcade-link", "cab2", "--arcade-link-autopilot", "r.txt" };
+
+			NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+			CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(after), after, &options) == 1);
+			CHECK(options.enabled == 1u && options.raceTickLimit == 0u);
+			CHECK((n == 0u) ? (options.freezeTick == validValues[i] && options.desyncTick == 0u)
+			                : (options.desyncTick == validValues[i] && options.freezeTick == 0u));
+			NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+			CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(before), before, &options) == 1);
+			CHECK((n == 0u) ? (options.freezeTick == validValues[i] && options.desyncTick == 0u)
+			                : (options.desyncTick == validValues[i] && options.freezeTick == 0u));
+		}
+		/* Errors leave the options untouched (transactional). */
+		{
+			char *zero[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, "0" };
+			char *zeros[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, "00000" };
+			char *above[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, "18001" };
+			char *sixDigits[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, "000600" };
+			char *huge[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, "4294967296" };
+			char *negative[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, "-600" };
+			char *plus[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, "+600" };
+			char *hex[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, "0x258" };
+			char *empty[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, "" };
+			char *junk[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, "600x" };
+			char *missing[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name };
+			char *nullValue[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, NULL };
+			char *option[] = { "ctr_native", name, "--arcade-link-autopilot", "r.txt" };
+			char *twice[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", name, "600", name, "600" };
+			char *twiceOther[] = { "ctr_native", name, "600", "--arcade-link-autopilot", "r.txt", name, "5" };
+			char *alone[] = { "ctr_native", "--arcade-link", "cab1", name, "600" };
+			char *aloneValue[] = { "ctr_native", name, "600" };
+			char *aloneBoth[] = { "ctr_native", "--arcade-link-autopilot-freeze", "600", "--arcade-link-autopilot-desync", "300" };
+			/* A valid option before a bad one: nothing of it is kept. */
+			char *goodThenBad[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks", "300",
+				(n == 0u) ? "--arcade-link-autopilot-desync" : "--arcade-link-autopilot-freeze", "300", name, "18001" };
+
+			CHECK(RejectsUntouched(ARGC(zero), zero));
+			CHECK(RejectsUntouched(ARGC(zeros), zeros));
+			CHECK(RejectsUntouched(ARGC(above), above));
+			CHECK(RejectsUntouched(ARGC(sixDigits), sixDigits));
+			CHECK(RejectsUntouched(ARGC(huge), huge));
+			CHECK(RejectsUntouched(ARGC(negative), negative));
+			CHECK(RejectsUntouched(ARGC(plus), plus));
+			CHECK(RejectsUntouched(ARGC(hex), hex));
+			CHECK(RejectsUntouched(ARGC(empty), empty));
+			CHECK(RejectsUntouched(ARGC(junk), junk));
+			CHECK(RejectsUntouched(ARGC(missing), missing));
+			CHECK(RejectsUntouched(ARGC(nullValue), nullValue));
+			CHECK(RejectsUntouched(ARGC(option), option));
+			CHECK(RejectsUntouched(ARGC(twice), twice));
+			CHECK(RejectsUntouched(ARGC(twiceOther), twiceOther));
+			CHECK(RejectsUntouched(ARGC(alone), alone));
+			CHECK(RejectsUntouched(ARGC(aloneValue), aloneValue));
+			CHECK(RejectsUntouched(ARGC(aloneBoth), aloneBoth));
+			CHECK(RejectsUntouched(ARGC(goodThenBad), goodThenBad));
+		}
+	}
+	/* The names are matched exactly: near names are other parsers' (ignored). */
+	{
+		char *argv[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-freeze=5",
+			"--arcade-link-autopilot-desyncs", "5" };
+
+		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(argv), argv, &options) == 1);
+		CHECK(options.enabled == 1u && options.freezeTick == 0u && options.desyncTick == 0u);
+	}
+	return 0;
+}
+
+static void Match(struct NativeArcadeLinkHostMatch *match, uint32_t trackID, uint64_t seed);
+
+/* LR-73: the pure fault decision. */
+static int TestFaultAt(void)
+{
+	struct NativeArcadeLinkAutopilot autopilot;
+	struct NativeArcadeLinkHostMatch match;
+	uint32_t tick;
+
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE == 0u);
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_FREEZE == 1u);
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_DESYNC == 2u);
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_FREEZE_PERIODS == 45u);
+	CHECK(NativeArcadeLinkAutopilot_FaultAt(NULL, 600u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+
+	/* 0 ticks (absent) never inject, in any race. */
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	Match(&match, 3u, 1u);
+	for (uint32_t race = 0u; race <= 2u; race++)
+	{
+		autopilot.racesStarted = race;
+		for (tick = 0u; tick <= 20u; tick++)
+		{
+			CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, tick) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+		}
+		CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 18000u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+	}
+
+	/* The run's own race count: RecordMatch starts each race. */
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	autopilot.freezeTick = 600u;
+	autopilot.desyncTick = 300u;
+	/* Before race 1 (no START_RACE yet): nothing. */
+	CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 600u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+	CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 300u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+	CHECK(NativeArcadeLinkAutopilot_RecordMatch(&autopilot, &match) == 1);
+	CHECK(autopilot.racesStarted == 1u);
+	/* Race 1: the freeze on its tick only; never the desync. */
+	for (tick = 0u; tick <= 1200u; tick++)
+	{
+		const uint32_t fault = NativeArcadeLinkAutopilot_FaultAt(&autopilot, tick);
+
+		CHECK(fault == ((tick == 600u) ? NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_FREEZE : NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE));
+	}
+	/* Race 2: the desync on its tick only; never the freeze. */
+	Match(&match, 5u, 2u);
+	CHECK(NativeArcadeLinkAutopilot_RecordMatch(&autopilot, &match) == 1);
+	CHECK(autopilot.racesStarted == 2u);
+	for (tick = 0u; tick <= 1200u; tick++)
+	{
+		const uint32_t fault = NativeArcadeLinkAutopilot_FaultAt(&autopilot, tick);
+
+		CHECK(fault == ((tick == 300u) ? NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_DESYNC : NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE));
+	}
+	/* Beyond race 2 (a later run shape): neither. */
+	autopilot.racesStarted = 3u;
+	CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 600u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+	CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 300u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+
+	/* The same tick for both: each in its own race. */
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	autopilot.freezeTick = 42u;
+	autopilot.desyncTick = 42u;
+	autopilot.racesStarted = 1u;
+	CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 42u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_FREEZE);
+	autopilot.racesStarted = 2u;
+	CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 42u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_DESYNC);
+
+	/* Done (pass or fail): nothing, and FaultAt only reads. */
+	autopilot.racesStarted = 1u;
+	autopilot.done = 1u;
+	{
+		const struct NativeArcadeLinkAutopilot before = autopilot;
+
+		CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 42u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+		autopilot.racesStarted = 2u;
+		CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 42u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+		autopilot.racesStarted = 1u;
+		CHECK(memcmp(&before, &autopilot, sizeof(autopilot)) == 0);
+	}
+	/* The report does not name the injections (LR-73: reported nowhere). */
+	{
+		char text[NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_BYTES];
+		char plain[NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_BYTES];
+		size_t length = 0u;
+		size_t plainLength = 0u;
+
+		NativeArcadeLinkAutopilot_Init(&autopilot);
+		CHECK(NativeArcadeLinkAutopilot_FormatReport(&autopilot, plain, sizeof(plain), &plainLength) == 1);
+		autopilot.freezeTick = 600u;
+		autopilot.desyncTick = 300u;
+		CHECK(NativeArcadeLinkAutopilot_FormatReport(&autopilot, text, sizeof(text), &length) == 1);
+		CHECK(length == plainLength && strcmp(text, plain) == 0);
+	}
+	return 0;
+}
+
+/* LR-73: the desync injection's target is the CONTROL domain digest: index
+ * CONTROL_DIGEST of the V4 state's domain digests (NativeCanonicalStateV4's
+ * domainDigests, in NativeCanonicalDomainOrder). */
+static int TestDesyncTarget(void)
+{
+	static const uint32_t order[NATIVE_CANONICAL_DOMAIN_COUNT] = { NATIVE_CANONICAL_DOMAIN_CONTROL, NATIVE_CANONICAL_DOMAIN_RNG,
+		NATIVE_CANONICAL_DOMAIN_INPUT, NATIVE_CANONICAL_DOMAIN_DRIVERS, NATIVE_CANONICAL_DOMAIN_WORLD, NATIVE_CANONICAL_DOMAIN_TOPOLOGY };
+
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_CONTROL_DIGEST == 0u);
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_CONTROL_DIGEST < NATIVE_CANONICAL_DOMAIN_COUNT);
+	CHECK(NativeCanonicalDomainOrder[NATIVE_ARCADE_LINK_AUTOPILOT_CONTROL_DIGEST] == (uint32_t)NATIVE_CANONICAL_DOMAIN_CONTROL);
+	for (uint32_t i = 0u; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+	{
+		CHECK(NativeCanonicalDomainOrder[i] == order[i]);
 	}
 	return 0;
 }
@@ -1065,6 +1288,9 @@ int main(void)
 {
 	CHECK(TestOptions() == 0);
 	CHECK(TestRaceTicksOption() == 0);
+	CHECK(TestFaultOptions() == 0);
+	CHECK(TestFaultAt() == 0);
+	CHECK(TestDesyncTarget() == 0);
 	CHECK(TestDecideEnter() == 0);
 	CHECK(TestDecideSelect() == 0);
 	CHECK(TestDecideResults() == 0);

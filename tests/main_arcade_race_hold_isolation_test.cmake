@@ -32,15 +32,19 @@
 #     banner guard, the two mode values are defined literally,
 #     MainArcadeRaceHold_Run is exactly RunMode with the banner (the roster
 #     proof keeps its banner), and RunMode is named only by the hold module
-#     and the race caller (game/MAIN/MainArcadeRaceLaunch.c), which calls it
-#     exactly once. Since LR-S11 (LR-72): RunMode takes the caller's glyph
-#     table and hands it on unread (named only in the parameter, the NULL
-#     test, and the glyph present; the banner guard holds exactly the count
-#     and one present: the glyph present for a table, the block present for
-#     none); Run passes NULL, so the roster proof's banner stays the block
-#     font and the proof names no glyph table; the race caller holds with
-#     the banner and its table (&glyphs), never without it, and presents no
-#     banner itself.
+#     and the race caller (game/MAIN/MainArcadeRaceLaunch.c). Since LR-S11
+#     (LR-72): RunMode takes the caller's glyph table and hands it on unread
+#     (named only in the parameter, the NULL test, and the glyph present; the
+#     banner guard holds exactly the count and one present: the glyph
+#     present for a table, the block present for none); Run passes NULL, so
+#     the roster proof's banner stays the block font and the proof names no
+#     glyph table; the race caller's race hold is with the banner and its
+#     table (&glyphs), and it presents no banner itself. Since LR-S13 part A
+#     (LR-73) the race caller calls RunMode exactly twice: that race hold, and
+#     the internal autopilot's freeze injection,
+#     RunMode(MainArcadeRaceLaunch_FreezeStep, NULL, NO_BANNER, NULL, &freeze),
+#     the one place it names NO_BANNER (main_arcade_link_hook_isolation 16m
+#     pins the freeze in the caller's CTR_INTERNAL part and its step).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "race hold isolation")
@@ -385,21 +389,40 @@ foreach(path IN LISTS scan_files)
         message(FATAL_ERROR "${prefix}: ${relative_path} names MainArcadeRaceHold_RunMode; only the hold module and ${launch_source} may")
     endif()
 endforeach()
-# 6 (cont). The race caller holds once, with the banner and its glyph table
-#    (LR-S11: the game font; LR-S10 part 2 held without the banner), and
-#    never presents a banner itself; the roster proof never passes a table.
+# 6 (cont). The race caller's race hold is with the banner and its glyph
+#    table (LR-S11: the game font; LR-S10 part 2 held without the banner);
+#    its only other hold is the internal freeze injection (LR-73), without
+#    the banner or a table; it never presents a banner itself; the roster
+#    proof never passes a table.
 ctr_read_source("${launch_source}" launch)
 ctr_strip_comments("${launch_source}" "${launch}" launch_code)
 ctr_count_identifier("${launch_code}" "MainArcadeRaceHold_RunMode" launch_run_mode_hits)
 ctr_count_identifier("${launch_code}" "MainArcadeRaceHold_Run" launch_run_hits)
-if(NOT launch_run_mode_hits EQUAL 1 OR NOT launch_run_hits EQUAL 0)
-    message(FATAL_ERROR "${prefix}: ${launch_source} must call MainArcadeRaceHold_RunMode exactly once and never MainArcadeRaceHold_Run (found ${launch_run_mode_hits} and ${launch_run_hits})")
+if(NOT launch_run_mode_hits EQUAL 2 OR NOT launch_run_hits EQUAL 0)
+    message(FATAL_ERROR "${prefix}: ${launch_source} must call MainArcadeRaceHold_RunMode exactly twice (the race hold and the freeze injection) and never MainArcadeRaceHold_Run (found ${launch_run_mode_hits} and ${launch_run_hits})")
 endif()
-string(REGEX MATCH "MainArcadeRaceHold_RunMode\\([^;]*\\);" launch_hold_call "${launch_code}")
-if(NOT launch_hold_call MATCHES "^MainArcadeRaceHold_RunMode\\([A-Za-z0-9_]+, [^,]+, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, &glyphs, [^,]+\\);$")
-    message(FATAL_ERROR "${prefix}: ${launch_source} must hold with MAIN_ARCADE_RACE_HOLD_MODE_BANNER and its glyph table &glyphs (LR-S11; found '${launch_hold_call}')")
+# (';' is masked while the calls are listed: a CMake list would split on it.)
+string(REPLACE ";" "@SEMI@" launch_code_masked "${launch_code}")
+string(REGEX MATCHALL "MainArcadeRaceHold_RunMode\\([^@]*\\)@SEMI@" launch_hold_calls "${launch_code_masked}")
+set(launch_banner_holds 0)
+set(launch_freeze_holds 0)
+foreach(launch_hold_call IN LISTS launch_hold_calls)
+    string(REPLACE "@SEMI@" ";" launch_hold_call "${launch_hold_call}")
+    if(launch_hold_call MATCHES "^MainArcadeRaceHold_RunMode\\([A-Za-z0-9_]+, [^,]+, MAIN_ARCADE_RACE_HOLD_MODE_BANNER, &glyphs, [^,]+\\);$")
+        math(EXPR launch_banner_holds "${launch_banner_holds} + 1")
+    elseif(launch_hold_call STREQUAL "MainArcadeRaceHold_RunMode(MainArcadeRaceLaunch_FreezeStep, NULL, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, NULL, &freeze);")
+        math(EXPR launch_freeze_holds "${launch_freeze_holds} + 1")
+    else()
+        message(FATAL_ERROR "${prefix}: ${launch_source} holds neither with MAIN_ARCADE_RACE_HOLD_MODE_BANNER and its glyph table &glyphs (LR-S11) nor as the freeze injection (LR-73; found '${launch_hold_call}')")
+    endif()
+endforeach()
+if(NOT launch_banner_holds EQUAL 1 OR NOT launch_freeze_holds EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${launch_source} must hold once with the banner and its glyph table and once as the freeze injection (found ${launch_banner_holds} and ${launch_freeze_holds})")
 endif()
-ctr_forbid("${launch_source}" "${launch_code}" "MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER")
+ctr_count_identifier("${launch_code}" "MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER" launch_no_banner_hits)
+if(NOT launch_no_banner_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${launch_source} may name MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER only in the freeze injection's hold (found ${launch_no_banner_hits})")
+endif()
 ctr_forbid("${launch_source}" "${launch_code}" "Platform_PresentVRAMDisplayBanner")
 ctr_read_source("${proof_source}" proof)
 foreach(term IN ITEMS NativeHoldBannerGlyphs native_hold_banner MainArcadeRaceLaunch_BannerGlyphs MainArcadeRaceHold_RunMode)

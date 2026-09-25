@@ -32,7 +32,10 @@
  *   3. the tick's V4 state, projected through MAIN/MainArcadeRaceDigest.h
  *      (ProjectState) into a file-scope static; a failed projection is a
  *      local drive failure, reported here, and the host's drive is not
- *      stepped;
+ *      stepped; in internal builds, while the arcade-link autopilot runs,
+ *      the projected state's digest line and the autopilot's fault
+ *      injection (a freeze in the hold loop without the banner, or a flipped
+ *      bit in the state's CONTROL domain digest; LR-73, LR-74);
  *   4. the local pad sample (Platform_InputSampleLocalPad), converted to the
  *      host's pad; in internal builds, while the arcade-link autopilot runs,
  *      the autopilot's steering pad instead (LR-16);
@@ -586,6 +589,65 @@ static int MainArcadeRaceLaunch_AutopilotSample(const struct GameTracker *gGT, u
 	return 1;
 }
 
+/* The desync injection flips one of the projected state's domain digests. */
+_Static_assert(NATIVE_ARCADE_LINK_AUTOPILOT_CONTROL_DIGEST < sizeof(s_mainArcadeRaceLaunchTickState.domainDigests) / sizeof(s_mainArcadeRaceLaunchTickState.domainDigests[0]), "the desync injection flips a domain digest");
+
+/* The freeze injection's hold step (LR-73): the cabinet freezes itself, for
+ * FREEZE_PERIODS tick periods. It names no link host or peer call, so the
+ * frozen cabinet sends and takes nothing; the hold loop only pumps the
+ * window and waits. */
+static int MainArcadeRaceLaunch_FreezeStep(void *context, uint32_t periods, int newPeriod)
+{
+	(void)context;
+	(void)newPeriod;
+	return (periods < NATIVE_ARCADE_LINK_AUTOPILOT_FREEZE_PERIODS) ? 1 : 0;
+}
+
+/*
+ * LR-73, LR-74: while the arcade-link autopilot runs, once per drive tick
+ * right after the projection: the tick's digest line from the projected
+ * state as projected (its domain digests named and ordered by the roster
+ * proof's tick line text, NativeArcadeRosterProof_FormatV4Digests), then the
+ * tick's fault injection. A freeze blocks here in the hold loop, without the
+ * banner. A desync XORs 1 into the CONTROL
+ * domain digest of the projected state, after its line, so only the copy the
+ * host's race step records and sends differs (the combined digest is left
+ * alone, and the next tick's projection overwrites the whole state). No game
+ * state is written. Returns at once while the autopilot is inactive.
+ */
+static void MainArcadeRaceLaunch_AutopilotTick(const struct MainArcadeRaceLaunchCoreOutput *output)
+{
+	struct MainArcadeRaceHoldResult freeze;
+	char digests[NATIVE_ARCADE_ROSTER_PROOF_V4_DIGESTS_BYTES];
+	size_t length = 0u;
+	uint32_t fault;
+
+	if (MainArcadeLinkAutopilot_Active() == 0u)
+	{
+		return;
+	}
+	if (NativeArcadeRosterProof_FormatV4Digests(s_mainArcadeRaceLaunchTickState.combinedDigest, s_mainArcadeRaceLaunchTickState.domainDigests,
+	        digests, sizeof(digests), &length))
+	{
+		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u race tick %u digests%s\n", (unsigned)output->raceNumber, (unsigned)output->raceTick,
+			digests);
+	}
+	fault = MainArcadeLinkAutopilot_Fault(output->raceTick);
+	if (fault == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_FREEZE)
+	{
+		memset(&freeze, 0, sizeof(freeze));
+		MainArcadeRaceHold_RunMode(MainArcadeRaceLaunch_FreezeStep, NULL, MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, NULL, &freeze);
+		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u race tick %u froze %u tick periods (%llu us)\n", (unsigned)output->raceNumber,
+			(unsigned)output->raceTick, (unsigned)freeze.periods, (unsigned long long)freeze.wallUs);
+	}
+	else if (fault == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_DESYNC)
+	{
+		s_mainArcadeRaceLaunchTickState.domainDigests[NATIVE_ARCADE_LINK_AUTOPILOT_CONTROL_DIGEST] ^= 1u;
+		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u race tick %u: autopilot desync injection flipped bit 0 of the CONTROL domain digest\n",
+			(unsigned)output->raceNumber, (unsigned)output->raceTick);
+	}
+}
+
 #else
 
 /* Without CTR_INTERNAL there is no autopilot: the local pad is the sample. */
@@ -595,6 +657,12 @@ static int MainArcadeRaceLaunch_AutopilotSample(const struct GameTracker *gGT, u
 	(void)raceTick;
 	(void)sample;
 	return 0;
+}
+
+/* Without CTR_INTERNAL there is no autopilot: no digest line and no fault. */
+static void MainArcadeRaceLaunch_AutopilotTick(const struct MainArcadeRaceLaunchCoreOutput *output)
+{
+	(void)output;
 }
 
 #endif
@@ -819,6 +887,8 @@ static void MainArcadeRaceLaunch_Drive(const struct GameTracker *gGT, struct Mai
 		MainArcadeRaceLaunch_DriveFailed(output);
 		return;
 	}
+	/* LR-73, LR-74: the autopilot's digest line and fault injection. */
+	MainArcadeRaceLaunch_AutopilotTick(output);
 	MainArcadeRaceLaunch_Sample(gGT, output->raceTick, &sample);
 	status = NativeArcadeLinkHost_RaceStep(output->raceTick, &s_mainArcadeRaceLaunchTickState, &sample, &facts, state->committed);
 	if (status == NATIVE_ARCADE_LINK_HOST_RACE_HOLD)

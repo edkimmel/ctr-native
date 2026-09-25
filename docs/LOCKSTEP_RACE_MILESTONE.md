@@ -531,7 +531,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-72; LR-17 is the owner's ruling)
+## 4. Decided design (defaults LR-1..LR-74; LR-17 is the owner's ruling)
 
 The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
 written, except that LR-18, the finish grace, amends LR-1, LR-12, LR-13,
@@ -543,8 +543,8 @@ changed, and "Owner decisions (2026-09-25)" after it lists the owner's
 decisions. LR-19..LR-27 were added by LR-S4, LR-28..LR-32 by LR-S5,
 LR-33..LR-36 by LR-S6, LR-37..LR-40 by LR-S7, LR-41..LR-48 by LR-S8,
 LR-49..LR-57 by LR-S9, LR-58..LR-60 by LR-S10 part 1, LR-61..LR-68 by
-LR-S10 part 2, LR-69..LR-71 by LR-S12, and LR-72 by LR-S11; each records
-the mechanics its slice settled.
+LR-S10 part 2, LR-69..LR-71 by LR-S12, LR-72 by LR-S11, and LR-73..LR-74
+by LR-S13 part A; each records the mechanics its slice settled.
 
 LR-1 Placement. The race driver lives under platform/, because game code
 may not name lockstep (tests/native_lockstep_isolation_test.cmake:128-157
@@ -2801,6 +2801,106 @@ FONT_SMALL and WHITE (MainArcadeLinkLayout.c's Body items).
   path), main_arcade_link_hook_isolation 16j and 16l (the read's place and
   its read-only body), and native_arcade_race_drive_isolation (the hold
   core's unit test may link the drive core, for the BannerDue pin).
+
+LR-73 The fault injections (LR-S13 part A, for LR-16's race 1 freeze and
+race 2 desync). Internal only, like the autopilot itself.
+
+- The options, parsed by NativeArcadeLinkAutopilotOptions_ApplyArgs:
+  --arcade-link-autopilot-freeze <t> and --arcade-link-autopilot-desync
+  <t>, each t 1..NATIVE_ARCADE_LINK_AUTOPILOT_RACE_TICKS_MAX (18000) with
+  exactly the race tick count's value rule (1 to 5 decimal digits, leading
+  zeros allowed within the five), each given at most once, and each
+  requiring --arcade-link-autopilot on the same command line; any error
+  fails the parse transactionally. They are the new last fields freezeTick
+  and desyncTick of struct NativeArcadeLinkAutopilotOptions (0: absent).
+  main.c's invalid-option message names both. main.c never reads the two
+  ticks: they need the autopilot, and main.c rejects the autopilot outside
+  CTR_INTERNAL and together with replay options, --arcade-roster-proof,
+  and --exit-after-frame, so those rejections cover them.
+- The run's state: struct NativeArcadeLinkAutopilot gains freezeTick and
+  desyncTick, copied by MainArcadeLinkAutopilot_Configure from the options
+  right after the race tick cap. They are reported nowhere (the report stays
+  "arcade link autopilot v2", unchanged).
+- The pure decision: uint32_t NativeArcadeLinkAutopilot_FaultAt(const struct
+  NativeArcadeLinkAutopilot *autopilot, uint32_t raceTick) returns
+  NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_FREEZE (1) iff freezeTick != 0,
+  raceTick == freezeTick, and racesStarted == 1 (the run's race 1);
+  _DESYNC (2) iff desyncTick != 0, raceTick == desyncTick, and
+  racesStarted == 2; _NONE (0) otherwise, for NULL, and once done. It only
+  reads. NATIVE_ARCADE_LINK_AUTOPILOT_FREEZE_PERIODS is 45 (1.5 s), and
+  NATIVE_ARCADE_LINK_AUTOPILOT_CONTROL_DIGEST is 0, the CONTROL domain's
+  index in the V4 state's domain digests.
+- The glue: uint32_t MainArcadeLinkAutopilot_Fault(uint32_t raceTick),
+  defined only in its CTR_INTERNAL part like MainArcadeLinkAutopilot_Active,
+  returns FaultAt over the run's state, NONE while inactive.
+- The race caller: MainArcadeRaceLaunch_AutopilotTick(output), in its
+  CTR_INTERNAL part with an inert #else stand-in, called exactly once per
+  drive tick, right after a successful ProjectState and before the sample.
+  While MainArcadeLinkAutopilot_Active() is 1 it logs the LR-74 line, then
+  asks MainArcadeLinkAutopilot_Fault(raceTick):
+  - FREEZE: the cabinet freezes itself, sending and taking nothing:
+    MainArcadeRaceHold_RunMode(MainArcadeRaceLaunch_FreezeStep, NULL,
+    MAIN_ARCADE_RACE_HOLD_MODE_NO_BANNER, NULL, &freeze), whose step names
+    no link host, netplay, or peer token and holds while periods <
+    FREEZE_PERIODS; then "race <n> race tick <t> froze <p> tick periods
+    (<us> us)". Reusing the hold loop keeps the window pumping and keeps
+    the hold module Platform_HostWaitMs's only caller. The drive tick then
+    goes on to the sample and the race step as usual.
+  - DESYNC: 1 is XORed into
+    s_mainArcadeRaceLaunchTickState.domainDigests[CONTROL_DIGEST] (the
+    CONTROL domain digest; combinedDigest untouched), after the line was
+    logged, so only the copy the race step hands to RecordLocalDigests
+    differs; then "race <n> race tick <t>: autopilot desync injection
+    flipped bit 0 of the CONTROL domain digest".
+  No retail state is written; no restart point, lease, NavHeader,
+  checkpoint, replay, or canonical-format change.
+- Why the XOR reaches only the recorded and sent digest: index 0 is CONTROL
+  (NativeCanonicalDomainOrder, platform/native_canonical_codec.c:9-10, the
+  order the V4 digests are computed in, platform/native_canonical_state_v4.c:31
+  and :39); RecordLocalDigests validates with NativeCanonicalStateV4_Validate
+  (platform/native_lockstep_session.c:413), which checks the versions,
+  counts, and sub-states and recomputes no digest
+  (platform/native_canonical_state_v4.c:30), and then copies the digests
+  (native_lockstep_session.c:443-444); the host and the drive pass the state
+  through unchanged and keep no pointer to it
+  (platform/native_arcade_link_host.c:551, platform/native_arcade_race_drive.c:449);
+  and nothing in the caller reads the static after the race step in the
+  same tick (it is named only at game/MAIN/MainArcadeRaceLaunch.c:164, the
+  declaration; :593, a static assert; :629 and :645, the line and the XOR;
+  :882, ProjectState; and :893, the race step), while the next tick's
+  ProjectState overwrites the whole state (game/MAIN/MainArcadeRaceDigest.c:278).
+- Pinned by native_arcade_link_autopilot_unit (the options, FaultAt, and the
+  CONTROL index against NativeCanonicalDomainOrder),
+  native_arcade_link_autopilot_isolation (1b, 2b, 4b, 6b),
+  main_arcade_link_hook_isolation 16j and 16m, and
+  main_arcade_race_hold_isolation 6 (the caller's second RunMode call, the
+  one NO_BANNER, is exactly the freeze's).
+
+LR-74 The per-tick digest lines (LR-S13 part A, LR-16's check). One
+Platform_Log line per projected race tick, only while the autopilot runs:
+
+    [CTR Native] arcade link: race <n> race tick <t> digests v4 <hex16> v4control <hex16> v4rng <hex16> v4input <hex16> v4drivers <hex16> v4world <hex16> v4topology <hex16>
+
+<n> is the caller's launch number, v4 the combined digest, and each <hex16>
+two lowercase %08x words, high word first (as LR-70's line). The line is the
+projected state before any injection, so both cabinets' lines stay equal in
+every race, the desync's race included. The domain names and order are the
+roster proof's tick line's: NativeArcadeRosterProof_SetTickLineV4 maps the
+V4 array by domain name through NativeCanonicalDomainOrder
+(platform/native_arcade_roster_proof.c:677, called by the proof hook at
+game/MAIN/MainArcadeRosterProof.c:732) and FormatTickLine prints the v4
+fields in that order (platform/native_arcade_roster_proof.c:1128). The
+caller does not copy that mapping: the roster proof module gains
+NativeArcadeRosterProof_FormatV4Digests (:1093), the tick line's V4 tail
+" v4 <hex16> ... v4topology <hex16>" over SetTickLineV4, printed by the same
+AppendV4 helper (:1080) FormatTickLine now uses, and the caller logs "race
+%u race tick %u digests%s" with it. The text could live nowhere else: the
+race caller may not name "topology" in any spelling
+(main_arcade_race_setup_isolation rule 4) and neither may the pure
+autopilot module (arcade_roster_proof_autopilot_isolation rule 1).
+FormatTickLine's own output is unchanged (native_arcade_roster_proof_unit's
+exact tick line passes). stdout is fully buffered when redirected; the
+buffering is unchanged.
 
 Review changes. The plan review (on befa152a9) changed these defaults:
 
@@ -5334,6 +5434,95 @@ Tests: native_arcade_link_autopilot_unit and its isolation (the new
 options are rejected outside CTR_INTERNAL and with replay options). A
 recorded non-skipped PASS of the full suite from a clean tree, with the
 measured gate time.
+
+Part A result: the fault injections and the per-tick digest lines (LR-73,
+LR-74). The run shape (two races), the report ("arcade link autopilot v2"),
+and tools/arcade-link-launch-check.ps1 are unchanged; part B switches the
+gate to three races and passes the new options.
+
+- Files: include/platform/native_arcade_link_autopilot.h and
+  platform/native_arcade_link_autopilot.c (the options, freezeTick and
+  desyncTick in the options and the run's state, FaultAt, FREEZE_PERIODS,
+  CONTROL_DIGEST, the header comment); game/MAIN/MainArcadeLinkAutopilot.{c,h}
+  (Configure's copy, MainArcadeLinkAutopilot_Fault); game/MAIN/MainArcadeRaceLaunch.c
+  (MainArcadeRaceLaunch_AutopilotTick and MainArcadeRaceLaunch_FreezeStep
+  in the CTR_INTERNAL part, the inert stand-in, the one call in the drive
+  tick); include/platform/native_arcade_roster_proof.h and
+  platform/native_arcade_roster_proof.c (FormatV4Digests and the shared
+  AppendV4; FormatTickLine's text unchanged); main.c (the invalid-option
+  message); CMakeLists.txt (the autopilot library's comment; the unit test
+  also links ctr_native_canonical_codec).
+- API: NativeArcadeLinkAutopilot_FaultAt,
+  NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE/_FREEZE/_DESYNC (0/1/2),
+  NATIVE_ARCADE_LINK_AUTOPILOT_FREEZE_PERIODS (45),
+  NATIVE_ARCADE_LINK_AUTOPILOT_CONTROL_DIGEST (0),
+  MainArcadeLinkAutopilot_Fault (internal only),
+  NativeArcadeRosterProof_FormatV4Digests and
+  NATIVE_ARCADE_ROSTER_PROOF_V4_DIGESTS_BYTES (256).
+- The verification facts (LR-73, "Why the XOR reaches only the recorded and
+  sent digest"): index 0 is CONTROL (native_canonical_codec.c:9-10;
+  native_canonical_state_v4.c:31, :39); RecordLocalDigests' Validate
+  recomputes no digest (native_lockstep_session.c:413,
+  native_canonical_state_v4.c:30) and copies them (:443-444); nothing
+  reads the static after the race step in the same tick
+  (MainArcadeRaceLaunch.c:164, :593, :629, :645, :882, :893), and the next
+  ProjectState overwrites it (MainArcadeRaceDigest.c:278).
+- Tests: native_arcade_link_autopilot_unit (TestFaultOptions: valid values
+  before and after the autopilot option, 0, 00000, 18001, six digits, a
+  value over 32 bits, '-', '+', hex, empty, trailing junk, a missing or
+  NULL value, an option as the value, repeated, without the autopilot
+  (either or both), and a valid option before a bad one, each leaving the
+  options byte-identical; near names ignored. TestFaultAt: no fault for 0
+  ticks in any race or before race 1; race 1's freeze only on its tick over
+  0..1200 and never its desync; race 2's desync only on its tick and never
+  its freeze; neither beyond race 2; one tick for both, each in its race;
+  NULL and done give NONE and FaultAt writes nothing; the report is
+  byte-identical with and without the ticks. TestDesyncTarget: CONTROL_DIGEST
+  is 0 and NativeCanonicalDomainOrder is CONTROL, RNG, INPUT, DRIVERS,
+  WORLD, TOPOLOGY); native_arcade_roster_proof_unit (TestFormatV4Digests:
+  the exact text for per-domain digests, equality with FormatTickLine's
+  tail for eight digest sets, the widest text within the buffer, and the
+  small-buffer and NULL cases); native_arcade_link_autopilot_isolation 1b,
+  2b, 4b, 6b; main_arcade_link_hook_isolation 16j (the call in the drive
+  tick's order, MainArcadeLinkAutopilot_Active twice, no glue call outside
+  the CTR_INTERNAL part) and 16m (the call directly between the
+  projection's failure return and the sample, the helper's order and texts,
+  each named only in the CTR_INTERNAL part, the inert stand-in, the freeze
+  step's body and its token ban, and the one digest write, with a
+  self-checked write scan); main_arcade_race_hold_isolation 6 (RunMode
+  exactly twice: the race hold with the banner and &glyphs, and the freeze
+  with NO_BANNER and no table, NO_BANNER named once).
+  native_host_wait_isolation needed no change: the freeze waits only
+  through the hold module.
+- Probes, each reverted (the tree was byte-identical afterwards, checked by
+  the hash of git diff):
+  - FaultAt: the freeze in any race (TestFaultAt failed), the desync in any
+    race (TestFaultAt), no done check (TestFaultAt), a 0 freeze tick
+    injecting (TestFaultAt), FREEZE_PERIODS 44 (TestFaultAt and autopilot
+    isolation 1b), CONTROL_DIGEST 1 (TestDesyncTarget);
+  - the parser: the freeze accepted without the autopilot
+    (TestFaultOptions; autopilot isolation 1b), a repeated tick option
+    accepted (TestRaceTicksOption), the freeze written straight into the
+    caller's options (TestFaultOptions);
+  - FormatV4Digests: RNG and CONTROL swapped instead of mapped by name, and
+    a trailing newline (TestFormatV4Digests each);
+  - the glue: Configure without the desync copy, and Fault without the
+    active check (autopilot isolation 2b each);
+  - main.c: the message without the desync option, and a read of
+    freezeTick (autopilot isolation 4b each);
+  - the race caller: the tick after the sample (hook 16j), called twice
+    (16m), the active check after the line (autopilot 6b and hook 16m), the
+    XOR before the line (16m), a write to combinedDigest (16m's write
+    scan), the freeze step naming NativeArcadeLinkHost_Mode (16m), a log in
+    the stand-in (16m), a glue call in the #else part (autopilot 6b and
+    hook 16j), the line's text and the XOR in a function outside the
+    CTR_INTERNAL part (16m each), the freeze held with the banner (hold
+    isolation 6 and hook 16m), a third RunMode call (hold isolation 6), and
+    the race hold without the banner (hold isolation 6).
+- Fast suite (-LE live): 154 of 154 passed. The live gate
+  arcade_link_launch runs on the committed tree; its result, the per-tick
+  line counts, and the gate time are reported with the commit, not recorded
+  here.
 
 ### LR-S14 -- docs close-out
 

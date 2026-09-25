@@ -596,6 +596,24 @@ int NativeArcadeRosterProof_SetTickLineV4(struct NativeArcadeRosterProofTickLine
 int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofTickLine *line, char *buffer,
 	size_t bufferSize, size_t *length);
 
+/* The buffer FormatV4Digests needs at most. */
+#define NATIVE_ARCADE_ROSTER_PROOF_V4_DIGESTS_BYTES 256u
+
+/*
+ * The tick line's V4 tail as text, " v4 <hex16> v4control <hex16> v4rng
+ * <hex16> v4input <hex16> v4drivers <hex16> v4world <hex16> v4topology
+ * <hex16>" (leading space, no newline), NUL-terminated, from a V4
+ * projection's combined digest and domainDigests (NATIVE_CANONICAL_DOMAIN_COUNT
+ * digests in NativeCanonicalDomainOrder), mapped by name as SetTickLineV4
+ * maps them and printed as FormatTickLine prints them. The Task 8 race
+ * caller's per-tick digest line (docs/LOCKSTEP_RACE_MILESTONE.md LR-74) is
+ * this text, so the two lines name and order the domains identically.
+ * *length excludes the NUL. 0 with an empty buffer on NULL arguments, a
+ * domain missing from the order, or a buffer too small.
+ */
+int NativeArcadeRosterProof_FormatV4Digests(uint64_t combined, const uint64_t *domainDigests, char *buffer, size_t bufferSize,
+	size_t *length);
+
 /* The configured config, profile, dwell, tick count, hold (1 when
  * requested), autopilot (1 when requested), seed, and log path;
  * NULL/0/empty when inactive. */

@@ -40,6 +40,24 @@
 #     Windows with SKIP_RETURN_CODE 77, RUN_SERIAL TRUE, and the label live,
 #     and the checker uses the fixed loopback ports and the autopilot option,
 #     passes the race tick cap 300, and reads the v2 report's race ticks line.
+# Since LR-S13 part A (docs/LOCKSTEP_RACE_MILESTONE.md LR-73, LR-74):
+#  1b. the module parses --arcade-link-autopilot-freeze and
+#      --arcade-link-autopilot-desync with the race tick count's value rule
+#      and rejects any of the three race tick options without
+#      --arcade-link-autopilot (so main.c's autopilot rejections, keyed on
+#      the enabled flag, cover them: non-internal builds, replay options, the
+#      roster proof, and --exit-after-frame), and defines the freeze length
+#      45 periods literally;
+#  2b. the glue's Configure copies the freeze and desync ticks right after
+#      the race tick cap, and MainArcadeLinkAutopilot_Fault, internal only,
+#      only answers the pure FaultAt over the run's state (NONE while
+#      inactive);
+#  4b. main.c's invalid-option message names both options, and main.c never
+#      reads the two ticks itself;
+#  6b. the race caller names the glue only in its include, two
+#      MainArcadeLinkAutopilot_Active calls, and one MainArcadeLinkAutopilot_Fault
+#      call, all inside its CTR_INTERNAL part, and its autopilot tick returns
+#      first while the autopilot is inactive.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade link autopilot isolation")
@@ -205,6 +223,25 @@ foreach(term IN ITEMS printf puts fputs stdout stderr remove rename fprintf)
     endif()
 endforeach()
 ctr_require_literal("${module_source}" "${module_code}" "static const char k_autopilotOption[] = \"--arcade-link-autopilot\";")
+# 1b. The fault options (LR-73): the same value rule as the race tick count,
+# and each needs the autopilot.
+foreach(literal IN ITEMS "static const char k_freezeOption[] = \"--arcade-link-autopilot-freeze\";"
+        "static const char k_desyncOption[] = \"--arcade-link-autopilot-desync\";"
+        "tickValue = &candidate.raceTickLimit;" "tickValue = &candidate.freezeTick;" "tickValue = &candidate.desyncTick;"
+        "!NativeArcadeLinkAutopilotOptions_ParseRaceTicks(argv[index + 1], tickValue)"
+        "if ((seenRaceTicks || seenFreeze || seenDesync) && !seen)")
+    ctr_require_literal("${module_source}" "${module_code}" "${literal}")
+endforeach()
+ctr_count("${module_code}" "NativeArcadeLinkAutopilotOptions_ParseRaceTicks\\(" parse_value_hits)
+if(NOT parse_value_hits EQUAL 2)
+    message(FATAL_ERROR "${prefix}: ${module_source} must define the race tick value rule once and use it once, for all three race tick options (found ${parse_value_hits})")
+endif()
+ctr_count("${header_code}" "#define NATIVE_ARCADE_LINK_AUTOPILOT_FREEZE_PERIODS 45u\n" freeze_periods_hits)
+if(NOT freeze_periods_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${module_header} must define NATIVE_ARCADE_LINK_AUTOPILOT_FREEZE_PERIODS as 45u (LR-16's 1.5 s freeze)")
+endif()
+ctr_require_literal("${module_header}" "${header_code}"
+    "uint32_t NativeArcadeLinkAutopilot_FaultAt(const struct NativeArcadeLinkAutopilot *autopilot, uint32_t raceTick);")
 
 ctr_read_source("CMakeLists.txt" cmake)
 string(FIND "${cmake}" "add_library(ctr_native_arcade_link_autopilot STATIC platform/native_arcade_link_autopilot.c)" library_at)
@@ -289,7 +326,7 @@ string(SUBSTRING "${internal_tail}" 0 ${internal_else} internal_part)
 string(SUBSTRING "${glue_code}" ${else_at} -1 else_part)
 # The implementation (configure, the exit request, the state) is internal only.
 foreach(term IN ITEMS "void MainArcadeLinkAutopilot_Configure(" "Platform_RequestExit(" "static struct MainArcadeLinkAutopilotState s_mainArcadeLinkAutopilot;"
-        "uint8_t MainArcadeLinkAutopilot_Active(void)")
+        "uint8_t MainArcadeLinkAutopilot_Active(void)" "uint32_t MainArcadeLinkAutopilot_Fault(uint32_t raceTick)")
     ctr_require_literal("${glue_source} (CTR_INTERNAL part)" "${internal_part}" "${term}")
     ctr_forbid("${glue_source} (#else part)" "${else_part}" "${term}")
 endforeach()
@@ -299,16 +336,31 @@ ctr_block_text("${glue_source}" "${internal_part}"
     "void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOptions *options)" configure_block)
 ctr_require_order("${glue_source} (MainArcadeLinkAutopilot_Configure)" "${configure_block}"
     "NativeArcadeLinkAutopilot_Init(&state->autopilot);" "state->autopilot.raceTickLimit = options->raceTickLimit;"
+    "state->autopilot.freezeTick = options->freezeTick;" "state->autopilot.desyncTick = options->desyncTick;"
     "state->active = 1u;")
-ctr_count("${glue_code}" "raceTickLimit" cap_hits)
-if(NOT cap_hits EQUAL 2)
-    message(FATAL_ERROR "${prefix}: ${glue_source} may name raceTickLimit only in Configure's one copy (found ${cap_hits})")
-endif()
+foreach(field IN ITEMS raceTickLimit freezeTick desyncTick)
+    ctr_count("${glue_code}" "${field}" field_hits)
+    if(NOT field_hits EQUAL 2)
+        message(FATAL_ERROR "${prefix}: ${glue_source} may name ${field} only in Configure's one copy (found ${field_hits})")
+    endif()
+endforeach()
 ctr_block_text("${glue_source}" "${internal_part}" "uint8_t MainArcadeLinkAutopilot_Active(void)" active_block)
 if(NOT active_block MATCHES "^\\{[ \t\r\n]*return s_mainArcadeLinkAutopilot\\.active;[ \t\r\n]*\\}$")
     message(FATAL_ERROR "${prefix}: MainArcadeLinkAutopilot_Active must only return the active flag (found '${active_block}')")
 endif()
 ctr_require_literal("${glue_header}" "${glue_header_code}" "uint8_t MainArcadeLinkAutopilot_Active(void);")
+# 2b. The fault query (LR-73): only the pure decision over the run's state,
+# NONE while inactive.
+ctr_block_text("${glue_source}" "${internal_part}" "uint32_t MainArcadeLinkAutopilot_Fault(uint32_t raceTick)" fault_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " fault_flat "${fault_block}")
+if(NOT fault_flat STREQUAL "{ if (s_mainArcadeLinkAutopilot.active == 0u) { return NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE; } return NativeArcadeLinkAutopilot_FaultAt(&s_mainArcadeLinkAutopilot.autopilot, raceTick); }")
+    message(FATAL_ERROR "${prefix}: MainArcadeLinkAutopilot_Fault must only return FaultAt over the run's state, NONE while inactive (found '${fault_flat}')")
+endif()
+ctr_require_literal("${glue_header}" "${glue_header_code}" "uint32_t MainArcadeLinkAutopilot_Fault(uint32_t raceTick);")
+ctr_count("${glue_code}" "NativeArcadeLinkAutopilot_FaultAt\\(" fault_at_hits)
+if(NOT fault_at_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${glue_source} must ask NativeArcadeLinkAutopilot_FaultAt exactly once, in MainArcadeLinkAutopilot_Fault (found ${fault_at_hits})")
+endif()
 ctr_count("${glue_code}" "Platform_RequestExit\\(" exit_hits)
 if(NOT exit_hits EQUAL 1)
     message(FATAL_ERROR "${prefix}: ${glue_source} must request the exit exactly once (found ${exit_hits})")
@@ -448,6 +500,19 @@ ctr_count("${main_code}" "NativeArcadeLinkAutopilotOptions_ApplyArgs\\(" parse_h
 if(NOT parse_hits EQUAL 1)
     message(FATAL_ERROR "${prefix}: main.c must parse the autopilot option exactly once (found ${parse_hits})")
 endif()
+# 4b. The fault options (LR-73) need the autopilot (1b), so the enabled-flag
+# rejections above cover them; main.c names them in its invalid-option
+# message and never reads the two ticks itself (only the glue's Configure).
+ctr_block_text("main.c" "${main_code}" "if (!NativeArcadeLinkAutopilotOptions_ApplyArgs(argc, argv, &arcadeLinkAutopilotOptions))" invalid_block)
+ctr_require_order("main.c (autopilot invalid option)" "${invalid_block}"
+    "--arcade-link-autopilot <report path> (once)"
+    "[--arcade-link-autopilot-race-ticks <1-18000> (once, needs --arcade-link-autopilot)]"
+    "[--arcade-link-autopilot-freeze <1-18000> (once, needs --arcade-link-autopilot)]"
+    "[--arcade-link-autopilot-desync <1-18000> (once, needs --arcade-link-autopilot)]"
+    "return NativeConsole_Return(1);")
+foreach(field IN ITEMS freezeTick desyncTick)
+    ctr_forbid("main.c" "${main_code}" "${field}")
+endforeach()
 
 # 5. The unity chain.
 ctr_read_source("game/game_unity.h" unity)
@@ -476,21 +541,41 @@ ctr_require_order("${caller_source} (MainArcadeRaceLaunch_LogDigests)" "${log_bl
     "MainArcadeRaceSetup_Digests(digests[0], digests[1], digests[2], digests[3])"
     "MAIN_ARCADE_RACE_LAUNCH_LOG \"race %u validated config %s plan %s bots %s bank %s\\n\""
     "s_mainArcadeRaceLaunch.validatedDigests" "s_mainArcadeRaceLaunch.validatedRace = raceNumber;" "s_mainArcadeRaceLaunch.validatedRaces++;")
-# Since LR-S10 part 2 the caller asks the glue one read-only question, and
-# only in internal builds: whether the autopilot runs (so its local sample is
-# the steering pad, LR-16). It names the glue only in the header include and
-# that one call, the first statement of MainArcadeRaceLaunch_AutopilotSample
-# inside its #if defined(CTR_INTERNAL) part.
+# Since LR-S10 part 2 the caller asks the glue read-only questions, and only
+# in internal builds: whether the autopilot runs (so its local sample is the
+# steering pad, LR-16), and since LR-S13 part A (LR-73, LR-74) whether it
+# runs (for the per-tick digest line) and which fault injection a race tick
+# gets. It names the glue only in the header include, the two
+# MainArcadeLinkAutopilot_Active calls (the first statements of
+# MainArcadeRaceLaunch_AutopilotSample and MainArcadeRaceLaunch_AutopilotTick),
+# and the one MainArcadeLinkAutopilot_Fault call, all inside its
+# #if defined(CTR_INTERNAL) part.
 string(REGEX MATCHALL "MainArcadeLinkAutopilot[A-Za-z0-9_.]*" caller_glue_names "${caller_code}")
-if(NOT "${caller_glue_names}" STREQUAL "MainArcadeLinkAutopilot.h;MainArcadeLinkAutopilot_Active")
-    message(FATAL_ERROR "${prefix}: ${caller_source} may name the glue only in its include and one MainArcadeLinkAutopilot_Active call (found '${caller_glue_names}')")
+if(NOT "${caller_glue_names}" STREQUAL "MainArcadeLinkAutopilot.h;MainArcadeLinkAutopilot_Active;MainArcadeLinkAutopilot_Active;MainArcadeLinkAutopilot_Fault")
+    message(FATAL_ERROR "${prefix}: ${caller_source} may name the glue only in its include, two MainArcadeLinkAutopilot_Active calls, and one MainArcadeLinkAutopilot_Fault call (found '${caller_glue_names}')")
 endif()
 string(FIND "${caller_code}" "#if defined(CTR_INTERNAL)" caller_internal_at)
 string(FIND "${caller_code}" "#else" caller_else_at)
-string(FIND "${caller_code}" "MainArcadeLinkAutopilot_Active()" caller_active_at)
-if(caller_internal_at EQUAL -1 OR caller_else_at LESS caller_internal_at OR caller_active_at LESS caller_internal_at OR
-        caller_active_at GREATER caller_else_at)
-    message(FATAL_ERROR "${prefix}: ${caller_source} must call MainArcadeLinkAutopilot_Active only inside its #if defined(CTR_INTERNAL) part")
+if(caller_internal_at EQUAL -1 OR caller_else_at LESS caller_internal_at)
+    message(FATAL_ERROR "${prefix}: ${caller_source} has no #if defined(CTR_INTERNAL) ... #else part")
+endif()
+math(EXPR caller_internal_length "${caller_else_at} - ${caller_internal_at}")
+string(SUBSTRING "${caller_code}" ${caller_internal_at} ${caller_internal_length} caller_internal_part)
+string(SUBSTRING "${caller_code}" 0 ${caller_internal_at} caller_before_internal)
+string(SUBSTRING "${caller_code}" ${caller_else_at} -1 caller_after_internal)
+string(FIND "${caller_before_internal}${caller_after_internal}" "MainArcadeLinkAutopilot_" caller_outside_glue_at)
+ctr_count("${caller_internal_part}" "MainArcadeLinkAutopilot_(Active|Fault)\\(" caller_inside_glue_calls)
+if(NOT caller_outside_glue_at EQUAL -1 OR NOT caller_inside_glue_calls EQUAL 3)
+    message(FATAL_ERROR "${prefix}: ${caller_source} must call MainArcadeLinkAutopilot_Active and MainArcadeLinkAutopilot_Fault only inside its #if defined(CTR_INTERNAL) part (found ${caller_inside_glue_calls} calls inside)")
+endif()
+ctr_block_text("${caller_source}" "${caller_internal_part}"
+    "static void MainArcadeRaceLaunch_AutopilotTick(const struct MainArcadeRaceLaunchCoreOutput *output)" tick_block)
+if(NOT tick_block MATCHES "^\\{([ \t\r\n]*(struct|char|size_t|uint32_t)[ \t]+[A-Za-z_][A-Za-z0-9_ ]*[ \t\\*]*[A-Za-z_][A-Za-z0-9_]*(\\[[A-Z0-9_]+\\])?( = 0u)?;)*[ \t\r\n]*if \\(MainArcadeLinkAutopilot_Active\\(\\) == 0u\\)[ \t\r\n]*\\{[ \t\r\n]*return;")
+    message(FATAL_ERROR "${prefix}: MainArcadeRaceLaunch_AutopilotTick must return first, before touching anything, while the autopilot is inactive")
+endif()
+ctr_count("${tick_block}" "MainArcadeLinkAutopilot_Fault\\(output->raceTick\\)" tick_fault_hits)
+if(NOT tick_fault_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: MainArcadeRaceLaunch_AutopilotTick must ask MainArcadeLinkAutopilot_Fault(output->raceTick) exactly once (found ${tick_fault_hits})")
 endif()
 ctr_block_text("${caller_source}" "${caller_code}"
     "static int MainArcadeRaceLaunch_AutopilotSample(const struct GameTracker *gGT, uint32_t raceTick, struct NativeArcadeLinkHostPad *sample)"

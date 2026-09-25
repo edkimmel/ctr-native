@@ -19,6 +19,8 @@
 
 static const char k_autopilotOption[] = "--arcade-link-autopilot";
 static const char k_raceTicksOption[] = "--arcade-link-autopilot-race-ticks";
+static const char k_freezeOption[] = "--arcade-link-autopilot-freeze";
+static const char k_desyncOption[] = "--arcade-link-autopilot-desync";
 
 /* The RESULTS row a decision confirmed, stored + 1 so 0 means none. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_CONFIRMED_NONE 0u
@@ -38,8 +40,9 @@ void NativeArcadeLinkAutopilotOptions_SetDefaults(struct NativeArcadeLinkAutopil
 	memset(options, 0, sizeof(*options));
 }
 
-/* The race tick count: 1 to 5 decimal digits, nothing else, with a value of
- * 1..RACE_TICKS_MAX (LR-60). */
+/* A race tick value (the race tick count, LR-60; the freeze and desync
+ * ticks, LR-73): 1 to 5 decimal digits, nothing else, with a value of
+ * 1..RACE_TICKS_MAX. */
 static int NativeArcadeLinkAutopilotOptions_ParseRaceTicks(const char *text, uint32_t *value)
 {
 	uint32_t result = 0u;
@@ -66,6 +69,8 @@ int NativeArcadeLinkAutopilotOptions_ApplyArgs(int argc, char *argv[], struct Na
 	struct NativeArcadeLinkAutopilotOptions candidate;
 	int seen = 0;
 	int seenRaceTicks = 0;
+	int seenFreeze = 0;
+	int seenDesync = 0;
 
 	if ((options == NULL) || (argc < 0) || ((argc > 0) && (argv == NULL)))
 	{
@@ -77,15 +82,33 @@ int NativeArcadeLinkAutopilotOptions_ApplyArgs(int argc, char *argv[], struct Na
 		const char *arg = argv[index];
 		const char *value;
 		size_t length;
+		uint32_t *tickValue = NULL;
+		int *tickSeen = NULL;
 
+		/* The three race tick options share one value rule. */
 		if ((arg != NULL) && (strcmp(arg, k_raceTicksOption) == 0))
 		{
-			if (seenRaceTicks || (index + 1 >= argc) || (argv[index + 1] == NULL) ||
-			    !NativeArcadeLinkAutopilotOptions_ParseRaceTicks(argv[index + 1], &candidate.raceTickLimit))
+			tickValue = &candidate.raceTickLimit;
+			tickSeen = &seenRaceTicks;
+		}
+		else if ((arg != NULL) && (strcmp(arg, k_freezeOption) == 0))
+		{
+			tickValue = &candidate.freezeTick;
+			tickSeen = &seenFreeze;
+		}
+		else if ((arg != NULL) && (strcmp(arg, k_desyncOption) == 0))
+		{
+			tickValue = &candidate.desyncTick;
+			tickSeen = &seenDesync;
+		}
+		if (tickValue != NULL)
+		{
+			if (*tickSeen || (index + 1 >= argc) || (argv[index + 1] == NULL) ||
+			    !NativeArcadeLinkAutopilotOptions_ParseRaceTicks(argv[index + 1], tickValue))
 			{
 				return 0;
 			}
-			seenRaceTicks = 1;
+			*tickSeen = 1;
 			index++;
 			continue;
 		}
@@ -108,9 +131,10 @@ int NativeArcadeLinkAutopilotOptions_ApplyArgs(int argc, char *argv[], struct Na
 		candidate.enabled = 1u;
 		seen = 1;
 	}
-	/* The race tick count only lowers the autopilot race's bound: without
-	 * the autopilot it is an error. */
-	if (seenRaceTicks && !seen)
+	/* The race tick count only lowers the autopilot race's bound, and the
+	 * freeze and desync ticks only inject into the autopilot's run (LR-73):
+	 * without the autopilot each is an error. */
+	if ((seenRaceTicks || seenFreeze || seenDesync) && !seen)
 	{
 		return 0;
 	}
@@ -712,4 +736,22 @@ int NativeArcadeLinkAutopilot_Passed(const struct NativeArcadeLinkAutopilotPassF
 	ax = NativeArcadeLinkAutopilot_Delta(facts->pointX, facts->previousX);
 	az = NativeArcadeLinkAutopilot_Delta(facts->pointZ, facts->previousZ);
 	return ((kx * ax) + (kz * az)) > 0;
+}
+
+/* Fault injections (LR-73): race 1's freeze, race 2's desync. */
+uint32_t NativeArcadeLinkAutopilot_FaultAt(const struct NativeArcadeLinkAutopilot *autopilot, uint32_t raceTick)
+{
+	if ((autopilot == NULL) || (autopilot->done != 0u))
+	{
+		return NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE;
+	}
+	if ((autopilot->freezeTick != 0u) && (raceTick == autopilot->freezeTick) && (autopilot->racesStarted == 1u))
+	{
+		return NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_FREEZE;
+	}
+	if ((autopilot->desyncTick != 0u) && (raceTick == autopilot->desyncTick) && (autopilot->racesStarted == 2u))
+	{
+		return NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_DESYNC;
+	}
+	return NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE;
 }

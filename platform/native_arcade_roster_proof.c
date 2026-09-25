@@ -1075,6 +1075,56 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	return 1;
 }
 
+/* v11 (LR-S4): the live V4 state's combined and domain digests, the tick
+ * line's tail (no newline). Shared with FormatV4Digests (LR-74). */
+static void NativeArcadeRosterProof_AppendV4(struct NativeArcadeRosterProofText *text, const struct NativeArcadeRosterProofTickLine *line)
+{
+	NativeArcadeRosterProof_Append(text, " v4 %08x%08x v4control %08x%08x v4rng %08x%08x v4input %08x%08x",
+		(unsigned)(uint32_t)(line->v4 >> 32), (unsigned)(uint32_t)(line->v4 & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->v4Control >> 32), (unsigned)(uint32_t)(line->v4Control & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->v4Rng >> 32), (unsigned)(uint32_t)(line->v4Rng & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->v4Input >> 32), (unsigned)(uint32_t)(line->v4Input & 0xFFFFFFFFu));
+	NativeArcadeRosterProof_Append(text, " v4drivers %08x%08x v4world %08x%08x v4topology %08x%08x",
+		(unsigned)(uint32_t)(line->v4Drivers >> 32), (unsigned)(uint32_t)(line->v4Drivers & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->v4World >> 32), (unsigned)(uint32_t)(line->v4World & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->v4Topology >> 32), (unsigned)(uint32_t)(line->v4Topology & 0xFFFFFFFFu));
+}
+
+int NativeArcadeRosterProof_FormatV4Digests(uint64_t combined, const uint64_t *domainDigests, char *buffer, size_t bufferSize,
+	size_t *length)
+{
+	struct NativeArcadeRosterProofTickLine line;
+	struct NativeArcadeRosterProofText text;
+
+	if ((buffer == NULL) || (bufferSize == 0u) || (length == NULL))
+	{
+		if ((buffer != NULL) && (bufferSize != 0u))
+		{
+			buffer[0] = '\0';
+		}
+		return 0;
+	}
+	buffer[0] = '\0';
+	memset(&line, 0, sizeof(line));
+	/* The domain digests by name, as the tick line maps them. */
+	if (!NativeArcadeRosterProof_SetTickLineV4(&line, combined, domainDigests))
+	{
+		return 0;
+	}
+	text.buffer = buffer;
+	text.size = bufferSize;
+	text.length = 0;
+	text.ok = 1;
+	NativeArcadeRosterProof_AppendV4(&text, &line);
+	if (!text.ok)
+	{
+		buffer[0] = '\0';
+		return 0;
+	}
+	*length = text.length;
+	return 1;
+}
+
 int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofTickLine *line, char *buffer,
 	size_t bufferSize, size_t *length)
 {
@@ -1098,16 +1148,8 @@ int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofT
 	{
 		NativeArcadeRosterProof_Append(&text, "%02x", (unsigned)line->drivers[i]);
 	}
-	/* v11 (LR-S4): the live V4 state's combined and domain digests. */
-	NativeArcadeRosterProof_Append(&text, " v4 %08x%08x v4control %08x%08x v4rng %08x%08x v4input %08x%08x",
-		(unsigned)(uint32_t)(line->v4 >> 32), (unsigned)(uint32_t)(line->v4 & 0xFFFFFFFFu),
-		(unsigned)(uint32_t)(line->v4Control >> 32), (unsigned)(uint32_t)(line->v4Control & 0xFFFFFFFFu),
-		(unsigned)(uint32_t)(line->v4Rng >> 32), (unsigned)(uint32_t)(line->v4Rng & 0xFFFFFFFFu),
-		(unsigned)(uint32_t)(line->v4Input >> 32), (unsigned)(uint32_t)(line->v4Input & 0xFFFFFFFFu));
-	NativeArcadeRosterProof_Append(&text, " v4drivers %08x%08x v4world %08x%08x v4topology %08x%08x\n",
-		(unsigned)(uint32_t)(line->v4Drivers >> 32), (unsigned)(uint32_t)(line->v4Drivers & 0xFFFFFFFFu),
-		(unsigned)(uint32_t)(line->v4World >> 32), (unsigned)(uint32_t)(line->v4World & 0xFFFFFFFFu),
-		(unsigned)(uint32_t)(line->v4Topology >> 32), (unsigned)(uint32_t)(line->v4Topology & 0xFFFFFFFFu));
+	NativeArcadeRosterProof_AppendV4(&text, line);
+	NativeArcadeRosterProof_Append(&text, "\n");
 	if (!text.ok)
 	{
 		buffer[0] = '\0';

@@ -21,20 +21,32 @@
  *                                           1..18000; docs/LOCKSTEP_RACE_MILESTONE.md
  *                                           LR-42, LR-60); needs
  *                                           --arcade-link-autopilot
+ *   --arcade-link-autopilot-freeze <t>      race 1 of the run freezes this
+ *                                           cabinet on race tick t (decimal
+ *                                           1..18000; docs/LOCKSTEP_RACE_MILESTONE.md
+ *                                           LR-73); needs --arcade-link-autopilot
+ *   --arcade-link-autopilot-desync <t>      race 2 of the run flips a bit of
+ *                                           this cabinet's recorded digest of
+ *                                           race tick t (decimal 1..18000;
+ *                                           LR-73); needs --arcade-link-autopilot
  *
  * The report path is opened as given when the report is written: a relative
  * path resolves against the base directory (main.c changes into it before
  * the game starts). Parsing is transactional: on any error the caller's
- * options are left untouched. Arguments other than this option are ignored,
- * because other host parsers own them. A missing value (end of argv, a NULL
- * entry, or a next argument starting with '-'), an empty or over-long path,
- * or a repeated option is an error; so is a race tick count that is not 1 to
- * 5 decimal digits with a value of 1..RACE_TICKS_MAX, and a race tick count
- * without --arcade-link-autopilot. main.c hands the count to the link host's
- * race tick limit setter after its Configure; 0 (absent) keeps the default
- * bound. main.c requires --arcade-link with it and
- * rejects it together with --arcade-roster-proof, --exit-after-frame, and
- * every replay record or playback option.
+ * options are left untouched. Arguments other than these options are
+ * ignored, because other host parsers own them. A missing value (end of
+ * argv, a NULL entry, or a next argument starting with '-'), an empty or
+ * over-long path, or a repeated option is an error; so is a race tick count,
+ * freeze tick, or desync tick that is not 1 to 5 decimal digits with a value
+ * of 1..RACE_TICKS_MAX, and any of the three without
+ * --arcade-link-autopilot. main.c hands the count to the link host's race
+ * tick limit setter after its Configure; 0 (absent) keeps the default bound.
+ * The freeze and desync ticks reach the run through the game glue's
+ * Configure (0: absent, no injection) and are reported nowhere. main.c
+ * requires --arcade-link with the autopilot and rejects it (and so every
+ * option that needs it) in non-internal builds and together with
+ * --arcade-roster-proof, --exit-after-frame, and every replay record or
+ * playback option.
  *
  * The run (RL-15): START on the attract screen, CROSS to confirm each select
  * item, REMATCH after race 1, EXIT after race 2, then exit with the result
@@ -143,6 +155,18 @@
  *   and (point - previous).
  * The buttons are the PSX pad's active-high bits (a set bit is held); a pad
  * word is active low, so the caller clears them from an all-released word.
+ *
+ * Fault injections (docs/LOCKSTEP_RACE_MILESTONE.md LR-73, for the LR-16
+ * gate; internal builds only, like the options). FaultAt is the pure
+ * decision for one projected race tick of the run: FREEZE on race 1's
+ * freezeTick, DESYNC on race 2's desyncTick (the race is racesStarted, the
+ * START_RACEs recorded so far), NONE otherwise, for a 0 tick (absent), for
+ * NULL, and once done. The race caller carries them out: a FREEZE holds the
+ * cabinet for FREEZE_PERIODS tick periods sending and taking nothing, a
+ * DESYNC XORs 1 into the CONTROL domain digest (index CONTROL_DIGEST of the
+ * V4 state's domain digests) of the state it hands to the link host's race
+ * step, after the tick's digest line (LR-74, which the race caller logs
+ * while the autopilot runs) was logged.
  */
 
 #define NATIVE_ARCADE_LINK_AUTOPILOT_PATH_BYTES 512u
@@ -161,6 +185,16 @@
 #define NATIVE_ARCADE_LINK_AUTOPILOT_DIGEST_COUNT 4u
 /* The report buffer FormatReport needs at most. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_BYTES 2048u
+
+/* Fault injections (LR-73): FaultAt's decisions. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE 0u
+#define NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_FREEZE 1u
+#define NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_DESYNC 2u
+/* A freeze holds this many tick periods (1.5 s at 30 Hz, LR-16). */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_FREEZE_PERIODS 45u
+/* The index of the CONTROL domain digest in the V4 state's domain digest
+ * array (its first domain): the desync injection's target. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_CONTROL_DIGEST 0u
 
 /* Steering (LR-16): the PSX pad bits of the steering pad profile. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_RIGHT 0x0020u
@@ -194,6 +228,10 @@ struct NativeArcadeLinkAutopilotOptions
 	char reportPath[NATIVE_ARCADE_LINK_AUTOPILOT_PATH_BYTES];
 	/* --arcade-link-autopilot-race-ticks, 1..RACE_TICKS_MAX; 0 when absent */
 	uint32_t raceTickLimit;
+	/* --arcade-link-autopilot-freeze and --arcade-link-autopilot-desync,
+	 * 1..RACE_TICKS_MAX; 0 when absent (LR-73) */
+	uint32_t freezeTick;
+	uint32_t desyncTick;
 };
 
 /* One race of the run, in this cabinet's order. */
@@ -238,6 +276,10 @@ struct NativeArcadeLinkAutopilot
 	/* the --arcade-link-autopilot-race-ticks cap the run was configured
 	 * with (0: absent, the default bound); reported only, never decides */
 	uint32_t raceTickLimit;
+	/* the fault injections' race ticks the run was configured with (0:
+	 * absent); only FaultAt reads them, and no report line names them */
+	uint32_t freezeTick;
+	uint32_t desyncTick;
 	struct NativeArcadeLinkAutopilotRace races[NATIVE_ARCADE_LINK_AUTOPILOT_RACES];
 };
 
@@ -351,5 +393,10 @@ uint32_t NativeArcadeLinkAutopilot_Steer(const struct NativeArcadeLinkAutopilotS
 /* 1 when the kart passed the restart point (see Steering above); 0 otherwise
  * and for NULL. A zero approach segment leaves only the radius. */
 int NativeArcadeLinkAutopilot_Passed(const struct NativeArcadeLinkAutopilotPassFacts *facts);
+
+/* The fault injection of one projected race tick of the run (see Fault
+ * injections above): NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_*; NONE for NULL and
+ * once done. Reads only. */
+uint32_t NativeArcadeLinkAutopilot_FaultAt(const struct NativeArcadeLinkAutopilot *autopilot, uint32_t raceTick);
 
 #endif

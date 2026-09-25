@@ -268,7 +268,7 @@ int main(int argc, char *argv[])
 	NativeArcadeLinkAutopilotOptions_SetDefaults(&arcadeLinkAutopilotOptions);
 	if (!NativeArcadeLinkAutopilotOptions_ApplyArgs(argc, argv, &arcadeLinkAutopilotOptions))
 	{
-		fprintf(stderr, "[CTR Native] invalid arcade link autopilot option; expected --arcade-link-autopilot <report path> (once) [--arcade-link-autopilot-race-ticks <1-18000> (once, needs --arcade-link-autopilot)].\n");
+		fprintf(stderr, "[CTR Native] invalid arcade link autopilot option; expected --arcade-link-autopilot <report path> (once) [--arcade-link-autopilot-race-ticks <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-freeze <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-desync <1-18000> (once, needs --arcade-link-autopilot)].\n");
 		return NativeConsole_Return(1);
 	}
 #if !defined(CTR_INTERNAL)
