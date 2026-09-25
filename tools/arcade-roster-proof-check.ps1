@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Executable,
 
-    # Absolute directory for the ten reports and their stdout/stderr logs.
+    # Absolute directory for the eleven reports and their stdout/stderr logs.
     # Each run uses it as its working directory; the game itself still writes
     # the gitignored `Crash Team Racing.log` in the repository root.
     [Parameter(Mandatory = $true)]
@@ -16,21 +16,24 @@ param(
     # [CmdletBinding()] script run with -File.
     [string]$AssetsFile,
 
-    # Race ticks each run (A-J) logs (--arcade-roster-proof-ticks).
+    # Race ticks each run (A-K) logs (--arcade-roster-proof-ticks), 1..3600.
+    # Run K holds at race tick 300, so it is skipped (with a note) when this
+    # is 300 or less; the other runs take any count.
     [int]$Ticks = 900,
 
-    # Seconds all ten runs together may take (parallel), or each run
+    # Seconds all eleven runs together may take (parallel), or each run
     # (-Sequential).
     [int]$TimeoutSeconds = 600,
 
-    # Run the ten proofs one after another instead of all at once.
+    # Run the eleven proofs one after another instead of all at once.
     [switch]$Sequential
 )
 
 # Live roster determinism check (docs/ROSTER_MILESTONE.md section 3.4, R-6,
-# R-6b, R-6c, R-6d, and OC-3).  Runs ten live roster proofs, five of the
-# two-cabinet profile (A-E) and five of the single-cabinet profile (F-J), and
-# compares their reports:
+# R-6b, R-6c, R-6d, and OC-3; run K is docs/LOCKSTEP_RACE_MILESTONE.md LR-S2
+# (a)).  Runs eleven live roster proofs, five of the two-cabinet profile
+# (A-E), five of the single-cabinet profile (F-J), and A again with the stall
+# hold (K), and compares their reports:
 #   A  two-cab, seed 0x5EED, dwell 0     (launches from the title)
 #   B  two-cab, seed 0x5EED, dwell 0     (A again: byte-identical report)
 #   C  two-cab, seed 0x5EED, dwell 5400  (launches from inside the attract
@@ -58,12 +61,16 @@ param(
 #                                         an odd number of ticks off F's at
 #                                         launch: the one-cab E; the check
 #                                         verifies the offset is odd)
+#   K  two-cab, seed 0x5EED, dwell 0,    (A with --arcade-roster-proof-hold:
+#      hold                               the race holds for 45 tick periods
+#                                         of wall time at race tick 300 in
+#                                         the stall hold loop, LR-9)
 # A-E pass no --arcade-roster-proof-profile, so they run on the default
 # profile (two-cab) with the command lines they had before OC-3, and their
 # reports must say "profile TWO_CAB"; F-J pass --arcade-roster-proof-profile
 # one-cab and must say "profile ONE_CAB".
 #
-# Tick counts.  Every run (A-J) logs -Ticks race ticks (900 in ctest), and
+# Tick counts.  Every run (A-K) logs -Ticks race ticks (900 in ctest), and
 # all its per-run expectations (tick lines, "end ticks N", the tick
 # comparisons) use that count.  The ONE_CAB cap (90 race ticks, which ended
 # before the green light) was lifted once game/UI/UI_Rank.c's uninitialized
@@ -72,7 +79,21 @@ param(
 # rcontrol, and topology-free drivers digests (the Physics group itself is
 # not digested, RS-13).
 #
-# Every report must be format v8 with result PASS, the profile line right
+# Run K (LR-S2 (a)).  The hold loop emits no VBlank, pumps host events, and
+# redraws the displayed frame with a banner once per period after the grace,
+# so the race must not notice it: every line of K's report except its "hold"
+# line must equal A's (the header, the setup evidence, and the control,
+# rcontrol, rng, input, and drivers digests of every tick).  K's hold line
+# must show the hold at race tick 300 for 45 periods; frameTimer
+# (gGT->frameTimer_VsyncCallback) advancing by exactly 2 from race tick 299
+# to race tick 300 and not at all inside the hold (entry = exit); a wall
+# time within 10% of 45 tick periods on both clocks: the loop's own (the
+# platform clock it counts periods on) and the independent one the proof
+# hook reads around the hold (C11 timespec_get); at least one host event pump in
+# every ended period; and every due banner presented.  Every other run's
+# hold line must be "hold none".
+#
+# Every report must be format v9 with result PASS, the profile line right
 # after the result line, the expected launch window, both counter lines, a
 # seeded line ending "match 1", eight slot lines, exactly the run's requested
 # tick lines numbered from 0, and "end ticks N".  The slot lines must carry the
@@ -124,6 +145,10 @@ $noDisplayMarker = 'No displays available'
 $notInternalMarker = '--arcade-roster-proof is available in internal builds only.'
 $tickPattern = '^tick ([0-9]+) control ([0-9a-f]{16}) rcontrol ([0-9a-f]{16}) rng ([0-9a-f]{16}) input ([0-9a-f]{16}) drivers ([0-9a-f]{64})$'
 $countersPattern = '^timer (-?[0-9]+) frameCounter (-?[0-9]+) frameTimer (-?[0-9]+) frameTimerConfetti (-?[0-9]+)$'
+$holdPattern = '^hold tick ([0-9]+) periods ([0-9]+) wall us ([0-9]+) independent us ([0-9]+|none) expected us ([0-9]+) pumps ([0-9]+) min pumps per period ([0-9]+|none) banners due ([0-9]+) presented ([0-9]+) vsync entry (-?[0-9]+) exit (-?[0-9]+) frameTimer before (-?[0-9]+|none) after (-?[0-9]+|none)$'
+# Run K's hold (NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK and _HOLD_PERIODS).
+$holdTick = 300
+$holdPeriods = 45
 # The slot roles of each profile, slots 0..7 (NativeMatchConfigV1_InitArcadeTwoCab
 # and _InitArcadeOneCab).
 $slotRoles = @{
@@ -195,6 +220,9 @@ function Start-Run($Run) {
     if (-not [string]::IsNullOrEmpty($Run.ProfileOption)) {
         $arguments += @('--arcade-roster-proof-profile', $Run.ProfileOption)
     }
+    if ($Run.Hold) {
+        $arguments += @('--arcade-roster-proof-hold')
+    }
     $argumentLine = ($arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
     $process = Start-Process -FilePath $resolvedExecutable -ArgumentList $argumentLine `
         -WorkingDirectory $resolvedOutput -NoNewWindow -PassThru `
@@ -250,6 +278,8 @@ function Read-Report($Run) {
         LaunchCounters = $null
         Ticks = @()
         End = $null
+        Hold = $null
+        HoldLine = $null
         Problems = @()
     }
     foreach ($line in $lines) {
@@ -268,12 +298,31 @@ function Read-Report($Run) {
         elseif ($line -match '^end ticks ([0-9]+)$') {
             $report.End = [int]$Matches[1]
         }
+        elseif ($line -match '^hold ') {
+            $report.HoldLine = $line
+            if ($line -match $holdPattern) {
+                $report.Hold = [pscustomobject]@{
+                    Tick = [long]$Matches[1]; Periods = [long]$Matches[2]; WallUs = [long]$Matches[3]; IndependentUs = $Matches[4]; ExpectedUs = [long]$Matches[5]
+                    Pumps = [long]$Matches[6]; MinPumps = $Matches[7]; BannersDue = [long]$Matches[8]; BannersPresented = [long]$Matches[9]
+                    VsyncEntry = [long]$Matches[10]; VsyncExit = [long]$Matches[11]; Before = $Matches[12]; After = $Matches[13]
+                }
+            }
+        }
         elseif ($line -match '^(result|launch window|launch counters|race tick 0 counters|config digest|race plan digest|bot setup plan digest|bank digest) (.*)$') {
             $report.Header[$Matches[1]] = $Matches[2]
         }
     }
-    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v8') -or ($lines[1] -ne 'drivers digest excludes physics')) {
-        $report.Problems += 'the report does not start with the v8 header and "drivers digest excludes physics"'
+    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v9') -or ($lines[1] -ne 'drivers digest excludes physics')) {
+        $report.Problems += 'the report does not start with the v9 header and "drivers digest excludes physics"'
+    }
+    # The hold line: "hold none" without the hold, the evidence line with it.
+    if ($Run.Hold) {
+        if ($null -eq $report.Hold) {
+            $report.Problems += "the hold line is missing or malformed: '$($report.HoldLine)'"
+        }
+    }
+    elseif ($report.HoldLine -ne 'hold none') {
+        $report.Problems += "the hold line is '$($report.HoldLine)', expected 'hold none'"
     }
     if ($report.Header['result'] -ne 'PASS (0)') {
         $report.Problems += "result is '$($report.Header['result'])', not 'PASS (0)'"
@@ -470,24 +519,35 @@ try {
     if (($Ticks -lt 1) -or ($Ticks -gt 3600)) {
         Exit-Failed "invalid tick count $Ticks (1..3600)"
     }
+    # Run K holds at race tick $holdTick and needs its tick lines, so it runs
+    # only with more ticks than that; the other runs take any count.
+    $runK = ($Ticks -gt $holdTick)
+    if (-not $runK) {
+        Write-Output "note: run K (the stall hold) skipped: -Ticks $Ticks is not above its hold tick $holdTick"
+    }
     $resolvedExecutable = (Resolve-Path -LiteralPath $Executable -ErrorAction Stop).Path
     $resolvedOutput = [System.IO.Path]::GetFullPath($OutputDirectory)
     [System.IO.Directory]::CreateDirectory($resolvedOutput) | Out-Null
 
     # ProfileOption is the --arcade-roster-proof-profile value, or '' for the
     # default (two-cab); Profile is the report's expected profile line; Ticks
-    # is the run's --arcade-roster-proof-ticks (-Ticks for every run).
+    # is the run's --arcade-roster-proof-ticks (-Ticks for every run); Hold
+    # adds --arcade-roster-proof-hold (run K only).
     $specs = @(
-        @{ Name = 'A'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
-        @{ Name = 'B'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
-        @{ Name = 'C'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 5400; Window = 'demo race'; Ticks = $Ticks },
-        @{ Name = 'D'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EEE'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
-        @{ Name = 'E'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 37; Window = 'title'; Ticks = $Ticks },
-        @{ Name = 'F'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
-        @{ Name = 'G'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
-        @{ Name = 'H'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EEE'; Dwell = 0; Window = 'title'; Ticks = $Ticks },
-        @{ Name = 'I'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 5400; Window = 'demo race'; Ticks = $Ticks },
-        @{ Name = 'J'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 37; Window = 'title'; Ticks = $Ticks })
+        @{ Name = 'A'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $false },
+        @{ Name = 'B'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $false },
+        @{ Name = 'C'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 5400; Window = 'demo race'; Ticks = $Ticks; Hold = $false },
+        @{ Name = 'D'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EEE'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $false },
+        @{ Name = 'E'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 37; Window = 'title'; Ticks = $Ticks; Hold = $false },
+        @{ Name = 'F'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $false },
+        @{ Name = 'G'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $false },
+        @{ Name = 'H'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EEE'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $false },
+        @{ Name = 'I'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 5400; Window = 'demo race'; Ticks = $Ticks; Hold = $false },
+        @{ Name = 'J'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 37; Window = 'title'; Ticks = $Ticks; Hold = $false },
+        @{ Name = 'K'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $true })
+    if (-not $runK) {
+        $specs = @($specs | Where-Object { $_.Name -ne 'K' })
+    }
     foreach ($spec in $specs) {
         $run = [pscustomobject]@{
             Name = $spec.Name
@@ -497,6 +557,7 @@ try {
             Dwell = $spec.Dwell
             Window = $spec.Window
             Ticks = $spec.Ticks
+            Hold = $spec.Hold
             ReportPath = Join-Path $resolvedOutput "$($spec.Name).report.txt"
             StdoutPath = Join-Path $resolvedOutput "$($spec.Name).stdout.log"
             StderrPath = Join-Path $resolvedOutput "$($spec.Name).stderr.log"
@@ -516,7 +577,11 @@ try {
     if ($Sequential) {
         $mode = 'sequential'
     }
-    Write-Output "arcade roster determinism check: $($runs.Count) runs ($mode, fixed VBlank pacing), $Ticks race ticks each, five two-cab (A-E) and five one-cab (F-J)"
+    $runKText = ', and A with the stall hold (K)'
+    if (-not $runK) {
+        $runKText = ' (K skipped)'
+    }
+    Write-Output "arcade roster determinism check: $($runs.Count) runs ($mode, fixed VBlank pacing), $Ticks race ticks each, five two-cab (A-E), five one-cab (F-J)$runKText"
     Write-Output "executable: $resolvedExecutable"
     Write-Output "output:     $resolvedOutput"
 
@@ -587,6 +652,7 @@ try {
     # the $i loop counter below (hence $reportI and, for symmetry, $reportJ).
     $reportI = $reports['I']
     $reportJ = $reports['J']
+    $reportK = $reports['K']
     $runByName = @{}
     foreach ($run in $runs) {
         $runByName[$run.Name] = $run
@@ -739,6 +805,78 @@ try {
             Write-Output $message
         }
         $failures += @($comparison.Failures)
+    }
+
+    # K against A (LR-S2 (a)): every line but the hold line is A's, and the
+    # hold evidence passes.  Skipped with K itself when -Ticks is too small.
+    if ($runK) {
+        $linesA = @($a.Lines | Where-Object { $_ -notmatch '^hold ' })
+        $linesK = @($reportK.Lines | Where-Object { $_ -notmatch '^hold ' })
+        $kFirstDifference = $null
+        if ($linesA.Count -ne $linesK.Count) {
+            $kFirstDifference = "A has $($linesA.Count) lines besides its hold line, K $($linesK.Count)"
+        }
+        else {
+            for ($i = 0; $i -lt $linesA.Count; $i++) {
+                if ($linesA[$i] -ne $linesK[$i]) {
+                    $kFirstDifference = "line $($i + 1): A '$($linesA[$i])', K '$($linesK[$i])'"
+                    break
+                }
+            }
+        }
+        if ($null -ne $kFirstDifference) {
+            $failures += "K differs from A outside its hold line (first difference: $kFirstDifference)"
+        }
+        else {
+            Write-Output "K = A: every report line but the hold line (the header, the setup evidence, and the control, rcontrol, rng, input, and drivers digests of all $Ticks ticks)"
+        }
+        $hold = $reportK.Hold
+        $holdFailures = @()
+        if (($hold.Tick -ne $holdTick) -or ($hold.Periods -ne $holdPeriods)) {
+            $holdFailures += "K held at race tick $($hold.Tick) for $($hold.Periods) periods, expected tick $holdTick for $holdPeriods"
+        }
+        if (($hold.Before -eq 'none') -or ($hold.After -eq 'none')) {
+            $holdFailures += "K's hold line lacks a frameTimer value (before $($hold.Before), after $($hold.After))"
+        }
+        else {
+            $frameTimerDelta = [long]$hold.After - [long]$hold.Before
+            if ($frameTimerDelta -ne 2) {
+                $holdFailures += "K's frameTimer advanced by $frameTimerDelta from race tick $($holdTick - 1) to $holdTick across the hold, expected exactly 2"
+            }
+        }
+        if ($hold.VsyncEntry -ne $hold.VsyncExit) {
+            $holdFailures += "K's frameTimer moved inside the hold (entry $($hold.VsyncEntry), exit $($hold.VsyncExit)): the hold emitted a VBlank"
+        }
+        # 45 tick periods within 10%, on both clocks: the loop's own (the
+        # platform clock it counts periods on) and the independent one the
+        # proof hook reads around the hold (C11 timespec_get).
+        $holdDeviation = [math]::Abs($hold.WallUs - $hold.ExpectedUs)
+        if (($hold.ExpectedUs -le 0) -or ((10 * $holdDeviation) -gt $hold.ExpectedUs)) {
+            $holdFailures += "K's hold lasted $($hold.WallUs) us on the loop's clock, not within 10% of $($hold.ExpectedUs) us ($holdPeriods tick periods)"
+        }
+        $independentPercent = 'none'
+        if ($hold.IndependentUs -eq 'none') {
+            $holdFailures += "K's hold line has no independent wall time (the proof hook's timespec_get failed)"
+        }
+        else {
+            $independentUs = [long]$hold.IndependentUs
+            $independentPercent = '{0:+0.00;-0.00;0.00}%' -f (100.0 * ($independentUs - $hold.ExpectedUs) / [math]::Max(1, $hold.ExpectedUs))
+            $independentDeviation = [math]::Abs($independentUs - $hold.ExpectedUs)
+            if (($hold.ExpectedUs -le 0) -or ((10 * $independentDeviation) -gt $hold.ExpectedUs)) {
+                $holdFailures += "K's hold lasted $independentUs us on the independent clock, not within 10% of $($hold.ExpectedUs) us ($holdPeriods tick periods)"
+            }
+        }
+        if (($hold.MinPumps -eq 'none') -or ([long]$hold.MinPumps -le 0) -or ($hold.Pumps -le 0)) {
+            $holdFailures += "K's hold did not pump host events in every period (pumps $($hold.Pumps), min per period $($hold.MinPumps))"
+        }
+        if (($hold.BannersDue -le 0) -or ($hold.BannersPresented -ne $hold.BannersDue)) {
+            $holdFailures += "K's hold presented $($hold.BannersPresented) of $($hold.BannersDue) due banners"
+        }
+        Write-Output ("K hold: race tick {0}, {1} periods, wall {2} us on the loop's clock ({3:+0.00;-0.00;0.00}%) and {4} us on the independent clock ({5}), expected {6} us, {7} pumps (min {8} per period), {9} of {10} banners presented, frameTimer {11} -> {12} across the hold (entry {13}, exit {14})" -f
+            $hold.Tick, $hold.Periods, $hold.WallUs, (100.0 * ($hold.WallUs - $hold.ExpectedUs) / [math]::Max(1, $hold.ExpectedUs)),
+            $hold.IndependentUs, $independentPercent, $hold.ExpectedUs,
+            $hold.Pumps, $hold.MinPumps, $hold.BannersPresented, $hold.BannersDue, $hold.Before, $hold.After, $hold.VsyncEntry, $hold.VsyncExit)
+        $failures += $holdFailures
     }
 
     Write-Output "report A first tick: $($a.Ticks[0].Line)"

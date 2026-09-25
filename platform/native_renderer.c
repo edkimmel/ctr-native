@@ -10,6 +10,7 @@
 
 #include "platform/native_gpu.h"
 #include "platform/native_glad.h"
+#include "platform/native_hold_banner.h"
 #include "platform/native_log.h"
 #include "platform/native_perf.h"
 #include "platform/native_renderer.h"
@@ -861,6 +862,53 @@ internal void NativeRenderer_ClearPresentationBars(void)
 		glDisable(GL_SCISSOR_TEST);
 	}
 
+	glClearColor(previousClearColor[0], previousClearColor[1], previousClearColor[2], previousClearColor[3]);
+	s_previousScissorState = previousScissorEnabled ? 1 : 0;
+}
+
+/* The hold banner layout: too large for the stack, host-local scratch. */
+global_variable struct NativeHoldBannerLayout s_presentBannerLayout;
+
+void NativeRenderer_DrawPresentBanner(const char *text)
+{
+	GLint previousScissorBox[4];
+	GLfloat previousClearColor[4];
+	GLboolean previousScissorEnabled;
+	struct NativeHoldBannerLayout *layout = &s_presentBannerLayout;
+	const int viewportTop = s_presentViewport.y + s_presentViewport.h;
+
+	if (!NativeHoldBanner_Layout(text, s_presentViewport.w, s_presentViewport.h, layout))
+	{
+		return;
+	}
+
+	previousScissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
+	glGetIntegerv(GL_SCISSOR_BOX, previousScissorBox);
+	glGetFloatv(GL_COLOR_CLEAR_VALUE, previousClearColor);
+
+	/* The window framebuffer only; layout rows run top-down, GL's bottom-up. */
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glEnable(GL_SCISSOR_TEST);
+	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+	NativeRenderer_ClearHostRect(s_presentViewport.x + layout->bar.x, viewportTop - (layout->bar.y + layout->bar.h), layout->bar.w,
+	                             layout->bar.h);
+	glClearColor(1.0f, 0.75f, 0.0f, 1.0f);
+	for (u32 i = 0; i < layout->textRectCount; i++)
+	{
+		const struct NativeHoldBannerRect *rect = &layout->text[i];
+
+		NativeRenderer_ClearHostRect(s_presentViewport.x + rect->x, viewportTop - (rect->y + rect->h), rect->w, rect->h);
+	}
+
+	if (previousScissorEnabled)
+	{
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(previousScissorBox[0], previousScissorBox[1], previousScissorBox[2], previousScissorBox[3]);
+	}
+	else
+	{
+		glDisable(GL_SCISSOR_TEST);
+	}
 	glClearColor(previousClearColor[0], previousClearColor[1], previousClearColor[2], previousClearColor[3]);
 	s_previousScissorState = previousScissorEnabled ? 1 : 0;
 }

@@ -30,6 +30,12 @@ struct NativeCanonicalStateV1;
  *   --arcade-roster-proof-profile <name>    two-cab or one-cab (exactly, in
  *                                           lowercase); default two-cab: the
  *                                           race profile (RS-23)
+ *   --arcade-roster-proof-hold              no value: hold the race for
+ *                                           HOLD_PERIODS tick periods of wall
+ *                                           time at race tick HOLD_TICK
+ *                                           (docs/LOCKSTEP_RACE_MILESTONE.md
+ *                                           LR-S2 (a)); needs a tick count
+ *                                           above HOLD_TICK
  *
  * The report path is opened as given when the report is written: a relative
  * path resolves against the base directory, because main.c changes into
@@ -37,11 +43,12 @@ struct NativeCanonicalStateV1;
  * working directory. Pass an absolute path to write elsewhere.
  *
  * Parsing is transactional: on any error the caller's options are left
- * untouched. Arguments that are not one of these five options are ignored,
+ * untouched. Arguments that are not one of these six options are ignored,
  * because other host parsers own them. An option whose value is missing (end
  * of argv, a NULL entry, or a next argument starting with '-'), repeated, or
- * malformed is an error, and so is a seed, dwell, tick count, or profile
- * without --arcade-roster-proof. main.c rejects the proof together with any
+ * malformed is an error, and so is a seed, dwell, tick count, profile, or
+ * hold without --arcade-roster-proof, and a hold with a tick count of
+ * HOLD_TICK or less. main.c rejects the proof together with any
  * arcade-link or replay option, and with --exit-after-frame (any frame-capture
  * exit option; NativeArcadeRosterProof_NamesExitOption), which would end the
  * run on a frame count instead of the proof result.
@@ -107,6 +114,18 @@ struct NativeCanonicalStateV1;
  * race, is independent of host timing. Every other run keeps the default
  * pacing.
  *
+ * Hold (LR-S2 (a), --arcade-roster-proof-hold). On the frame logged as race
+ * tick HOLD_TICK, the game hook (MainArcadeRosterProof_Frame, which runs
+ * after the frame's GameLogic and before its VBlanks, the ones that read the
+ * pads for the next tick: the LR-9 hook position) blocks in the stall hold
+ * loop (game/MAIN/MainArcadeRaceHold.h) until HOLD_PERIODS full tick periods
+ * of wall time have passed. The loop emits no VBlank, so the race must run
+ * exactly as without the hold: every tick line equals the unheld run's, and
+ * frameTimer (gGT->frameTimer_VsyncCallback) advances by exactly 2 from race
+ * tick HOLD_TICK - 1 to HOLD_TICK and not at all inside the hold. The
+ * report's "hold" line carries that evidence (FormatReport); the check
+ * (tools/arcade-roster-proof-check.ps1, run K) judges it.
+ *
  * Process exit codes while the proof is active (enum
  * NativeArcadeRosterProofResult is also the report's result):
  *
@@ -138,8 +157,9 @@ struct NativeCanonicalStateV1;
  *   28  EVIDENCE_MISSING     VALIDATED, but the digests, the slot facts, or
  *                            the seed or pin readback could not be read, or
  *                            the launch or race tick 0 counters or a
- *                            requested tick line is missing; PASS needs all
- *                            of them
+ *                            requested tick line is missing, or a requested
+ *                            hold did not run or lacks its frameTimer values;
+ *                            PASS needs all of them
  *   29  RACE_TICK_TIMEOUT    no race tick 0 (the drivers extraction never
  *                            succeeded) within RACE_TICK_TIMEOUT_TICKS of
  *                            VALIDATED
@@ -210,6 +230,10 @@ struct NativeCanonicalStateV1;
 #define NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB
 #define NATIVE_ARCADE_ROSTER_PROOF_DEFAULT_PROFILE NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB
 #define NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE UINT32_MAX
+/* The hold (LR-S2 (a)): the race tick it holds on and its length in tick
+ * periods of wall time. */
+#define NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK 300u
+#define NATIVE_ARCADE_ROSTER_PROOF_HOLD_PERIODS 45u
 
 /* Watchdogs and the post-validation wait, in proof ticks (game frames). */
 #define NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT_TICKS 3000u
@@ -237,7 +261,8 @@ struct NativeCanonicalStateV1;
 struct NativeArcadeRosterProofOptions
 {
 	uint8_t enabled; /* --arcade-roster-proof given */
-	uint8_t reserved[3];
+	uint8_t hold;    /* --arcade-roster-proof-hold given */
+	uint8_t reserved[2];
 	uint32_t dwellTicks;
 	uint64_t seed;
 	uint32_t tickCount; /* race ticks to log */
@@ -321,6 +346,38 @@ struct NativeArcadeRosterProofCounters
 	int32_t frameTimerConfetti;
 };
 
+/*
+ * The hold's evidence (LR-S2 (a)): what the hold loop measured
+ * (MainArcadeRaceHoldResult), an independent measurement of the same hold,
+ * and gGT->frameTimer_VsyncCallback at the hold's entry and exit and, from
+ * the V1 control values, at race ticks HOLD_TICK - 1 and HOLD_TICK.
+ * frameTimerValid has bit 0 set once frameTimerBefore holds tick
+ * HOLD_TICK - 1's value and bit 1 once frameTimerAfter holds tick
+ * HOLD_TICK's. independentUs is the wall time the proof hook measures around
+ * its MainArcadeRaceHold_Run call with C11 timespec_get(TIME_UTC), a clock
+ * the hold loop does not use (the loop's own wallUs reads the platform's
+ * SDL clock); independentValid is 1 when both reads succeeded and did not
+ * go back.
+ */
+struct NativeArcadeRosterProofHold
+{
+	uint32_t raceTick; /* the race tick held on */
+	uint32_t periods;  /* full tick periods held */
+	uint64_t wallUs;   /* measured wall time of the hold (the loop's clock) */
+	uint64_t independentUs; /* measured wall time of the hold (timespec_get, the proof hook's) */
+	uint64_t expectedUs; /* HOLD_PERIODS tick periods */
+	uint32_t pumps;
+	uint32_t minPeriodPumps; /* UINT32_MAX when no period ended */
+	uint32_t bannersDue;
+	uint32_t bannersPresented;
+	int32_t vsyncEntry;
+	int32_t vsyncExit;
+	int32_t frameTimerBefore;
+	int32_t frameTimerAfter;
+	uint32_t frameTimerValid;
+	uint32_t independentValid;
+};
+
 /* The boot-relative counters the race setup pins at its seeding point
  * (RS-17): gGT->timer and gGT->frameTimer_Confetti. */
 struct NativeArcadeRosterProofPins
@@ -378,10 +435,14 @@ struct NativeArcadeRosterProofReport
 	uint8_t botSetupPlanDigest[NATIVE_SHA256_DIGEST_BYTES];
 	uint8_t bankDigest[NATIVE_SHA256_DIGEST_BYTES];
 	struct NativeArcadeRosterProofSlotLine slots[NATIVE_ARCADE_ROSTER_PROOF_SLOT_COUNT];
+	uint8_t holdRequested; /* --arcade-roster-proof-hold */
+	uint8_t holdDone;      /* the hold ran; hold holds its evidence */
+	uint8_t holdReserved[2];
+	struct NativeArcadeRosterProofHold hold;
 };
 
 /* NULL is a no-op. Otherwise: disabled, seed 1, dwell 0, 900 ticks, profile
- * TWO_CAB, empty path. */
+ * TWO_CAB, no hold, empty path. */
 void NativeArcadeRosterProofOptions_SetDefaults(struct NativeArcadeRosterProofOptions *options);
 
 /* Returns 1 and updates *options on success; 0 with *options untouched otherwise. */
@@ -470,19 +531,20 @@ int NativeArcadeRosterProof_RaceControlDigest(const struct NativeCanonicalStateV
 int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofTickLine *line, char *buffer,
 	size_t bufferSize, size_t *length);
 
-/* The configured config, profile, dwell, tick count, seed, and log path;
- * NULL/0/empty when inactive. */
+/* The configured config, profile, dwell, tick count, hold (1 when
+ * requested), seed, and log path; NULL/0/empty when inactive. */
 const struct NativeMatchConfigV1 *NativeArcadeRosterProof_Config(void);
 uint32_t NativeArcadeRosterProof_Profile(void);
 uint32_t NativeArcadeRosterProof_Dwell(void);
 uint32_t NativeArcadeRosterProof_Ticks(void);
+uint32_t NativeArcadeRosterProof_Hold(void);
 uint64_t NativeArcadeRosterProof_Seed(void);
 const char *NativeArcadeRosterProof_LogPath(void);
 
 /*
  * Formats the report as text into buffer (NUL-terminated) and stores its
  * length without the NUL. Returns 0 on NULL arguments or a buffer too small.
- * The format is line based: a header line ("arcade roster proof v8"), the
+ * The format is line based: a header line ("arcade roster proof v9"), the
  * line "drivers digest excludes physics", then "result", "profile" (TWO_CAB
  * or ONE_CAB, the configured profile; UNKNOWN for any other value), "setup
  * status",
@@ -495,8 +557,15 @@ const char *NativeArcadeRosterProof_LogPath(void);
  * lowercase hex (or "none"), the "seeded" line (the five retail seed fields
  * and the two pinned counters, timer and frameTimerConfetti as signed
  * decimal, as read back, then "match 1" when every one equals what the setup
- * wrote, else "match 0"; "seeded none" without both readbacks), and one
- * "slot" line per slot.
+ * wrote, else "match 0"; "seeded none" without both readbacks), one
+ * "slot" line per slot, and the "hold" line (v9, LR-S2 (a)): "hold none"
+ * without a requested hold, "hold missing" when it was requested but did
+ * not run, otherwise
+ *   hold tick <t> periods <p> wall us <w> independent us <i|none>
+ *     expected us <e> pumps <n>
+ *     min pumps per period <m|none> banners due <d> presented <b>
+ *     vsync entry <x> exit <y> frameTimer before <f|none> after <g|none>
+ * on one line (signed decimal for the counters).
  */
 int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofReport *report, char *buffer,
 	size_t bufferSize, size_t *length);
@@ -514,9 +583,10 @@ int NativeArcadeRosterProof_PinsMatch(const struct NativeArcadeRosterProofPins *
 /*
  * The result a finished proof reports: requested unless it is PASS, and PASS
  * only when the digests, the slot facts, the seed and pin readbacks, and the
- * launch and race tick 0 counters are all valid and every requested tick line
- * was kept (tickLineCount == ticksRequested, and at least one) (else
- * EVIDENCE_MISSING), the seed readback matches (else SEED_MISMATCH), and the
+ * launch and race tick 0 counters are all valid, every requested tick line
+ * was kept (tickLineCount == ticksRequested, and at least one), and a
+ * requested hold ran with both frameTimer values (else EVIDENCE_MISSING), the
+ * seed readback matches (else SEED_MISMATCH), and the
  * pin readback matches (else PIN_MISMATCH).
  */
 uint32_t NativeArcadeRosterProof_FinalResult(uint32_t requested, const struct NativeArcadeRosterProofReport *report);

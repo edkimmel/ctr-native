@@ -30,6 +30,7 @@ static const char k_seedOption[] = "--arcade-roster-proof-seed";
 static const char k_dwellOption[] = "--arcade-roster-proof-dwell";
 static const char k_ticksOption[] = "--arcade-roster-proof-ticks";
 static const char k_profileOption[] = "--arcade-roster-proof-profile";
+static const char k_holdOption[] = "--arcade-roster-proof-hold";
 static const char k_profileTwoCab[] = "two-cab";
 static const char k_profileOneCab[] = "one-cab";
 static const char k_exitAfterFrameOption[] = "--exit-after-frame";
@@ -192,6 +193,7 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 	int seenDwell = 0;
 	int seenTicks = 0;
 	int seenProfile = 0;
+	int seenHold = 0;
 
 	if ((options == NULL) || (argc < 0) || ((argc > 0) && (argv == NULL)))
 	{
@@ -269,9 +271,24 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 			seenProfile = 1;
 			index++;
 		}
+		else if (strcmp(arg, k_holdOption) == 0)
+		{
+			/* A flag: it takes no value. */
+			if (seenHold)
+			{
+				return 0;
+			}
+			candidate.hold = 1u;
+			seenHold = 1;
+		}
 	}
-	/* A seed, dwell, tick count, or profile without the proof would be silently ignored. */
-	if ((seenSeed || seenDwell || seenTicks || seenProfile) && !seenProof)
+	/* A seed, dwell, tick count, profile, or hold without the proof would be silently ignored. */
+	if ((seenSeed || seenDwell || seenTicks || seenProfile || seenHold) && !seenProof)
+	{
+		return 0;
+	}
+	/* The hold needs the tick lines of HOLD_TICK - 1 and HOLD_TICK. */
+	if ((candidate.hold != 0u) && (candidate.tickCount <= NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK))
 	{
 		return 0;
 	}
@@ -448,7 +465,8 @@ int NativeArcadeRosterProof_Configure(const struct NativeArcadeRosterProofOption
 	}
 	if ((options->logPath[0] == '\0') || (memchr(options->logPath, '\0', sizeof(options->logPath)) == NULL) ||
 	    (options->dwellTicks > NATIVE_ARCADE_ROSTER_PROOF_MAX_DWELL) || (options->tickCount == 0u) ||
-	    (options->tickCount > NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS) ||
+	    (options->tickCount > NATIVE_ARCADE_ROSTER_PROOF_MAX_TICKS) || (options->hold > 1u) ||
+	    ((options->hold != 0u) && (options->tickCount <= NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK)) ||
 	    !NativeArcadeRosterProof_BuildConfig(identity, options->profile, options->seed, &config))
 	{
 		return 0;
@@ -510,6 +528,11 @@ uint32_t NativeArcadeRosterProof_Dwell(void)
 uint32_t NativeArcadeRosterProof_Ticks(void)
 {
 	return (s_nativeArcadeRosterProof.active != 0u) ? s_nativeArcadeRosterProof.options.tickCount : 0u;
+}
+
+uint32_t NativeArcadeRosterProof_Hold(void)
+{
+	return ((s_nativeArcadeRosterProof.active != 0u) && (s_nativeArcadeRosterProof.options.hold != 0u)) ? 1u : 0u;
 }
 
 void NativeArcadeRosterProof_ScriptedPads(uint32_t profile, uint32_t raceTick,
@@ -695,7 +718,8 @@ uint32_t NativeArcadeRosterProof_FinalResult(uint32_t requested, const struct Na
 	}
 	if ((report == NULL) || (report->digestsValid == 0u) || (report->slotsValid == 0u) || (report->seedValid == 0u) ||
 	    (report->pinValid == 0u) || (report->launchCountersValid == 0u) || (report->countersValid == 0u) ||
-	    (report->ticksRequested == 0u) || (report->tickLineCount != report->ticksRequested))
+	    (report->ticksRequested == 0u) || (report->tickLineCount != report->ticksRequested) ||
+	    ((report->holdRequested != 0u) && ((report->holdDone == 0u) || (report->hold.frameTimerValid != 3u))))
 	{
 		return (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING;
 	}
@@ -820,6 +844,63 @@ static void NativeArcadeRosterProof_Name(const char field[NATIVE_ARCADE_ROSTER_P
 	out[NATIVE_ARCADE_ROSTER_PROOF_NAME_BYTES - 1u] = '\0';
 }
 
+/* The "hold" line (LR-S2 (a)); see the header. */
+static void NativeArcadeRosterProof_AppendHold(struct NativeArcadeRosterProofText *text,
+	const struct NativeArcadeRosterProofReport *report)
+{
+	const struct NativeArcadeRosterProofHold *hold = &report->hold;
+
+	if (report->holdRequested == 0u)
+	{
+		NativeArcadeRosterProof_Append(text, "hold none\n");
+		return;
+	}
+	if (report->holdDone == 0u)
+	{
+		NativeArcadeRosterProof_Append(text, "hold missing\n");
+		return;
+	}
+	NativeArcadeRosterProof_Append(text, "hold tick %u periods %u wall us %llu independent us ", (unsigned)hold->raceTick,
+		(unsigned)hold->periods, (unsigned long long)hold->wallUs);
+	if (hold->independentValid == 0u)
+	{
+		NativeArcadeRosterProof_Append(text, "none");
+	}
+	else
+	{
+		NativeArcadeRosterProof_Append(text, "%llu", (unsigned long long)hold->independentUs);
+	}
+	NativeArcadeRosterProof_Append(text, " expected us %llu pumps %u min pumps per period ",
+		(unsigned long long)hold->expectedUs, (unsigned)hold->pumps);
+	if (hold->minPeriodPumps == UINT32_MAX)
+	{
+		NativeArcadeRosterProof_Append(text, "none");
+	}
+	else
+	{
+		NativeArcadeRosterProof_Append(text, "%u", (unsigned)hold->minPeriodPumps);
+	}
+	NativeArcadeRosterProof_Append(text, " banners due %u presented %u vsync entry %ld exit %ld frameTimer before ",
+		(unsigned)hold->bannersDue, (unsigned)hold->bannersPresented, (long)hold->vsyncEntry, (long)hold->vsyncExit);
+	if ((hold->frameTimerValid & 1u) == 0u)
+	{
+		NativeArcadeRosterProof_Append(text, "none");
+	}
+	else
+	{
+		NativeArcadeRosterProof_Append(text, "%ld", (long)hold->frameTimerBefore);
+	}
+	NativeArcadeRosterProof_Append(text, " after ");
+	if ((hold->frameTimerValid & 2u) == 0u)
+	{
+		NativeArcadeRosterProof_Append(text, "none\n");
+	}
+	else
+	{
+		NativeArcadeRosterProof_Append(text, "%ld\n", (long)hold->frameTimerAfter);
+	}
+}
+
 int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofReport *report, char *buffer,
 	size_t bufferSize, size_t *length)
 {
@@ -840,7 +921,7 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_Name(report->setupStatusName, statusName);
 	NativeArcadeRosterProof_Name(report->setupFailureName, failureName);
 
-	NativeArcadeRosterProof_Append(&text, "arcade roster proof v8\n");
+	NativeArcadeRosterProof_Append(&text, "arcade roster proof v9\n");
 	NativeArcadeRosterProof_Append(&text, "drivers digest excludes physics\n");
 	NativeArcadeRosterProof_Append(&text, "result %s (%u)\n", NativeArcadeRosterProof_ResultName(report->result),
 		(unsigned)report->result);
@@ -916,6 +997,7 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 				(unsigned)line->spawnOrder, (unsigned)line->navPathIndex, (unsigned)line->accelerationOrder);
 		}
 	}
+	NativeArcadeRosterProof_AppendHold(&text, report);
 	if (!text.ok)
 	{
 		buffer[0] = '\0';

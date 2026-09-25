@@ -14,6 +14,13 @@
  * the proof and the drivers candidate extracted here go into the proof's
  * report and nowhere else (no scheduler, no recording, no saved state).
  *
+ * LR-S2 (a)'s hold (--arcade-roster-proof-hold): on the frame logged as race
+ * tick HOLD_TICK, MainArcadeRosterProof_Frame (after GameLogic, before the
+ * frame's VBlanks) blocks in the stall hold loop, MainArcadeRaceHold_Run,
+ * for HOLD_PERIODS tick periods of wall time, and keeps the loop's
+ * measurements and the VSync counter around it as the report's hold
+ * evidence.
+ *
  * Unity-included after the 230 overlay sources and the arcade-link hook,
  * because it reads and closes the retail title (MM_Title_*, MM_MENU_MAIN)
  * and asks the arcade-link hook for its menu-ready condition; and after
@@ -24,6 +31,8 @@
 
 #include "MAIN/MainArcadeBotSetup.h"
 #include "MAIN/MainArcadeLink.h"
+#include "MAIN/MainArcadeRaceHold.h"
+#include "MAIN/MainArcadeRaceHoldCore.h"
 #include "MAIN/MainArcadeRaceSetup.h"
 #include "MAIN/MainArcadeRosterProof.h"
 #include "MAIN/MainCanonicalDrivers.h"
@@ -34,6 +43,8 @@
 #include "platform/native_input.h"
 #include "platform/native_log.h"
 #include "platform/native_sha256.h"
+
+#include <time.h>
 
 #define MAIN_ARCADE_ROSTER_PROOF_LOG "[CTR Native] arcade roster proof: "
 
@@ -74,13 +85,15 @@ struct MainArcadeRosterProofState
 	struct NativeArcadeRosterProofCounters raceTickZeroCounters;
 	uint32_t launchCountersValid; /* 1 once launchCounters holds the launch tick's counters */
 	struct NativeArcadeRosterProofCounters launchCounters;
+	uint32_t holdDone; /* 1 once the LR-S2 (a) hold ran */
+	struct NativeArcadeRosterProofHold hold;
 };
 
 static struct MainArcadeRosterProofState s_mainArcadeRosterProof = {
 	MAIN_ARCADE_ROSTER_PROOF_WAIT_MENU, 0u, 0u,
 	NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE,
 	NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, NATIVE_ARCADE_ROSTER_PROOF_WINDOW_NONE, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE,
-	0u, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, 0u, {0, 0, 0}, 0u, {0, 0, 0}};
+	0u, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, 0u, {0, 0, 0}, 0u, {0, 0, 0}, 0u, {0}};
 
 /* The drivers digest workspace: far too large for the game stack, so
  * file-scope static. Local only; only the digest leaves it. */
@@ -198,6 +211,9 @@ static void MainArcadeRosterProof_Finish(uint32_t requested)
 	}
 	report.seedValid = MainArcadeRosterProof_ReadSeeds(&report.seedStored, &report.seedMatch) ? 1u : 0u;
 	report.pinValid = MainArcadeRosterProof_ReadPins(&report.pinStored, &report.pinMatch) ? 1u : 0u;
+	report.holdRequested = (NativeArcadeRosterProof_Hold() != 0u) ? 1u : 0u;
+	report.holdDone = (state->holdDone != 0u) ? 1u : 0u;
+	report.hold = state->hold;
 	result = NativeArcadeRosterProof_FinalResult(requested, &report);
 	report.result = result;
 	exitCode = (int)result;
@@ -308,6 +324,71 @@ static int MainArcadeRosterProof_TryLaunch(struct GameTracker *gGT, struct Gamep
 		(unsigned)NativeArcadeRosterProof_Dwell());
 	state->phase = MAIN_ARCADE_ROSTER_PROOF_RUNNING;
 	return 1;
+}
+
+/* The hold's step: held until HOLD_PERIODS full tick periods passed. */
+static int MainArcadeRosterProof_HoldStep(void *context, uint32_t periods, int newPeriod)
+{
+	(void)context;
+	(void)newPeriod;
+	return periods < NATIVE_ARCADE_ROSTER_PROOF_HOLD_PERIODS;
+}
+
+/* A C11 timespec_get(TIME_UTC) read in microseconds: the hold's independent
+ * clock (not the platform clock the hold loop uses). Returns 0 on failure. */
+static int MainArcadeRosterProof_IndependentUs(uint64_t *us)
+{
+	struct timespec now;
+
+	if ((timespec_get(&now, TIME_UTC) != TIME_UTC) || (now.tv_sec < 0) || (now.tv_nsec < 0))
+	{
+		return 0;
+	}
+	*us = ((uint64_t)now.tv_sec * UINT64_C(1000000)) + ((uint64_t)now.tv_nsec / UINT64_C(1000));
+	return 1;
+}
+
+/*
+ * LR-S2 (a): holds this frame, after its GameLogic and before its VBlanks,
+ * in the stall hold loop, and keeps the evidence. The VSync counter is read
+ * around the hold (the loop must not move it), and so is an independent
+ * clock (the loop measures itself on the platform clock); the hold loop
+ * itself never sees game state.
+ */
+static void MainArcadeRosterProof_Hold(const struct GameTracker *gGT)
+{
+	struct MainArcadeRosterProofState *state = &s_mainArcadeRosterProof;
+	struct MainArcadeRaceHoldResult result;
+	uint64_t independentBeginUs = 0u;
+	uint64_t independentEndUs = 0u;
+	int independentBegun;
+
+	state->hold.raceTick = state->raceTick;
+	state->hold.expectedUs = MainArcadeRaceHoldCore_PeriodsToUs(NATIVE_ARCADE_ROSTER_PROOF_HOLD_PERIODS);
+	state->hold.vsyncEntry = (int32_t)gGT->frameTimer_VsyncCallback;
+	Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "holding at race tick %u for %u tick periods (tick %u)\n",
+		(unsigned)state->raceTick, (unsigned)NATIVE_ARCADE_ROSTER_PROOF_HOLD_PERIODS, (unsigned)state->tick);
+	independentBegun = MainArcadeRosterProof_IndependentUs(&independentBeginUs);
+	MainArcadeRaceHold_Run(MainArcadeRosterProof_HoldStep, NULL, &result);
+	if (independentBegun && MainArcadeRosterProof_IndependentUs(&independentEndUs) && (independentEndUs >= independentBeginUs))
+	{
+		state->hold.independentUs = independentEndUs - independentBeginUs;
+		state->hold.independentValid = 1u;
+	}
+	state->hold.vsyncExit = (int32_t)gGT->frameTimer_VsyncCallback;
+	state->hold.periods = result.periods;
+	state->hold.wallUs = result.wallUs;
+	state->hold.pumps = result.pumps;
+	state->hold.minPeriodPumps = result.minPeriodPumps;
+	state->hold.bannersDue = result.bannersDue;
+	state->hold.bannersPresented = result.bannersPresented;
+	state->holdDone = 1u;
+	Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "hold ended after %u periods, %llu us (independent %llu us, valid %u; expected %llu us), "
+		"%u pumps, min %u per period, %u of %u banners presented, frameTimer entry %ld exit %ld\n",
+		(unsigned)result.periods, (unsigned long long)result.wallUs, (unsigned long long)state->hold.independentUs,
+		(unsigned)state->hold.independentValid, (unsigned long long)state->hold.expectedUs,
+		(unsigned)result.pumps, (unsigned)result.minPeriodPumps, (unsigned)result.bannersPresented,
+		(unsigned)result.bannersDue, (long)state->hold.vsyncEntry, (long)state->hold.vsyncExit);
 }
 
 void MainArcadeRosterProof_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
@@ -447,6 +528,12 @@ void MainArcadeRosterProof_Frame(struct GameTracker *gGT, struct GamepadSystem *
 				(unsigned)(state->tick - state->raceTickZeroTick));
 			MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT);
 			return;
+		}
+		/* LR-S2 (a): the hold, on the frame that will be logged as HOLD_TICK. */
+		if ((NativeArcadeRosterProof_Hold() != 0u) && (state->holdDone == 0u) &&
+		    (state->raceTick == NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK))
+		{
+			MainArcadeRosterProof_Hold(gGT);
 		}
 		break;
 	default:
@@ -645,6 +732,17 @@ void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct Native
 		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "race tick 0 counters: timer %ld frameCounter %ld frameTimer %ld frameTimerConfetti %ld\n",
 			(long)frameState->control.timer, (long)frameState->control.frameCounter, (long)frameState->control.frameTimer,
 			(long)state->raceTickZeroCounters.frameTimerConfetti);
+	}
+	/* The hold's frameTimer evidence: race ticks HOLD_TICK - 1 and HOLD_TICK. */
+	if ((NativeArcadeRosterProof_Hold() != 0u) && (state->raceTick == (NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK - 1u)))
+	{
+		state->hold.frameTimerBefore = frameState->control.frameTimer;
+		state->hold.frameTimerValid |= 1u;
+	}
+	if ((NativeArcadeRosterProof_Hold() != 0u) && (state->raceTick == NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK))
+	{
+		state->hold.frameTimerAfter = frameState->control.frameTimer;
+		state->hold.frameTimerValid |= 2u;
 	}
 	if (!NativeArcadeRosterProof_RecordTick(&line))
 	{

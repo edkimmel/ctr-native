@@ -582,6 +582,29 @@ set_target_properties(ctr_native_arcade_race_launch_core PROPERTIES
 )
 target_include_directories(ctr_native_arcade_race_launch_core PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 
+# Stall hold period core (docs/LOCKSTEP_RACE_MILESTONE.md LR-9, slice LR-S2
+# (a)): the tick-period, pump, and banner bookkeeping of the hold loop
+# (game/MAIN/MainArcadeRaceHold.c), pure, with caller-owned state and no
+# clock. Never unity-included; ctr_native links it. It links nothing.
+add_library(ctr_native_arcade_race_hold_core STATIC game/MAIN/MainArcadeRaceHoldCore.c)
+set_target_properties(ctr_native_arcade_race_hold_core PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_race_hold_core PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+
+# Hold banner layout (include/platform/native_hold_banner.h, LR-S2 (a)): the
+# built-in block font and the banner geometry the renderer fills over the
+# presented image. No GL, SDL, clock, or heap; linked into ctr_native.
+add_library(ctr_native_hold_banner STATIC platform/native_hold_banner.c)
+set_target_properties(ctr_native_hold_banner PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_hold_banner PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Internal live roster proof host glue (docs/ROSTER_MILESTONE.md section 3.4,
 # R-5b): the --arcade-roster-proof options, the proof config (the fixture
 # resolved through match select), a singleton, the report writer, and the
@@ -1023,7 +1046,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_race_setup_core ctr_native_arcade_race_launch_core ctr_native_arcade_roster_proof ctr_native_arcade_link_autopilot ctr_native_vblank_pacing)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_race_setup_core ctr_native_arcade_race_launch_core ctr_native_arcade_roster_proof ctr_native_arcade_link_autopilot ctr_native_vblank_pacing ctr_native_arcade_race_hold_core ctr_native_hold_banner)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -1691,6 +1714,46 @@ if(BUILD_TESTING)
     add_test(NAME main_arcade_race_launch_core_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_launch_core_isolation_test.cmake")
 
+    # Stall hold (LR-S2 (a)): the period core's grace, period, and pump
+    # rules, and the banner layout; the isolation tests keep the hold loop
+    # free of VSync, pads, game state, and lockstep tokens, and the host wait
+    # free of any VBlank, callback, or audio step and called only by the hold.
+    add_executable(main_arcade_race_hold_core_test tests/main_arcade_race_hold_core_test.c)
+    set_target_properties(main_arcade_race_hold_core_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(main_arcade_race_hold_core_test PRIVATE ctr_native_arcade_race_hold_core)
+    add_test(NAME main_arcade_race_hold_core_unit COMMAND $<TARGET_FILE:main_arcade_race_hold_core_test>)
+
+    # The hold loop itself (MainArcadeRaceHold_Run) over stubbed platform
+    # calls: the pump/step/banner/wait order, the grace, and the result.
+    add_executable(main_arcade_race_hold_test tests/main_arcade_race_hold_test.c game/MAIN/MainArcadeRaceHold.c)
+    set_target_properties(main_arcade_race_hold_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_compile_definitions(main_arcade_race_hold_test PRIVATE CTR_NATIVE)
+    target_include_directories(main_arcade_race_hold_test PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+    target_link_libraries(main_arcade_race_hold_test PRIVATE ctr_native_arcade_race_hold_core)
+    add_test(NAME main_arcade_race_hold_unit COMMAND $<TARGET_FILE:main_arcade_race_hold_test>)
+
+    add_executable(native_hold_banner_test tests/native_hold_banner_test.c)
+    set_target_properties(native_hold_banner_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_hold_banner_test PRIVATE ctr_native_hold_banner)
+    add_test(NAME native_hold_banner_unit COMMAND $<TARGET_FILE:native_hold_banner_test>)
+
+    add_test(NAME main_arcade_race_hold_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_hold_isolation_test.cmake")
+    add_test(NAME native_host_wait_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_host_wait_isolation_test.cmake")
+
     # The link's and the race caller's returns to title, interleaved in the
     # live hook-then-caller order against a model of the retail load
     # (race-launch risk 10): exactly one main-menu load per return.
@@ -1797,13 +1860,15 @@ if(BUILD_TESTING)
             LABELS live)
 
         # The live roster determinism proof (docs/ROSTER_MILESTONE.md section
-        # 3.4, R-6, R-6b, R-6c, R-6d, and OC-3): ten internal
+        # 3.4, R-6, R-6b, R-6c, R-6d, and OC-3; run K is
+        # docs/LOCKSTEP_RACE_MILESTONE.md LR-S2 (a)): eleven internal
         # --arcade-roster-proof runs of ctr_native, all at once under the
         # proof's fixed VBlank pacing, five of the two-cabinet profile (A-E)
         # and five of the single-cabinet profile (F-J), each profile run as:
         # same seed twice, same seed launched from inside the attract demo
         # race, another seed, same seed launched an odd number of ticks late;
-        # compared tick by tick, within each profile and across the two.
+        # compared tick by tick, within each profile and across the two; and
+        # A again with the stall hold (K), which must equal A.
         # Needs the user-supplied assets/ctr-u.bin, a desktop session with a
         # display, and an internal build; skips (77) otherwise.  Reports and
         # logs are written only under the build tree.

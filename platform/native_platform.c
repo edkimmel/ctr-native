@@ -44,6 +44,9 @@ global_variable int s_pinnedVramDisplayX = 0;
 global_variable int s_pinnedVramDisplayY = 0;
 global_variable int s_pinnedVramDisplayW = 0;
 global_variable int s_pinnedVramDisplayH = 0;
+/* Host-local: the text of the one Platform_PresentVRAMDisplayBanner present
+ * in progress; NULL otherwise. */
+global_variable const char *s_presentBannerText = NULL;
 #if defined(CTR_INTERNAL)
 /* Host-local presentation state only; never observed by game/replay code. */
 global_variable struct NativeFrameCaptureConfig s_frameCaptureConfig;
@@ -594,6 +597,12 @@ void Platform_EndScene(void)
 		{
 			NativeRenderer_PresentVRAMDisplay();
 		}
+		if (s_presentBannerText != NULL)
+		{
+			/* Platform_PresentVRAMDisplayBanner: a host overlay on the
+			 * presented image only, drawn before the capture reads it. */
+			NativeRenderer_DrawPresentBanner(s_presentBannerText);
+		}
 		NativeRenderer_EndGpuFrame();
 #if defined(CTR_INTERNAL)
 		Platform_ServiceFrameCapture();
@@ -645,6 +654,35 @@ void Platform_PresentVRAMDisplay(void)
 	Platform_PinVRAMDisplayFrames(1);
 	Platform_BeginScene();
 	Platform_EndFrame();
+}
+
+int Platform_PresentVRAMDisplayBanner(const char *text)
+{
+	/* A scene in progress, or a pinned presentation the game asked for, is
+	 * render-pass state this overlay must not end or consume. */
+	if ((s_platformInitialized == 0) || (s_platformBeginScene != 0) || (s_pinnedVramDisplayFrames > 0) || (text == NULL))
+	{
+		return 0;
+	}
+	s_presentBannerText = text;
+	Platform_PresentVRAMDisplay();
+	s_presentBannerText = NULL;
+#if defined(CTR_INTERNAL)
+	Platform_Log("[CTR Native] hold banner presented as capture frame %d\n", s_frameCaptureFrameIndex);
+#endif
+	return 1;
+}
+
+/* Host-local (include/platform.h): the monotonic host time. */
+unsigned long long Platform_HostClockUs(void)
+{
+	return (unsigned long long)(SDL_GetTicksNS() / 1000u);
+}
+
+/* Host-local (include/platform.h): a plain host sleep. It emits no VBlank. */
+void Platform_HostWaitMs(unsigned int milliseconds)
+{
+	SDL_Delay((Uint32)milliseconds);
 }
 
 void Platform_PinVRAMDisplayFrames(int frameCount)

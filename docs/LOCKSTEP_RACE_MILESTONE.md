@@ -757,8 +757,8 @@ for the proof:
   records the result. Any change must be explained before an expectation
   moves.
 - The pin readback (the two new fields) appears in the setup's log and
-  the proof report; the report version and
-  tools/arcade-roster-proof-check.ps1's counters pattern change with it.
+  the proof report; the next report version and
+  tools/arcade-roster-proof-check.ps1's counters pattern come with it.
 - The C - A, E - A, I - F, and J - F counter offsets the check prints are
   unchanged: rcntTotalUnits and clockFrameStart are not among the four
   counters it compares.
@@ -834,6 +834,25 @@ replaces it, and it never touches simulation state.
 LR-S2 spikes the mechanism with a pass/fail (section 6). If the banner
 cannot be drawn without touching simulation or render-pass state, the
 fallback is the frozen frame without a banner, and risk 2 records it.
+
+LR-S2 (a) result: the banner is drawn, but not in the arcade-link font.
+DecalFont_DrawLine writes gGT->backBuffer's primitive memory and links into
+the UI ordering table (game/DecalFont.c:169, :196-205), which is
+render-pass state. So the banner is a host overlay instead:
+Platform_PresentVRAMDisplayBanner runs Platform_PresentVRAMDisplay's
+present and fills a black bar and the text, in a built-in 5x7 block font,
+into the window framebuffer before the capture and the swap. The banner
+draw touches only the window framebuffer: it writes neither VRAM nor the
+ordering table. The pinned present it rides on does go through
+Platform_BeginScene and NativeRenderer_BeginScene, which bind the main
+render target and clear it or reload it from VRAM, as every
+Platform_PresentVRAMDisplay does; the next DrawOTag rebuilds that target,
+and VRAM is not written. LR-S11 settles the final style.
+
+Note for LR-S9: Platform_PollHostEvents indirectly calls
+Platform_InputControllerAdded/Removed and SubmitName_UseKeyboard, which
+writes the game global kbCurr; this is harmless in a race, because kbCurr
+is read only after the next VBlank poll.
 
 LR-10 Live V4 projection. It is made on linked races only, once per race
 tick, by the game module MainArcadeRaceDigest through
@@ -1562,9 +1581,57 @@ for the owner.
 
 ### LR-S2 -- spikes: the hold and the autopilot finish
 
-Status: planned. Internal only. Review required (it introduces the hold
-module, MainArcadeRaceHold, and the host-local platform wait, both of
-which later ship). Run 1.
+Status: (a) done, (b) pending. Internal only. Review required (it
+introduces the hold module, MainArcadeRaceHold, and the host-local
+platform wait, both of which later ship). Run 1.
+
+(a) result. Every pass criterion passed. The banner is drawn with one
+deviation from LR-9, for the owner's review: it is not in "the
+arcade-link layout's font and style" but in a built-in host block font
+(LR-9, "LR-S2 (a) result").
+
+- The hold module is game/MAIN/MainArcadeRaceHold.{c,h} (unity chain,
+  CTR_NATIVE). Its pure period core is game/MAIN/MainArcadeRaceHoldCore.{c,h}
+  (library ctr_native_arcade_race_hold_core). The tick period is 33435 us,
+  2 native VBlanks (897619 / 53693175 s each), and holdGraceTicks is 10.
+- The host-local wait is named Platform_HostWaitMs (include/platform.h,
+  one SDL_Delay). The hold's clock is Platform_HostClockUs (one
+  SDL_GetTicksNS read). The banner is Platform_PresentVRAMDisplayBanner
+  (LR-9, "LR-S2 (a) result"). It presents nothing while a scene is in
+  progress or a pinned present is owed. Only the hold module calls the
+  three.
+- The internal option --arcade-roster-proof-hold makes the proof hold at
+  race tick 300 for 45 periods. The hold runs from
+  MainArcadeRosterProof_Frame, after GameLogic and before RenderVSYNC, the
+  LR-9 hook position. The report is v9 and gains a "hold" line.
+- Run K of arcade_roster_determinism is A's seed and options plus the
+  hold. K equals A in every report line but the hold line: the header, the
+  setup evidence, and the control, rcontrol, rng, input, and drivers
+  digests of all 900 ticks.
+- frameTimer_VsyncCallback is 2975 at race tick 299, 2975 at the hold's
+  entry and exit, and 2977 at race tick 300: +2 across the held tick.
+- Two gate runs held for 1505086 us and 1504696 us against 1504575 us
+  expected (+0.03%, +0.01%). They pumped host events 1100 and 1072 times,
+  at least 22 times in every period, and each presented 35 of 35 banners
+  (periods 10 to 44).
+- The hold time is also measured on a clock the loop does not use: the
+  proof hook reads C11 timespec_get(TIME_UTC) around its
+  MainArcadeRaceHold_Run call, the hold line carries it as "independent
+  us", and run K checks the 10% bound on both clocks. A later gate run:
+  1505662 us on the loop's clock and 1505664 us on the independent clock
+  against 1504575 us expected (+0.07% on both), 1090 pumps, at least 22
+  in every period, 35 of 35 banners presented.
+- A capture during the hold shows the frozen frame under a black bar with
+  WAITING FOR OPPONENT; the first frame after the hold has no banner. The
+  captures stay under build-msvc-x86 and are never committed. Capture frame
+  numbers shift by one between runs (load-time presents), so internal
+  builds log each banner's capture frame number.
+- Tests: main_arcade_race_hold_core_unit, main_arcade_race_hold_unit (the
+  loop itself over stubbed platform calls), native_hold_banner_unit,
+  main_arcade_race_hold_isolation, native_host_wait_isolation, and the
+  proof unit test's hold option and v9 hold line.
+
+(b) is not started.
 
 Plan: two spikes on the roster proof, which already runs a real race on
 installed pads under fixed pacing.
@@ -1627,7 +1694,7 @@ Tests:
   that the pin fixes its race tick.
 - A pre-pin and a post-pin roster proof run compared tick by tick, with
   the result recorded (LR-8), and the proof check updated for the
-  readback.
+  readback (the next report version).
 - Run 1's fresh non-skipped arcade_link_launch and
   arcade_roster_determinism.
 
@@ -1654,8 +1721,8 @@ Plan: LR-10, and LR-17 as the owner rules it.
   projection instead, after its own review.
 
 The roster proof also projects V4 each proof tick, through
-MainArcadeRaceDigest, and logs its combined and domain digests (report
-v9). tools/arcade-roster-proof-check.ps1 requires them equal wherever it
+MainArcadeRaceDigest, and logs its combined and domain digests (the
+next report version). tools/arcade-roster-proof-check.ps1 requires them equal wherever it
 requires rng, input, and drivers equal: A = B, C and E equal A, I and J
 equal F. The proof also checks that every tick's topology domain digest
 is the unavailable summary's, so a live topology cannot arrive unnoticed.
@@ -1872,7 +1939,11 @@ Tests:
 Status: planned. Run 4.
 
 Plan: the LR-9 grace and banner from the LR-S2 result: the
-MainArcadeRaceHold draw path and a layout item for the banner.
+MainArcadeRaceHold draw path and the banner as a host overlay
+(Platform_PresentVRAMDisplayBanner), not an arcade-link layout item.
+LR-S2 (a) found that the arcade-link layout's DecalFont path writes
+render-pass state (game/DecalFont.c:169, :196-205), so the final style
+is settled on the host overlay.
 
 Tests: a layout unit case; the preview capture checker gains the hold
 banner if LR-S2 found it capturable. Captures stay under build-msvc-x86
@@ -1939,8 +2010,14 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
    behaviour during a long hold is host-local but visible. Audio can
    underrun whenever no VBlank steps the mixer: during a hold, and also
    after any host hitch under fixed pacing, which never emits the missed
-   VBlanks (LR-7). LR-S2 (a) decides the hold. The fallback is a frozen
-   frame without a banner.
+   VBlanks (LR-7). LR-S2 (a) decided the hold: it works, and the banner
+   is drawn as a host overlay in a built-in block font instead of the
+   arcade-link font (LR-9, "LR-S2 (a) result"), so the frozen-frame
+   fallback was not needed. Audio during the hold was not observed or
+   recorded, so the underrun risk stays open. At a render scale above 1
+   the banner frame shows the 1x VRAM image (the pinned present reads
+   VRAM), so the picture visibly drops resolution while held and returns
+   with the next rendered frame.
 3. Per-tick V4 cost. Drivers extraction and assembly, the
    MainCanonicalTopology context validation, and the world extractors now
    run every tick, in Debug too. LR-S4 measures the cost. If it threatens

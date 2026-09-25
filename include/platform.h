@@ -29,6 +29,33 @@ void Platform_WaitUntilVBlank(int targetVBlank);
 void Platform_PollHostEvents(void);
 int Platform_PollInput(void);
 
+/*
+ * Host-local stall hold support (docs/LOCKSTEP_RACE_MILESTONE.md LR-9,
+ * slice LR-S2 (a)); only the hold loop (game/MAIN/MainArcadeRaceHold.c)
+ * calls them (tests/native_host_wait_isolation_test.cmake).
+ *
+ * Platform_HostClockUs: the host's monotonic time in microseconds.
+ * Platform_HostWaitMs: sleeps about `milliseconds` of host time. It emits no
+ * VBlank, runs no VSync callback, and steps no audio: unlike VSync and
+ * Platform_WaitUntilVBlank it leaves the VBlank schedule, the root counter,
+ * the pads, and the mixer untouched.
+ * Platform_PresentVRAMDisplayBanner: Platform_PresentVRAMDisplay with `text`
+ * drawn by the host over the presented image only (a bar across the middle
+ * of the display area, in a built-in block font; include/platform/native_hold_banner.h).
+ * The banner draw itself touches only the window framebuffer: it never
+ * writes VRAM or the game's ordering table. The pinned present it rides on
+ * does go through Platform_BeginScene (NativeRenderer_BeginScene), which
+ * binds the main render target and clears it or reloads it from VRAM, as
+ * any Platform_PresentVRAMDisplay does; the next DrawOTag rebuilds that
+ * target, so the next rendered frame replaces the banner. Returns 1 when it
+ * presented; 0, with nothing done, before the platform started, while a
+ * scene is in progress (the displayed frame is not settled then), while a
+ * pinned present the game asked for is still owed, or for a NULL text.
+ */
+unsigned long long Platform_HostClockUs(void);
+void Platform_HostWaitMs(unsigned int milliseconds);
+int Platform_PresentVRAMDisplayBanner(const char *text);
+
 #if defined(CTR_INTERNAL)
 /*
  * Host-local, presentation-only frame capture. The platform layer keeps its

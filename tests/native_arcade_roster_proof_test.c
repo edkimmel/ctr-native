@@ -284,6 +284,80 @@ static int TestUnknownCombinations(void)
 	return 0;
 }
 
+/* --arcade-roster-proof-hold (LR-S2 (a)): a flag, only with the proof, once,
+ * and only with more than HOLD_TICK race ticks. */
+static int TestHoldOption(void)
+{
+	struct NativeArcadeRosterProofOptions options;
+	char *noHold[] = {"ctr_native", "--arcade-roster-proof", "r.txt"};
+	char *hold[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-hold"};
+	char *holdFirst[] = {"ctr_native", "--arcade-roster-proof-hold", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-seed",
+		"0x5EED"};
+	char *holdMinTicks[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-hold", "--arcade-roster-proof-ticks",
+		"301"};
+	char *holdAlone[] = {"ctr_native", "--arcade-roster-proof-hold"};
+	char *holdRepeated[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-hold", "--arcade-roster-proof-hold"};
+	char *holdFewTicks[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-hold", "--arcade-roster-proof-ticks",
+		"300"};
+	char *holdOneTick[] = {"ctr_native", "--arcade-roster-proof-ticks", "1", "--arcade-roster-proof", "r.txt",
+		"--arcade-roster-proof-hold"};
+	/* The flag takes no value: a following word is another parser's. */
+	char *holdValue[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-hold", "45"};
+	char *holdEquals[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-hold=1"};
+
+	CHECK(NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK == 300u && NATIVE_ARCADE_ROSTER_PROOF_HOLD_PERIODS == 45u);
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(options.hold == 0u);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(noHold), noHold, &options) == 1);
+	CHECK(options.enabled == 1u && options.hold == 0u);
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(hold), hold, &options) == 1);
+	CHECK(options.enabled == 1u && options.hold == 1u && options.tickCount == 900u);
+	CHECK(IsAllByte(options.reserved, sizeof(options.reserved), 0u));
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(holdFirst), holdFirst, &options) == 1);
+	CHECK(options.hold == 1u && options.seed == UINT64_C(0x5EED));
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(holdMinTicks), holdMinTicks, &options) == 1);
+	CHECK(options.hold == 1u && options.tickCount == 301u);
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(holdValue), holdValue, &options) == 1);
+	CHECK(options.hold == 1u);
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(holdEquals), holdEquals, &options) == 1);
+	CHECK(options.enabled == 1u && options.hold == 0u);
+	CHECK(ExpectReject(ARGC(holdAlone), holdAlone) == 0);
+	CHECK(ExpectReject(ARGC(holdRepeated), holdRepeated) == 0);
+	CHECK(ExpectReject(ARGC(holdFewTicks), holdFewTicks) == 0);
+	CHECK(ExpectReject(ARGC(holdOneTick), holdOneTick) == 0);
+
+	/* Configure refuses a hold without its tick lines; the accessor reports it. */
+	{
+		struct NativeIdentityV1 identity;
+
+		TestIdentity(&identity);
+		NativeArcadeRosterProofOptions_SetDefaults(&options);
+		CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(hold), hold, &options) == 1);
+		CHECK(NativeArcadeRosterProof_Hold() == 0u);
+		CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 1);
+		CHECK(NativeArcadeRosterProof_Hold() == 1u);
+		NativeArcadeRosterProof_Shutdown();
+		CHECK(NativeArcadeRosterProof_Hold() == 0u);
+		options.hold = 0u;
+		CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 1);
+		CHECK(NativeArcadeRosterProof_Hold() == 0u);
+		options.hold = 1u;
+		options.tickCount = 300u;
+		CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 0);
+		CHECK(NativeArcadeRosterProof_Active() == 0 && NativeArcadeRosterProof_Hold() == 0u);
+		options.tickCount = 900u;
+		options.hold = 2u;
+		CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 0);
+		NativeArcadeRosterProof_Shutdown();
+	}
+	return 0;
+}
+
 /* --arcade-roster-proof-profile (RS-23): two-cab by default, one-cab, or an error. */
 static int TestProfileOption(void)
 {
@@ -954,7 +1028,7 @@ static int TestTickLines(void)
 	(void)remove(path);
 	text[length] = '\0';
 	{
-		static const char head[] = "arcade roster proof v8\ndrivers digest excludes physics\nresult PASS (0)\nprofile ONE_CAB\n"
+		static const char head[] = "arcade roster proof v9\ndrivers digest excludes physics\nresult PASS (0)\nprofile ONE_CAB\n"
 		                           "setup status VALIDATED (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
@@ -966,7 +1040,7 @@ static int TestTickLines(void)
 	CHECK(strstr(text, "\nvalidated tick 762\nrace tick 0 tick 762\n"
 	                   "race tick 0 counters timer 1466 frameCounter 1523 frameTimer -2 frameTimerConfetti 57\n"
 	                   "config digest none\n") != NULL);
-	CHECK(strstr(text, "slot 7 none\n"
+	CHECK(strstr(text, "slot 7 none\nhold none\n"
 	                   "tick 0 control 0123456789abcdef rcontrol a1b2c3d4e5f60718 rng 0000000000000000 input 0000000000000001 drivers 0001")
 	      != NULL);
 	CHECK(strstr(text, "\ntick 1 control 0123456789abcdef rcontrol a1b2c3d4e5f60718 rng 0000000000000001 ") != NULL);
@@ -1073,6 +1147,22 @@ static int TestSeedsAndFinalResult(void)
 	report.countersValid = 0u;
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
 	report.countersValid = 1u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_PASS);
+	/* A requested hold (LR-S2 (a)) must have run and kept both frameTimer
+	 * values; the hold's measurements themselves are judged by the check. */
+	report.holdRequested = 1u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.holdDone = 1u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.hold.frameTimerValid = 1u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.hold.frameTimerValid = 2u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+	report.hold.frameTimerValid = 3u;
+	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_PASS);
+	report.holdRequested = 0u;
+	report.holdDone = 0u;
+	report.hold.frameTimerValid = 0u;
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_PASS);
 	report.digestsValid = 0u;
 	CHECK(NativeArcadeRosterProof_FinalResult(NATIVE_ARCADE_ROSTER_PROOF_PASS, &report) == NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
@@ -1290,7 +1380,7 @@ static int TestSingletonAndReport(void)
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(length == strlen(text));
 	{
-		static const char head[] = "arcade roster proof v8\ndrivers digest excludes physics\nresult PASS (0)\n"
+		static const char head[] = "arcade roster proof v9\ndrivers digest excludes physics\nresult PASS (0)\n"
 		                           "profile TWO_CAB\nsetup status VALIDATED (4)\nsetup failure NONE (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
@@ -1311,6 +1401,52 @@ static int TestSingletonAndReport(void)
 	CHECK(strstr(text, "slot 0 role CAB1_HUMAN character 0 difficulty 0x00 spawn 0 nav 0 accel 0\n") != NULL);
 	CHECK(strstr(text, "slot 2 role BOT character 6 difficulty 0xA0 spawn 2 nav 1 accel 3\n") != NULL);
 	CHECK(strstr(text, "slot 7 role INACTIVE\n") != NULL);
+	/* The hold line (v9, LR-S2 (a)) ends the header: none, missing, or the evidence. */
+	{
+		static const char noHold[] = "slot 7 role INACTIVE\nhold none\n";
+		static const char missing[] = "slot 7 role INACTIVE\nhold missing\n";
+
+		CHECK((length >= sizeof(noHold) - 1u) && (strcmp(text + length - (sizeof(noHold) - 1u), noHold) == 0));
+		report.holdRequested = 1u;
+		CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
+		CHECK((length >= sizeof(missing) - 1u) && (strcmp(text + length - (sizeof(missing) - 1u), missing) == 0));
+	}
+	report.holdDone = 1u;
+	report.hold.raceTick = 300u;
+	report.hold.periods = 45u;
+	report.hold.wallUs = UINT64_C(1505012);
+	report.hold.independentUs = UINT64_C(1505230);
+	report.hold.independentValid = 1u;
+	report.hold.expectedUs = UINT64_C(1504575);
+	report.hold.pumps = 1398u;
+	report.hold.minPeriodPumps = 29u;
+	report.hold.bannersDue = 36u;
+	report.hold.bannersPresented = 35u;
+	report.hold.vsyncEntry = 12001;
+	report.hold.vsyncExit = 12001;
+	report.hold.frameTimerBefore = 12001;
+	report.hold.frameTimerAfter = -3;
+	report.hold.frameTimerValid = 3u;
+	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, "slot 7 role INACTIVE\nhold tick 300 periods 45 wall us 1505012 independent us 1505230 "
+	                   "expected us 1504575 pumps 1398 min pumps per period 29 banners due 36 presented 35 vsync entry 12001 exit 12001 "
+	                   "frameTimer before 12001 after -3\n") != NULL);
+	CHECK(text[length - 1u] == '\n' && strstr(text, "after -3\n") == text + length - 9u);
+	report.hold.minPeriodPumps = UINT32_MAX;
+	report.hold.frameTimerValid = 2u;
+	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, " min pumps per period none banners due 36 ") != NULL);
+	CHECK(strstr(text, " frameTimer before none after -3\n") != NULL);
+	report.hold.frameTimerValid = 1u;
+	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, " frameTimer before 12001 after none\n") != NULL);
+	report.hold.independentValid = 0u;
+	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, " wall us 1505012 independent us none expected us 1504575 ") != NULL);
+	memset(&report.hold, 0, sizeof(report.hold));
+	report.holdDone = 0u;
+	report.holdRequested = 0u;
+	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(strstr(text, "bank digest 0000000000000000000000000000000000000000000000000000000000000000\n"
 	                   "seeded randomNumber 0x7D2E advRng0 0x60C79386 advRng1 0x78DFDBA8 psxRand 0x1472E10B audioRNG 0x75599A57 "
 	                   "timer 0 frameTimerConfetti 0 match 1\n"
@@ -1366,6 +1502,7 @@ int main(void)
 	CHECK(TestExitOptionNames() == 0);
 	CHECK(TestExitCodes() == 0);
 	CHECK(TestProfileOption() == 0);
+	CHECK(TestHoldOption() == 0);
 	CHECK(TestConfigBuilder() == 0);
 	CHECK(TestOneCabConfigBuilder() == 0);
 	CHECK(TestSeedsAndFinalResult() == 0);

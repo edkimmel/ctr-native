@@ -260,6 +260,14 @@
 
 #include "230.c"
 
+// Stall hold loop (Task 8 race plan LR-9, slice LR-S2 (a); the plan is
+// linked from docs/GAME_LOOP_UI_MILESTONE.md),
+// CTR_NATIVE only: host work only (event pump, host wait, banner present),
+// no game state. The internal roster proof below holds through it (and the
+// race caller will, LR-S9). Its pure period core is a linked library, never
+// included here.
+#include "MAIN/MainArcadeRaceHold.c"
+
 // Arcade-link screens (docs/GAME_LOOP_UI_MILESTONE.md Tasks 6b-2 and 6b-3,
 // and the menu sounds of section 3.1): the pure layout builder, decision
 // policy, and menu sound decision, then the CTR_NATIVE-only drawer and hook,
