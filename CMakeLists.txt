@@ -1629,15 +1629,18 @@ if(BUILD_TESTING)
     # Linked-race drive core (docs/LOCKSTEP_RACE_MILESTONE.md LR-S7, LR-S8):
     # pad normalization over every status and id byte, and two drive cores
     # over real sessions exchanging bundles in memory, with a real outcome
-    # tracker (linked into the test only) behind OnTakeResult. The isolation
-    # test keeps the core pure (includes, token ban, C17, links, send order).
+    # tracker (linked into the test only) behind OnTakeResult. The test also
+    # links the roster proof, the RL-10 source of truth for the disconnected
+    # pad bytes (LR-43). The isolation test keeps the core pure (includes,
+    # token ban, C17, links, send order).
     add_executable(native_arcade_race_drive_test tests/native_arcade_race_drive_test.c)
     set_target_properties(native_arcade_race_drive_test PROPERTIES
         C_STANDARD 17
         C_STANDARD_REQUIRED ON
         C_EXTENSIONS OFF
     )
-    target_link_libraries(native_arcade_race_drive_test PRIVATE ctr_native_arcade_race_drive ctr_native_lockstep_match_outcome)
+    target_link_libraries(native_arcade_race_drive_test PRIVATE ctr_native_arcade_race_drive ctr_native_lockstep_match_outcome
+        ctr_native_arcade_roster_proof)
     add_test(NAME native_arcade_race_drive_unit COMMAND $<TARGET_FILE:native_arcade_race_drive_test>)
 
     add_test(NAME native_arcade_race_drive_isolation

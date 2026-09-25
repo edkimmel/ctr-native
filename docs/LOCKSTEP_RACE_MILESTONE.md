@@ -1844,12 +1844,13 @@ success. It requires a RUNNING session on which nothing has been recorded
 or consumed (recordedAny 0, consumedFrame 0): one session per race, begun
 before race tick 0. D is the session's inputDelay. The CAB1_HUMAN and
 CAB2_HUMAN slots come from the session's config through
-NativeMatchConfigV1_FindRoleSlot and must differ. A refusal returns 0 and
-ends the drive as LOCAL_FAILURE with a named reason (ARGUMENT,
-SESSION_MODE, SESSION_STARTED, INPUT_DELAY for D above 3, ROLE_SLOT,
+NativeMatchConfigV1_FindRoleSlot and must differ, and the session's
+localSlot must be one of them. A refusal returns 0 and ends the drive as
+LOCAL_FAILURE with a named reason (ARGUMENT, SESSION_MODE,
+SESSION_STARTED, INPUT_DELAY for D outside 1..3, ROLE_SLOT, LOCAL_SLOT,
 TICK_LIMIT). Nothing is sent. Step(drive, raceTick, state, localSample,
-facts, padsOut[4]) and Hold(drive, newPeriod, padsOut[4]) return GO,
-HOLD, or END. LingerTick(drive, onResults) returns the bundles it sent.
+facts, padsOut[4]) and Hold(drive, periods, newPeriod, padsOut[4]) return
+GO, HOLD, or END. LingerTick(drive, onResults) returns the bundles it sent.
 The facts are the pointer-free struct NativeArcadeRaceDriveFacts
 {endOfRace, finishedHumans, humans}. The accessors are EndKind,
 FailureReason, EndIsFinish (the three finish kinds), RaceTick (the tick
@@ -1861,8 +1862,8 @@ every Step and Hold returns END and does nothing: no poll, no send, no
 take. LR-S9 maps LOCAL_FAILURE to ReportRaceFailure, the finish kinds to
 the finish report, and OUTCOME to nothing, because OnTakeResult has
 already latched it. The core reads the session's mode, inputDelay,
-config, recordedAny, recordedFrame, and consumedFrame directly and
-read-only; it changes the session only through RecordLocalDigests,
+config, localSlot, recordedAny, recordedFrame, and consumedFrame directly
+and read-only; it changes the session only through RecordLocalDigests,
 SubmitLocalInput, ComposeBundle, and TakeFrameInputs. The drive and the
 ring are host-local (LR-15).
 
@@ -1888,16 +1889,29 @@ MainArcadeRaceLaunch_InstallPads installs (RL-10), exposed as
 NativeArcadeRaceDrive_DisconnectedPad. A committed set without a role's
 pad, or for another frame, is FAILURE_ROLE_PAD, after OnTakeResult(OK).
 
-LR-44 Hold accounting (LR-S8). The core counts the held periods itself,
-one per Hold call with newPeriod nonzero, and resets the count in every
-Step. Every Hold call polls first. A newPeriod call counts the period,
-resends the ring window max(0, k - D - 1) to k + D once (the newest
-bundle, k + D, included; on race tick 0, frames 0 to D), calls
-servicePeriod, and takes. If the take stalls it calls
-onTakeResult(STALL, k), except in the start grace (race tick 0 and
-periods <= 810). Any other call only retries the take, and a stall there
-reports nothing. A take that succeeds on any call is GO. So on race tick
-0 the first reported stall is period 811 and the timeout is period 900.
+LR-44 Hold accounting (LR-S8). Hold takes the hold loop's own arguments
+(MainArcadeRaceHoldStepFn): periods, the full tick periods held so far,
+and newPeriod. The core counts wall-time periods from periods, not
+newPeriod calls, because a late pump raises newPeriod once however many
+periods it skipped (MainArcadeRaceHoldCore_Pump), and counting calls
+would stretch the 3 s timeout and the 30 s start wait. HeldPeriods
+equals the hold's periods. Every Step that passes its argument checks
+resets it to 0 (a new hold loop starts at 0). periods must never go
+backwards, and newPeriod must be set exactly when periods exceeds
+HeldPeriods. Anything else is FAILURE_PERIODS, before the poll. It is
+refused, not clamped, because a clamp could freeze the count and with it
+the stall timeout. Every other Hold call polls first. A newPeriod call
+counts the periods up to periods. It resends the ring window
+max(0, k - D - 1) to k + D once (the newest bundle, k + D, included; on
+race tick 0, frames 0 to D), calls servicePeriod once, and takes, all
+once per call however many periods elapsed. If the take stalls, it calls
+onTakeResult(STALL, k) once for each newly elapsed period outside the
+start grace (race tick 0 and period <= 810), and stops at the first
+latched return, which ends as OUTCOME. Any other call only retries the
+take, and a stall there reports nothing. A take that succeeds on any
+call is GO, and reports no stall. So on race tick 0 the first reported
+stall is period 811, and the timeout is counted period 900, also when
+periods jump across 810 or 900; elsewhere it is counted period 90.
 BannerDue(periods) is periods >= 10 (LR-9's hold grace); the hold module
 keeps its own identical rule until LR-S11. Step while held, or Hold while
 not held, is FAILURE_SEQUENCE.
@@ -1930,15 +1944,23 @@ LR-45 Take classification and the send gate (LR-S8).
   k - D - 1 to k + D - 1 in increasing order.
 
 LR-46 The finish linger (LR-S8). Only a finish-kind end arms it, with 15
-ticks. Each LingerTick call, while ticks remain, onResults is nonzero,
-and the session is RUNNING, resends the kept frames max(0, F - D - 1) to
-F + D - 1 (those composed; an end on race tick 0 has none). It then
-counts one tick down, whatever it sent. onResults 0, a session that is
-not RUNNING, or a refused send (the link closed; that call stops at once)
-set the count to 0 for good. An OUTCOME or LOCAL_FAILURE end never arms
-it, and the send gate refuses anyway while the session is not RUNNING.
-Note for LR-S9: call it after the adapter's Tick of the same host tick,
-so that the first call after F already sees RESULTS.
+ticks. onResults is nonzero while the flow shows RESULTS. Each LingerTick
+call, while ticks remain, onResults is nonzero, and the session is
+RUNNING, resends the kept frames max(0, F - D - 1) to F + D - 1 (those
+composed; an end on race tick 0 has none). It then counts one tick down,
+whatever it sent. A refused send is ignored, as in Step and Hold,
+because the transport also refuses on a transient socket error; the
+return value counts only the sends the link accepted. The flow reaches
+RESULTS only on the host Tick of pass F + 1
+(platform/native_arcade_flow.c), so until the first call with onResults
+nonzero, onResults 0 does nothing: no send, no count, no stop. After
+RESULTS was seen, onResults 0 stops it for good (LR-13: it stops when
+the flow leaves RESULTS). So the linger stops only on the count reaching
+0, a session that is not RUNNING (seen or not), or leaving RESULTS after
+seeing it. An OUTCOME or LOCAL_FAILURE end never arms it, and the send
+gate refuses anyway while the session is not RUNNING. Note for LR-S9:
+call it after the adapter's Tick of the same host tick, so that the
+first call after F already sees RESULTS.
 
 LR-47 Step's argument checks (LR-S8). They run before the record, and
 each failure is a local failure with nothing recorded:
@@ -1948,7 +1970,11 @@ each failure is a local failure with nothing recorded:
 - state->frameNumber not equal to raceTick (STATE_FRAME);
 - humans outside 1..4, or finishedHumans above humans (FACTS).
 
-A drive that was never begun is FAILURE_NOT_BEGUN. A NULL drive is END,
+Once they pass, the step resets the held-period count to 0, so an early
+END (a failed record, a finish-kind end) leaves no stale count. The grace
+start G latches before the END_OF_RACE check, so G is logged even when
+END_OF_RACE comes on G itself; the tie order of LR-42 is unchanged. A
+drive that was never begun is FAILURE_NOT_BEGUN. A NULL drive is END,
 and nothing happens.
 
 LR-48 The drive core's isolation (LR-S8).
@@ -1959,7 +1985,8 @@ and platform/native_match_config.h. The core links exactly
 ctr_native_lockstep_session, which links ctr_native_match_config PUBLIC,
 so the core's FindRoleSlot call resolves through it. Only
 native_arcade_race_drive_test links the core; the test also links
-ctr_native_lockstep_match_outcome. The token ban strips
+ctr_native_lockstep_match_outcome, and ctr_native_arcade_roster_proof
+for the RL-10 disconnected pad bytes (LR-43). The token ban strips
 NativeCanonicalInputPadV1 and NativeCanonicalStateV4 only as whole
 identifiers, so NativeCanonicalStateV4_Validate still trips it. The state
 type may appear only as const struct NativeCanonicalStateV4 *. The ban
@@ -3099,14 +3126,16 @@ Result:
   and NativeArcadeRaceDriveFacts, and the enums NativeArcadeRaceDriveStatus
   (GO 1, HOLD 2, END 3), NativeArcadeRaceDriveEndKind (NONE, END_OF_RACE,
   FINISH_GRACE, RACE_TICK_LIMIT, OUTCOME, LOCAL_FAILURE), and
-  NativeArcadeRaceDriveFailure (18 named reasons, append-only). The
-  calls:
+  NativeArcadeRaceDriveFailure (NONE 0 and 19 named failure reasons,
+  1..19, append-only; the review follow-ups appended LOCAL_SLOT 18 and
+  PERIODS 19). The calls:
 
       void NativeArcadeRaceDrive_Init(struct NativeArcadeRaceDrive *drive);
       int NativeArcadeRaceDrive_Begin(drive, session, kept, callbacks, raceTickLimit);
       enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step(drive, raceTick,
           const struct NativeCanonicalStateV4 *state, localSample, facts, padsOut[4]);
-      enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Hold(drive, newPeriod, padsOut[4]);
+      enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Hold(drive, uint32_t periods,
+          int newPeriod, padsOut[4]);
       uint32_t NativeArcadeRaceDrive_LingerTick(drive, onResults);
       int NativeArcadeRaceDrive_BannerDue(uint32_t periods);
       void NativeArcadeRaceDrive_DisconnectedPad(struct NativeCanonicalInputPadV1 *out);
@@ -3117,7 +3146,8 @@ Result:
 - The files: platform/native_arcade_race_drive.c and its header (the core,
   C17, no extensions, no heap, clock, stdio, or I/O);
   CMakeLists.txt (the core links ctr_native_lockstep_session; the unit test
-  also links ctr_native_lockstep_match_outcome);
+  also links ctr_native_lockstep_match_outcome, and
+  ctr_native_arcade_roster_proof for the RL-10 pad bytes);
   tests/native_arcade_race_drive_test.c; and
   tests/native_arcade_race_drive_isolation_test.cmake (LR-48). Nothing
   but the unit test links or calls the core; no session, peer-link,
@@ -3125,8 +3155,8 @@ Result:
 - The decisions are LR-41..LR-48. In brief: the callback I/O and a
   caller-owned ring (LR-41); the limit tick itself ends, and the
   override may only lower the bound (LR-42); the disconnected pad bytes
-  of the RL-10 install (LR-43); periods counted from newPeriod calls,
-  and the hold window including k + D (LR-44); REJECTED passed to
+  of the RL-10 install (LR-43); wall-time periods counted from the hold
+  loop's periods, and the hold window including k + D (LR-44); REJECTED passed to
   OnTakeResult after a record latch, and a latched OnTakeResult ranking
   above a local failure (LR-45); the linger's stop rules (LR-46); the
   argument checks (LR-47); and the isolation rules (LR-48).
@@ -3145,10 +3175,15 @@ Result:
   first send. On every call it checks the exact set of frames sent: the
   Step window, the newPeriod Hold window, and nothing on other
   iterations. Every GO's four pads are checked against the expected
-  mapping. The cases:
-  - Begin: every refusal and its reason; D 1..3 run and 4..6 are refused
-    (D = 4 sends nothing); the limit (0 is 18000, 1 and 18000 are
-    accepted, 18001 is refused); a one-cab config (ROLE_SLOT); an IDLE, a
+  mapping, and every HOLD and END against the untouched 0xa5 fill of
+  padsOut. Every Hold call is driven with the hold loop's periods, and
+  HeldPeriods is checked against them. The disconnected pad is checked
+  against NativeArcadeRosterProof_ScriptedPads(TWO_CAB) pads 2 and 3,
+  not literal bytes. The cases:
+  - Begin: every refusal and its reason; D 1..3 run, and 0 (forced) and
+    4..6 are refused (D = 4 sends nothing); the limit (0 is 18000, 1 and
+    18000 are accepted, 18001 is refused); a one-cab config (ROLE_SLOT);
+    a localSlot forced to each non-role slot (LOCAL_SLOT); an IDLE, a
     FAULTED, and an already-recording session; the reinitialization;
     never begun; NULL.
   - Equal inputs at D = 1, 2, 3 over 300 ticks: both sides' committed
@@ -3167,6 +3202,19 @@ Result:
   - The start wait: no report through period 810, the first at 811, END
     at exactly 900; service 900 times, sends 3 + 900 x 3. A peer that
     starts at period 850 resumes with no end.
+  - Skipped periods: periods 1 -> 5 in one call report 4 stalls with one
+    resend and one service; a late call over 2 periods that takes OK
+    reports none. The timeout with jumps of 7 (84 -> 91 reports 85..90
+    and stops at the latch) and with one jump of 1000 is exactly 90
+    reports. The start wait with jumps across 810 (805 -> 815 reports
+    811..815) ends at exactly 900 (895 -> 905), as do 810 -> 899 -> 900
+    and 0 -> 899 -> 900.
+  - A latched onTakeResult after an OK take, from Step and from Hold
+    (both a retry and a new period): OUTCOME, padsOut untouched.
+  - A REJECTED take while RUNNING from Hold (both kinds of call):
+    LOCAL_FAILURE (TAKE), after OnTakeResult.
+  - A Step that ends at the record after a 5-period hold leaves
+    HeldPeriods 0.
   - A lead of 1, 2, and 3 (D + 1) ticks, either side leading: no fault,
     no divergence, identical pads to tick 120.
   - The worst-case lead at D = 2 and 3 (A's sends to B lost): B stalls at
@@ -3190,8 +3238,10 @@ Result:
     OnTakeResult.
   - Local failures: record, submit, compose, race tick, state frame,
     facts (three variants), NULL arguments (four), Step while held, Hold
-    while not held, Hold without pads, and a missing role pad (after
-    OnTakeResult(OK)). None sends anything, before or after.
+    while not held, Hold without pads, inconsistent hold periods (four
+    variants: backwards with and without newPeriod, newPeriod with no new
+    period, a new period without newPeriod; no poll), and a missing role
+    pad (after OnTakeResult(OK)). None sends anything, before or after.
   - Pad mapping of crafted raw peer bytes (all-zero, connected 2 with id
     0xff and START, disconnected with axes, id 0x73 with status 0xff):
     each normalized, and pads 2 and 3 disconnected byte for byte.
@@ -3207,10 +3257,14 @@ Result:
     as FINISH_GRACE, and as END_OF_RACE when END_OF_RACE also comes at
     1000. A lowered bound of 50 alone gives RACE_TICK_LIMIT, END_OF_RACE
     on 50 wins over it, and a grace past a bound of 600 ends at the
-    bound.
-  - The linger's stops: off RESULTS, a session that was faulted after
-    the end, and a refused send each stop it for good; an end on race
-    tick 0 has nothing to send.
+    bound. END_OF_RACE on the grace start tick 100 ends as END_OF_RACE
+    with G 100 logged.
+  - The linger: off RESULTS before RESULTS was seen waits (0, 0, 0 then
+    1 sends, 15 ticks kept); 1, 1, 0 stops it for good and a later 1
+    sends nothing; a session faulted after the end stops it, seen or
+    not; refused sends are ignored (the window still offered, the count
+    still falls, the next ticks send); an end on race tick 0 has nothing
+    to send.
 - native_arcade_race_drive_isolation: LR-48.
 - Probes, each reverted. Each failed native_arcade_race_drive_unit unless
   noted:
@@ -3244,6 +3298,27 @@ Result:
 - Fast suite (-LE live): 154 of 154 passed (native_arcade_race_drive_unit
   about 5 s). No live test runs the core: nothing on the live path
   links it.
+- Review follow-ups: the linger waits for RESULTS before an off-RESULTS
+  stop and ignores refused sends (LR-46); Hold takes the hold loop's
+  periods and reports one stall per elapsed wall-time period, refusing
+  inconsistent periods as FAILURE_PERIODS (LR-44); Begin refuses a
+  localSlot outside the two roles (FAILURE_LOCAL_SLOT) and names D
+  outside 1..3; Step resets HeldPeriods right after its checks and
+  latches G before END_OF_RACE (LR-47); tests for a latched OK take,
+  untouched padsOut on every HOLD and END, and a REJECTED take from
+  Hold; the disconnected pad checked against the roster proof; the
+  LR-S9 notes. Probes, each reverted and each failing
+  native_arcade_race_drive_unit: an early onResults 0 stopping the
+  linger; 1, 0, 1 still sending after the 0; a refused send stopping it;
+  one stall report per newPeriod call; the start grace judged on the new
+  periods, not each period; the periods check removed; stall reports
+  continuing past the latch; the service or the resend once per period;
+  the HeldPeriods reset moved back before the take; G not latched on an
+  END_OF_RACE tick; no localSlot check; D 0 accepted; padsOut written on
+  HOLD; a latched OK take ignored; a REJECTED take from Hold treated as
+  the outcome. The isolation test still fails on a stdio include and a
+  NativeLockstepMatchOutcome token. Fast suite (-LE live): 154 of 154
+  passed (native_arcade_race_drive_unit about 7 s).
 
 Plan: LR-2, LR-3, LR-5, LR-9 accounting and take classification, LR-12,
 LR-13, LR-14, LR-18. platform/native_arcade_race_drive.{c,h}, library
@@ -3310,6 +3385,20 @@ Plan: LR-1, LR-3, LR-9 host work.
 - The glue calls OnTakeResult right after a record that leaves the
   session non-RUNNING, as the drive core directs (LR-9).
 - Nothing in game/ calls the new API yet.
+
+Note for LR-S9: the glue must re-initialize the drive
+(NativeArcadeRaceDrive_Init) at RaceEnd and when the flow leaves
+RESULTS. The drive holds a raw pointer to the link's session, which
+REMATCH re-initializes, so a stale drive must never step, hold, or
+linger over it.
+
+Note for LR-S9: NativeArcadeNetplay_OnTakeResult returns void, so the
+onTakeResult callback must compute its "latched" return from the
+adapter's pending link failure after the call: nonzero when the
+pendingLinkFailure field of struct NativeArcadeNetplay
+(include/platform/native_arcade_netplay.h:354, public in the adapter
+struct; NativeArcadeNetplayView does not carry it) is not
+NATIVE_ARCADE_FLOW_END_NONE.
 
 Tests:
 

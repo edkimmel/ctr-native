@@ -13,7 +13,7 @@
  * only through caller-supplied callbacks: the verbatim bundle send, the link
  * poll, the adapter's OnTakeResult, and the hold's once-per-period service.
  * It holds no pointer to anything else and reads no clock: the hold's wall
- * time arrives as the caller's newPeriod flag.
+ * time arrives as the hold loop's periods count and newPeriod flag.
  */
 
 #include "platform/native_canonical_state.h"
@@ -45,8 +45,8 @@
  * disconnected pads. */
 #define NATIVE_ARCADE_RACE_DRIVE_PAD_COUNT           4u
 
-/* LR-3: the drive refuses a session whose D is above 3 (the 2D + 1 lead must
- * stay below the peer window of 8). */
+/* LR-3: the drive refuses a session whose D is outside 1..3 (the 2D + 1
+ * lead must stay below the peer window of 8). */
 #define NATIVE_ARCADE_RACE_DRIVE_MAX_INPUT_DELAY     3u
 /* LR-9, LR-12: the first 810 held periods of race tick 0 do not count toward
  * the stall timeout, so the whole start wait is 810 + 90 periods. */
@@ -90,7 +90,7 @@ enum NativeArcadeRaceDriveFailure
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_ARGUMENT = 1,        /* a NULL argument or callback */
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_SESSION_MODE = 2,    /* Begin: the session is not RUNNING */
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_SESSION_STARTED = 3, /* Begin: the session has recorded or consumed a frame */
-	NATIVE_ARCADE_RACE_DRIVE_FAILURE_INPUT_DELAY = 4,     /* Begin: D above 3 (LR-3) */
+	NATIVE_ARCADE_RACE_DRIVE_FAILURE_INPUT_DELAY = 4,     /* Begin: D outside 1..3 (LR-3) */
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_ROLE_SLOT = 5,       /* Begin: no CAB1_HUMAN or CAB2_HUMAN slot */
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_TICK_LIMIT = 6,      /* Begin: a race tick limit above 18000 */
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_NOT_BEGUN = 7,       /* Step or Hold before a successful Begin */
@@ -103,7 +103,9 @@ enum NativeArcadeRaceDriveFailure
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_COMPOSE = 14,        /* ComposeBundle failed while RUNNING */
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_SEND_ORDER = 15,     /* a compose the LR-29 send order forbids (unreachable) */
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_TAKE = 16,           /* a non-OK, non-STALL take while RUNNING */
-	NATIVE_ARCADE_RACE_DRIVE_FAILURE_ROLE_PAD = 17        /* the committed inputs lack a role's pad */
+	NATIVE_ARCADE_RACE_DRIVE_FAILURE_ROLE_PAD = 17,       /* the committed inputs lack a role's pad */
+	NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_SLOT = 18,     /* Begin: the session's localSlot is neither role slot */
+	NATIVE_ARCADE_RACE_DRIVE_FAILURE_PERIODS = 19         /* Hold: periods went backwards or disagrees with newPeriod (LR-44) */
 };
 
 /*
@@ -176,7 +178,8 @@ struct NativeArcadeRaceDrive
 	uint32_t composedCount;
 	uint8_t cab1Slot;
 	uint8_t cab2Slot;
-	uint8_t reserved[2];
+	uint8_t lingerSawResults; /* the linger has seen onResults nonzero (LR-46) */
+	uint8_t reserved;
 };
 
 /* Writes the neutral connected pad (connected 1, status 0, id 0x41, buttons
@@ -206,12 +209,13 @@ void NativeArcadeRaceDrive_Init(struct NativeArcadeRaceDrive *drive);
  * consumed), kept (cleared here), and callbacks (sendBundle, poll, and
  * onTakeResult required). D is the session's inputDelay; the CAB1_HUMAN and
  * CAB2_HUMAN slots come from the session's config
- * (NativeMatchConfigV1_FindRoleSlot). raceTickLimit 0 is the default 18000; a
- * nonzero value is the internal override (LR-S10) and may only lower it
- * (1..18000). Always reinitializes the whole drive first. Returns 1 when the
- * drive runs; 0 on a refusal, which ends the drive as LOCAL_FAILURE with the
- * reason (D above 3 is FAILURE_INPUT_DELAY) and sends nothing. NULL drive:
- * returns 0.
+ * (NativeMatchConfigV1_FindRoleSlot), and the session's localSlot must be one
+ * of them (FAILURE_LOCAL_SLOT otherwise). raceTickLimit 0 is the default
+ * 18000; a nonzero value is the internal override (LR-S10) and may only lower
+ * it (1..18000). Always reinitializes the whole drive first. Returns 1 when
+ * the drive runs; 0 on a refusal, which ends the drive as LOCAL_FAILURE with
+ * the reason (D outside 1..3 is FAILURE_INPUT_DELAY) and sends nothing. NULL
+ * drive: returns 0.
  */
 int NativeArcadeRaceDrive_Begin(struct NativeArcadeRaceDrive *drive, struct NativeLockstepSession *session, struct NativeArcadeRaceDriveKept *kept,
                                 const struct NativeArcadeRaceDriveCallbacks *callbacks, uint32_t raceTickLimit);
@@ -219,7 +223,8 @@ int NativeArcadeRaceDrive_Begin(struct NativeArcadeRaceDrive *drive, struct Nati
 /*
  * One race tick k (LR-2, LR-9, LR-13, LR-18). raceTick must be the next race
  * tick (0 first, then one more after each GO) and state->frameNumber must
- * equal it; localSample is the raw local sample (normalized here). In order:
+ * equal it; localSample is the raw local sample (normalized here). Once those
+ * argument checks pass, the held-period count is reset to 0. In order:
  *
  *   1. RecordLocalDigests(state). If the session is not RUNNING afterwards (a
  *      parked digest diverged inside the record, or an earlier drain latched
@@ -252,26 +257,36 @@ enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step(struct NativeArcadeR
                                                             struct NativeCanonicalInputPadV1 padsOut[NATIVE_ARCADE_RACE_DRIVE_PAD_COUNT]);
 
 /*
- * One hold-loop iteration while held on race tick k (LR-9), about 1 ms
- * apart. newPeriod is nonzero on the first iteration of each full tick period
- * held (MainArcadeRaceHoldStepFn's flag). Every call polls. On newPeriod
- * only: counts the period, resends the ring window max(0, k - D - 1)..k + D
- * once, calls servicePeriod, takes, and on a stall calls
- * onTakeResult(STALL, k), except in the start grace (race tick 0 and held
- * periods <= 810). Other iterations only retry the take. A non-STALL take is
- * classified as in Step. Returns GO (padsOut mapped), HOLD, or END.
+ * One hold-loop iteration while held on race tick k (LR-9, LR-44), about 1 ms
+ * apart. periods and newPeriod are MainArcadeRaceHoldStepFn's arguments: the
+ * full tick periods held so far (0 when the hold starts), and nonzero on the
+ * first iteration of each period after the first. A late pump raises
+ * newPeriod once for every period it skipped, so the core counts wall-time
+ * periods from periods, not newPeriod calls. newPeriod must be set exactly
+ * when periods exceeds the periods counted so far (HeldPeriods), and periods
+ * never goes backwards; anything else is FAILURE_PERIODS, before the poll.
+ * Every other call polls. On newPeriod only: counts the periods up to
+ * periods, resends the ring window max(0, k - D - 1)..k + D once, calls
+ * servicePeriod once, and takes; on a stall it calls onTakeResult(STALL, k)
+ * once per newly elapsed period outside the start grace (race tick 0 and
+ * period <= 810), and stops at the first latched return (END as OUTCOME).
+ * Other iterations only retry the take. A non-STALL take is classified as in
+ * Step. Returns GO (padsOut mapped), HOLD, or END.
  */
-enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Hold(struct NativeArcadeRaceDrive *drive, int newPeriod,
+enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Hold(struct NativeArcadeRaceDrive *drive, uint32_t periods, int newPeriod,
                                                             struct NativeCanonicalInputPadV1 padsOut[NATIVE_ARCADE_RACE_DRIVE_PAD_COUNT]);
 
 /*
- * The finish linger (LR-13), once per host tick after a finish-kind END.
- * While linger ticks remain, onResults is nonzero, and the session is
- * RUNNING, it resends the kept bundles of the end tick's window, frames
- * max(0, F - D - 1)..F + D - 1, once, and counts one tick down. It stops for
- * good when onResults is 0, the session is not RUNNING, a send is refused,
- * or the count reaches 0. Never sends after an OUTCOME or LOCAL_FAILURE end.
- * Returns the bundles sent by this call.
+ * The finish linger (LR-13, LR-46), once per host tick after a finish-kind
+ * END; onResults is nonzero while the flow shows RESULTS. While linger ticks
+ * remain, onResults is nonzero, and the session is RUNNING, it resends the
+ * kept bundles of the end tick's window, frames max(0, F - D - 1)..F + D - 1,
+ * once, ignoring refused sends, and counts one tick down. Until the first
+ * call with onResults nonzero (the flow reaches RESULTS a host tick after
+ * F), onResults 0 does nothing: no send, no count, no stop. It stops for good
+ * when the count reaches 0, the session is not RUNNING, or onResults is 0
+ * after RESULTS was seen. Never sends after an OUTCOME or LOCAL_FAILURE end.
+ * Returns the bundles the link accepted in this call.
  */
 uint32_t NativeArcadeRaceDrive_LingerTick(struct NativeArcadeRaceDrive *drive, int onResults);
 
@@ -291,7 +306,8 @@ uint32_t NativeArcadeRaceDrive_RaceTick(const struct NativeArcadeRaceDrive *driv
 uint32_t NativeArcadeRaceDrive_EndTick(const struct NativeArcadeRaceDrive *drive);
 /* The finish grace's start tick G; NO_TICK before it starts. */
 uint32_t NativeArcadeRaceDrive_GraceStartTick(const struct NativeArcadeRaceDrive *drive);
-/* Full periods counted in the current hold; every Step resets it to 0. */
+/* Full periods counted in the current hold, equal to the hold loop's
+ * periods; every Step that passes its argument checks resets it to 0. */
 uint32_t NativeArcadeRaceDrive_HeldPeriods(const struct NativeArcadeRaceDrive *drive);
 uint32_t NativeArcadeRaceDrive_LingerTicksLeft(const struct NativeArcadeRaceDrive *drive);
 /* The race tick limit in force (18000 unless lowered). */

@@ -278,11 +278,12 @@ static int NativeArcadeRaceDrive_MapPads(const struct NativeArcadeRaceDrive *dri
 }
 
 /*
- * Takes frame k and classifies the result (LR-9, LR-45). countStall: a
- * stall calls onTakeResult(STALL), once per full held period outside the
- * start grace.
+ * Takes frame k and classifies the result (LR-9, LR-45). stallReports: a
+ * stall calls onTakeResult(STALL) this many times (one per newly elapsed
+ * held period outside the start grace, LR-44), stopping at the first
+ * latched return.
  */
-static enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Take(struct NativeArcadeRaceDrive *drive, int countStall,
+static enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Take(struct NativeArcadeRaceDrive *drive, uint32_t stallReports,
                                                                    struct NativeCanonicalInputPadV1 padsOut[NATIVE_ARCADE_RACE_DRIVE_PAD_COUNT])
 {
 	struct NativeLockstepSessionFrameInputs inputs;
@@ -294,9 +295,12 @@ static enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Take(struct Native
 	result = NativeLockstepSession_TakeFrameInputs(drive->session, raceTick, &inputs);
 	if (result == NATIVE_LOCKSTEP_SESSION_STALL)
 	{
-		if (countStall && (drive->callbacks.onTakeResult(drive->callbacks.context, result, raceTick) != 0))
+		for (uint32_t report = 0; report < stallReports; report++)
 		{
-			return NativeArcadeRaceDrive_End(drive, NATIVE_ARCADE_RACE_DRIVE_END_OUTCOME, NATIVE_ARCADE_RACE_DRIVE_FAILURE_NONE);
+			if (drive->callbacks.onTakeResult(drive->callbacks.context, result, raceTick) != 0)
+			{
+				return NativeArcadeRaceDrive_End(drive, NATIVE_ARCADE_RACE_DRIVE_END_OUTCOME, NATIVE_ARCADE_RACE_DRIVE_FAILURE_NONE);
+			}
 		}
 		drive->phase = NATIVE_ARCADE_RACE_DRIVE_PHASE_HELD;
 		return NATIVE_ARCADE_RACE_DRIVE_HOLD;
@@ -354,8 +358,8 @@ int NativeArcadeRaceDrive_Begin(struct NativeArcadeRaceDrive *drive, struct Nati
 		(void)NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_SESSION_STARTED);
 		return 0;
 	}
-	/* LR-3: the 2D + 1 lead must stay below the peer window, and the resend
-	 * window of 2D + 2 frames must fit the kept ring. */
+	/* LR-3: D is 1..3. The 2D + 1 lead must stay below the peer window, and
+	 * the resend window of 2D + 2 frames must fit the kept ring. */
 	if ((session->inputDelay < 1u) || (session->inputDelay > NATIVE_ARCADE_RACE_DRIVE_MAX_INPUT_DELAY))
 	{
 		(void)NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_INPUT_DELAY);
@@ -365,6 +369,13 @@ int NativeArcadeRaceDrive_Begin(struct NativeArcadeRaceDrive *drive, struct Nati
 	    !NativeMatchConfigV1_FindRoleSlot(&session->config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &cab2Slot) || (cab1Slot == cab2Slot))
 	{
 		(void)NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_ROLE_SLOT);
+		return 0;
+	}
+	/* LR-41: this cabinet is one of the two roles, so its own pad is one the
+	 * mapping reads. */
+	if ((session->localSlot != cab1Slot) && (session->localSlot != cab2Slot))
+	{
+		(void)NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_SLOT);
 		return 0;
 	}
 	/* LR-42: the internal override may only lower the bound. */
@@ -429,6 +440,8 @@ enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step(struct NativeArcadeR
 		return NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_FACTS);
 	}
 	drive->raceTick = raceTick;
+	/* A new race tick: no period held on it yet, whatever the step does. */
+	drive->heldPeriods = 0u;
 
 	/* 1. Record frame k. A session that is not RUNNING afterwards (a parked
 	 *    digest diverged inside the record, or an earlier drain latched)
@@ -444,15 +457,17 @@ enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step(struct NativeArcadeR
 	}
 
 	/* 2. The end checks in LR-18's tie order. A finish-kind end has recorded
-	 *    the tick and composes, sends, and takes nothing (LR-13). */
-	if (facts->endOfRace != 0u)
-	{
-		return NativeArcadeRaceDrive_End(drive, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, NATIVE_ARCADE_RACE_DRIVE_FAILURE_NONE);
-	}
+	 *    the tick and composes, sends, and takes nothing (LR-13). The grace
+	 *    start G latches first, so it is logged even when END_OF_RACE comes
+	 *    on G itself; the tie order is unchanged. */
 	graceThreshold = (facts->humans > 2u) ? (facts->humans - 1u) : 1u;
 	if ((drive->graceStartTick == NATIVE_ARCADE_RACE_DRIVE_NO_TICK) && (facts->finishedHumans >= graceThreshold))
 	{
 		drive->graceStartTick = raceTick;
+	}
+	if (facts->endOfRace != 0u)
+	{
+		return NativeArcadeRaceDrive_End(drive, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, NATIVE_ARCADE_RACE_DRIVE_FAILURE_NONE);
 	}
 	if ((drive->graceStartTick != NATIVE_ARCADE_RACE_DRIVE_NO_TICK) &&
 	    ((uint64_t)raceTick >= (uint64_t)drive->graceStartTick + NATIVE_ARCADE_RACE_DRIVE_FINISH_GRACE_TICKS))
@@ -493,14 +508,13 @@ enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step(struct NativeArcadeR
 
 	/* 6. Poll. 7. Take frame k. */
 	drive->callbacks.poll(drive->callbacks.context);
-	drive->heldPeriods = 0u;
-	return NativeArcadeRaceDrive_Take(drive, 0, padsOut);
+	return NativeArcadeRaceDrive_Take(drive, 0u, padsOut);
 }
 
-enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Hold(struct NativeArcadeRaceDrive *drive, int newPeriod,
+enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Hold(struct NativeArcadeRaceDrive *drive, uint32_t periods, int newPeriod,
                                                             struct NativeCanonicalInputPadV1 padsOut[NATIVE_ARCADE_RACE_DRIVE_PAD_COUNT])
 {
-	int countStall = 0;
+	uint32_t stallReports = 0u;
 
 	if (drive == NULL)
 	{
@@ -523,21 +537,39 @@ enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Hold(struct NativeArcadeR
 		return NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_ARGUMENT);
 	}
 
+	/* LR-44: the hold loop's periods never go backwards, and newPeriod is set
+	 * exactly when periods passed the count. Anything else is a caller bug
+	 * that would stretch or freeze the stall timeout, so it is refused rather
+	 * than clamped. */
+	if ((periods < drive->heldPeriods) || ((newPeriod != 0) != (periods > drive->heldPeriods)))
+	{
+		return NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_PERIODS);
+	}
+
 	/* Every iteration drains the link (LR-9). */
 	drive->callbacks.poll(drive->callbacks.context);
 	if (newPeriod != 0)
 	{
-		/* Once per full period, never per iteration (LR-44). */
-		drive->heldPeriods++;
+		/* One stall report per newly elapsed wall-time period: a late pump
+		 * raises newPeriod once for every period it skipped. The start grace:
+		 * race tick 0's periods 1..810 do not count. */
+		uint32_t firstCounted = drive->heldPeriods + 1u;
+
+		if ((drive->raceTick == 0u) && (firstCounted <= NATIVE_ARCADE_RACE_DRIVE_START_GRACE_PERIODS))
+		{
+			firstCounted = NATIVE_ARCADE_RACE_DRIVE_START_GRACE_PERIODS + 1u;
+		}
+		stallReports = (periods >= firstCounted) ? (periods - firstCounted + 1u) : 0u;
+		drive->heldPeriods = periods;
+		/* The resend and the service run once per call, never per period or
+		 * per iteration (LR-44). */
 		NativeArcadeRaceDrive_Resend(drive, NativeArcadeRaceDrive_WindowLow(drive, drive->raceTick), drive->raceTick + drive->inputDelay);
 		if (drive->callbacks.servicePeriod != NULL)
 		{
 			drive->callbacks.servicePeriod(drive->callbacks.context);
 		}
-		/* The start grace: race tick 0's first 810 periods do not count. */
-		countStall = !((drive->raceTick == 0u) && (drive->heldPeriods <= NATIVE_ARCADE_RACE_DRIVE_START_GRACE_PERIODS));
 	}
-	return NativeArcadeRaceDrive_Take(drive, countStall, padsOut);
+	return NativeArcadeRaceDrive_Take(drive, stallReports, padsOut);
 }
 
 uint32_t NativeArcadeRaceDrive_LingerTick(struct NativeArcadeRaceDrive *drive, int onResults)
@@ -549,27 +581,33 @@ uint32_t NativeArcadeRaceDrive_LingerTick(struct NativeArcadeRaceDrive *drive, i
 	{
 		return 0u;
 	}
-	/* LR-46: off RESULTS or a session that left RUNNING stops it for good. */
-	if ((onResults == 0) || !NativeArcadeRaceDrive_SessionRunning(drive))
+	/* LR-46: a session that left RUNNING stops it for good. */
+	if (!NativeArcadeRaceDrive_SessionRunning(drive))
 	{
 		drive->lingerTicksLeft = 0u;
 		return 0u;
 	}
+	/* The flow reaches RESULTS only on the host tick after F: before RESULTS
+	 * was seen, off RESULTS waits; after, leaving RESULTS stops it for good
+	 * (LR-13). */
+	if (onResults == 0)
+	{
+		if (drive->lingerSawResults != 0u)
+		{
+			drive->lingerTicksLeft = 0u;
+		}
+		return 0u;
+	}
+	drive->lingerSawResults = 1u;
 	if (drive->endTick + drive->inputDelay > 0u)
 	{
 		const uint32_t high = drive->endTick + drive->inputDelay - 1u;
 
 		for (uint64_t frame = NativeArcadeRaceDrive_WindowLow(drive, drive->endTick); frame <= (uint64_t)high; frame++)
 		{
-			const int result = NativeArcadeRaceDrive_SendKept(drive, (uint32_t)frame);
-
-			if (result == 0)
-			{
-				/* The link refused: it is closed. Stop for good. */
-				drive->lingerTicksLeft = 0u;
-				return sent;
-			}
-			if (result > 0)
+			/* A refused send is ignored, as in Step and Hold: the transport
+			 * also refuses on a transient socket error. */
+			if (NativeArcadeRaceDrive_SendKept(drive, (uint32_t)frame) > 0)
 			{
 				sent++;
 			}
@@ -668,7 +706,7 @@ const char *NativeArcadeRaceDrive_FailureName(enum NativeArcadeRaceDriveFailure 
 	case NATIVE_ARCADE_RACE_DRIVE_FAILURE_SESSION_STARTED:
 		return "session already started";
 	case NATIVE_ARCADE_RACE_DRIVE_FAILURE_INPUT_DELAY:
-		return "input delay above 3";
+		return "input delay outside 1..3";
 	case NATIVE_ARCADE_RACE_DRIVE_FAILURE_ROLE_SLOT:
 		return "role slot missing";
 	case NATIVE_ARCADE_RACE_DRIVE_FAILURE_TICK_LIMIT:
@@ -695,6 +733,10 @@ const char *NativeArcadeRaceDrive_FailureName(enum NativeArcadeRaceDriveFailure 
 		return "take rejected";
 	case NATIVE_ARCADE_RACE_DRIVE_FAILURE_ROLE_PAD:
 		return "role pad missing";
+	case NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_SLOT:
+		return "local slot not a cabinet role";
+	case NATIVE_ARCADE_RACE_DRIVE_FAILURE_PERIODS:
+		return "held periods inconsistent";
 	default:
 		return "unknown";
 	}

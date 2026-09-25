@@ -1,5 +1,6 @@
 #include "platform/native_arcade_race_drive.h"
 
+#include "platform/native_arcade_roster_proof.h"
 #include "platform/native_lockstep_match_outcome.h"
 #include "platform/native_lockstep_session.h"
 #include "platform/native_match_config.h"
@@ -27,7 +28,10 @@
  * only after the sender recorded f - D, nothing before the first record,
  * nothing while the session is not RUNNING) and for byte identity with the
  * first send of that frame, and every call's set of sent frames is checked
- * against the resend window (LR-3).
+ * against the resend window (LR-3). Hold is driven with the hold loop's
+ * periods count, including skipped periods (LR-44). The disconnected pad is
+ * checked against the RL-10 source of truth,
+ * NativeArcadeRosterProof_ScriptedPads (TWO_CAB) pads 2 and 3 (LR-43).
  */
 
 static int s_failures;
@@ -308,6 +312,7 @@ struct Side
 	int refuseSends;      /* the link refuses the send */
 	int freezeInbox;      /* poll drains nothing */
 	int tamperTakeOnPoll; /* poll moves consumedFrame so the take is REJECTED while RUNNING */
+	int latchOnOk;        /* onTakeResult returns latched after an OK take */
 	uint32_t knob;        /* the WORLD counter of this side's states from knobFromFrame on */
 	uint32_t knobFromFrame;
 
@@ -316,7 +321,8 @@ struct Side
 	uint32_t orderViolations;
 	uint32_t identityViolations;
 	uint32_t sendSetViolations;
-	uint32_t padViolations;
+	uint32_t padViolations;    /* a GO's pads wrong, or HOLD or END wrote padsOut */
+	uint32_t periodViolations; /* HeldPeriods differs from the hold's periods */
 	uint32_t maxSentFrame;
 	int sentAny;
 	uint32_t callSends[CALL_SENDS];
@@ -336,6 +342,7 @@ struct Side
 
 	/* The caller's loop. */
 	uint32_t nextTick;
+	uint32_t holdPeriods; /* the hold loop's periods on the current held tick */
 	int held;
 	int ended;
 	uint32_t endCallSends;
@@ -450,10 +457,51 @@ static void Expected(uint8_t slot, uint32_t frame, uint32_t delay, struct Native
 	NativeArcadeRaceDrive_NormalizePad(&raw, pad);
 }
 
+/* The RL-10 source of truth for the disconnected pad (LR-43): pad 2 of
+ * NativeArcadeRosterProof_ScriptedPads(TWO_CAB, TICK_NONE), which the
+ * rehearsal installs, copied field by field. Pad 3 must be the same. */
+static struct NativeCanonicalInputPadV1 g_rl10Disconnected;
+
+static int Rl10PadEquals(const struct NativeArcadeRosterProofPad *proof, const struct NativeCanonicalInputPadV1 *pad)
+{
+	return (proof->status == pad->status) && (proof->id == pad->id) && (proof->buttons[0] == pad->buttons[0]) && (proof->buttons[1] == pad->buttons[1]) &&
+	       (proof->analog[0] == pad->analog[0]) && (proof->analog[1] == pad->analog[1]) && (proof->analog[2] == pad->analog[2]) &&
+	       (proof->analog[3] == pad->analog[3]) && (proof->connected == pad->connected);
+}
+
+static int LoadRl10Disconnected(void)
+{
+	struct NativeArcadeRosterProofPad proof[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT];
+
+	memset(proof, 0x5a, sizeof(proof));
+	NativeArcadeRosterProof_ScriptedPads(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, proof);
+	memset(&g_rl10Disconnected, 0, sizeof(g_rl10Disconnected));
+	g_rl10Disconnected.status = proof[2].status;
+	g_rl10Disconnected.id = proof[2].id;
+	memcpy(g_rl10Disconnected.buttons, proof[2].buttons, sizeof(g_rl10Disconnected.buttons));
+	memcpy(g_rl10Disconnected.analog, proof[2].analog, sizeof(g_rl10Disconnected.analog));
+	g_rl10Disconnected.connected = proof[2].connected;
+	return (g_rl10Disconnected.connected == 0u) && Rl10PadEquals(&proof[3], &g_rl10Disconnected);
+}
+
 static int IsDisconnected(const struct NativeCanonicalInputPadV1 *pad)
 {
-	return (pad->status == 0xffu) && (pad->id == 0xffu) && (pad->buttons[0] == 0xffu) && (pad->buttons[1] == 0xffu) && (pad->analog[0] == 0x80u) &&
-	       (pad->analog[1] == 0x80u) && (pad->analog[2] == 0x80u) && (pad->analog[3] == 0x80u) && (pad->connected == 0u);
+	return memcmp(pad, &g_rl10Disconnected, sizeof(*pad)) == 0;
+}
+
+/* padsOut untouched: still the 0xa5 fill. */
+static int PadsUntouched(const struct NativeCanonicalInputPadV1 pads[4])
+{
+	const uint8_t *bytes = (const uint8_t *)pads;
+
+	for (size_t i = 0; i < 4u * sizeof(pads[0]); i++)
+	{
+		if (bytes[i] != 0xa5u)
+		{
+			return 0;
+		}
+	}
+	return 1;
 }
 
 static int IsNormalized(const struct NativeCanonicalInputPadV1 *pad)
@@ -622,6 +670,10 @@ static int CbTakeResult(void *context, enum NativeLockstepSessionResult result, 
 		s->firstStallPeriod = NativeArcadeRaceDrive_HeldPeriods(&s->drive);
 	}
 	(void)NativeLockstepMatchOutcome_Poll(&s->tracker, &s->session, result, frameIndex);
+	if (s->latchOnOk && (result == NATIVE_LOCKSTEP_SESSION_OK))
+	{
+		return 1;
+	}
 	return NativeLockstepMatchOutcome_FirstOutcome(&s->tracker) != NULL;
 }
 
@@ -715,12 +767,15 @@ static void CheckPads(struct Side *s, uint32_t frame, const struct NativeCanonic
 
 /*
  * One call of the caller's loop: Step on the next race tick, or Hold while
- * held (newPeriod as given). Checks the frames each call sent: a Step that
- * does not end sends the new bundle(s) and the window, frames
- * max(0, k - D - 1)..k + D (0..D on tick 0); a newPeriod Hold resends that
- * same window; any other Hold iteration sends nothing.
+ * held, with the hold loop's periods advanced by advance (0: a retry
+ * iteration; 1: the next period; more: a late pump that skipped periods).
+ * Checks the frames each call sent: a Step that does not end sends the new
+ * bundle(s) and the window, frames max(0, k - D - 1)..k + D (0..D on tick
+ * 0); a newPeriod Hold resends that same window once, however many periods
+ * it skipped; any other Hold iteration sends nothing. HOLD and END leave
+ * padsOut untouched, and HeldPeriods follows the hold's periods.
  */
-static enum NativeArcadeRaceDriveStatus Act(struct Side *s, int newPeriod)
+static enum NativeArcadeRaceDriveStatus ActPeriods(struct Side *s, uint32_t advance)
 {
 	struct NativeCanonicalInputPadV1 pads[4];
 	enum NativeArcadeRaceDriveStatus status;
@@ -733,7 +788,8 @@ static enum NativeArcadeRaceDriveStatus Act(struct Side *s, int newPeriod)
 	s->callSendCount = 0u;
 	if (s->held)
 	{
-		status = NativeArcadeRaceDrive_Hold(&s->drive, newPeriod, pads);
+		s->holdPeriods += advance;
+		status = NativeArcadeRaceDrive_Hold(&s->drive, s->holdPeriods, advance != 0u, pads);
 	}
 	else
 	{
@@ -741,7 +797,16 @@ static enum NativeArcadeRaceDriveStatus Act(struct Side *s, int newPeriod)
 		const struct NativeArcadeRaceDriveFacts facts = FactsFor(k);
 
 		Sample(s->slot, k, &sample);
+		s->holdPeriods = 0u;
 		status = NativeArcadeRaceDrive_Step(&s->drive, k, StateFor(k, KnobFor(s, k)), &sample, &facts, pads);
+	}
+	if ((status != DRIVE_GO) && !PadsUntouched(pads))
+	{
+		s->padViolations++;
+	}
+	if ((status != DRIVE_END) && (NativeArcadeRaceDrive_HeldPeriods(&s->drive) != s->holdPeriods))
+	{
+		s->periodViolations++;
 	}
 	if (status == DRIVE_END)
 	{
@@ -763,7 +828,7 @@ static enum NativeArcadeRaceDriveStatus Act(struct Side *s, int newPeriod)
 		s->sendSetViolations++;
 		return status;
 	}
-	if (wasHeld && !newPeriod)
+	if (wasHeld && (advance == 0u))
 	{
 		if (s->callSendCount != 0u)
 		{
@@ -793,6 +858,12 @@ static enum NativeArcadeRaceDriveStatus Act(struct Side *s, int newPeriod)
 	s->nextTick = k + 1u;
 	s->held = 0;
 	return status;
+}
+
+/* One call with newPeriod as given: the next period, or a retry iteration. */
+static enum NativeArcadeRaceDriveStatus Act(struct Side *s, int newPeriod)
+{
+	return ActPeriods(s, newPeriod ? 1u : 0u);
 }
 
 /* Rounds of A then B; a side acts while active, not ended, and either held
@@ -830,6 +901,7 @@ static int CheckClean(const struct Side *s)
 	REQUIRE(s->identityViolations == 0u);
 	REQUIRE(s->sendSetViolations == 0u);
 	REQUIRE(s->padViolations == 0u);
+	REQUIRE(s->periodViolations == 0u);
 	REQUIRE(s->takeResultWhileEnded == 0u);
 	REQUIRE(s->inboxOverflow == 0u);
 	return 1;
@@ -873,13 +945,17 @@ static int CheckSilentAfterEnd(struct Side *s)
 
 	REQUIRE(s->ended);
 	Sample(s->slot, s->nextTick, &sample);
+	memset(pads, 0xa5, sizeof(pads));
 	for (uint32_t i = 0; i < 3u; i++)
 	{
+		const uint32_t held = NativeArcadeRaceDrive_HeldPeriods(&s->drive);
+
 		REQUIRE(NativeArcadeRaceDrive_Step(&s->drive, s->nextTick, StateFor(s->nextTick, 0u), &sample, &facts, pads) == DRIVE_END);
 		REQUIRE(NativeArcadeRaceDrive_Step(&s->drive, s->nextTick + 1u, StateFor(s->nextTick + 1u, 0u), &sample, &facts, pads) == DRIVE_END);
-		REQUIRE(NativeArcadeRaceDrive_Hold(&s->drive, 1, pads) == DRIVE_END);
-		REQUIRE(NativeArcadeRaceDrive_Hold(&s->drive, 0, pads) == DRIVE_END);
+		REQUIRE(NativeArcadeRaceDrive_Hold(&s->drive, held + 1u, 1, pads) == DRIVE_END);
+		REQUIRE(NativeArcadeRaceDrive_Hold(&s->drive, held, 0, pads) == DRIVE_END);
 	}
+	REQUIRE(PadsUntouched(pads));
 	if (!NativeArcadeRaceDrive_EndIsFinish(&s->drive))
 	{
 		for (uint32_t i = 0; i < 20u; i++)
@@ -909,10 +985,22 @@ static void TestDriveConstants(void)
 	/* 2D + 2 frames of the hold's window fit the ring for D <= 3 only. */
 	CHECK(2u * NATIVE_ARCADE_RACE_DRIVE_MAX_INPUT_DELAY + 2u <= NATIVE_ARCADE_RACE_DRIVE_KEPT_CAPACITY);
 
-	/* The RL-10 rehearsal's disconnected pad, byte for byte. */
+	/* The RL-10 rehearsal's disconnected pad, byte for byte: pads 2 and 3 of
+	 * NativeArcadeRosterProof_ScriptedPads(TWO_CAB) (LR-43), on the neutral
+	 * tick and on a scripted tick, and the header's named bytes. */
+	CHECK(LoadRl10Disconnected());
 	memset(&pad, 0x5a, sizeof(pad));
 	NativeArcadeRaceDrive_DisconnectedPad(&pad);
 	CHECK(IsDisconnected(&pad));
+	for (uint32_t tick = 0; tick < 2u; tick++)
+	{
+		struct NativeArcadeRosterProofPad proof[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT];
+
+		NativeArcadeRosterProof_ScriptedPads(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB, (tick == 0u) ? NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE : 100u, proof);
+		CHECK(Rl10PadEquals(&proof[2], &pad));
+		CHECK(Rl10PadEquals(&proof[3], &pad));
+	}
+	CHECK(pad.status == NATIVE_ARCADE_RACE_DRIVE_DISCONNECTED_STATUS && pad.id == NATIVE_ARCADE_RACE_DRIVE_DISCONNECTED_ID);
 	NativeArcadeRaceDrive_DisconnectedPad(NULL);
 
 	for (uint32_t periods = 0; periods < 10u; periods++)
@@ -930,7 +1018,7 @@ static void TestDriveConstants(void)
 	CHECK(strcmp(NativeArcadeRaceDrive_EndKindName(NATIVE_ARCADE_RACE_DRIVE_END_OUTCOME), "outcome") == 0);
 	CHECK(strcmp(NativeArcadeRaceDrive_EndKindName(NATIVE_ARCADE_RACE_DRIVE_END_LOCAL_FAILURE), "local failure") == 0);
 	CHECK(strcmp(NativeArcadeRaceDrive_EndKindName((enum NativeArcadeRaceDriveEndKind)99), "unknown") == 0);
-	for (uint32_t reason = 0; reason <= (uint32_t)NATIVE_ARCADE_RACE_DRIVE_FAILURE_ROLE_PAD; reason++)
+	for (uint32_t reason = 0; reason <= (uint32_t)NATIVE_ARCADE_RACE_DRIVE_FAILURE_PERIODS; reason++)
 	{
 		const char *name = NativeArcadeRaceDrive_FailureName((enum NativeArcadeRaceDriveFailure)reason);
 
@@ -941,11 +1029,14 @@ static void TestDriveConstants(void)
 			CHECK(strcmp(name, NativeArcadeRaceDrive_FailureName((enum NativeArcadeRaceDriveFailure)other)) != 0);
 		}
 	}
-	CHECK(strcmp(NativeArcadeRaceDrive_FailureName(NATIVE_ARCADE_RACE_DRIVE_FAILURE_INPUT_DELAY), "input delay above 3") == 0);
+	CHECK(strcmp(NativeArcadeRaceDrive_FailureName((enum NativeArcadeRaceDriveFailure)20), "unknown") == 0);
+	CHECK(strcmp(NativeArcadeRaceDrive_FailureName(NATIVE_ARCADE_RACE_DRIVE_FAILURE_INPUT_DELAY), "input delay outside 1..3") == 0);
+	CHECK(strcmp(NativeArcadeRaceDrive_FailureName(NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_SLOT), "local slot not a cabinet role") == 0);
+	CHECK(strcmp(NativeArcadeRaceDrive_FailureName(NATIVE_ARCADE_RACE_DRIVE_FAILURE_PERIODS), "held periods inconsistent") == 0);
 
 	/* NULL drive: END, nothing, and neutral accessors. */
 	CHECK(NativeArcadeRaceDrive_Step(NULL, 0u, NULL, NULL, NULL, NULL) == DRIVE_END);
-	CHECK(NativeArcadeRaceDrive_Hold(NULL, 1, NULL) == DRIVE_END);
+	CHECK(NativeArcadeRaceDrive_Hold(NULL, 1u, 1, NULL) == DRIVE_END);
 	CHECK(NativeArcadeRaceDrive_LingerTick(NULL, 1) == 0u);
 	CHECK(NativeArcadeRaceDrive_EndKind(NULL) == NATIVE_ARCADE_RACE_DRIVE_END_NONE);
 	CHECK(NativeArcadeRaceDrive_EndTick(NULL) == NO_TICK);
@@ -953,7 +1044,7 @@ static void TestDriveConstants(void)
 }
 
 /* Begin's refusals end the drive as a named local failure and send nothing
- * (LR-3: D above 3 is refused). */
+ * (LR-3: D outside 1..3 is refused). */
 static int BeginRefused(struct NativeArcadeRaceDrive *drive, struct NativeLockstepSession *session, struct NativeArcadeRaceDriveKept *kept,
                         const struct NativeArcadeRaceDriveCallbacks *callbacks, uint32_t limit, enum NativeArcadeRaceDriveFailure reason)
 {
@@ -969,7 +1060,7 @@ static int BeginRefused(struct NativeArcadeRaceDrive *drive, struct NativeLockst
 	REQUIRE(NativeArcadeRaceDrive_FailureReason(drive) == reason);
 	REQUIRE(NativeArcadeRaceDrive_EndIsFinish(drive) == 0);
 	REQUIRE(NativeArcadeRaceDrive_Step(drive, 0u, StateFor(0u, 0u), &sample, &facts, pads) == DRIVE_END);
-	REQUIRE(NativeArcadeRaceDrive_Hold(drive, 1, pads) == DRIVE_END);
+	REQUIRE(NativeArcadeRaceDrive_Hold(drive, 1u, 1, pads) == DRIVE_END);
 	REQUIRE(NativeArcadeRaceDrive_LingerTick(drive, 1) == 0u);
 	REQUIRE(g_a.sendCalls == sends);
 	REQUIRE(g_a.pollCalls == polls);
@@ -1039,6 +1130,31 @@ static void TestDriveBegin(void)
 	CHECK(NativeLockstepSession_RecordLocalDigests(&g_spare, StateFor(0u, 0u)) == 1);
 	CHECK(BeginRefused(&drive, &g_spare, &kept, &callbacks, 0u, NATIVE_ARCADE_RACE_DRIVE_FAILURE_SESSION_STARTED));
 
+	/* D 0 (the session refuses it at Open; forced here) is refused. */
+	NativeLockstepSession_Init(&g_spare);
+	CHECK(NativeLockstepSession_Open(&g_spare, &g_config, 0u, g_a.slot) == 0);
+	CHECK(NativeLockstepSession_Open(&g_spare, &g_config, 1u, g_a.slot) == 1);
+	g_spare.inputDelay = 0u;
+	CHECK(BeginRefused(&drive, &g_spare, &kept, &callbacks, 0u, NATIVE_ARCADE_RACE_DRIVE_FAILURE_INPUT_DELAY));
+
+	/* A session whose localSlot is neither role slot (the session only opens
+	 * on a human slot; forced here to each bot slot and two past the end). */
+	NativeLockstepSession_Init(&g_spare);
+	CHECK(NativeLockstepSession_Open(&g_spare, &g_config, 2u, g_b.slot) == 1);
+	CHECK(NativeArcadeRaceDrive_Begin(&drive, &g_spare, &kept, &callbacks, 0u) == 1);
+	for (uint8_t slot = 0u; slot < 8u; slot++)
+	{
+		g_spare.localSlot = slot;
+		if ((slot == g_a.slot) || (slot == g_b.slot))
+		{
+			CHECK(NativeArcadeRaceDrive_Begin(&drive, &g_spare, &kept, &callbacks, 0u) == 1);
+		}
+		else
+		{
+			CHECK(BeginRefused(&drive, &g_spare, &kept, &callbacks, 0u, NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_SLOT));
+		}
+	}
+
 	/* D above 3 is refused (LR-3); 1..3 run. The session itself accepts
 	 * up to 6. */
 	for (uint32_t delay = 1u; delay <= 6u; delay++)
@@ -1073,7 +1189,7 @@ static void TestDriveBegin(void)
 		CHECK(NativeArcadeRaceDrive_Step(&drive, 0u, StateFor(0u, 0u), &sample, &facts, pads) == DRIVE_END);
 		CHECK(NativeArcadeRaceDrive_FailureReason(&drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_NOT_BEGUN);
 		NativeArcadeRaceDrive_Init(&drive);
-		CHECK(NativeArcadeRaceDrive_Hold(&drive, 1, pads) == DRIVE_END);
+		CHECK(NativeArcadeRaceDrive_Hold(&drive, 1u, 1, pads) == DRIVE_END);
 		CHECK(NativeArcadeRaceDrive_FailureReason(&drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_NOT_BEGUN);
 	}
 }
@@ -1306,6 +1422,226 @@ static void TestDriveStartWait(void)
 	CHECK(g_a.nextTick == 60u && g_b.nextTick == 60u);
 	CHECK(CheckHealthy(&g_a) && CheckHealthy(&g_b));
 	CHECK(CheckSamePads(60u));
+}
+
+/* Holds A on its next tick with B inactive (B stays inactive). */
+static int HoldA(uint32_t target)
+{
+	RunUntil(target, 500u);
+	g_b.active = 0;
+	for (uint32_t i = 0; (i < 10u) && !g_a.held; i++)
+	{
+		REQUIRE(Act(&g_a, 1) != DRIVE_END);
+	}
+	REQUIRE(g_a.held);
+	g_a.serviceCalls = 0u; /* the count of this hold only */
+	REQUIRE(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 0u);
+	return 1;
+}
+
+/* Skipped periods (LR-44): a late pump raises newPeriod once for several
+ * wall-time periods. Each newly elapsed period is one STALL report, but the
+ * window is resent and the service called once per call, and HeldPeriods is
+ * the hold's periods. A late period that also resumes reports nothing. */
+static void TestDriveSkippedPeriods(void)
+{
+	const uint32_t window = 2u * 2u + 2u;
+
+	CHECK(Setup(2u, 0u));
+	CHECK(HoldA(40u));
+	CHECK(ActPeriods(&g_a, 1u) == DRIVE_HOLD);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 1u);
+	CHECK(g_a.serviceCalls == 1u && g_a.callSendCount == window);
+	CHECK(ActPeriods(&g_a, 0u) == DRIVE_HOLD);
+	/* Periods 1 -> 5 in one call: 4 reports, one resend, one service. */
+	CHECK(ActPeriods(&g_a, 4u) == DRIVE_HOLD);
+	CHECK(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive) == 5u);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 5u);
+	CHECK(g_a.tracker.consecutiveStallFrames == 5u);
+	CHECK(g_a.serviceCalls == 2u && g_a.callSendCount == window);
+	CHECK(NativeArcadeRaceDrive_BannerDue(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive)) == 0);
+	CHECK(ActPeriods(&g_a, 6u) == DRIVE_HOLD);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 11u);
+	CHECK(NativeArcadeRaceDrive_BannerDue(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive)) != 0);
+
+	/* The peer resumes; a late call over 2 periods takes OK: no report. */
+	g_b.active = 1;
+	CHECK(Act(&g_b, 1) == DRIVE_GO);
+	CHECK(ActPeriods(&g_a, 2u) == DRIVE_GO);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 11u);
+	CHECK(g_a.serviceCalls == 4u);
+	CHECK(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive) == 13u);
+	CHECK(g_a.tracker.consecutiveStallFrames == 0u);
+	RunUntil(100u, 1000u);
+	CHECK(g_a.nextTick == 100u && g_b.nextTick == 100u);
+	CHECK(CheckHealthy(&g_a) && CheckHealthy(&g_b));
+	CHECK(CheckSamePads(100u));
+}
+
+/* The stall timeout with skipped periods lands at exactly 90 counted
+ * periods: jumps of 7 reach 84, and the jump to 91 reports 85..90 and stops
+ * at the latch; one jump of 1000 reports exactly 90. */
+static void TestDriveStallTimeoutSkipped(void)
+{
+	const struct NativeLockstepMatchOutcomeReport *report;
+
+	CHECK(Setup(2u, 0u));
+	CHECK(HoldA(40u));
+	for (uint32_t jump = 1u; jump <= 12u; jump++)
+	{
+		CHECK(ActPeriods(&g_a, 7u) == DRIVE_HOLD);
+		CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 7u * jump);
+	}
+	CHECK(ActPeriods(&g_a, 7u) == DRIVE_END);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == STALL_TIMEOUT);
+	CHECK(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive) == 91u);
+	CHECK(g_a.serviceCalls == 13u);
+	CHECK(NativeArcadeRaceDrive_EndKind(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_END_OUTCOME);
+	report = NativeLockstepMatchOutcome_FirstOutcome(&g_a.tracker);
+	CHECK(report != NULL && report->stalledFrameCount == STALL_TIMEOUT && report->frameIndex == g_a.nextTick);
+	CHECK(ReasonOf(&g_a) == REASON_PEER_TIMEOUT);
+	CHECK(CheckClean(&g_a));
+	CHECK(CheckSilentAfterEnd(&g_a));
+
+	CHECK(Setup(2u, 0u));
+	CHECK(HoldA(40u));
+	CHECK(ActPeriods(&g_a, 1000u) == DRIVE_END);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == STALL_TIMEOUT);
+	CHECK(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive) == 1000u);
+	CHECK(g_a.serviceCalls == 1u);
+	CHECK(ReasonOf(&g_a) == REASON_PEER_TIMEOUT);
+	CHECK(CheckClean(&g_a));
+	CHECK(CheckSilentAfterEnd(&g_a));
+}
+
+/* The start wait with skipped periods across the 810 boundary: 805 -> 815
+ * reports 811..815 only, and the wait ends at exactly 900 (the jump 895 ->
+ * 905 reports 896..900). A jump 0 -> 899 reports 89, and one more ends it. */
+static void TestDriveStartWaitSkipped(void)
+{
+	CHECK(Setup(2u, 0u));
+	g_b.active = 0;
+	CHECK(Act(&g_a, 1) == DRIVE_HOLD);
+	CHECK(ActPeriods(&g_a, 805u) == DRIVE_HOLD);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 0u);
+	CHECK(ActPeriods(&g_a, 10u) == DRIVE_HOLD);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 5u);
+	CHECK(g_a.firstStallPeriod == 815u);
+	for (uint32_t jump = 1u; jump <= 8u; jump++)
+	{
+		CHECK(ActPeriods(&g_a, 10u) == DRIVE_HOLD);
+	}
+	CHECK(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive) == 895u);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 85u);
+	CHECK(ActPeriods(&g_a, 10u) == DRIVE_END);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == STALL_TIMEOUT);
+	CHECK(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive) == 905u);
+	CHECK(g_a.serviceCalls == 11u);
+	CHECK(g_a.sendCalls == 3u + 11u * 3u);
+	CHECK(NativeArcadeRaceDrive_EndKind(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_END_OUTCOME);
+	CHECK(NativeLockstepMatchOutcome_FirstOutcome(&g_a.tracker) != NULL);
+	CHECK(NativeLockstepMatchOutcome_FirstOutcome(&g_a.tracker)->frameIndex == 0u);
+	CHECK(ReasonOf(&g_a) == REASON_PEER_TIMEOUT);
+	CHECK(CheckClean(&g_a));
+	CHECK(CheckSilentAfterEnd(&g_a));
+
+	CHECK(Setup(2u, 0u));
+	g_b.active = 0;
+	CHECK(Act(&g_a, 1) == DRIVE_HOLD);
+	CHECK(ActPeriods(&g_a, 810u) == DRIVE_HOLD);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 0u);
+	CHECK(ActPeriods(&g_a, 89u) == DRIVE_HOLD);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 89u);
+	CHECK(ActPeriods(&g_a, 1u) == DRIVE_END);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == STALL_TIMEOUT);
+	CHECK(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive) == 900u);
+	CHECK(CheckClean(&g_a));
+
+	CHECK(Setup(2u, 0u));
+	g_b.active = 0;
+	CHECK(Act(&g_a, 1) == DRIVE_HOLD);
+	CHECK(ActPeriods(&g_a, 899u) == DRIVE_HOLD);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == 89u);
+	CHECK(ActPeriods(&g_a, 1u) == DRIVE_END);
+	CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_STALL] == STALL_TIMEOUT);
+	CHECK(CheckClean(&g_a));
+}
+
+/* An onTakeResult that returns latched after an OK take ends as OUTCOME,
+ * from Step and from Hold, with padsOut untouched (checked in Act). */
+static void TestDriveLatchAfterOk(void)
+{
+	CHECK(Setup(2u, 0u));
+	RunUntil(10u, 100u);
+	g_a.latchOnOk = 1;
+	CHECK(Act(&g_a, 1) == DRIVE_END);
+	CHECK(g_a.lastTakeResult == NATIVE_LOCKSTEP_SESSION_OK && g_a.lastTakeFrame == 10u);
+	CHECK(NativeArcadeRaceDrive_EndKind(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_END_OUTCOME);
+	CHECK(NativeArcadeRaceDrive_FailureReason(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_NONE);
+	CHECK(g_a.goCount == 10u);
+	CHECK(CheckClean(&g_a));
+	CHECK(CheckSilentAfterEnd(&g_a));
+
+	for (uint32_t newPeriod = 0; newPeriod < 2u; newPeriod++)
+	{
+		uint32_t heldTick;
+
+		CHECK(Setup(2u, 0u));
+		CHECK(HoldA(10u));
+		heldTick = g_a.nextTick;
+		CHECK(ActPeriods(&g_a, 2u) == DRIVE_HOLD);
+		g_b.active = 1;
+		CHECK(Act(&g_b, 1) == DRIVE_GO);
+		g_a.latchOnOk = 1;
+		CHECK(Act(&g_a, (int)newPeriod) == DRIVE_END);
+		CHECK(g_a.lastTakeResult == NATIVE_LOCKSTEP_SESSION_OK && g_a.lastTakeFrame == heldTick);
+		CHECK(NativeArcadeRaceDrive_EndKind(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_END_OUTCOME);
+		CHECK(NativeArcadeRaceDrive_FailureReason(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_NONE);
+		CHECK(CheckClean(&g_a));
+		CHECK(CheckSilentAfterEnd(&g_a));
+	}
+}
+
+/* A REJECTED take while RUNNING from Hold (a retry iteration and a new
+ * period) is a local failure, after OnTakeResult. */
+static void TestDriveRejectedFromHold(void)
+{
+	for (uint32_t newPeriod = 0; newPeriod < 2u; newPeriod++)
+	{
+		uint32_t heldTick;
+
+		CHECK(Setup(2u, 0u));
+		CHECK(HoldA(10u));
+		heldTick = g_a.nextTick;
+		CHECK(ActPeriods(&g_a, 1u) == DRIVE_HOLD);
+		g_a.tamperTakeOnPoll = 1;
+		CHECK(Act(&g_a, (int)newPeriod) == DRIVE_END);
+		CHECK(NativeLockstepSession_Mode(&g_a.session) == NATIVE_LOCKSTEP_RUNNING);
+		CHECK(g_a.takeCalls[NATIVE_LOCKSTEP_SESSION_REJECTED] == 1u && g_a.lastTakeFrame == heldTick);
+		CHECK(g_a.lastTakeResult == NATIVE_LOCKSTEP_SESSION_REJECTED);
+		CHECK(NativeArcadeRaceDrive_EndKind(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_END_LOCAL_FAILURE);
+		CHECK(NativeArcadeRaceDrive_FailureReason(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_TAKE);
+		CHECK(NativeLockstepMatchOutcome_FirstOutcome(&g_a.tracker) == NULL);
+		CHECK(CheckClean(&g_a));
+		CHECK(CheckSilentAfterEnd(&g_a));
+	}
+}
+
+/* A Step that ends early (after its argument checks) resets the held-period
+ * count: no stale count from the previous hold survives into the end. */
+static void TestDriveHeldPeriodsReset(void)
+{
+	CHECK(Setup(2u, 0u));
+	CHECK(HoldA(20u));
+	CHECK(ActPeriods(&g_a, 5u) == DRIVE_HOLD);
+	g_b.active = 1;
+	CHECK(Act(&g_b, 1) == DRIVE_GO);
+	CHECK(Act(&g_a, 0) == DRIVE_GO);
+	CHECK(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive) == 5u);
+	g_a.session.recordedFrame = g_a.nextTick;
+	CHECK(Act(&g_a, 1) == DRIVE_END);
+	CHECK(NativeArcadeRaceDrive_FailureReason(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_RECORD);
+	CHECK(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive) == 0u);
 }
 
 /* A lead of 1 to D + 1 ticks, either side leading: parked digests, no
@@ -1623,7 +1959,7 @@ static void TestDriveLocalFailures(void)
 	CHECK(Setup(2u, 0u));
 	RunUntil(3u, 100u);
 	takes = g_a.takeCallsTotal;
-	CHECK(NativeArcadeRaceDrive_Hold(&g_a.drive, 1, pads) == DRIVE_END);
+	CHECK(NativeArcadeRaceDrive_Hold(&g_a.drive, 1u, 1, pads) == DRIVE_END);
 	g_a.ended = 1;
 	CHECK(ExpectLocalFailure(NATIVE_ARCADE_RACE_DRIVE_FAILURE_SEQUENCE, takes));
 
@@ -1631,9 +1967,38 @@ static void TestDriveLocalFailures(void)
 	g_b.active = 0;
 	CHECK(Act(&g_a, 1) == DRIVE_HOLD);
 	takes = g_a.takeCallsTotal;
-	CHECK(NativeArcadeRaceDrive_Hold(&g_a.drive, 1, NULL) == DRIVE_END);
+	CHECK(NativeArcadeRaceDrive_Hold(&g_a.drive, 1u, 1, NULL) == DRIVE_END);
 	g_a.ended = 1;
 	CHECK(ExpectLocalFailure(NATIVE_ARCADE_RACE_DRIVE_FAILURE_ARGUMENT, takes));
+
+	/* Inconsistent hold periods (LR-44), each refused before the poll, with
+	 * nothing sent or taken: periods backwards (with and without newPeriod),
+	 * newPeriod with no new period, and a new period without newPeriod. */
+	for (uint32_t variant = 0; variant < 4u; variant++)
+	{
+		static const uint32_t periodsFor[4] = {2u, 2u, 3u, 4u};
+		static const int newPeriodFor[4] = {0, 1, 1, 0};
+		uint32_t polls;
+		uint32_t sends;
+
+		CHECK(Setup(2u, 0u));
+		RunUntil(10u, 100u);
+		g_b.active = 0;
+		for (uint32_t i = 0; (i < 10u) && !g_a.held; i++)
+		{
+			CHECK(Act(&g_a, 1) != DRIVE_END);
+		}
+		CHECK(g_a.held);
+		CHECK(ActPeriods(&g_a, 3u) == DRIVE_HOLD);
+		CHECK(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive) == 3u);
+		takes = g_a.takeCallsTotal;
+		polls = g_a.pollCalls;
+		sends = g_a.sendCalls;
+		CHECK(NativeArcadeRaceDrive_Hold(&g_a.drive, periodsFor[variant], newPeriodFor[variant], pads) == DRIVE_END);
+		g_a.ended = 1;
+		CHECK(g_a.pollCalls == polls && g_a.sendCalls == sends);
+		CHECK(ExpectLocalFailure(NATIVE_ARCADE_RACE_DRIVE_FAILURE_PERIODS, takes));
+	}
 
 	/* A committed input set without a role's pad: OnTakeResult(OK) first. */
 	CHECK(Setup(2u, 0u));
@@ -1728,7 +2093,7 @@ static void TestDrivePadMapping(void)
 		if (frame == 0u)
 		{
 			/* A retry iteration takes too. */
-			CHECK(NativeArcadeRaceDrive_Hold(&g_a.drive, 0, pads) == DRIVE_GO);
+			CHECK(NativeArcadeRaceDrive_Hold(&g_a.drive, 0u, 0, pads) == DRIVE_GO);
 		}
 		else
 		{
@@ -1832,6 +2197,9 @@ static void TestDriveFinish(void)
 	CHECK(RunRace(0u, 2u, first100, 500u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 500u, 100u));
 	/* END_OF_RACE on the grace-end tick is the natural finish. */
 	CHECK(RunRace(0u, 2u, first100, 1000u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 1000u, 100u));
+	/* END_OF_RACE on the grace start tick G itself: the natural finish, and
+	 * G is still latched for the logs. */
+	CHECK(RunRace(0u, 2u, first100, 100u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 100u, 100u));
 	/* END_OF_RACE with no grace. */
 	CHECK(RunRace(0u, 2u, none, 77u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 77u, NO_TICK));
 	/* The tie order with the bound lowered to the grace-end tick: the grace
@@ -1848,15 +2216,41 @@ static void TestDriveFinish(void)
 	CHECK(g_a.committed[17999][0].connected == 1u);
 }
 
-/* The linger's stop rules (LR-13, LR-14): off RESULTS, a session that left
- * RUNNING, a refused send; each stops it for good. And an end on race tick
- * 0 has nothing kept to send. */
+/* The linger's stop rules (LR-13, LR-14, LR-46): leaving RESULTS after it
+ * was seen, or a session that left RUNNING, stops it for good; off RESULTS
+ * before RESULTS was seen waits; a refused send is ignored. And an end on
+ * race tick 0 has nothing kept to send. */
 static void TestDriveLingerStops(void)
 {
 	uint8_t shortRecord[BUNDLE_BYTES];
 	uint32_t sends;
 
-	/* Off RESULTS after two linger ticks. */
+	/* Off RESULTS before RESULTS is seen (the flow reaches RESULTS on the
+	 * host tick after F): no send, no count, no stop; then RESULTS sends. */
+	CHECK(Setup(2u, 0u));
+	g_race.endOfRaceTick = 50u;
+	RunUntil(UINT32_MAX, 200u);
+	CHECK(g_a.ended && g_b.ended);
+	sends = g_a.sendCalls;
+	for (uint32_t tick = 0; tick < 3u; tick++)
+	{
+		CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 0) == 0u);
+		CHECK(NativeArcadeRaceDrive_LingerTicksLeft(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS);
+	}
+	CHECK(g_a.sendCalls == sends);
+	g_a.callSendCount = 0u;
+	CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 1) == 5u);
+	CheckCallSends(&g_a, 47u, 51u);
+	CHECK(NativeArcadeRaceDrive_LingerTicksLeft(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS - 1u);
+	/* Then off RESULTS after it was seen: stopped for good. */
+	sends = g_a.sendCalls;
+	CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 0) == 0u);
+	CHECK(NativeArcadeRaceDrive_LingerTicksLeft(&g_a.drive) == 0u);
+	CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 1) == 0u);
+	CHECK(g_a.sendCalls == sends);
+	CHECK(CheckClean(&g_a));
+
+	/* Off RESULTS after two linger ticks: 1, 1, 0 stops; 1 sends nothing. */
 	CHECK(Setup(2u, 0u));
 	g_race.endOfRaceTick = 50u;
 	RunUntil(UINT32_MAX, 200u);
@@ -1866,28 +2260,46 @@ static void TestDriveLingerStops(void)
 	sends = g_a.sendCalls;
 	CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 0) == 0u);
 	CHECK(NativeArcadeRaceDrive_LingerTicksLeft(&g_a.drive) == 0u);
-	CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 1) == 0u);
+	for (uint32_t tick = 0; tick < 3u; tick++)
+	{
+		CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 1) == 0u);
+	}
 	CHECK(g_a.sendCalls == sends);
 
-	/* The session leaves RUNNING (a fault drained after the end). */
+	/* The session leaves RUNNING (a fault drained after the end): stopped
+	 * for good, even before RESULTS was seen. */
 	memset(shortRecord, 0x22, sizeof(shortRecord));
 	CHECK(NativeLockstepSession_AcceptBundle(&g_b.session, shortRecord, 64u) == NATIVE_LOCKSTEP_SESSION_FAULT);
 	sends = g_b.sendCalls;
+	CHECK(NativeArcadeRaceDrive_LingerTick(&g_b.drive, 0) == 0u);
+	CHECK(NativeArcadeRaceDrive_LingerTicksLeft(&g_b.drive) == 0u);
 	CHECK(NativeArcadeRaceDrive_LingerTick(&g_b.drive, 1) == 0u);
 	CHECK(NativeArcadeRaceDrive_LingerTicksLeft(&g_b.drive) == 0u);
 	CHECK(NativeArcadeRaceDrive_LingerTick(&g_b.drive, 1) == 0u);
 	CHECK(g_b.sendCalls == sends);
 
-	/* A refused send (the link closed). */
+	/* Refused sends (a transient socket error refuses too) are ignored: the
+	 * whole window is still offered, the tick counts down, and the next
+	 * tick sends again; the linger ends only when the count reaches 0. */
 	CHECK(Setup(2u, 0u));
 	g_race.endOfRaceTick = 50u;
 	RunUntil(UINT32_MAX, 200u);
 	g_a.refuseSends = 1;
-	g_a.callSendCount = 0u;
-	CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 1) == 0u);
-	CHECK(g_a.callSendCount == 1u);
-	CHECK(NativeArcadeRaceDrive_LingerTicksLeft(&g_a.drive) == 0u);
+	for (uint32_t tick = 1u; tick <= 3u; tick++)
+	{
+		g_a.callSendCount = 0u;
+		CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 1) == 0u);
+		CheckCallSends(&g_a, 47u, 51u);
+		CHECK(NativeArcadeRaceDrive_LingerTicksLeft(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS - tick);
+	}
 	g_a.refuseSends = 0;
+	for (uint32_t tick = 4u; tick <= NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS; tick++)
+	{
+		g_a.callSendCount = 0u;
+		CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 1) == 5u);
+		CheckCallSends(&g_a, 47u, 51u);
+	}
+	CHECK(NativeArcadeRaceDrive_LingerTicksLeft(&g_a.drive) == 0u);
 	sends = g_a.sendCalls;
 	CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 1) == 0u);
 	CHECK(g_a.sendCalls == sends);
@@ -1906,6 +2318,11 @@ static void TestDriveLingerStops(void)
 
 int main(void)
 {
+	if (!LoadRl10Disconnected())
+	{
+		fprintf(stderr, "the RL-10 disconnected pads 2 and 3 differ or are connected\n");
+		s_failures++;
+	}
 	TestConstants();
 	TestNeutralPad();
 	TestEveryStatusAndIdByte();
@@ -1924,6 +2341,12 @@ int main(void)
 	TestDriveStallAndResume();
 	TestDriveStallTimeout();
 	TestDriveStartWait();
+	TestDriveSkippedPeriods();
+	TestDriveStallTimeoutSkipped();
+	TestDriveStartWaitSkipped();
+	TestDriveLatchAfterOk();
+	TestDriveRejectedFromHold();
+	TestDriveHeldPeriodsReset();
 	TestDriveLead();
 	TestDriveWorstCaseLead();
 	TestDriveFaultIsOutcome();
