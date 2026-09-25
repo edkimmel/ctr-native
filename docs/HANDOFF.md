@@ -613,23 +613,36 @@ Task 7 (networked race launch) is complete and tracked in
    - Next: LR-S7 (local sample seam), LR-S8 (pure drive core), and LR-S9
      (host drive glue). After them come LR-S10 (the caller),
      LR-S11..LR-S12, the LR-S13 gate, and LR-S14.
-   - For owner review: the hold banner is a host overlay in a 5x7 block
-     font.
+   - Hold banner: it is a host overlay, because DecalFont writes
+     render-pass state (LR-S2 (a)). The owner asked why it does not use the
+     game font. LR-S11 default: the host overlay draws the game font's
+     glyphs, read from VRAM without writing it, and falls back to the 5x7
+     block font if that proves unsafe.
+   - Menu sounds SND-1..11 are assumed approved until live testing.
 2. Package and ship, as soon as possible (owner directive). Overnight the
    owner reprioritised: drive Task 8 autonomously to a real end-to-end
    linked race first, then package; cabinets and hardware follow.
    - A Release build, checked against the Debug suite.
-   - A package step that produces one self-contained folder: the exe,
-     DLLs, and a per-cabinet config template (role, peer address,
-     fullscreen). It contains NO retail data; each cabinet supplies its
-     own `assets/ctr-u.bin`.
+   - A package step that produces one self-contained folder: the exe and
+     DLLs, with the runtime bundled so nothing needs installing, plus a
+     per-cabinet config file next to the exe (data path, seat, peer IP
+     and port, fullscreen). It contains NO retail data; each cabinet
+     reads its own data from the path in its config. Owner-approved:
+     static per-cabinet config until auto-discovery lands.
    - Both cabinets must run the byte-identical package, because the
      handshake rejects different builds.
    - The owner will guide deployment to `C:\arcade` and the sync between
      cabinets. Later Task 8 builds ship the same way.
    - Stretch goals (items 8-13 above) are developed in this repo after
      shipping. `C:\arcade` only ever receives packaged builds.
-3. Real two-cabinet and G29 validation (actual wire, LAN switch,
+3. Cabinet auto-discovery (owner directive, after packaging). The
+   cabinets sit on a dumb switch and have fixed IPs.
+   - Each cabinet announces itself on the subnet. A continuous background
+     poll finds peers that wake up later.
+   - ONE_CAB versus TWO_CAB is not a static setting: it follows from
+     whether other cabinets are found or are silent.
+   - Discovery replaces the static peer address in the config.
+4. Real two-cabinet and G29 validation (actual wire, LAN switch,
    latency/loss, wheel input) needs cabinet access. It is the separately
    gated requirement for step 6 (CAB1 G29/kiosk gate) and step 7
    (two-cabinet fleet acceptance).
