@@ -640,8 +640,8 @@ not flood a peer that is still loading. The resend needs one new peer-link
 call, a verbatim 128-byte bundle send (LR-S9). It requires both the link
 mode and the session mode to be RUNNING. The link mode alone is not
 enough: the link copies the session mode only in Poll and in the
-staged-record replay (platform/native_lockstep_peer_link.c:108-120,
-:140-141, :215-216), so a divergence that RecordLocalDigests latches
+staged-record replay (platform/native_lockstep_peer_link.c:109-121,
+:167-168, :245), so a divergence that RecordLocalDigests latches
 (LR-11) leaves the link RUNNING until the next poll.
 ComposeAndSendBundle already sends nothing then, because the session's
 ComposeBundle requires a RUNNING session (native_lockstep_session.c:354-358).
@@ -862,7 +862,11 @@ must keep running: the start wait holds at race tick 0 for up to 900
 periods, the launch records (RL-4) are sent only from the adapter
 (section 2.4), and a peer that has not committed yet needs them to launch
 at all (RL-7). The linger counts one tick per period, as it would have
-counted game ticks.
+counted game ticks. It is capped: it ends
+NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS = 300 ticks after the commit
+(RL-4), counting the adapter Ticks of the load and then the held periods
+alike, so the 900-period start wait can outlast it. The linger reaches a
+peer that needs it only within that cap.
 
 On GO the loop returns, and the pass continues exactly as it would have.
 Fixed pacing re-anchors the next VSync instead of catching up (LR-7).
@@ -2052,18 +2056,53 @@ launch linger counts one tick per held period. It runs nothing else: no
 flow tick, menu input, lobby-status mapping, lastMenuEvent reset, READY or
 PEER_LOST handling, select drive, outcome latch, race-end record, or
 action. The safer option taken: it is a no-op for NULL, an uninitialized
-adapter, and every screen but RACING, OFF included. The drive only holds
-on RACING (the flow leaves RACING only inside Tick, which the hold does not
-run), and off RACING Tick already runs the same steps, so a call there
-could only double-count the launch linger or drain the link behind the
-flow. tests/native_arcade_netplay_isolation_test.cmake (section 8) pins
+adapter, and every screen but RACING, OFF included. Off RACING Tick
+already runs the same steps, so a call there could only double-count the
+launch linger or drain the link behind the flow. The drive only steps and
+holds on RACING. The flow leaves RACING only inside Tick, which the hold
+does not run, but that alone is not the argument: a host pass runs the
+adapter's Tick before the hook, so a Tick that leaves RACING can be
+followed by a Step on the same pass (and a Hold, if that Step held). The
+full reasoning is that every way Tick leaves RACING coincides with a drive
+END, and after END every Step and Hold returns END and does nothing (no
+poll, no servicePeriod, no send, no take; LR-41). The flow's RACING tick
+(NativeArcadeFlow_TickRacing) leaves RACING on exactly three
+observations:
+
+- raceFinished. The glue reports the race finished only after a
+  finish-kind END (LR-41's mapping of END_OF_RACE, FINISH_GRACE, and
+  RACE_TICK_LIMIT to the finish report), so the drive has already ended.
+- linkFailure. It is either the adapter's pending link failure or the
+  local race failure (Tick step 5a). A pending link failure means
+  OnTakeResult latched, and a latched onTakeResult return always ends the
+  drive as OUTCOME (LR-41, LR-45); Tick's own step 2b latches one only on
+  PEER_LOST, the next case. The local race failure is set only by
+  ReportLocalRaceFailure, which the glue calls after a LOCAL_FAILURE end
+  (LR-41).
+- lobbyStatus LOST (lobby PEER_LOST). The lobby reports PEER_LOST only
+  when the link mode is FAULTED or DIVERGED
+  (platform/native_lobby_state.c:173-178), and a RUNNING link reaches
+  those only by mirroring a session that has latched DIVERGED or FAULTED,
+  which is terminal. So the next Step finds the session not RUNNING after
+  its record, calls onTakeResult(REJECTED) and ends as OUTCOME at step 1,
+  before any compose, send, poll, or take; it never holds.
+
+So no Step or Hold after such a Tick reaches the poll or servicePeriod
+callbacks, and RaceService is not reached off RACING; its own RACING gate
+is the backstop. Part 2's glue adds a third guard: it refuses to Step or
+Hold when the screen is not RACING and ends the drive instead (the "Note
+for LR-S9 part 2" in the LR-S9 section).
+tests/native_arcade_netplay_isolation_test.cmake (section 8) pins
 the body: it must name the RACING gate, the launchPeriod test, PollLobby,
 DriveLaunch, and SendLaunch, and must not name the flow (other than
 NativeArcadeFlow_Screen), the menu input, the launch, lobby, outcome,
-roster, or select modules directly, Tick, OnTakeResult, the lobby actions,
-lastMenuEvent, pendingLinkFailure, localRaceFailure, or raceEnd; and the
-adapter has exactly one NativeLobbyState_Poll call, in PollLobby, which is
-called exactly twice (Tick and RaceService).
+roster, select, peer-link, or session modules directly
+(NativeLockstepPeerLink_, NativeLockstepSession_), the lobby field
+(->lobby: it reaches the lobby only through PollLobby), Tick,
+OnTakeResult, the lobby actions, lastMenuEvent, pendingLinkFailure,
+localRaceFailure, or raceEnd; and the adapter has exactly one
+NativeLobbyState_Poll call, in PollLobby, which is called exactly twice
+(Tick and RaceService).
 
 Review changes. The plan review (on befa152a9) changed these defaults:
 
@@ -3541,6 +3580,28 @@ Result, part 1:
     passed and the isolation test failed.
 - Fast suite (-LE live): 154 of 154 passed. No live test runs the new
   calls: nothing on the live path calls them yet.
+- Review follow-ups (part 1): the send's header and source comments say a
+  divergence latched in RecordLocalDigests leaves the link RUNNING until a
+  later Poll hands a received (non-foreign) bundle to the session (LR-49);
+  LR-50 gives the full reasoning why no Step or Hold reaches RaceService
+  off RACING (every way Tick leaves RACING coincides with a drive END),
+  and the part 2 note records the glue's own off-RACING refusal; the
+  RaceService header names the drive's poll and servicePeriod callbacks
+  and the harmless double poll of a new-period hold iteration; LR-9 notes
+  the 300-tick launch linger cap; LR-3's line references are current.
+  Section 8 of native_arcade_netplay_isolation also bans
+  NativeLockstepPeerLink_, NativeLockstepSession_, and ->lobby in
+  RaceService's body. native_lockstep_peer_link_unit snapshots the sending
+  link before every verbatim send in TestVerbatimSendRefusals and the
+  DIVERGED case (the positive controls and the refused
+  ComposeAndSendBundle included) and compares it afterwards. Probes, each
+  reverted: a NativeLockstepPeerLink_ call, a NativeLockstepSession_ call,
+  and a netplay->lobby access inside RaceService each failed
+  native_arcade_netplay_isolation, naming the term; a link counter bumped
+  on the session-mode refusal, on the decode refusal, and on an accepted
+  verbatim send each failed native_lockstep_peer_link_unit (the DIVERGED
+  case, the foreign record, and the positive control). Fast suite
+  (-LE live): 154 of 154 passed.
 
 Plan: LR-1, LR-3, LR-9 host work.
 
@@ -3568,6 +3629,25 @@ pendingLinkFailure field of struct NativeArcadeNetplay
 (include/platform/native_arcade_netplay.h:354, public in the adapter
 struct; NativeArcadeNetplayView does not carry it) is not
 NATIVE_ARCADE_FLOW_END_NONE.
+
+Note for LR-S9 part 2: the glue refuses to Step or Hold when the flow's
+screen is not RACING, and ends the drive instead. LR-50 argues that every
+way the adapter's Tick leaves RACING already coincides with a drive END,
+and a Tick that leaves RACING can be followed by a Step on the same pass
+(the pass runs Tick before the hook), so this refusal is the glue's own
+guard on that argument; RaceService's RACING gate is the last backstop.
+
+Part 2 items deferred from the part 1 review:
+
+- An isolation rule: NativeArcadeNetplay_RaceService is named in no game/
+  source and, outside the adapter (platform/native_arcade_netplay.c and
+  its header), only in platform/native_arcade_link_host.c.
+- The glue's refusal to Step or Hold off RACING (the note above), with a
+  unit case in native_arcade_link_host_unit.
+- The drive's sendBundle contract comment
+  (include/platform/native_arcade_race_drive.h:133-134) widened to say
+  that 0 also covers a failed decode, a wrong sender slot, or a transport
+  failure (LR-49).
 
 Tests:
 

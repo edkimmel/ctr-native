@@ -327,10 +327,12 @@ int NativeLockstepPeerLink_ComposeAndSendBundle(struct NativeLockstepPeerLink *l
  *     NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES;
  *   - link mode is RUNNING;
  *   - the session mode (NativeLockstepSession_Mode) is RUNNING. Link mode
- *     alone is not enough: the link copies the session mode only in Poll and
- *     in the staged-record replay, so a divergence that
+ *     alone is not enough: the link copies the session mode only when it
+ *     hands a received bundle to the session (in Poll and in the
+ *     staged-record replay), so a divergence that
  *     NativeLockstepSession_RecordLocalDigests latches leaves link mode
- *     RUNNING until the next Poll (LR-3);
+ *     RUNNING until a later Poll hands a received (non-foreign) bundle to
+ *     the session (LR-3, LR-49);
  *   - the bytes decode (NativeLockstepBundleV1_Decode) against this link's
  *     session: its match identity, protocol version, and input delay, with
  *     senderSlot equal to the session's localSlot (LR-49). So a record of

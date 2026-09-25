@@ -389,9 +389,10 @@ int NativeLockstepPeerLink_SendBundleVerbatim(struct NativeLockstepPeerLink *lin
 	{
 		return 0;
 	}
-	/* LR-3: link mode alone is not enough. The link copies the session mode
-	 * only in Poll and in the staged replay, so a divergence latched inside
-	 * RecordLocalDigests leaves link mode RUNNING until the next Poll. */
+	/* LR-3, LR-49: link mode alone is not enough. The link copies the session
+	 * mode only in Poll and in the staged replay, so a divergence latched
+	 * inside RecordLocalDigests leaves link mode RUNNING until a later Poll
+	 * hands a received (non-foreign) bundle to the session. */
 	if (NativeLockstepSession_Mode(&link->session) != NATIVE_LOCKSTEP_RUNNING)
 	{
 		return 0;

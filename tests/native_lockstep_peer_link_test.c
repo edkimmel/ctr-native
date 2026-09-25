@@ -1807,6 +1807,36 @@ static int MakeDriftState(struct NativeCanonicalStateV4 *state, uint32_t frame, 
 	return NativeCanonicalStateV4_ComputeDigests(state) == 1;
 }
 
+/* The sending link as it was before a send, for SendVerbatimUnchanged. File
+ * scope because the link struct (its session and staging buffers) is large. */
+static struct NativeLockstepPeerLink verbatimSnapshot;
+
+/* 1 when NativeLockstepPeerLink_SendBundleVerbatim returns expected and the
+ * sending link (when non-NULL) is byte-identical before and after the call:
+ * a refused send changes no link or session state (LR-49), and neither does
+ * an accepted one, which only hands the bytes to the transport. */
+static int SendVerbatimUnchanged(struct NativeLockstepPeerLink *link, const uint8_t *bytes, size_t size, int expected)
+{
+	int sent;
+
+	if (link != NULL)
+	{
+		memcpy(&verbatimSnapshot, link, sizeof(verbatimSnapshot));
+	}
+	sent = NativeLockstepPeerLink_SendBundleVerbatim(link, bytes, size);
+	if (sent != expected)
+	{
+		fprintf(stderr, "SendVerbatimUnchanged: sent %d, expected %d\n", sent, expected);
+		return 0;
+	}
+	if ((link != NULL) && (memcmp(&verbatimSnapshot, link, sizeof(verbatimSnapshot)) != 0))
+	{
+		fprintf(stderr, "SendVerbatimUnchanged: the send changed the link\n");
+		return 0;
+	}
+	return 1;
+}
+
 /*
  * A RUNNING pair: the bytes A's session composed for frame 0, sent through
  * the verbatim send, reach B unchanged, from A's address, and are exactly
@@ -1884,7 +1914,9 @@ static int TestVerbatimSendDelivers(void)
  * current-identity record with the wrong input delay, and a corrupt record.
  * The marker then shows nothing reached B; the positive control after it
  * shows the same path does deliver. A closed link refuses too. Both links
- * stay RUNNING and neither session latches anything.
+ * stay RUNNING and neither session latches anything, and every send, the
+ * positive control included, leaves the sending link byte-identical
+ * (SendVerbatimUnchanged).
  */
 static int TestVerbatimSendRefusals(void)
 {
@@ -1902,8 +1934,8 @@ static int TestVerbatimSendRefusals(void)
 	NativeLockstepPeerLinkFixture_BuildConfig(&config);
 	CHECK(ComposeScratchBundle(&config, (uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, 0u,
 		kept) == 0);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(NULL, kept, sizeof(kept)) == 0);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&idle, kept, sizeof(kept)) == 0);
+	CHECK(SendVerbatimUnchanged(NULL, kept, sizeof(kept), 0));
+	CHECK(SendVerbatimUnchanged(&idle, kept, sizeof(kept), 0));
 	CHECK(NativeLockstepPeerLink_Mode(&idle) == NATIVE_LOCKSTEP_PEER_LINK_IDLE);
 
 	CHECK(OpenRunningPair(&linkA, &linkB, (uint16_t)VERBATIM_REFUSE_PORT_A, (uint16_t)VERBATIM_REFUSE_PORT_B, &addrA, &addrB) == 0);
@@ -1912,35 +1944,35 @@ static int TestVerbatimSendRefusals(void)
 	big[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES] = 0u;
 
 	/* Arguments and sizes. */
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, NULL, sizeof(kept)) == 0);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, kept, 0u) == 0);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, kept, sizeof(kept) - 1u) == 0);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, big, sizeof(big)) == 0);
+	CHECK(SendVerbatimUnchanged(&linkA, NULL, sizeof(kept), 0));
+	CHECK(SendVerbatimUnchanged(&linkA, kept, 0u, 0));
+	CHECK(SendVerbatimUnchanged(&linkA, kept, sizeof(kept) - 1u, 0));
+	CHECK(SendVerbatimUnchanged(&linkA, big, sizeof(big), 0));
 
 	/* Another match's record, for A's own role and slot. */
 	CHECK(ComposeForeignBundle(0u, other) == 0);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, other, sizeof(other)) == 0);
+	CHECK(SendVerbatimUnchanged(&linkA, other, sizeof(other), 0));
 
 	/* The peer's record: B's own bundle, and a scratch CAB2 bundle. */
 	CHECK(NativeLockstepSession_ComposeBundle(&linkB.session, 0u, other, sizeof(other), &size));
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, other, sizeof(other)) == 0);
+	CHECK(SendVerbatimUnchanged(&linkA, other, sizeof(other), 0));
 	CHECK(ComposeScratchBundle(&config, (uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, 0u,
 		other) == 0);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, other, sizeof(other)) == 0);
+	CHECK(SendVerbatimUnchanged(&linkA, other, sizeof(other), 0));
 
 	/* The current identity with the wrong input delay. */
 	CHECK(ComposeScratchBundle(&config, (uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY + 1u, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
 		0u, other) == 0);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, other, sizeof(other)) == 0);
+	CHECK(SendVerbatimUnchanged(&linkA, other, sizeof(other), 0));
 
 	/* A corrupt copy of A's own bundle. */
 	memcpy(other, kept, sizeof(kept));
 	other[BUNDLE_PAD_BYTE_OFFSET] ^= 0x01u;
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, other, sizeof(other)) == 0);
+	CHECK(SendVerbatimUnchanged(&linkA, other, sizeof(other), 0));
 
 	/* Nothing reached B; the positive control does. */
 	CHECK(CountBundlesBeforeMarker(&linkB.transport, &linkA.transport, &addrB) == 0u);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, kept, sizeof(kept)) == 1);
+	CHECK(SendVerbatimUnchanged(&linkA, kept, sizeof(kept), 1));
 	CHECK(CountBundlesBeforeMarker(&linkB.transport, &linkA.transport, &addrB) == 1u);
 
 	CHECK(NativeLockstepPeerLink_Mode(&linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
@@ -1950,7 +1982,7 @@ static int TestVerbatimSendRefusals(void)
 
 	/* A closed link refuses. */
 	NativeLockstepPeerLink_Close(&linkA);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, kept, sizeof(kept)) == 0);
+	CHECK(SendVerbatimUnchanged(&linkA, kept, sizeof(kept), 0));
 	CHECK(NativeLockstepPeerLink_Mode(&linkA) == NATIVE_LOCKSTEP_PEER_LINK_IDLE);
 
 	NativeLockstepPeerLink_Close(&linkB);
@@ -2027,7 +2059,8 @@ static int TestVerbatimSendRefusedWhileHandshaking(void)
  * too), and nothing reaches B. A Poll that reads nothing leaves link mode
  * RUNNING (the link mirrors the session mode only when it hands a received
  * bundle to the session); the next bundle from B mirrors DIVERGED into link
- * mode, and the send stays refused.
+ * mode, and the send stays refused. Every send, refused or not, leaves A's
+ * link struct byte-identical.
  */
 static int TestVerbatimSendRefusedWhenSessionDiverged(void)
 {
@@ -2070,7 +2103,7 @@ static int TestVerbatimSendRefusedWhenSessionDiverged(void)
 	CHECK(NativeLockstepSession_Mode(&linkA.session) == NATIVE_LOCKSTEP_RUNNING);
 
 	/* The positive control, while both modes are RUNNING. */
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, kept0, sizeof(kept0)) == 1);
+	CHECK(SendVerbatimUnchanged(&linkA, kept0, sizeof(kept0), 1));
 	CHECK(CountBundlesBeforeMarker(&linkB.transport, &linkA.transport, &addrB) == 1u);
 
 	/* A's drifted frame 1: the divergence latches inside the record. */
@@ -2082,9 +2115,11 @@ static int TestVerbatimSendRefusedWhenSessionDiverged(void)
 	CHECK(divergence->frameIndex == 1u);
 	CHECK(NativeLockstepPeerLink_Mode(&linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
 
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, kept0, sizeof(kept0)) == 0);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, kept1, sizeof(kept1)) == 0);
+	CHECK(SendVerbatimUnchanged(&linkA, kept0, sizeof(kept0), 0));
+	CHECK(SendVerbatimUnchanged(&linkA, kept1, sizeof(kept1), 0));
+	memcpy(&verbatimSnapshot, &linkA, sizeof(verbatimSnapshot));
 	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkA, 2u) == 0);
+	CHECK(memcmp(&verbatimSnapshot, &linkA, sizeof(verbatimSnapshot)) == 0);
 	CHECK(NativeLockstepPeerLink_Mode(&linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
 	CHECK(CountBundlesBeforeMarker(&linkB.transport, &linkA.transport, &addrB) == 0u);
 
@@ -2093,12 +2128,12 @@ static int TestVerbatimSendRefusedWhenSessionDiverged(void)
 	 * So the gate cannot rely on the next Poll either. */
 	NativeLockstepPeerLink_Poll(&linkA);
 	CHECK(NativeLockstepPeerLink_Mode(&linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, kept0, sizeof(kept0)) == 0);
+	CHECK(SendVerbatimUnchanged(&linkA, kept0, sizeof(kept0), 0));
 
 	/* The next bundle from B mirrors the latch into link mode; still refused. */
 	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkB, 0u) == 1);
 	CHECK(PumpPollUntilMode(&linkA, NATIVE_LOCKSTEP_PEER_LINK_DIVERGED) == NATIVE_LOCKSTEP_PEER_LINK_DIVERGED);
-	CHECK(NativeLockstepPeerLink_SendBundleVerbatim(&linkA, kept0, sizeof(kept0)) == 0);
+	CHECK(SendVerbatimUnchanged(&linkA, kept0, sizeof(kept0), 0));
 	CHECK(CountBundlesBeforeMarker(&linkB.transport, &linkA.transport, &addrB) == 0u);
 	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
 

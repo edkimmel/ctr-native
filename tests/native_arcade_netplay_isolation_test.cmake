@@ -219,7 +219,10 @@ ctr_require_regex("${netplay_header} (LAUNCH_LINGER_TICKS must stay 300u)" "${he
 #    body must name exactly those helpers and the RACING gate, and nothing
 #    that runs or feeds the flow, the menu input, the select session, the
 #    outcome tracker, the roster, the race-end record, a lobby action, or the
-#    launch agreement directly.
+#    launch agreement directly. It reaches the link and the session only
+#    through the lobby, and the lobby only through the poll helper: no
+#    NativeLockstepPeerLink_ or NativeLockstepSession_ call and no direct
+#    ->lobby access in its body.
 string(FIND "${netplay_source}" "\nvoid NativeArcadeNetplay_RaceService(" race_service_at)
 if(race_service_at EQUAL -1)
     message(FATAL_ERROR "arcade netplay isolation: platform/native_arcade_netplay.c must define NativeArcadeNetplay_RaceService")
@@ -245,6 +248,7 @@ string(REPLACE "NativeArcadeFlow_Screen(" "" race_service_scan "${race_service_b
 foreach(term IN ITEMS
         NativeArcadeFlow_ NativeArcadeMenuInput_ NativeArcadeLaunch_ NativeLobbyState_
         NativeLockstepMatchOutcome_ NativeLockstepMatchRoster_ NativeMatchSelect
+        NativeLockstepPeerLink_ NativeLockstepSession_ "->lobby"
         NativeArcadeNetplay_Tick NativeArcadeNetplay_OnTakeResult DriveSelect SendSelect ApplyLatchedOutcome BeginLaunch BeginLobby CloseLobby RestartLobby
         BeginRematch BeginSelect Relink ArmRace lastMenuEvent pendingLinkFailure localRaceFailure raceEnd)
     string(FIND "${race_service_scan}" "${term}" found_at)
