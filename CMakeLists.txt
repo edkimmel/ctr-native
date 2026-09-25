@@ -480,9 +480,11 @@ target_link_libraries(ctr_native_arcade_launch PUBLIC ctr_native_canonical_codec
 
 # Linked-race drive core (docs/LOCKSTEP_RACE_MILESTONE.md LR-1). Pure, over
 # caller-owned values: no socket, clock, SDL, heap, or game dependency.
-# LR-S7 adds only the pad normalization (LR-4, LR-5); LR-S8 grows it into
-# the full drive core and lets it link the lockstep session library. It
-# links nothing yet (tests/native_arcade_race_drive_isolation_test.cmake).
+# LR-S7 added the pad normalization (LR-4, LR-5); LR-S8 grows it into the
+# per-tick drive core over a caller-owned lockstep session, kept-bundle
+# ring, and callbacks (LR-41..LR-48). It links only the lockstep session
+# (which brings the match config), and only its unit test links it until
+# LR-S9 (tests/native_arcade_race_drive_isolation_test.cmake).
 add_library(ctr_native_arcade_race_drive STATIC platform/native_arcade_race_drive.c)
 set_target_properties(ctr_native_arcade_race_drive PROPERTIES
     C_STANDARD 17
@@ -490,6 +492,7 @@ set_target_properties(ctr_native_arcade_race_drive PROPERTIES
     C_EXTENSIONS OFF
 )
 target_include_directories(ctr_native_arcade_race_drive PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_arcade_race_drive PUBLIC ctr_native_lockstep_session)
 
 # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6, Task
 # 6b-1): a process-wide singleton owning one arcade-link host adapter (link
@@ -1623,16 +1626,18 @@ if(BUILD_TESTING)
     add_test(NAME native_arcade_launch_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_launch_isolation_test.cmake")
 
-    # Linked-race drive core (docs/LOCKSTEP_RACE_MILESTONE.md LR-S7): pad
-    # normalization over every status and id byte; the isolation test keeps
-    # the core pure (includes, token ban, C17, no link).
+    # Linked-race drive core (docs/LOCKSTEP_RACE_MILESTONE.md LR-S7, LR-S8):
+    # pad normalization over every status and id byte, and two drive cores
+    # over real sessions exchanging bundles in memory, with a real outcome
+    # tracker (linked into the test only) behind OnTakeResult. The isolation
+    # test keeps the core pure (includes, token ban, C17, links, send order).
     add_executable(native_arcade_race_drive_test tests/native_arcade_race_drive_test.c)
     set_target_properties(native_arcade_race_drive_test PROPERTIES
         C_STANDARD 17
         C_STANDARD_REQUIRED ON
         C_EXTENSIONS OFF
     )
-    target_link_libraries(native_arcade_race_drive_test PRIVATE ctr_native_arcade_race_drive)
+    target_link_libraries(native_arcade_race_drive_test PRIVATE ctr_native_arcade_race_drive ctr_native_lockstep_match_outcome)
     add_test(NAME native_arcade_race_drive_unit COMMAND $<TARGET_FILE:native_arcade_race_drive_test>)
 
     add_test(NAME native_arcade_race_drive_isolation
