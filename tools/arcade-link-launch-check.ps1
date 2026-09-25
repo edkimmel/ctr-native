@@ -70,8 +70,9 @@ param(
 #   - the per-tick digest lines (LR-74): per cabinet and race, one line per
 #     race tick, contiguous from race tick 0 with no duplicate, up to the
 #     race's drive end tick exactly (cab2's killed race 3: up to its last
-#     flushed line); for every race tick both cabinets logged in the k-th race
-#     the digest text is equal;
+#     flushed line; a race 2 with no drive end: up to its last line, whose
+#     race tick is bounded as in race 2 below); for every race tick both
+#     cabinets logged in the k-th race the digest text is equal;
 #   - race 1: one drive end per cabinet, "end of race" or "finish grace"
 #     (recorded), equal kind and tick; both "ended (reason 1)"; no "out of
 #     sync" line; cab2 has exactly one "race <n> race tick 600 froze 45 tick
@@ -83,10 +84,12 @@ param(
 #     (cab1 none); at least one cabinet logs "race <m> out of sync at race
 #     tick 300 domains 0x1 ..." (m the adapter's match count, the number of
 #     its race 2 ended line) and ends race 2 with reason 3 (DESYNC); the other
-#     ends it with reason 3 or 2 (PEER_TIMEOUT); each race 2 drive end is
-#     "outcome", and a cabinet with none (its host tick found the divergence
-#     and the flow left RACING there) must be a detecting one; no
-#     out-of-sync line outside race 2;
+#     ends it with reason 3 or 2 (PEER_TIMEOUT); each out-of-sync line's
+#     local and remote digests differ in bit 0 alone (local XOR remote is 1);
+#     each race 2 drive end is "outcome", and a cabinet with none (its host
+#     tick found the divergence and the flow left RACING there) must be a
+#     detecting one whose race 2 per-tick lines end at a race tick in
+#     300..300 + D + 1; no out-of-sync line outside race 2;
 #   - race 3: both cabinets validated it; cab1's drive end is "outcome", its
 #     race 3 ended line reason 2, and its hold line at that end tick shows
 #     the stall timeout: at least 90 tick periods (LR-44: the timeout is
@@ -96,7 +99,9 @@ param(
 #   - each capture exists, starts with "BM", and is larger than a BMP header;
 #     its "frame capture wrote <path>" line is on stdout once, right after a
 #     race 1 per-tick line of a race tick below race 1's end tick (so the
-#     captured frame is a race 1 frame; the margins are printed).
+#     captured frame is a race 1 frame; the margins are printed), and the
+#     capture frame is none of that cabinet's "hold banner presented as
+#     capture frame <n>" frames (so it is not a hold banner's frame).
 #
 # Skips (77) without the disc image, without a display, with a non-internal
 # build (the option is rejected), or with an unknown build identity (a build
@@ -128,6 +133,15 @@ $freezePeriods = 45
 # frame and holds on race tick 600 + D at the latest (earlier only if cab1 was
 # not yet there when cab2 froze and a bundle is late).
 $inputDelay = 2
+# The latest race tick past the desync tick x at which a cabinet whose host
+# Tick found the divergence can still have logged a race 2 per-tick line:
+# D + 1.  The divergence of frame x is found before the detecting cabinet
+# takes frame x + D + 1, since that take needs the bundle that carries frame
+# x's digest (LR-11; LR-12's desync row), and the drive tick of race tick t
+# logs its per-tick line before its race step, which takes frame t.  So the
+# last line is at most x + D + 1; it is at least x, because the cabinet
+# compares frame x only once its own race step recorded x, after x's line.
+$desyncDetectionTicks = $inputDelay + 1
 $holdBannerGracePeriods = 10
 # Race 3's kill: cab2 is killed once its stdout shows this race tick of its
 # third race.
@@ -481,7 +495,10 @@ function Read-Stdout($Run) {
             $log.Ended += [pscustomobject]@{ Index = $index; Number = [int]$Matches[1]; Reason = [int]$Matches[2]; Line = $line }
         }
         elseif ($line -match $stdoutOutOfSyncPattern) {
-            $log.OutOfSync += [pscustomobject]@{ Index = $index; Number = [int]$Matches[1]; Tick = [int]$Matches[2]; Mask = $Matches[3]; Line = $line }
+            $log.OutOfSync += [pscustomobject]@{
+                Index = $index; Number = [int]$Matches[1]; Tick = [int]$Matches[2]; Mask = $Matches[3]
+                Local = [Convert]::ToUInt64($Matches[4], 16); Remote = [Convert]::ToUInt64($Matches[5], 16); Line = $line
+            }
         }
         elseif ($line -match $stdoutDriveEndPattern) {
             $log.DriveEnds += [pscustomobject]@{ Index = $index; Launch = [int]$Matches[1]; Text = $Matches[2] }
@@ -873,6 +890,18 @@ try {
     foreach ($problem in $problems) {
         [void]$failures.Add($problem)
     }
+    # A race 2 with no drive end line has no end tick to bound its per-tick
+    # lines: they must end in desyncTick..desyncTick + D + 1
+    # ($desyncDetectionTicks, above).
+    foreach ($name in @('cab1', 'cab2')) {
+        $two = $tickDigests[$name][1]
+        if (($null -eq $driveEnds[$name][1]) -and ($null -ne $two)) {
+            $lastTick = $two.Count - 1
+            if (($lastTick -lt $desyncTick) -or ($lastTick -gt ($desyncTick + $desyncDetectionTicks))) {
+                [void]$failures.Add("race 2: ${name} has no drive end line, and its per-tick digest lines end at race tick $lastTick, expected $desyncTick..$($desyncTick + $desyncDetectionTicks) (the desync tick to D + 1 past it)")
+            }
+        }
+    }
     for ($k = 0; $k -lt $races; $k++) {
         $one = $tickDigests['cab1'][$k]
         $two = $tickDigests['cab2'][$k]
@@ -950,6 +979,11 @@ try {
             elseif (($line.Tick -ne $desyncTick) -or ($line.Mask -ne '1')) {
                 [void]$failures.Add("run ${name}: race 2's out-of-sync line is '$($line.Line)', expected race tick $desyncTick domains 0x1")
             }
+            elseif (($line.Local -bxor $line.Remote) -ne [UInt64]1) {
+                # The injection flips bit 0 of the CONTROL domain digest alone
+                # (LR-73), and the line's digests are that domain's (LR-70).
+                [void]$failures.Add("run ${name}: race 2's out-of-sync line is '$($line.Line)', expected local and remote CONTROL digests that differ in bit 0 alone (local XOR remote 1)")
+            }
             elseif (($log.Ended.Count -ge 2) -and ($line.Number -eq $log.Ended[1].Number) -and ($log.Ended[1].Reason -eq 3)) {
                 $detecting += $name
             }
@@ -987,7 +1021,7 @@ try {
             [void]$failures.Add("race 2: ${name} has no drive end line and did not detect the divergence (an out-of-sync line and reason 3)")
         }
         else {
-            $race2Ends[$name] = "no drive end (its host tick found the divergence)"
+            $race2Ends[$name] = "no drive end (its host tick found the divergence; its per-tick lines end at race tick $($tickDigests[$name][1].Count - 1))"
         }
     }
     Write-Output ("race 2: cab2 flipped its CONTROL digest of race tick {0}; detected (out of sync, reason 3) by: {1}" -f $desyncTick, ($detecting -join ', '))
@@ -1061,6 +1095,13 @@ try {
         $captureTick = $ticks[$ticks.Count - 1].Tick
         if ($captureTick -ge $endTick) {
             [void]$failures.Add("run $($run.Name): its frame $captureFrame capture follows race 1's race tick $captureTick, not below its end tick $endTick")
+            continue
+        }
+        # The captured frame must be a race frame, not a hold banner's: the
+        # banner lines name the same present count as the capture frame.
+        $bannerFrames = @($log.Banners | Where-Object { $_.Frame -eq $captureFrame })
+        if ($bannerFrames.Count -ne 0) {
+            [void]$failures.Add("run $($run.Name): its capture frame $captureFrame is a hold banner's frame ('hold banner presented as capture frame $captureFrame')")
             continue
         }
         Write-Output ("capture: {0} frame {1} ({2}x{3}, {4} bytes) {5}, after race 1's race tick {6} of {7} (margins {6} and {8} race ticks)" -f

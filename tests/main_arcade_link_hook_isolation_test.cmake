@@ -1712,7 +1712,15 @@ endif()
 #        sends and takes nothing;
 #      - the projected state's digests are written only by the one XOR: no
 #        other store to domainDigests and none to combinedDigest (the write
-#        scan checks itself).
+#        scan checks itself);
+#      - LR-73's "nothing in the caller reads the static after the race step
+#        in the same tick": the projected state's static,
+#        s_mainArcadeRaceLaunchTickState, is named exactly 8 times in the
+#        comment-stripped caller (its declaration, twice in the XOR target's
+#        static assert, twice in the per-tick line's formatter call, the XOR,
+#        ProjectState, and the race step), and nowhere in the drive tick
+#        after its race step call, so the XORed CONTROL digest reaches only
+#        the race step.
 set(autopilot_tick_signature "static void MainArcadeRaceLaunch_AutopilotTick(const struct MainArcadeRaceLaunchCoreOutput *output)")
 string(REGEX MATCHALL "(^|[^A-Za-z0-9_])MainArcadeRaceLaunch_AutopilotTick([^A-Za-z0-9_]|$)" autopilot_tick_names "${caller_code}")
 list(LENGTH autopilot_tick_names autopilot_tick_name_count)
@@ -1822,4 +1830,22 @@ list(LENGTH caller_digest_writes caller_digest_write_count)
 list(LENGTH caller_digest_pre caller_digest_pre_count)
 if(NOT caller_digest_write_count EQUAL 1 OR NOT caller_digest_pre_count EQUAL 0 OR NOT "${caller_digest_writes}" MATCHES "^domainDigests\\[NATIVE_ARCADE_LINK_AUTOPILOT_CONTROL_DIGEST\\] \\^=$")
     message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} may write the projected state's digests only in the desync injection's one XOR (found '${caller_digest_writes}${caller_digest_pre}')")
+endif()
+# The static: nowhere in the drive tick after its race step, and named
+# exactly 8 times in the file.
+set(tick_state_race_step "status = NativeArcadeLinkHost_RaceStep(output->raceTick, &s_mainArcadeRaceLaunchTickState, &sample, &facts, state->committed);")
+string(FIND "${drive_block}" "${tick_state_race_step}" tick_state_race_step_at)
+if(tick_state_race_step_at EQUAL -1)
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_Drive has no '${tick_state_race_step}'")
+endif()
+string(LENGTH "${tick_state_race_step}" tick_state_race_step_length)
+math(EXPR tick_state_after_at "${tick_state_race_step_at} + ${tick_state_race_step_length}")
+string(SUBSTRING "${drive_block}" ${tick_state_after_at} -1 drive_after_race_step)
+ctr_forbid("${caller_source_path} (MainArcadeRaceLaunch_Drive after the race step)" "${drive_after_race_step}" "s_mainArcadeRaceLaunchTickState")
+# ';' is masked first: a ';' in a match would split the list.
+string(REPLACE ";" "@SC@" caller_code_semicolons "${caller_code}")
+string(REGEX MATCHALL "(^|[^A-Za-z0-9_])s_mainArcadeRaceLaunchTickState([^A-Za-z0-9_]|$)" tick_state_names "${caller_code_semicolons}")
+list(LENGTH tick_state_names tick_state_name_count)
+if(NOT tick_state_name_count EQUAL 8)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must name s_mainArcadeRaceLaunchTickState exactly 8 times (the declaration, the static assert's 2, the formatter call's 2, the XOR, ProjectState, and the race step; found ${tick_state_name_count}); LR-73's desync argument needs no other read")
 endif()

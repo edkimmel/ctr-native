@@ -2870,6 +2870,11 @@ race 2 desync). Internal only, like the autopilot itself.
   declaration; :593, a static assert; :629 and :645, the line and the XOR;
   :882, ProjectState; and :893, the race step), while the next tick's
   ProjectState overwrites the whole state (game/MAIN/MainArcadeRaceDigest.c:278).
+  Since the LR-S13 review, main_arcade_link_hook_isolation 16m pins that
+  argument: s_mainArcadeRaceLaunchTickState is named exactly 8 times in the
+  comment-stripped caller (the declaration, 2 in the static assert, 2 in
+  the per-tick line's formatter call, the XOR, ProjectState, and the race
+  step) and nowhere in MainArcadeRaceLaunch_Drive after its race step call.
 - Pinned by native_arcade_link_autopilot_unit (the options, FaultAt, and the
   CONTROL index against NativeCanonicalDomainOrder),
   native_arcade_link_autopilot_isolation (1b, 2b, 4b, 6b),
@@ -3036,9 +3041,11 @@ the two cabinets.
   tick from 0, in order, with no duplicate, and up to the race's drive end
   tick exactly (the drive projects and logs its end tick before it ends);
   cab2's race 3 has no end and runs to its last flushed line (the kill cuts
-  the buffer; a cut line fails the full-line pattern and is not counted).
-  For every race tick both cabinets logged in the k-th race, the digest text
-  after "digests" is equal.
+  the buffer; a cut line fails the full-line pattern and is not counted),
+  and a race 2 with no drive end runs to its last line, which must lie in
+  race tick 300..303 (the race 2 bullet below). For every race tick both
+  cabinets logged in the k-th race, the digest text after "digests" is
+  equal.
 - Race 1. At most one drive end line per cabinet and race, and none of a
   launch that is none of its races; race 1's, required on both, is "end of
   race" or "finish grace" (printed), equal kind and tick on both; "race
@@ -3060,17 +3067,42 @@ the two cabinets.
   race tick 300 domains 0x1 ..." in its race 2 with m equal to the number of
   its race 2 ended line (both are the adapter's match count, LR-70; neither
   is compared to launch numbers) and reason 3 there; both race 2 ended lines
-  have reason 3 or 2. Each race 2 drive end is "outcome", but a cabinet may
-  have none: when its host Tick (the adapter's own poll, LR-70) finds the
-  divergence, the flow leaves RACING on that Tick and the launch core ends
-  the drive phase on hostRacing 0 with no drive result and no drive end
-  line (game/MAIN/MainArcadeRaceLaunchCore.c:312-320). The first measured
-  run did exactly that on cab2 (its race 2 per-tick lines end at race tick
-  300, and its ended and out-of-sync lines follow the injection line of that
+  have reason 3 or 2. Every out-of-sync line's local and remote digests,
+  parsed as 64-bit values, XOR to exactly 1: the injection flips bit 0 of
+  the CONTROL domain digest alone (LR-73), and the line carries that
+  domain's digests (LR-70); a line that fails this is no detection. Each
+  race 2 drive end is "outcome", but a cabinet may have none: when its host
+  Tick (the adapter's own poll, LR-70) finds the divergence, the flow
+  leaves RACING on that Tick and the launch core ends the drive phase on
+  hostRacing 0 with no drive result and no drive end line
+  (game/MAIN/MainArcadeRaceLaunchCore.c:315-319). The first measured run
+  did exactly that on cab2 (its race 2 per-tick lines end at race tick 300,
+  and its ended and out-of-sync lines follow the injection line of that
   same tick). So a race 2 without a drive end line passes only on a
-  detecting cabinet (its out-of-sync line and reason 3); races 1 and 3 on
-  cab1 and race 1 on cab2 must have one, since their drives end them (the
-  finish, the stall timeout).
+  detecting cabinet (its out-of-sync line and reason 3), and, having no end
+  tick to bound them, its race 2 per-tick lines must end at a race tick in
+  300..300 + D + 1 (303; the checker's desyncDetectionTicks, D + 1): the
+  divergence of frame x is found before the detecting cabinet takes frame
+  x + D + 1 (LR-12's desync row), the drive tick of race tick t logs its
+  line before its race step, which takes frame t, and the cabinet compares
+  frame x only after its race step recorded x, so the last line lies in
+  x..x + D + 1. Races 1 and 3 on cab1 and race 1 on cab2 must have a drive
+  end line, since their drives end them (the finish, the stall timeout).
+- Open observability item (recorded, not closed; the LR-S13 review): the
+  missing race 2 drive end line itself. On that path the core sets
+  driveEnded with no drive result (MainArcadeRaceLaunchCore.c:315-319), so
+  the caller's MainArcadeRaceLaunch_DriveEnd, which writes every "drive
+  end" line, never runs, and the log names neither the end nor its race
+  tick. The gate accepts it, because nothing but the line is missing: LR-62
+  lists the flow seen off RACING as a driveEnded source, and Apply still
+  calls MainArcadeRaceDigest_EndRace on it, so the race's digest ends as on
+  every other end; the checker bounds that race's per-tick lines instead.
+  Product code is not changed for it. Closing it would need one log line
+  on that path (the caller logging, when driveEnded comes with no drive
+  result, the end and its race tick) plus a pin of it in
+  main_arcade_link_hook_isolation, and then the gate could require a race 2
+  end line on both cabinets again. It sits next to LR-70's closing-Tick
+  risk (LR-S13's result).
 - Race 3. Both cabinets validated it; cab1's drive end is "outcome" and its
   third ended line reason 2; cab2 has no race 3 drive end. cab1's hold line
   at its race 3 end tick is the stall timeout: at least 90 periods (LR-44:
@@ -3085,8 +3117,11 @@ the two cabinets.
   order: the capture line must lie between race 1's first and last per-tick
   lines, so the captured frame is the frame of the race 1 race tick whose
   line precedes it (the capture follows the present, which follows the
-  hook). The checker prints that race tick and its margins to race tick 0
-  and to the end tick.
+  hook). The capture frame N must also be none of that cabinet's logged
+  hold banner frames ("hold banner presented as capture frame <n>", which
+  counts the same presents), so the captured frame is never a hold banner.
+  The checker prints that race tick and its margins to race tick 0 and to
+  the end tick.
 - -TimeoutSeconds is 780 (the script default and the CMake argument);
   ctest TIMEOUT stays 900. The checker prints the total gate time.
 - Pinned by native_arcade_link_autopilot_isolation 7 and 7b (the cap 6000,
@@ -5808,6 +5843,17 @@ Part B result: the three-race run and the gate (LR-75, LR-76).
     BEGIN_REMATCH teardown, or a divergence record kept past the close), a
     change to the host and adapter and their isolation pins (host 3i), out
     of this slice.
+  - recorded, not closed (the LR-S13 review): the cabinet whose host Tick
+    finds race 2's divergence logs no drive end line (LR-76's open
+    observability item). The flow seen off RACING ends the drive phase
+    with driveEnded and no drive result (MainArcadeRaceLaunchCore.c:315-319),
+    so MainArcadeRaceLaunch_DriveEnd, the only writer of "drive end" lines,
+    does not run. The gate accepts it because only the line is missing:
+    LR-62 lists the flow seen off RACING as a driveEnded source, and Apply
+    still calls MainArcadeRaceDigest_EndRace on it; the checker bounds that
+    race's per-tick lines to race tick 300..303 instead. Closing it needs
+    one log line on that path plus a hook isolation pin; product code is
+    unchanged.
   - recorded, not closed: LR-60's race tick cap is still checked across
     cabinets only by the gate. The option is internal-only and host-local
     (not in the match config or on the wire); the gate requires the same
@@ -5852,6 +5898,46 @@ Part B result: the three-race run and the gate (LR-75, LR-76).
     message.
 - Fast suite (-LE live): 154 of 154 passed on 1c85f81d1 and again on the
   final tree (2e06af2e2 with this record).
+
+Review follow-ups (the LR-S13 review, no BLOCKER; no product behaviour
+changes):
+
+- tools/arcade-link-launch-check.ps1: a race 2 with no drive end line (the
+  cabinet whose host Tick found the divergence) must end its per-tick lines
+  at a race tick in 300..303 ($desyncDetectionTicks = D + 1, justified in
+  the script and in LR-76); every race 2 out-of-sync line's local and
+  remote digests, parsed as UInt64, must XOR to 1; each cabinet's capture
+  frame must be none of its logged hold banner frames. The checker's
+  header comment follows.
+- The missing race 2 drive end line is recorded, not fixed (LR-76's open
+  observability item and the open-risk list above).
+- tests/main_arcade_link_hook_isolation_test.cmake 16m: LR-73's "nothing
+  reads the static after the race step" is pinned: exactly 8 names of
+  s_mainArcadeRaceLaunchTickState in the comment-stripped caller (';' is
+  masked before the count, since the declaration's match ends in one), and
+  none in MainArcadeRaceLaunch_Drive after its race step call.
+- game/MAIN/MainArcadeLinkAutopilot.h: MainArcadeLinkAutopilot_Fault's
+  comment reflowed to its neighbours' width (the review named line 161; the
+  133-column line was line 46 of this 72-line header). Comment only.
+- Probes, each reverted (the tree was byte-identical afterwards, checked by
+  the hash of git diff and of the probed file; backups only in a temp
+  directory outside the repository):
+  - 16m: a (void) read of the static's combinedDigest after the race step
+    in the drive tick failed the after-race-step rule; the same read added
+    in MainArcadeRaceLaunch_Apply failed the count (found 9).
+  - the checker, on edited copies of the last gate run's logs (race 1 end at
+    race tick 3791) outside the repository, with a scratch copy of the
+    checker that skips the launch (the unedited copy passed, its cab2 race 2
+    lines ending at race tick 300): cab2's race 2 lines extended to race
+    tick 304 (failed: "ends at race tick 304, expected 300..303") and to 303
+    (passed, the bound's edge); cab2's race 2 line of race tick 300 removed
+    (failed: "ends at race tick 299"); cab2's out-of-sync remote digest
+    ...46b, XOR 3 (failed with the XOR message, and so no detection); a race
+    1 hold banner line of cab1 at capture frame 2800 (failed: "its capture
+    frame 2800 is a hold banner's frame").
+- Fast suite (-LE live): 154 of 154 passed. The live gate
+  arcade_link_launch runs on the committed tree; its result and time are
+  reported with the commit, not recorded here.
 
 ### LR-S14 -- docs close-out
 
