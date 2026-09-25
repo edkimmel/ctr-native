@@ -478,6 +478,19 @@ set_target_properties(ctr_native_arcade_launch PROPERTIES
 target_include_directories(ctr_native_arcade_launch PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_arcade_launch PUBLIC ctr_native_canonical_codec)
 
+# Linked-race drive core (docs/LOCKSTEP_RACE_MILESTONE.md LR-1). Pure, over
+# caller-owned values: no socket, clock, SDL, heap, or game dependency.
+# LR-S7 adds only the pad normalization (LR-4, LR-5); LR-S8 grows it into
+# the full drive core and lets it link the lockstep session library. It
+# links nothing yet (tests/native_arcade_race_drive_isolation_test.cmake).
+add_library(ctr_native_arcade_race_drive STATIC platform/native_arcade_race_drive.c)
+set_target_properties(ctr_native_arcade_race_drive PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_race_drive PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6, Task
 # 6b-1): a process-wide singleton owning one arcade-link host adapter (link
 # mode) or a scripted screen preview (preview mode), behind a small
@@ -1609,6 +1622,40 @@ if(BUILD_TESTING)
 
     add_test(NAME native_arcade_launch_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_launch_isolation_test.cmake")
+
+    # Linked-race drive core (docs/LOCKSTEP_RACE_MILESTONE.md LR-S7): pad
+    # normalization over every status and id byte; the isolation test keeps
+    # the core pure (includes, token ban, C17, no link).
+    add_executable(native_arcade_race_drive_test tests/native_arcade_race_drive_test.c)
+    set_target_properties(native_arcade_race_drive_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_race_drive_test PRIVATE ctr_native_arcade_race_drive)
+    add_test(NAME native_arcade_race_drive_unit COMMAND $<TARGET_FILE:native_arcade_race_drive_test>)
+
+    add_test(NAME native_arcade_race_drive_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_race_drive_isolation_test.cmake")
+
+    # The local sample seam (docs/LOCKSTEP_RACE_MILESTONE.md LR-4, LR-S7):
+    # platform/native_input.c compiled into the test as main.c compiles it
+    # into ctr_native (the test includes the .c to reach its statics), with
+    # SDL input initialized headless, every host device closed, and SDL
+    # virtual joysticks standing in for a gamepad and a G29. It installs the
+    # host SDL assertion handler first, as Platform_Init does, so no SDL
+    # assertion can block it on a modal dialog. SDL3 is built static here
+    # (SDL_SHARED OFF), so there is no SDL3.dll to find at run time.
+    add_executable(native_input_sample_test tests/native_input_sample_test.c)
+    set_target_properties(native_input_sample_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_include_directories(native_input_sample_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_definitions(native_input_sample_test PRIVATE CTR_NATIVE)
+    target_link_libraries(native_input_sample_test PRIVATE SDL3::SDL3 ctr_native_g29_input ctr_native_sdl_assert)
+    add_test(NAME native_input_sample_unit COMMAND $<TARGET_FILE:native_input_sample_test>)
 
     # Sound IDs stay out of cross-cabinet identity (docs/RACE_LAUNCH_MILESTONE.md
     # RL-14; slice RL-S3): identity-bearing sources name no sound-ID token.

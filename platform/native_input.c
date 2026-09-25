@@ -121,6 +121,18 @@ global_variable s32 s_lastActiveControllerSlot = -1;
 global_variable SDL_JoystickID s_directG29InstanceId = -1;
 global_variable struct NativeInputG29Diagnostic s_g29Diagnostic;
 
+/* The local sample's own G29 pedal hysteresis (LR-37). Like s_g29Diagnostic
+ * it is deliberately outside NativeInputStateSnapshot: host-local and
+ * sample-only, never saved, restored, or written by Platform_InputUpdate.
+ * Re-arm rule: Platform_InputInit, Platform_InputShutdown, an install of pad
+ * snapshots that turns installed pads on (inactive to active), and
+ * Platform_InputClearInstalledPadSnapshots set s_sampleG29Armed. The first
+ * sample after that seeds the state from slot 0's live g29State (read-only);
+ * later samples advance it alone, so a race's samples keep one continuous
+ * hysteresis while Platform_InputUpdate replays installed pads. */
+global_variable struct NativeG29MappingState s_sampleG29State;
+global_variable s32 s_sampleG29Armed = 1;
+
 extern s32 g_padCommEnable;
 
 internal u16 NativeInput_GetSnapshotButtons(const struct PlatformInputPadSnapshot *snapshot)
@@ -134,10 +146,11 @@ internal void NativeInput_SetSnapshotButtons(struct PlatformInputPadSnapshot *sn
 	snapshot->buttons[1] = (u8)(buttons >> 8);
 }
 
-internal void NativeInput_ResetSnapshot(s32 slot)
+/* The snapshot Platform_InputUpdate starts each slot from: slot 0 is the
+ * connected digital pad with nothing pressed, every other slot is
+ * disconnected. Writes only *snapshot. */
+internal void NativeInput_MakeResetSnapshot(s32 slot, struct PlatformInputPadSnapshot *snapshot)
 {
-	struct PlatformInputPadSnapshot *snapshot = &s_controllers[slot].snapshot;
-
 	snapshot->connected = slot == 0;
 	snapshot->status = snapshot->connected ? 0 : NATIVE_INPUT_PAD_DISCONNECT;
 	snapshot->id = snapshot->connected ? NATIVE_INPUT_PAD_DIGITAL : NATIVE_INPUT_PAD_DISCONNECT;
@@ -147,6 +160,11 @@ internal void NativeInput_ResetSnapshot(s32 slot)
 	snapshot->analog[2] = 0x80;
 	snapshot->analog[3] = 0x80;
 	memset(snapshot->reserved, 0, sizeof(snapshot->reserved));
+}
+
+internal void NativeInput_ResetSnapshot(s32 slot)
+{
+	NativeInput_MakeResetSnapshot(slot, &s_controllers[slot].snapshot);
 }
 
 internal s32 NativeInput_IsValidControllerSlot(s32 slot)
@@ -376,12 +394,23 @@ internal s32 NativeInput_AxisIsActive(s32 axis)
 	return abs(axis) > NATIVE_INPUT_AXIS_DEADZONE;
 }
 
-internal void NativeInput_ApplyController(s32 slot)
+/* Maps the SDL gamepad of host slot `slot` onto *snapshot; analogEnabled
+ * selects the reported id. A SELECT+START chord is always suppressed to
+ * 0xffff. It also toggles *toggleAnalogEnabled (edge-tracked through
+ * *toggleSwitchingAnalog) only when both pointers are non-NULL, and activity
+ * records `slot` in *lastActiveSlot only when that pointer is non-NULL.
+ * Platform_InputUpdate passes the slot's own state; the local sample passes
+ * NULL for all three, so it writes only *snapshot (LR-37, LR-39). */
+internal void NativeInput_ApplyController(
+	SDL_Gamepad *controller,
+	s32 analogEnabled,
+	s32 slot,
+	struct PlatformInputPadSnapshot *snapshot,
+	s32 *toggleAnalogEnabled,
+	s32 *toggleSwitchingAnalog,
+	s32 *lastActiveSlot)
 {
-	struct NativeInputController *nativeController = &s_controllers[slot];
-	struct PlatformInputPadSnapshot *snapshot = &nativeController->snapshot;
 	const struct NativeInputControllerMapping *mapping = &s_controllerMapping;
-	SDL_Gamepad *controller = nativeController->controller;
 	u16 buttons = 0xffff;
 
 	if ((controller == NULL) || (SDL_GamepadConnected(controller) == 0))
@@ -391,7 +420,7 @@ internal void NativeInput_ApplyController(s32 slot)
 
 	snapshot->connected = 1;
 	snapshot->status = 0;
-	snapshot->id = nativeController->analogEnabled ? NATIVE_INPUT_PAD_ANALOG : NATIVE_INPUT_PAD_DIGITAL;
+	snapshot->id = analogEnabled ? NATIVE_INPUT_PAD_ANALOG : NATIVE_INPUT_PAD_DIGITAL;
 
 	if (NativeInput_ControllerButtonState(controller, mapping->gc_square) > 16384)
 	{
@@ -466,21 +495,28 @@ internal void NativeInput_ApplyController(s32 slot)
 	if ((buttons != 0xffff) || NativeInput_AxisIsActive(rightX) || NativeInput_AxisIsActive(rightY) || NativeInput_AxisIsActive(leftX) ||
 	    NativeInput_AxisIsActive(leftY))
 	{
-		s_lastActiveControllerSlot = slot;
+		if (lastActiveSlot != NULL)
+		{
+			*lastActiveSlot = slot;
+		}
 	}
 
+	s32 toggle = (toggleAnalogEnabled != NULL) && (toggleSwitchingAnalog != NULL);
 	if (((buttons & 0x1) == 0) && ((buttons & 0x8) == 0))
 	{
 		buttons = 0xffff;
-		if (nativeController->switchingAnalog == 0)
+		if (toggle)
 		{
-			nativeController->analogEnabled = nativeController->analogEnabled == 0;
+			if (*toggleSwitchingAnalog == 0)
+			{
+				*toggleAnalogEnabled = *toggleAnalogEnabled == 0;
+			}
+			*toggleSwitchingAnalog = 1;
 		}
-		nativeController->switchingAnalog = 1;
 	}
-	else
+	else if (toggle)
 	{
-		nativeController->switchingAnalog = 0;
+		*toggleSwitchingAnalog = 0;
 	}
 
 	NativeInput_SetSnapshotButtons(snapshot, buttons);
@@ -591,13 +627,22 @@ internal void NativeInput_LogG29Diagnostic(
 	s_g29Diagnostic.valid = 1;
 }
 
-internal void NativeInput_ApplyG29(s32 slot)
+/* Maps the direct G29 joystick of host slot `slot` onto *snapshot, advancing
+ * the pedal hysteresis in *g29State. Activity records `slot` in
+ * *lastActiveSlot only when that pointer is non-NULL, and the G29 diagnostic
+ * is logged (and its host-only state updated) only when logDiagnostic is
+ * nonzero. Platform_InputUpdate passes the slot's own state; the local
+ * sample passes its sample-only hysteresis state, NULL, and 0 (LR-37). */
+internal void NativeInput_ApplyG29(
+	SDL_Joystick *joystick,
+	s32 slot,
+	struct NativeG29MappingState *g29State,
+	struct PlatformInputPadSnapshot *snapshot,
+	s32 *lastActiveSlot,
+	s32 logDiagnostic)
 {
-	struct NativeInputController *nativeController = &s_controllers[slot];
-	struct PlatformInputPadSnapshot *snapshot = &nativeController->snapshot;
 	struct NativeG29RawInput raw;
 	struct NativeG29MappedInput mapped;
-	SDL_Joystick *joystick = nativeController->joystick;
 
 	if ((joystick == NULL) || (SDL_JoystickConnected(joystick) == false))
 	{
@@ -615,8 +660,11 @@ internal void NativeInput_ApplyG29(s32 slot)
 	}
 	raw.hat = SDL_GetJoystickHat(joystick, 0);
 
-	NativeG29Input_Map(&raw, &nativeController->g29State, &mapped);
-	NativeInput_LogG29Diagnostic("change", joystick, &raw, &nativeController->g29State, &mapped);
+	NativeG29Input_Map(&raw, g29State, &mapped);
+	if (logDiagnostic != 0)
+	{
+		NativeInput_LogG29Diagnostic("change", joystick, &raw, g29State, &mapped);
+	}
 	snapshot->connected = 1;
 	snapshot->status = 0;
 	snapshot->id = NATIVE_INPUT_PAD_ANALOG;
@@ -626,9 +674,9 @@ internal void NativeInput_ApplyG29(s32 slot)
 	snapshot->analog[2] = NativeInput_AxisToByte(mapped.steering);
 	snapshot->analog[3] = 0x80;
 
-	if (mapped.active != 0u)
+	if ((mapped.active != 0u) && (lastActiveSlot != NULL))
 	{
-		s_lastActiveControllerSlot = slot;
+		*lastActiveSlot = slot;
 	}
 }
 
@@ -720,10 +768,10 @@ internal s32 NativeInput_KeyboardSuppressed(void)
 	return s_keyboardState[SDL_SCANCODE_RALT] || s_keyboardState[SDL_SCANCODE_LALT];
 }
 
-internal void NativeInput_ApplyKeyboard(s32 slot, u16 keyboardButtons)
+/* ANDs the keyboard buttons into *snapshot when the keyboard is mapped to
+ * host slot `slot`. Reads s_keyboardControllerSlot; writes only *snapshot. */
+internal void NativeInput_ApplyKeyboard(s32 slot, u16 keyboardButtons, struct PlatformInputPadSnapshot *snapshot)
 {
-	struct PlatformInputPadSnapshot *snapshot = &s_controllers[slot].snapshot;
-
 	if (slot != s_keyboardControllerSlot)
 	{
 		return;
@@ -993,6 +1041,7 @@ int Platform_InputInit(void)
 	s_directG29InstanceId = -1;
 	memset(&s_g29Diagnostic, 0, sizeof(s_g29Diagnostic));
 	s_installedSnapshotsActive = 0;
+	s_sampleG29Armed = 1;
 	s_keyboardState = SDL_GetKeyboardState(NULL);
 
 	if (SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC) == 0)
@@ -1022,6 +1071,7 @@ void Platform_InputShutdown(void)
 
 	s_inputInitialized = 0;
 	s_installedSnapshotsActive = 0;
+	s_sampleG29Armed = 1;
 	s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT;
 	s_lastActiveControllerSlot = -1;
 	s_directG29InstanceId = -1;
@@ -1055,12 +1105,59 @@ void Platform_InputUpdate(void)
 
 	for (s32 slot = 0; slot < NATIVE_INPUT_MAX_CONTROLLERS; slot++)
 	{
+		struct NativeInputController *controller = &s_controllers[slot];
+
 		NativeInput_ResetSnapshot(slot);
-		NativeInput_ApplyController(slot);
-		NativeInput_ApplyG29(slot);
-		NativeInput_ApplyKeyboard(slot, keyboardButtons);
+		NativeInput_ApplyController(controller->controller,
+		                            controller->analogEnabled,
+		                            slot,
+		                            &controller->snapshot,
+		                            &controller->analogEnabled,
+		                            &controller->switchingAnalog,
+		                            &s_lastActiveControllerSlot);
+		NativeInput_ApplyG29(controller->joystick, slot, &controller->g29State, &controller->snapshot, &s_lastActiveControllerSlot, 1);
+		NativeInput_ApplyKeyboard(slot, keyboardButtons, &controller->snapshot);
 	}
 	NativeInput_WritePadBus();
+}
+
+/* LR-4 local sample (docs/LOCKSTEP_RACE_MILESTONE.md LR-37..LR-39): host
+ * slot 0 built as Platform_InputUpdate builds it (the slot-0 reset, the
+ * slot-0 gamepad, the slot-0 G29, then the keyboard when it is mapped to
+ * slot 0 and Alt is not held), into caller storage only. It never writes
+ * s_controllers[].snapshot, the pad bus, anything Platform_InputCaptureState
+ * saves, or the G29 diagnostic state and log. It does not pump host events
+ * and does not consult g_padCommEnable (LR-38). It never toggles analog mode:
+ * a SELECT+START chord is suppressed without the toggle (LR-39). */
+int Platform_InputSampleLocalPad(struct PlatformInputPadSnapshot *dst)
+{
+	struct PlatformInputPadSnapshot sample;
+	const struct NativeInputController *controller = &s_controllers[0];
+
+	if (dst == NULL)
+	{
+		return 0;
+	}
+
+	NativeInput_MakeResetSnapshot(0, &sample);
+	if (s_inputInitialized == 0)
+	{
+		*dst = sample;
+		return 0;
+	}
+
+	if (s_sampleG29Armed != 0)
+	{
+		s_sampleG29State = controller->g29State;
+		s_sampleG29Armed = 0;
+	}
+
+	u16 keyboardButtons = NativeInput_KeyboardSuppressed() ? 0xffff : NativeInput_ReadKeyboard();
+	NativeInput_ApplyController(controller->controller, controller->analogEnabled, 0, &sample, NULL, NULL, NULL);
+	NativeInput_ApplyG29(controller->joystick, 0, &s_sampleG29State, &sample, NULL, 0);
+	NativeInput_ApplyKeyboard(0, keyboardButtons, &sample);
+	*dst = sample;
+	return 1;
 }
 
 void Platform_InputControllerAdded(int deviceIndex)
@@ -1179,6 +1276,10 @@ int Platform_InputInstallPadSnapshots(const struct PlatformInputPadSnapshot *src
 		s_installedSnapshots[slot] = src[slot];
 	}
 
+	if (s_installedSnapshotsActive == 0)
+	{
+		s_sampleG29Armed = 1;
+	}
 	s_installedSnapshotsActive = 1;
 	NativeInput_WriteInstalledSnapshots();
 	return NATIVE_INPUT_MAX_CONTROLLERS;
@@ -1187,6 +1288,7 @@ int Platform_InputInstallPadSnapshots(const struct PlatformInputPadSnapshot *src
 void Platform_InputClearInstalledPadSnapshots(void)
 {
 	s_installedSnapshotsActive = 0;
+	s_sampleG29Armed = 1;
 }
 
 int Platform_InputGetStateSize(void)

@@ -531,7 +531,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-36; LR-17 is the owner's ruling)
+## 4. Decided design (defaults LR-1..LR-40; LR-17 is the owner's ruling)
 
 The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
 written, except that LR-18, the finish grace, amends LR-1, LR-12, LR-13,
@@ -540,8 +540,9 @@ LR-15. LR-17 is ruled (a). LR-3's D is accepted pending a feel test on
 the physical cabinets (LR-3). Before that, the plan review changed
 several defaults; "Review changes" at the end of this section lists what
 changed, and "Owner decisions (2026-09-25)" after it lists the owner's
-decisions. LR-19..LR-27 were added by LR-S4, LR-28..LR-32 by LR-S5, and
-LR-33..LR-36 by LR-S6; each records the mechanics its slice settled.
+decisions. LR-19..LR-27 were added by LR-S4, LR-28..LR-32 by LR-S5,
+LR-33..LR-36 by LR-S6, and LR-37..LR-40 by LR-S7; each records the
+mechanics its slice settled.
 
 LR-1 Placement. The race driver lives under platform/, because game code
 may not name lockstep (tests/native_lockstep_isolation_test.cmake:128-157
@@ -1766,6 +1767,54 @@ first 8 records are staged (and later screened and counted); the rest
 overflow into DroppedEarlyBundleCount, which is not included and not
 reported.
 
+LR-37 What the local sample may touch (LR-S7).
+Platform_InputSampleLocalPad builds host slot 0 as Platform_InputUpdate
+would: the slot-0 reset (connected 1, status 0, id 0x41, buttons 0xffff,
+analog 0x80), then the slot-0 gamepad, the slot-0 G29, and the keyboard
+when s_keyboardControllerSlot is 0 and Alt is not held. It writes only the
+caller's snapshot. It never writes s_controllers[].snapshot, the pad bus,
+anything Platform_InputCaptureState saves (the keyboard slot,
+s_lastActiveControllerSlot, the installed-pad flag and snapshots, and each
+slot's g29State, analogEnabled, switchingAnalog, and slot mapping), or the
+G29 diagnostic state and log. It works whether or not installed pads are
+active. It returns 1 with the snapshot written; 0 for a NULL snapshot,
+with nothing written; and 0 with the neutral slot-0 snapshot while input
+is not initialized. The bytes are not normalized: the drive core does that
+(LR-40). The G29 pedal hysteresis the sample needs lives in a sample-only
+state, s_sampleG29State in platform/native_input.c. Like the G29
+diagnostic it is host-local: not in NativeInputStateSnapshot, never saved
+or restored, and never written by Platform_InputUpdate. It is re-armed by
+Platform_InputInit, Platform_InputShutdown, an install that turns
+installed pads on (inactive to active; a repeat install while active does
+not re-arm), and Platform_InputClearInstalledPadSnapshots. The first
+sample after a re-arm seeds it from slot 0's live g29State (read-only).
+Later samples advance it alone, so a race's samples keep one continuous
+hysteresis while Platform_InputUpdate replays installed pads.
+
+LR-38 The sample does not pump (LR-S7). Platform_InputSampleLocalPad
+never calls SDL_PumpEvents and does not consult g_padCommEnable. The main
+loop and the hold loop pump host events, and the sample reads the device
+state they left.
+
+LR-39 The sample never toggles analog mode (LR-S7). It reads the slot's
+analogEnabled only to choose the id it reports (0x73 or 0x41). A
+SELECT+START chord on the gamepad is still suppressed to 0xffff, as
+Platform_InputUpdate does, but without the toggle: analogEnabled and
+switchingAnalog are never written. Platform_InputUpdate's own toggle,
+once per chord, is unchanged.
+
+LR-40 Normalization decides disconnection by the connected byte only
+(LR-S7). NativeArcadeRaceDrive_NormalizePad treats a pad whose connected
+byte is 0 as disconnected and maps it to the neutral connected pad
+(NativeArcadeRaceDrive_NeutralPad). Any nonzero connected byte (1, 2,
+0xff, ...) counts as connected. A connected pad's status byte is
+overwritten with 0, never used to decide disconnection, even when it is
+0xff with id 0xff (the pad bus's disconnected packet). Its id becomes 0x73
+if it was 0x73, else 0x41. START (bit 0x0008 of the active-low button
+word, buttons[0] |= 0x08) is released, and every other button bit and the
+four analog bytes are kept. NULL in or out is a no-op; in and out may be
+the same pad.
+
 Review changes. The plan review (on befa152a9) changed these defaults:
 
 - LR-11 no longer treats a lead as a desync. A peer digest for a frame
@@ -2750,8 +2799,99 @@ native_lockstep_peer_link_process_unit still passes.
 
 ### LR-S7 -- local sample seam and normalization
 
-Status: planned. Review required (the bytes that enter the simulation and
-the wire; section 5). Run 3.
+Status: done. Review required (the bytes that enter the simulation and
+the wire; section 5). Run 3. New defaults LR-37..LR-40 (section 4).
+
+Result:
+
+- The sample is `int Platform_InputSampleLocalPad(struct
+  PlatformInputPadSnapshot *dst)`, declared in
+  include/platform/native_input.h and defined in platform/native_input.c
+  (LR-37..LR-39). NativeInput_ApplyController, NativeInput_ApplyG29, and
+  NativeInput_ApplyKeyboard now take the target snapshot as a pointer.
+  The mutable state is passed explicitly and may be NULL: the analog
+  toggle pair and the active slot for the gamepad; the hysteresis state,
+  the active slot, and a diagnostic flag for the G29. The slot-0 reset is
+  NativeInput_MakeResetSnapshot. Platform_InputUpdate passes each slot's
+  own snapshot and state, so its behaviour is unchanged, and its
+  installed-pads path is untouched. The sample passes a local snapshot,
+  NULL, and the sample-only hysteresis s_sampleG29State (LR-37). The
+  re-arm flag is set by Init, Shutdown, an inactive-to-active install, and
+  the clear.
+- The normalization is a new pure core, platform/native_arcade_race_drive.c
+  and include/platform/native_arcade_race_drive.h, library
+  ctr_native_arcade_race_drive (C17, no extensions, links nothing yet;
+  LR-S8 grows it into the drive core). It provides
+  NativeArcadeRaceDrive_NormalizePad, NativeArcadeRaceDrive_NeutralPad
+  (for LR-S8's zero-frame mapping), and the constants
+  NATIVE_ARCADE_RACE_DRIVE_PAD_ID_DIGITAL (0x41u), _PAD_ID_ANALOG (0x73u),
+  _START_MASK (0x0008u), _NEUTRAL_BUTTONS, and _NEUTRAL_ANALOG (LR-40).
+  Neither ctr_native nor any other library links it yet (LR-S9).
+- native_input_sample_unit (tests/native_input_sample_test.c) includes
+  platform/native_input.c as main.c does, with CTR_NATIVE, SDL3 (built
+  static, so there is no DLL to find), ctr_native_g29_input, and the host
+  SDL assertion handler. It runs headless: Platform_InputInit, then every
+  host device is closed, with a test-owned keyboard array and two
+  sentinel-filled pad-bus buffers. SDL virtual joysticks stand in for a
+  gamepad and a G29. Every sample is taken between two observations that
+  must be byte-identical: Platform_InputCapturePadSnapshots' output, both
+  pad-bus buffers, Platform_InputCaptureState's bytes, and the G29
+  diagnostic. A self-check shows that the observations do see a change
+  to the slot snapshot, the bus, the active slot, the analog mode, or the
+  g29State. The cases:
+  - not initialized: 0 with the neutral snapshot, and NULL returns 0;
+  - four distinctive installed pads (multitap bus): the neutral slot-0
+    snapshot;
+  - keyboard CROSS and START (unnormalized 0xbff7); LALT and RALT
+    suppress it; a keyboard on slot 1 is not sampled; SELECT and START
+    from the keyboard are not a chord;
+  - installed pads cleared: the sample equals Update's slot 0, with and
+    without g_padCommEnable;
+  - gamepad: id 0x73, buttons and axes, START unnormalized, the chord
+    suppressed with no toggle over three samples, and the active slot
+    untouched. Update still toggles once per chord, and after that the
+    sample reads id 0x41;
+  - G29 with diagnostics on: the sample's own pedal hysteresis (wake,
+    press below 22500, hold at 24000, release), steering, and Options,
+    with slot 0's g29State unchanged. After a clear the first sample
+    matches Update. An inactive-to-active install re-seeds, and a repeat
+    install does not;
+  - after Platform_InputShutdown: 0 with the neutral snapshot.
+- native_arcade_race_drive_unit covers every status byte and every id
+  byte, each with connected 0, 1, 2, and 0xff, and every 16-bit button
+  word (only 0x0008 changes). It also covers each button bit alone, every
+  value of each analog byte, status 0xff with id 0xff still connected,
+  the all-zero pad, in-place use, NULL arguments, and the neutral pad.
+- native_arcade_race_drive_isolation
+  (tests/native_arcade_race_drive_isolation_test.cmake) checks the
+  include allow-list on both files and the token ban on comment-free
+  code, with the two allowed canonical type names stripped first. The
+  scan asserts that it found both files and the API, and a self-check
+  shows that the stripping still catches other NativeCanonical tokens.
+  It also checks the C17 properties in order and that the library links
+  nothing. The allow-lists are variables for LR-S8 to extend.
+- Probes, each reverted:
+  - the sample writing s_controllers[0].snapshot failed on the pad
+    snapshots;
+  - the sample recording the active slot failed on the state bytes;
+  - the sample toggling analog mode failed on the state bytes;
+  - the sample using slot 0's live g29State failed on the state bytes;
+  - the sample logging the G29 diagnostic failed on the diagnostic;
+  - no seeding on re-arm failed the install re-seed check;
+  - re-arming on a repeat install failed the no-re-arm check;
+  - Update without its toggle failed the toggle check;
+  - Update without its G29 active-slot record failed the active-slot
+    check;
+  - normalization: no START release, status 0xff as disconnected,
+    connected != 1 as disconnected, the id passed through, and the status
+    kept each failed native_arcade_race_drive_unit;
+  - isolation: a stdio include, malloc in code, a NativeCanonicalStateV1
+    declaration, a Platform_ call, a link to the session library, and the
+    C17 properties out of order each failed
+    native_arcade_race_drive_isolation, while malloc, SDL, and replay in
+    a comment passed.
+- Fast suite (-LE live): 154 of 154 passed. arcade_roster_determinism
+  (live, run alone because it uses the installed pads): passed.
 
 Plan: LR-4. Platform_InputSampleLocalPad (name settled here) in
 platform/native_input.c reads host slot 0 into caller scratch while
