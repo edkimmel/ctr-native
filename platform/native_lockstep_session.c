@@ -11,7 +11,10 @@
  * capacity.  The history depth is not asserted here: it is defined as
  * NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 2, so an assertion against that expression
  * could not fail, and FindDigests and RecordLocalDigests each guard their use
- * of historyCapacity as a modulus at runtime instead.
+ * of historyCapacity as a modulus at runtime instead.  The park depth is not
+ * asserted either, for the same reason: it is defined as
+ * NATIVE_LOCKSTEP_MAX_INPUT_DELAY, and Verify checks inputDelay against it
+ * before parking.
  */
 _Static_assert(NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY == NATIVE_LOCKSTEP_BUNDLE_SLOT_COUNT,
                "The lockstep peer array must be indexable by bundle sender slot.");
@@ -71,10 +74,12 @@ static const struct NativeLockstepSessionDigestRecord *NativeLockstepSession_Fin
 /*
  * The latch in the shape of NativeReplaySchedulerV4 Match(): the whole body is
  * guarded, so the first divergence can never be overwritten.  record is NULL
- * for a FRAME_UNAVAILABLE report, where there was nothing to compare.
+ * for a FRAME_UNAVAILABLE report, where there was nothing to compare.  remote
+ * is the peer's verified block, whether it was just decoded or parked, so the
+ * on-arrival and the parked comparison write the same report.
  */
 static void NativeLockstepSession_LatchDivergence(struct NativeLockstepSession *session, uint32_t mask, uint32_t canonicalDomainMask,
-                                                  const struct NativeLockstepBundleV1 *bundle,
+                                                  const struct NativeLockstepSessionParkedDigest *remote,
                                                   const struct NativeLockstepSessionDigestRecord *record)
 {
 	if (session->mode == NATIVE_LOCKSTEP_DIVERGED)
@@ -86,10 +91,10 @@ static void NativeLockstepSession_LatchDivergence(struct NativeLockstepSession *
 	session->divergence.mask = mask;
 	session->divergence.canonicalDomainMask = canonicalDomainMask;
 	/* The frame that actually diverged, not the frame that noticed it. */
-	session->divergence.frameIndex = bundle->verifiedFrameIndex;
-	session->divergence.senderSlot = bundle->senderSlot;
-	session->divergence.remoteCombinedDigest = bundle->verifiedCombinedDigest;
-	memcpy(session->divergence.remoteDomainDigests, bundle->verifiedDomainDigests, sizeof(session->divergence.remoteDomainDigests));
+	session->divergence.frameIndex = remote->frameIndex;
+	session->divergence.senderSlot = remote->senderSlot;
+	session->divergence.remoteCombinedDigest = remote->combinedDigest;
+	memcpy(session->divergence.remoteDomainDigests, remote->domainDigests, sizeof(session->divergence.remoteDomainDigests));
 	if (record != NULL)
 	{
 		session->divergence.localCombinedDigest = record->combinedDigest;
@@ -125,34 +130,116 @@ static void NativeLockstepSession_LatchFault(struct NativeLockstepSession *sessi
 }
 
 /*
- * Returns 1 when this record's verified digest block disagrees with the local
- * history, whether or not the latch accepted it.  Only a record the peer window
- * ACCEPTED reaches here: a stale, duplicate, or faulted record is not part of
- * the match and is never digest-compared.  A bundle with verifiedPresent 0
- * carries no digest, which is the first inputDelay + 1 frames of a session, and
- * is never a divergence.
+ * Returns 1 when remote disagrees with record, or when record is NULL because
+ * the frame is not comparable, whether or not the latch accepted it.  Both the
+ * on-arrival path and the parked path come through here, so a parked digest
+ * latches exactly the report its on-arrival comparison would have.
  */
-static int NativeLockstepSession_Verify(struct NativeLockstepSession *session, const struct NativeLockstepBundleV1 *bundle)
+static int NativeLockstepSession_Compare(struct NativeLockstepSession *session, const struct NativeLockstepSessionParkedDigest *remote,
+                                         const struct NativeLockstepSessionDigestRecord *record)
 {
-	const struct NativeLockstepSessionDigestRecord *record;
 	uint32_t canonicalDomainMask = 0;
 	uint32_t mask = 0;
 
-	if (bundle->verifiedPresent == 0)
-	{
-		return 0;
-	}
-
-	record = NativeLockstepSession_FindDigests(session, bundle->verifiedFrameIndex);
 	if (record == NULL)
 	{
 		/* Well formed, but the two simulations are no longer comparable.  This
 		 * is deliberately a divergence and never a protocol fault: an
 		 * incomparable frame was never compared, so suppressing it would hide a
 		 * real report on a record the window did accept. */
-		NativeLockstepSession_LatchDivergence(session, NATIVE_LOCKSTEP_DIVERGENCE_FRAME_UNAVAILABLE, 0u, bundle, NULL);
+		NativeLockstepSession_LatchDivergence(session, NATIVE_LOCKSTEP_DIVERGENCE_FRAME_UNAVAILABLE, 0u, remote, NULL);
 		return 1;
 	}
+
+	/* Identical to platform/native_replay_scheduler_v4.c EndFrame: one bit per
+	 * differing domain digest, with the combined digest reported separately. */
+	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+	{
+		if (record->domainDigests[i] != remote->domainDigests[i])
+		{
+			canonicalDomainMask |= UINT32_C(1) << i;
+		}
+	}
+	if (canonicalDomainMask != 0)
+	{
+		mask |= NATIVE_LOCKSTEP_DIVERGENCE_CANONICAL_DOMAIN;
+	}
+	if (record->combinedDigest != remote->combinedDigest)
+	{
+		mask |= NATIVE_LOCKSTEP_DIVERGENCE_COMBINED;
+	}
+	if (mask == 0)
+	{
+		return 0;
+	}
+
+	NativeLockstepSession_LatchDivergence(session, mask, canonicalDomainMask, remote, record);
+	return 1;
+}
+
+/*
+ * Classifies the verified block of a record the peer window ACCEPTED (LR-11).
+ * Only such a record reaches here: a stale, duplicate, or faulted record is not
+ * part of the match and is never digest-compared.  A bundle with
+ * verifiedPresent 0 carries no digest, which is the first inputDelay + 1 frames
+ * of a session, and is never a divergence.  Otherwise, with r the last recorded
+ * frame and D the input delay: a frame at or below r is compared on arrival, a
+ * frame from r + 1 to r + D is parked for RecordLocalDigests, and anything else
+ * is the VERIFY_AHEAD fault.
+ */
+static enum NativeLockstepSessionResult NativeLockstepSession_Verify(struct NativeLockstepSession *session,
+                                                                     const struct NativeLockstepBundleV1 *bundle)
+{
+	struct NativeLockstepSessionParkedDigest remote;
+
+	if (bundle->verifiedPresent == 0)
+	{
+		return NATIVE_LOCKSTEP_SESSION_OK;
+	}
+
+	memset(&remote, 0, sizeof(remote));
+	remote.frameIndex = bundle->verifiedFrameIndex;
+	remote.senderSlot = bundle->senderSlot;
+	remote.present = 1u;
+	memcpy(remote.domainDigests, bundle->verifiedDomainDigests, sizeof(remote.domainDigests));
+	remote.combinedDigest = bundle->verifiedCombinedDigest;
+
+	/*
+	 * The lead bound.  The peer composed this record after taking frames the
+	 * local side sent, and the local side sends frame f only after recording
+	 * f - D, so a conforming peer's digest is at most D frames past r, and
+	 * there is none at all before the first local record.  Anything further is
+	 * a forged or broken record the window happened to accept: a protocol
+	 * fault, not an incomparable frame.  64-bit, so r + D cannot wrap.
+	 */
+	if ((session->recordedAny == 0) ||
+	    ((uint64_t)bundle->verifiedFrameIndex > ((uint64_t)session->recordedFrame + (uint64_t)session->inputDelay)))
+	{
+		NativeLockstepSession_LatchFault(session, NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD, bundle->frameIndex, bundle->senderSlot,
+		                                 (session->recordedAny != 0) ? (session->recordedFrame + 1u) : 0u);
+		return NATIVE_LOCKSTEP_SESSION_FAULT;
+	}
+
+	if (bundle->verifiedFrameIndex > session->recordedFrame)
+	{
+		/* A lead, not a desync.  The index is wire-derived, so the park depth
+		 * is validated rather than trusted, as FindDigests validates the
+		 * history depth: a delay Open never admitted parks nothing, and the
+		 * frame is then simply not comparable. */
+		if ((session->inputDelay == 0u) || (session->inputDelay > NATIVE_LOCKSTEP_SESSION_PARK_CAPACITY) ||
+		    (bundle->senderSlot >= NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY))
+		{
+			return NativeLockstepSession_Compare(session, &remote, NULL) ? NATIVE_LOCKSTEP_SESSION_DIVERGENCE
+			                                                             : NATIVE_LOCKSTEP_SESSION_OK;
+		}
+		/* The entry is free: this peer's parked frames all lie in (r, r + D],
+		 * at most PARK_CAPACITY consecutive frames with distinct indices, and
+		 * the window plus the codec's lag pin let at most one ACCEPTED record
+		 * carry this verifiedFrameIndex (see the header). */
+		session->parked[bundle->senderSlot][bundle->verifiedFrameIndex % NATIVE_LOCKSTEP_SESSION_PARK_CAPACITY] = remote;
+		return NATIVE_LOCKSTEP_SESSION_OK;
+	}
+
 	/* No dedup bookkeeping is needed to keep this comparison at most once per
 	 * verifiedFrameIndex: only the caller's ACCEPTED case reaches here, and the
 	 * window's occupancy-slot check makes ACCEPTED happen at most once per
@@ -162,31 +249,43 @@ static int NativeLockstepSession_Verify(struct NativeLockstepSession *session, c
 	 * (platform/native_lockstep_protocol.c:308-312), a bijection between the two,
 	 * so at most one ACCEPTED record can ever carry this verifiedFrameIndex
 	 * regardless of wire reordering. */
+	return NativeLockstepSession_Compare(session, &remote, NativeLockstepSession_FindDigests(session, bundle->verifiedFrameIndex))
+	           ? NATIVE_LOCKSTEP_SESSION_DIVERGENCE
+	           : NATIVE_LOCKSTEP_SESSION_OK;
+}
 
-	/* Identical to platform/native_replay_scheduler_v4.c EndFrame: one bit per
-	 * differing domain digest, with the combined digest reported separately. */
-	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+/*
+ * Settles every digest parked for a frame the record of frame has now passed:
+ * frames previousFrame + 1 up to frame, the only frames a digest can have been
+ * parked for (at most PARK_CAPACITY past previousFrame), in increasing frame
+ * order and then slot order, so the once-only latch keeps the earliest.  A
+ * parked frame below frame was skipped by recording and is FRAME_UNAVAILABLE;
+ * frame itself is compared against record.  Every settled entry is cleared,
+ * which is what keeps each peer's parked frames inside
+ * (recordedFrame, recordedFrame + D].
+ */
+static void NativeLockstepSession_SettleParked(struct NativeLockstepSession *session, uint32_t previousFrame, uint32_t frame,
+                                               const struct NativeLockstepSessionDigestRecord *record)
+{
+	const uint64_t last = (uint64_t)previousFrame + (uint64_t)NATIVE_LOCKSTEP_SESSION_PARK_CAPACITY;
+
+	for (uint64_t parkedFrame = (uint64_t)previousFrame + 1u; (parkedFrame <= (uint64_t)frame) && (parkedFrame <= last); parkedFrame++)
 	{
-		if (record->domainDigests[i] != bundle->verifiedDomainDigests[i])
+		for (uint32_t slot = 0; slot < NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY; slot++)
 		{
-			canonicalDomainMask |= UINT32_C(1) << i;
+			struct NativeLockstepSessionParkedDigest *entry =
+			    &session->parked[slot][(uint32_t)(parkedFrame % (uint64_t)NATIVE_LOCKSTEP_SESSION_PARK_CAPACITY)];
+			struct NativeLockstepSessionParkedDigest remote;
+
+			if ((entry->present == 0) || ((uint64_t)entry->frameIndex != parkedFrame))
+			{
+				continue;
+			}
+			remote = *entry;
+			memset(entry, 0, sizeof(*entry));
+			(void)NativeLockstepSession_Compare(session, &remote, (parkedFrame == (uint64_t)frame) ? record : NULL);
 		}
 	}
-	if (canonicalDomainMask != 0)
-	{
-		mask |= NATIVE_LOCKSTEP_DIVERGENCE_CANONICAL_DOMAIN;
-	}
-	if (record->combinedDigest != bundle->verifiedCombinedDigest)
-	{
-		mask |= NATIVE_LOCKSTEP_DIVERGENCE_COMBINED;
-	}
-	if (mask == 0)
-	{
-		return 0;
-	}
-
-	NativeLockstepSession_LatchDivergence(session, mask, canonicalDomainMask, bundle, record);
-	return 1;
 }
 
 void NativeLockstepSession_Init(struct NativeLockstepSession *session)
@@ -308,6 +407,8 @@ int NativeLockstepSession_SubmitLocalInput(struct NativeLockstepSession *session
 int NativeLockstepSession_RecordLocalDigests(struct NativeLockstepSession *session, const struct NativeCanonicalStateV4 *state)
 {
 	struct NativeLockstepSessionDigestRecord *record;
+	uint32_t previousFrame;
+	uint8_t previousAny;
 
 	if ((session == NULL) || (state == NULL) || (session->mode != NATIVE_LOCKSTEP_RUNNING) || !NativeCanonicalStateV4_Validate(state))
 	{
@@ -332,6 +433,8 @@ int NativeLockstepSession_RecordLocalDigests(struct NativeLockstepSession *sessi
 		return 0;
 	}
 
+	previousFrame = session->recordedFrame;
+	previousAny = session->recordedAny;
 	record = &session->localDigests[state->frameNumber % session->historyCapacity];
 	memset(record, 0, sizeof(*record));
 	record->frameIndex = state->frameNumber;
@@ -341,6 +444,15 @@ int NativeLockstepSession_RecordLocalDigests(struct NativeLockstepSession *sessi
 	record->combinedDigest = state->combinedDigest;
 	session->recordedFrame = state->frameNumber;
 	session->recordedAny = 1u;
+
+	/* The frame is recorded first, whatever the parked comparison finds: a
+	 * divergence is a latch the caller reads from the mode, not a failed
+	 * record.  Nothing is ever parked before the first record, because
+	 * AcceptBundle faults every digest while nothing is recorded. */
+	if (previousAny != 0)
+	{
+		NativeLockstepSession_SettleParked(session, previousFrame, state->frameNumber, record);
+	}
 	return 1;
 }
 
@@ -459,7 +571,8 @@ enum NativeLockstepSessionResult NativeLockstepSession_AcceptBundle(struct Nativ
 	switch (offered)
 	{
 	case NATIVE_LOCKSTEP_INPUT_WINDOW_ACCEPTED:
-		result = NativeLockstepSession_Verify(session, &bundle) ? NATIVE_LOCKSTEP_SESSION_DIVERGENCE : NATIVE_LOCKSTEP_SESSION_OK;
+		/* OK, DIVERGENCE on arrival, or the VERIFY_AHEAD FAULT (LR-11). */
+		result = NativeLockstepSession_Verify(session, &bundle);
 		break;
 	case NATIVE_LOCKSTEP_INPUT_WINDOW_DUPLICATE:
 		result = NATIVE_LOCKSTEP_SESSION_DUPLICATE;

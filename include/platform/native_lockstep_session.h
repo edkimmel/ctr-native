@@ -28,6 +28,15 @@
 #define NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY NATIVE_MATCH_CONFIG_V1_SLOT_COUNT
 /* The local digest history is inputDelay + 2 frames deep; this is its bound. */
 #define NATIVE_LOCKSTEP_SESSION_DIGEST_HISTORY_CAPACITY (NATIVE_LOCKSTEP_MAX_INPUT_DELAY + 2u)
+/*
+ * A conforming peer's digest is at most inputDelay frames newer than the last
+ * locally recorded frame, so a peer never has more than
+ * NATIVE_LOCKSTEP_MAX_INPUT_DELAY digests parked.  A parked entry is indexed by
+ * verifiedFrameIndex % this capacity: the parked frames of one peer always lie
+ * in (recordedFrame, recordedFrame + inputDelay], at most this many consecutive
+ * frames, so no two of them share an index.
+ */
+#define NATIVE_LOCKSTEP_SESSION_PARK_CAPACITY NATIVE_LOCKSTEP_MAX_INPUT_DELAY
 /* One local entry plus every other slot's full bundle pad capacity. */
 #define NATIVE_LOCKSTEP_SESSION_FRAME_PAD_CAPACITY (NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY * NATIVE_LOCKSTEP_BUNDLE_PAD_CAPACITY)
 
@@ -64,10 +73,14 @@ enum NativeLockstepSessionResult
 /*
  * Same bit-flag idiom as enum NativeReplaySchedulerV4MismatchMask.
  * FRAME_UNAVAILABLE covers a peer digest for a frame the local side cannot
- * compare, because it never simulated it or has already retired it from the
- * digest history.  It is a divergence, not a protocol fault: the bundle is well
- * formed but the two simulations are no longer comparable, so it never produces
- * an enum NativeLockstepFaultCause value.
+ * compare: a frame already retired from the digest history when the digest
+ * arrives, or a parked digest (see AcceptBundle) whose frame recording skipped,
+ * so no local digest of that frame ever existed.  It is a divergence, not a
+ * protocol fault: the bundle is well formed but the two simulations are no
+ * longer comparable, so it never produces an enum NativeLockstepFaultCause
+ * value.  A digest for a frame never simulated and beyond the lead bound, more
+ * than inputDelay frames after the last recorded frame, is not this divergence
+ * but the protocol fault NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD.
  */
 enum NativeLockstepDivergenceMask
 {
@@ -105,8 +118,11 @@ struct NativeLockstepDivergenceReport
  * because nothing read out of an undecodable record can be trusted.  detail is
  * cause-specific and zero unless documented: for
  * NATIVE_LOCKSTEP_FAULT_WINDOW_OVERRUN it is the peer window's consumedFrame,
- * and for a NATIVE_LOCKSTEP_FAULT_BAD_SLOT raised by an unexpected sender it is
- * the local slot.
+ * for a NATIVE_LOCKSTEP_FAULT_BAD_SLOT raised by an unexpected sender it is
+ * the local slot, and for the session-local
+ * NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD it is the number of frames recorded
+ * locally when the record arrived, recordedFrame + 1, or 0 while nothing has
+ * been recorded: the bound the record's verified frame broke.
  */
 struct NativeLockstepFaultReport
 {
@@ -128,6 +144,21 @@ struct NativeLockstepSessionLocalInput
 struct NativeLockstepSessionDigestRecord
 {
 	uint32_t frameIndex;
+	uint8_t present;
+	uint64_t domainDigests[NATIVE_CANONICAL_DOMAIN_COUNT];
+	uint64_t combinedDigest;
+};
+
+/*
+ * One peer digest that arrived before the local side recorded its frame: the
+ * verified block of an ACCEPTED record, kept until RecordLocalDigests reaches
+ * that frame.  frameIndex is the bundle's verifiedFrameIndex and senderSlot its
+ * sender, so a parked comparison reports exactly what the on-arrival one would.
+ */
+struct NativeLockstepSessionParkedDigest
+{
+	uint32_t frameIndex;
+	uint8_t senderSlot;
 	uint8_t present;
 	uint64_t domainDigests[NATIVE_CANONICAL_DOMAIN_COUNT];
 	uint64_t combinedDigest;
@@ -165,6 +196,8 @@ struct NativeLockstepSession
 	struct NativeLockstepSessionLocalInput localInputs[NATIVE_LOCKSTEP_RING_CAPACITY];
 	struct NativeLockstepSessionDigestRecord localDigests[NATIVE_LOCKSTEP_SESSION_DIGEST_HISTORY_CAPACITY];
 	struct NativeLockstepInputWindow peers[NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY];
+	/* Indexed [senderSlot][verifiedFrameIndex % NATIVE_LOCKSTEP_SESSION_PARK_CAPACITY]. */
+	struct NativeLockstepSessionParkedDigest parked[NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY][NATIVE_LOCKSTEP_SESSION_PARK_CAPACITY];
 	struct NativeLockstepDivergenceReport divergence;
 	struct NativeLockstepFaultReport fault;
 };
@@ -220,6 +253,16 @@ int NativeLockstepSession_SubmitLocalInput(struct NativeLockstepSession *session
  * because recording backwards would retire a newer frame the verification lag
  * still needs.  Requires the RUNNING mode and a state that validates; returns 0
  * and changes nothing otherwise.
+ *
+ * Recording a frame also compares every peer digest parked for it (see
+ * AcceptBundle) and latches exactly the divergence the on-arrival comparison
+ * would have: the same frame, sender, masks, and both digests.  A parked digest
+ * for a frame this record skips over, one recording never reaches, latches
+ * FRAME_UNAVAILABLE.  Parked frames are settled in increasing frame order, then
+ * sender slot order, so the once-only latch keeps the earliest.  Either latch
+ * is a divergence, not a failed record: the frame is still recorded and the
+ * call returns 1 with the mode DIVERGED, so a caller must read the session
+ * mode after every successful record, not only after AcceptBundle.
  */
 int NativeLockstepSession_RecordLocalDigests(struct NativeLockstepSession *session, const struct NativeCanonicalStateV4 *state);
 
@@ -251,14 +294,25 @@ int NativeLockstepSession_ComposeBundle(const struct NativeLockstepSession *sess
  * known peer of this session is NATIVE_LOCKSTEP_FAULT_BAD_SLOT.
  *
  * The record is offered to the sender's window first and its verified digest
- * block is compared against the local digest history only when the window
- * ACCEPTED it, that is only for a genuinely new in-window record.  A STALE,
- * DUPLICATE, or faulted record is never digest-compared and can never latch a
- * divergence: a duplicating or delaying transport legitimately re-delivers a
- * record whose verified frame the local history has already retired, and a
- * window fault means the record was not taken into the match at all.  No
- * explicit dedup structure keeps one verifiedFrameIndex from being compared
- * twice: the window's occupancy-slot check in Offer
+ * block is looked at only when the window ACCEPTED it, that is only for a
+ * genuinely new in-window record.  A STALE, DUPLICATE, or faulted record is
+ * never digest-compared and can never latch a divergence: a duplicating or
+ * delaying transport legitimately re-delivers a record whose verified frame the
+ * local history has already retired, and a window fault means the record was
+ * not taken into the match at all.
+ *
+ * An ACCEPTED record carrying a digest is classified against r, the last
+ * locally recorded frame, and D, the input delay.  A verified frame at or below
+ * r is compared on arrival against the local digest history (FRAME_UNAVAILABLE
+ * once retired from it).  A verified frame from r + 1 to r + D is parked, and
+ * RecordLocalDigests compares it when it records that frame: a peer leading by
+ * up to D + 1 ticks is the normal state of a linked race, not a desync.  A
+ * verified frame after r + D, or any digest while nothing has been recorded, is
+ * impossible from a conforming peer and latches the protocol fault
+ * NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD; the record stays in the peer window, but
+ * a FAULTED session never takes it.  No explicit dedup structure keeps one
+ * verifiedFrameIndex from being compared or parked twice: the window's
+ * occupancy-slot check in Offer
  * (platform/native_lockstep_input_window.c:83-97) accepts a given frameIndex
  * at most once, having already dropped a below-window re-delivery as STALE
  * (platform/native_lockstep_input_window.c:65-69), and the codec pins
@@ -267,16 +321,19 @@ int NativeLockstepSession_ComposeBundle(const struct NativeLockstepSession *sess
  * ACCEPTED delivery per frameIndex plus that bijection between frameIndex and
  * verifiedFrameIndex means at most one ACCEPTED record can ever carry a given
  * verifiedFrameIndex, so a record cannot be re-verified however the transport
- * reorders the wire.  The two latches
- * remain independent and each is once-only: a fault arriving after a divergence
+ * reorders the wire.  The two latches remain independent and each is
+ * once-only, parked entries included: a fault arriving after a divergence
  * leaves the divergence report byte-identical and the mode DIVERGED, and a
  * divergence arriving after a fault leaves the fault report byte-identical and
- * raises the mode to DIVERGED.
+ * raises the mode to DIVERGED.  A parked digest can only diverge at a record,
+ * and RecordLocalDigests requires RUNNING, so a digest still parked when either
+ * latch ends the match is never compared.
  *
  * The result describes this record, not the latch state: FAULT when this record
  * is a protocol fault, DUPLICATE or STALE from the sender's window, and for an
- * accepted record DIVERGENCE when its verified digest disagrees with the local
- * one and OK otherwise.  A later record of the same kind therefore still reports
+ * accepted record DIVERGENCE when its verified digest is compared on arrival
+ * and disagrees with the local one, and OK otherwise, a parked digest
+ * included.  A later record of the same kind therefore still reports
  * itself even though the report it would have written is ignored.  Deliberately
  * usable in every non-IDLE mode, which is what lets a fault be latched after a
  * divergence has ended the match.

@@ -6,7 +6,9 @@
 # change, no other seam picks up a lockstep identifier, and the three targets
 # stay portable C17 with extensions off. It also freezes the peer link's
 # generic aux-route widths and keeps any select-layer token out of the peer
-# link and holds it to the lease and allocation scans (section 9).
+# link and holds it to the lease and allocation scans (section 9). The fault
+# cause enum is append-only and its session-local VERIFY_AHEAD cause stays out
+# of the codec and the window (section 10).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -204,3 +206,33 @@ foreach(relative_path IN ITEMS "include/platform/native_lockstep_peer_link.h" "p
         ctr_forbid("${relative_path}" "${source}" "${term}")
     endforeach()
 endforeach()
+
+# 10. The fault-cause enum is append-only: every existing value keeps its
+#     number, and VERIFY_AHEAD (docs/LOCKSTEP_RACE_MILESTONE.md LR-S5) is the
+#     15th, appended. VERIFY_AHEAD is a lockstep-session cause only: the codec
+#     and the input window never produce it, so the wire never carries it.
+set(fault_causes
+    NONE BAD_MAGIC BAD_VERSION BAD_SIZE BAD_DIGEST BAD_RESERVED MATCH_IDENTITY
+    PROTOCOL_VERSION INPUT_DELAY BAD_SLOT BAD_PAD_COUNT CONFLICTING_INPUT
+    WINDOW_OVERRUN VERIFY_LAG VERIFY_SHAPE VERIFY_AHEAD)
+set(value 0)
+foreach(cause IN LISTS fault_causes)
+    string(REGEX MATCHALL "NATIVE_LOCKSTEP_FAULT_${cause} = ${value}[, \r\n]" found "${protocol_header}")
+    list(LENGTH found found_count)
+    if(NOT found_count EQUAL 1)
+        message(FATAL_ERROR "lockstep isolation: NATIVE_LOCKSTEP_FAULT_${cause} must be declared exactly once as ${value} (append-only enum)")
+    endif()
+    math(EXPR value "${value} + 1")
+endforeach()
+string(REGEX MATCHALL "NATIVE_LOCKSTEP_FAULT_[A-Z_]+ = [0-9]+" declared_causes "${protocol_header}")
+list(LENGTH declared_causes declared_count)
+list(LENGTH fault_causes expected_count)
+if(NOT declared_count EQUAL expected_count)
+    message(FATAL_ERROR "lockstep isolation: native_lockstep_protocol.h declares ${declared_count} fault causes, expected ${expected_count}; append new causes to this list")
+endif()
+foreach(relative_path IN ITEMS "platform/native_lockstep_protocol.c" "platform/native_lockstep_input_window.c")
+    ctr_read_source("${relative_path}" source)
+    ctr_forbid("${relative_path}" "${source}" "NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD")
+endforeach()
+ctr_read_source("platform/native_lockstep_session.c" session_source)
+ctr_require("platform/native_lockstep_session.c" "${session_source}" "NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD")

@@ -31,6 +31,12 @@
  * the codec and are intended to be latched and logged verbatim, so new causes
  * may only be appended at the end and an existing numeric value must never
  * change.
+ *
+ * NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD is a local session cause, not a codec
+ * one: NativeLockstepBundleV1_Decode never returns it and it is never encoded
+ * on the wire.  The lockstep session latches it for a well formed, window
+ * accepted record whose verified frame is more than inputDelay frames after
+ * the last locally recorded frame (docs/LOCKSTEP_RACE_MILESTONE.md LR-11).
  */
 enum NativeLockstepFaultCause
 {
@@ -48,7 +54,8 @@ enum NativeLockstepFaultCause
 	NATIVE_LOCKSTEP_FAULT_CONFLICTING_INPUT = 11,
 	NATIVE_LOCKSTEP_FAULT_WINDOW_OVERRUN = 12,
 	NATIVE_LOCKSTEP_FAULT_VERIFY_LAG = 13,
-	NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE = 14
+	NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE = 14,
+	NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD = 15 /* Session-local; never decoded, never on the wire. */
 };
 
 /* One owned input slot plus the canonical pad bytes the INPUT domain records. */

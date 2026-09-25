@@ -422,16 +422,26 @@ int main(void)
 		CHECK(SameBundle(&out, &lag));
 	}
 
-	/* Every covered failure path reported a distinct, non-zero cause. */
+	/*
+	 * Every covered failure path reported a distinct, non-zero cause.  causes[]
+	 * lists the decoder's causes only.  WINDOW_OVERRUN and CONFLICTING_INPUT
+	 * come from the input window, and VERIFY_AHEAD (LR-S5) is a lockstep
+	 * session cause that the decoder never returns and the wire never carries,
+	 * so it is deliberately absent here.  The list must never claim it.
+	 */
 	CHECK(causeCount == sizeof(causes) / sizeof(causes[0]));
 	for (size_t i = 0; i < causeCount; i++)
 	{
 		CHECK(causes[i] != NATIVE_LOCKSTEP_FAULT_NONE);
+		CHECK(causes[i] != NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD);
 		for (size_t j = 0; j < i; j++)
 		{
 			CHECK(causes[i] != causes[j]);
 		}
 	}
+	/* Appended after VERIFY_SHAPE, never renumbered. */
+	CHECK(NATIVE_LOCKSTEP_FAULT_VERIFY_SHAPE == 14);
+	CHECK(NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD == 15);
 
 	/* NULL arguments are size faults and touch nothing. */
 	CHECK(!NativeLockstepBundleV1_Decode(NULL, g_identity, g_protocolVersion, g_inputDelay, &bundle, &cause));

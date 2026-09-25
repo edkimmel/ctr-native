@@ -531,7 +531,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-27; LR-17 is the owner's ruling)
+## 4. Decided design (defaults LR-1..LR-32; LR-17 is the owner's ruling)
 
 The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
 written, except that LR-18, the finish grace, amends LR-1, LR-12, LR-13,
@@ -1662,6 +1662,48 @@ textual: a read through a pointer whose unit names none of the three,
 such as a nav header pointer passed in untyped or from another file's
 helper, is not seen. Review covers that case.
 
+LR-28 Park storage (LR-S5). The park is
+NativeLockstepSession.parked[senderSlot][verifiedFrameIndex % 6], with
+NATIVE_LOCKSTEP_SESSION_PARK_CAPACITY defined as
+NATIVE_LOCKSTEP_MAX_INPUT_DELAY. An entry holds the verified frame, the
+sender, a present flag, and the domain and combined digests (64 bytes; 48
+entries add 3072 bytes to the session, still no heap). A peer's parked
+frames always lie in (r, r + D], at most 6 consecutive frames, so no two
+share an index, and the window plus the codec's lag pin let at most one
+ACCEPTED record carry a given verified frame. A delay or sender that Open
+never admits (unreachable) parks nothing: the digest is FRAME_UNAVAILABLE,
+as FindDigests treats a depth Open never wrote.
+
+LR-29 Classification order (LR-S5). AcceptBundle offers the record to the
+window first, so a record above the window stays a WINDOW_OVERRUN. Only an
+ACCEPTED record with a digest is classified: VERIFY_AHEAD when nothing is
+recorded or its frame is after r + D, parked from r + 1 to r + D, and
+compared on arrival at or below r. A VERIFY_AHEAD record stays in the peer
+window, but a FAULTED session never takes it. Classification is the same
+in every non-IDLE mode, so a fault still latches after a divergence.
+
+LR-30 Settling parked digests (LR-S5). RecordLocalDigests writes the
+record first, then settles the parked frames from the previous r + 1 up
+to the recorded frame, in increasing frame order and then slot order. A
+frame below the recorded one was skipped and is FRAME_UNAVAILABLE (local
+digests zero, remote from the park); the recorded frame is compared. Every
+settled entry is cleared. The once-only latch therefore keeps the earliest
+frame: a skipped clean frame outranks a real mismatch parked after it. The
+call returns 1 whatever it latched.
+
+LR-31 Latch priority with parked entries (LR-S5). No call both compares a
+parked digest and faults: AcceptBundle parks or faults, and
+RecordLocalDigests compares. RecordLocalDigests still requires RUNNING, so
+a digest parked when either latch ends the match is never compared; the
+first latch stands, and DIVERGED still outranks FAULTED.
+
+LR-32 VERIFY_AHEAD pinned (LR-S5). NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD is
+15, appended after VERIFY_SHAPE. It is session-local: the decoder never
+returns it and it is never on the wire. native_lockstep_isolation pins
+every fault-cause value (append-only) and bans the token from the codec
+and the window sources. native_lockstep_protocol_unit's causes[] lists
+decoder causes only, so it asserts VERIFY_AHEAD is not among them.
+
 Review changes. The plan review (on befa152a9) changed these defaults:
 
 - LR-11 no longer treats a lead as a desync. A peer digest for a frame
@@ -2429,8 +2471,55 @@ Tests:
 
 ### LR-S5 -- lockstep session: early peer digests
 
-Status: planned. Review required (the session, which decides what a
-digest on the wire means). Run 2.
+Status: done. Review required (the session, which decides what a
+digest on the wire means). Run 2. New defaults LR-28..LR-32 (section 4).
+
+Result:
+
+- The park (LR-28): struct NativeLockstepSessionParkedDigest and
+  NativeLockstepSession.parked[8][NATIVE_LOCKSTEP_SESSION_PARK_CAPACITY]
+  (= NATIVE_LOCKSTEP_MAX_INPUT_DELAY = 6), indexed by verified frame
+  modulo 6, in include/platform/native_lockstep_session.h.
+- platform/native_lockstep_session.c: Verify now classifies an ACCEPTED
+  record's digest (LR-29): VERIFY_AHEAD with nothing recorded or after
+  r + D, parked from r + 1 to r + D, compared on arrival at or below r.
+  One Compare helper serves both paths, so a parked comparison writes the
+  on-arrival report byte for byte. RecordLocalDigests records, then
+  settles the parked frames up to the recorded one (LR-30) and returns 1.
+- New cause NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD = 15, appended and
+  documented as session-local (include/platform/native_lockstep_protocol.h;
+  LR-32). Its detail is r + 1, or 0 with nothing recorded; frameIndex and
+  senderSlot are the bundle's. Nothing on the wire, the bundle, the
+  window, the handshake, the config, canonical state, or replay changed.
+- Header comments updated: FRAME_UNAVAILABLE (retired, or a parked frame
+  that recording skipped; never-simulated beyond the bound is
+  VERIFY_AHEAD), the fault report's VERIFY_AHEAD detail, the
+  RecordLocalDigests latch and the caller's duty to read the mode, and
+  AcceptBundle's on-arrival, park, and fault ranges and latch rules.
+- Tests, native_lockstep_session_unit, in the drive order of LR-2 (record
+  k, submit and send k + D, take k):
+  TestLeadParksAndComparesClean (every D 1..6, consumed frame r and
+  r + 1, every lead the window admits: 0 to D parked for D 1..3, up to
+  6 - D and 7 - D for D 4..6, each settled clean at its record, and the
+  next lead a WINDOW_OVERRUN with detail c for D 4..6);
+  TestLeadParkedDivergence (34 lead and flipped-frame cases: the record
+  of the flipped frame returns 1, the mode is DIVERGED, and the report
+  equals, by memcmp, the one an on-arrival oracle copy latches);
+  TestVerifyAheadFault, which replaces TestFrameUnavailableNeverSimulated
+  (nothing recorded: detail 0; D = 2 at r and D = 3 at r + 1: the bound
+  r + D parks and r + D + 1 faults with detail r + 1; D = 3 at r:
+  WINDOW_OVERRUN); TestParkedLatchRules (once-only divergence and fault
+  latches with parked entries, a skipped parked frame FRAME_UNAVAILABLE
+  outranking a later mismatch, and a fault first leaving the parked
+  digest uncompared). TestFrameUnavailableRetired stays.
+  native_lockstep_protocol_unit asserts VERIFY_AHEAD is 15 and not a
+  decoder cause. native_lockstep_isolation gains section 10 (LR-32).
+- Probes, each reverted: dropping the parked compare, moving the bound to
+  r + D + 1, comparing skipped frames against the record, and not parking
+  each failed native_lockstep_session_unit; renumbering VERIFY_AHEAD or
+  naming it in the window source failed native_lockstep_isolation.
+- All other lockstep, peer-link, netplay, and lobby tests pass unchanged.
+  Fast suite (-LE live): 151 of 151 passed.
 
 Plan: LR-11's park, in platform/native_lockstep_session.{c,h}:
 
