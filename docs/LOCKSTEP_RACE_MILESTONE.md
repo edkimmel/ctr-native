@@ -2950,12 +2950,17 @@ fixed; the steering, the options, and FaultAt (LR-73) are unchanged.
   synchronous load pauses frames, so neither adds observed ticks. The
   RL-S10 two-race gate observed 1205 ticks for two races of 301 race ticks,
   so a race's select, launch, RESULTS, and rematch cost about 300. The
-  worst case: race 1 to the 6000-tick cap (6001 race ticks, which race 1
-  does not accept, but the run must still end inside the deadline), races
+  worst case: race 1 to the 6000-tick cap (6001 race ticks; the autopilot
+  accepts that FINISHED end and the gate does not, but the run must still
+  end inside the deadline), races
   2 and 3 about 310 and 340 race ticks (the desync is found by race tick 303
   and the kill comes at about 300 to 340), three times 300 for the selects
   and RESULTS, two REMATCH_WAITs of at most 300 each (rematchWaitTimeoutTicks),
-  and EXIT's 60: about 8200, 61% of 13500. It is not raised.
+  and EXIT's 60: about 8200, 61% of 13500. It is not raised. Measured
+  (LR-S13 part B's first run): cab1's report counted 5251 observed ticks
+  for the whole run with a race 1 of 3686 race ticks, so the same run with
+  race 1 at the cap would count about 5251 - 3686 + 6001 = 7566, 56% of the
+  deadline.
 - Report v3 (FormatReport): the header "arcade link autopilot v3"; after
   "race ticks <n>", "freeze tick <n>" and "desync tick <n>" (0 when absent;
   this amends LR-73, which reported them nowhere); per race k, after its
@@ -2992,6 +2997,16 @@ the two cabinets.
   directory). cab2 alone gets --arcade-link-autopilot-freeze 600 and
   --arcade-link-autopilot-desync 300. main.c allows --capture-frame with
   the autopilot; only --exit-after-frame is rejected.
+- The capture frame N is 2800 on both cabinets. N counts every present
+  since the process started (native_frame_capture.h), the hold banners'
+  included, so the race tick it lands on moves only with the time before
+  race 1 (boot, lobby, select, load, start wait). Measured in the first run:
+  cab1 captured after race 1's race tick 1356 and cab2 after 1340, of an
+  end at 3685, so the margins were 1340 to 1356 race ticks after race tick 0
+  and 2329 to 2345 before the end (the recorded run's are in LR-S13's
+  result). N sits about 1400 frames after race tick 0, far from both ends of
+  a race of about 3,600 to 3,750 ticks, and the check below still requires
+  it inside race 1.
 - The kill. While waiting, the checker reads cab2's stdout every 500 ms for
   its third race's per-tick line (the third race is the launch number of its
   third "race <n> validated" line) with race tick >= 300, then kills cab2 and
@@ -3024,7 +3039,8 @@ the two cabinets.
   the buffer; a cut line fails the full-line pattern and is not counted).
   For every race tick both cabinets logged in the k-th race, the digest text
   after "digests" is equal.
-- Race 1. Exactly one drive end per cabinet and race; race 1's is "end of
+- Race 1. At most one drive end line per cabinet and race, and none of a
+  launch that is none of its races; race 1's, required on both, is "end of
   race" or "finish grace" (printed), equal kind and tick on both; "race
   tick limit" or any other kind fails. Both first ended lines have reason 1.
   No out-of-sync line outside race 2 on either cabinet. cab2 has exactly one
@@ -5590,8 +5606,7 @@ lingering launch records.
 
 ### LR-S13 -- one-machine race gate
 
-Status: part A done; part B in progress (its recorded gate run follows).
-Review required. Run 5.
+Status: done. Review required. Run 5.
 
 Plan: LR-16.
 
@@ -5717,6 +5732,126 @@ Part B result: the three-race run and the gate (LR-75, LR-76).
 - API: NativeArcadeLinkAutopilot_EndAccepted; struct
   NativeArcadeLinkAutopilotRace gains ended and endReason; struct
   NativeArcadeLinkAutopilot's racesFinished is renamed racesEnded.
+- The first measured run (commit 1c85f81d1, the checker run directly) went
+  through all three races and cab1 exited 0 with PASS, but the checker
+  failed one rule of its own: it required a race 2 drive end line on both
+  cabinets, and cab2 had none. cab2 found the divergence in its host Tick
+  (the adapter's own poll) on its race tick 300, so its flow left RACING
+  there and the launch core ended the drive phase without a drive result
+  (LR-76). The fix (2e06af2e2) accepts a race 2 without a drive end line on
+  a detecting cabinet only; the same logs then passed the fixed checker
+  offline. That run's numbers set the capture frame (LR-76) and the
+  deadline figure (LR-75).
+- The recorded run: ctest -R "^arcade_link_launch$" on 2e06af2e2, a build
+  from the clean tree: non-skipped PASS in 232.93 s. ctest prints no
+  output for a passing test, so the summary below is read from the run's
+  logs and cab1's report (build-msvc-x86/arcade_link_launch/Debug) by the
+  checker's own rules:
+  - race 1: agreed match track 3 laps 3, slots 12BBBB--; the per-tick
+    lines cover race ticks 0..3710 on both cabinets and all 3711 are
+    equal; drive end "end of race" at race tick 3710 on both, ended
+    (reason 1) on both. cab2 froze 45 tick periods (1505898 us) at race
+    tick 600; cab1 held 43 tick periods (1449237 us) at race tick 602 and
+    presented 34 hold banners (capture frames 2010..2043), all in the game
+    font.
+  - race 2: cab2 flipped its CONTROL digest of race tick 300 and detected
+    it: "out of sync at race tick 300 domains 0x1 local 98f2312485e1f468
+    remote 98f2312485e1f469", ended (reason 3), no drive end line (LR-76).
+    cab1 held 90 tick periods (3010214 us) at race tick 303, drive end
+    "outcome" at race tick 303, ended (reason 2). The 301 common per-tick
+    lines (0..300) are equal.
+  - race 3: cab2 was killed once its race 3 per-tick line showed race tick
+    300 (no drive end line, as required). cab1 held 90 tick periods
+    (3010293 us) at race tick 309, within the stall window (the timeout is
+    90 periods, 3009150 us, with a 25% margin), drive end "outcome" at
+    race tick 309, ended (reason 2).
+  - cab1's report: "arcade link autopilot v3", result PASS (0), ticks 5263
+    of the 13500 deadline, race ticks 6000, end reasons FINISHED,
+    PEER_TIMEOUT, PEER_TIMEOUT, end races 3. Both stdouts carry "race tick
+    limit 6000".
+  - the captures: one "frame capture wrote ... (800x600)" line per
+    cabinet, each a BMP ("BM", 1920138 bytes), written in race 1 after
+    race tick 1358 on cab1 and 1331 on cab2 (of 3710): at the narrower
+    margins, 1331 race ticks after the start and 2352 before the end.
+- The capture content (criterion 9), from the recorded run's two BMPs,
+  converted to PNG outside the repository, viewed, and deleted: both show
+  the retail two-player split screen in race 1 on lap 2/3, with no hold
+  banner. The top half is player 0 (cab1's player, Crash in the blue kart,
+  6th); the bottom half is player 1 (cab2's player, 5th). Each half has its
+  own HUD (Aku Aku, Wumpa count 0, place, LAP 2/3). The two frames differ,
+  as expected 27 race ticks apart: cab2's (race tick 1331) is at the start
+  line under the CTR banner, and cab1's (race tick 1358) is further on by
+  the rock arch, with the same places in both.
+- The open risks this slice closes or records:
+  - closed: the steering moves a kart live. Race 1 reached the natural
+    finish, END_OF_RACE on the same race tick on both cabinets, in both
+    runs (3685 in the first, 3710 in the recorded one), so risk 1's natural
+    end is proven live in the gate's own race, not only in LR-S2 (b)'s
+    seeds.
+  - closed: the race hold ran live for a full period count with the banner
+    in the game font. cab1 held race 1's freeze for 43 tick periods and
+    presented 34 banners, every one logged "in the game font" and none in
+    the block font (LR-72's automated check, now live). This is log-checked
+    only: no image of the banner was captured (the capture frame lies
+    about 1,350 race ticks into race 1, after the hold), and none is
+    required.
+  - recorded, not closed: LR-70's divergence found only by the Tick that
+    closes the link leaving RESULTS is still not logged. The gate cannot
+    reach it: its injection is at race tick 300 of a running race, so the
+    divergence surfaces while both cabinets are RACING (within D + 1 ticks,
+    in the drive's poll or record or in the host Tick, LR-11), long before
+    either reaches RESULTS; reaching the closing Tick needs a divergence
+    visible only in the last bundles a finish linger drains (frames F - 1 or
+    F, LR-12). Fixing it would need the host to read the session's
+    FirstDivergence before the Tick that leaves RESULTS closes the link
+    (for example a latch inside the adapter ahead of its CLOSE_LINK and
+    BEGIN_REMATCH teardown, or a divergence record kept past the close), a
+    change to the host and adapter and their isolation pins (host 3i), out
+    of this slice.
+  - recorded, not closed: LR-60's race tick cap is still checked across
+    cabinets only by the gate. The option is internal-only and host-local
+    (not in the match config or on the wire); the gate requires the same
+    "race tick limit 6000" line on both stdouts and the cap in cab1's
+    report, and a mismatch stays a stall, not a silent desync (LR-60).
+- Tests: native_arcade_link_autopilot_unit (TestEndAccepted, and the
+  three-race TestDecideResults, TestFullRun, TestFailures, TestFaultAt, and
+  TestReport of LR-75) and native_arcade_link_autopilot_isolation 1c and 7b
+  (LR-75, LR-76). No other test names RACES, the report version, or the
+  run's shape.
+- Probes, each reverted with the tree clean afterwards (git status empty,
+  checked after every probe):
+  - the module, unit and isolation both failing unless noted: race 2
+    accepting only DESYNC and race 3 accepting FINISHED (TestEndAccepted;
+    1c's EndAccepted body), the evidence rule only on FINISHED
+    (TestFailures; 1c's Observe order), a rejected end not recorded
+    (TestFailures; 1c), Decide without the EndAccepted check and EXIT after
+    race 2 (TestDecideResults; 1c), a pass with one rematch
+    (TestFailures; 1c), RACES 2 (TestEndAccepted; 1c), no freeze tick
+    line and the v2 header (TestFaultAt; 1c), the end reason line only for
+    accepted ends (TestReport; 1c), REPORT_BYTES 1600 (TestReport's widest
+    report; the unit test alone), a RESULTS entry after three ends failing
+    RACE_FAILED (TestFailures; 1c), and a stray FINISHED decision (1c alone:
+    the unit test passed, as it should);
+  - the checker and CMake, isolation 7 and 7b: the freeze option given to
+    cab1, the cap 300, -TimeoutSeconds 600 in CMake and in the script, a
+    relative capture path, the kill at race tick 301, a 50% stall margin,
+    and race 1 accepting "race tick limit";
+  - the checker's live rules, on edited copies of the first run's logs
+    under the build tree with a scratch copy of the checker that skips the
+    launch (the unedited copy passed): a missing and a duplicated per-tick
+    line, one digest changed on one cabinet, race 1 ending "race tick
+    limit", race 1's end tick differing, the freeze at 44 periods, cab1's
+    hold at 9 periods and at race tick 603, a freeze line on cab1, a block
+    font banner, no banner, an out-of-sync line in race 1, race 2's
+    out-of-sync line removed or at race tick 301, the injection removed,
+    race 2 ended with reason 1 or 5, a race 2 drive end "race tick limit",
+    a LINK ERROR ended line, race 3's stall at 89 periods and at 3,800,000
+    us, a race 3 drive end on cab2, cab2's cap line 300, the capture line
+    after race 1, a BMP without "BM", and cab1's report with race 2
+    FINISHED or freeze tick 600: each failed the check with its own
+    message.
+- Fast suite (-LE live): 154 of 154 passed on 1c85f81d1 and again on the
+  final tree (2e06af2e2 with this record).
 
 ### LR-S14 -- docs close-out
 
