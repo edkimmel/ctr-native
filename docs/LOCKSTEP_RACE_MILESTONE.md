@@ -531,7 +531,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-74; LR-17 is the owner's ruling)
+## 4. Decided design (defaults LR-1..LR-76; LR-17 is the owner's ruling)
 
 The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
 written, except that LR-18, the finish grace, amends LR-1, LR-12, LR-13,
@@ -543,8 +543,9 @@ changed, and "Owner decisions (2026-09-25)" after it lists the owner's
 decisions. LR-19..LR-27 were added by LR-S4, LR-28..LR-32 by LR-S5,
 LR-33..LR-36 by LR-S6, LR-37..LR-40 by LR-S7, LR-41..LR-48 by LR-S8,
 LR-49..LR-57 by LR-S9, LR-58..LR-60 by LR-S10 part 1, LR-61..LR-68 by
-LR-S10 part 2, LR-69..LR-71 by LR-S12, LR-72 by LR-S11, and LR-73..LR-74
-by LR-S13 part A; each records the mechanics its slice settled.
+LR-S10 part 2, LR-69..LR-71 by LR-S12, LR-72 by LR-S11, LR-73..LR-74 by
+LR-S13 part A, and LR-75..LR-76 by LR-S13 part B; each records the
+mechanics its slice settled.
 
 LR-1 Placement. The race driver lives under platform/, because game code
 may not name lockstep (tests/native_lockstep_isolation_test.cmake:128-157
@@ -2901,6 +2902,173 @@ autopilot module (arcade_roster_proof_autopilot_isolation rule 1).
 FormatTickLine's own output is unchanged (native_arcade_roster_proof_unit's
 exact tick line passes). stdout is fully buffered when redirected; the
 buffering is unchanged.
+
+LR-75 The autopilot's three-race run (LR-S13 part B, LR-16). The pure
+module (platform/native_arcade_link_autopilot.{c,h}) runs LR-16's scenario,
+fixed; the steering, the options, and FaultAt (LR-73) are unchanged.
+
+- NATIVE_ARCADE_LINK_AUTOPILOT_RACES is 3: race 1, REMATCH, race 2,
+  REMATCH, race 3, EXIT.
+- The accepted ends: int NativeArcadeLinkAutopilot_EndAccepted(uint32_t
+  race, uint32_t endReason) is 1 for FINISHED in race 1, DESYNC or
+  PEER_TIMEOUT in race 2 (risk 7: the cabinet that does not detect the
+  divergence may stall into the timeout instead), and PEER_TIMEOUT in race
+  3, and 0 for everything else, any race outside 1..3 included. It is the
+  module's only decision on FINISHED. The autopilot only accepts an end;
+  that the end happened for the scenario's reason (the finish kind, the
+  injection, the kill) is the gate's check (LR-76), from the logs.
+- Observe. A RESULTS entry is the end of race k = racesEnded + 1
+  (racesFinished is renamed racesEnded: the races whose end was accepted).
+  An entry after three ends fails UNEXPECTED_RACE (a fourth START_RACE
+  fails first, so it is defensive). Otherwise the entry's end reason is
+  recorded in race k's entry (the new ended flag, in the old reserved[0],
+  and endReason) before the decision, so the report shows a rejected end
+  too; a rejected end fails RACE_FAILED; an accepted end requires racesEnded
+  == racesStarted and racesValidated == racesStarted, else EVIDENCE_MISSING.
+  The evidence rule so covers every accepted end, not only FINISHED.
+- Decide. On RESULTS with the rows enabled, only when racesEnded > 0 and
+  EndAccepted(racesEnded, view.endReason): REMATCH after races 1 and 2,
+  EXIT (DOWN to it, then CROSS) after race 3. The check of the view's end
+  reason is the safer choice over a bare racesEnded check: a RESULTS screen
+  the autopilot did not accept is never confirmed, even if Decide ever ran
+  before its Observe.
+- The pass: RETURN_TO_TITLE with this autopilot's own EXIT confirmed,
+  racesStarted = racesValidated = racesEnded = 3, and 2 rematches; anything
+  else there is SESSION_LOST, as before.
+- The EXIT screen's end reason after race 3. cab1 confirms EXIT on RESULTS
+  PEER_TIMEOUT. NativeArcadeFlow_TickResults' CONFIRM on the EXIT row enters
+  EXIT without touching endReason (platform/native_arcade_flow.c:322-329),
+  NativeArcadeFlow_EnterScreen clears it only on OFF (:87-96), and only
+  REMATCH_WAIT sets OPPONENT_LEFT (on REJECTED or its timeout, :363-369; its
+  BACK and the lobby's set NONE, :352-356, :158-162). So cab1's EXIT screen
+  keeps PEER_TIMEOUT, holds exitHoldTicks (60, not the opponent-left notice,
+  :384-385), and the SESSION_LOST rule for EXIT with OPPONENT_LEFT does not
+  fire on it. TestFullRun runs that EXIT screen, with PEER_TIMEOUT, to PASS.
+- The deadline stays NATIVE_ARCADE_LINK_AUTOPILOT_DEADLINE_TICKS = 13500
+  observed ticks. An observed tick is one AfterTick, one per link frame; a
+  hold (the freeze, a stall, the start wait) runs inside one frame and a
+  synchronous load pauses frames, so neither adds observed ticks. The
+  RL-S10 two-race gate observed 1205 ticks for two races of 301 race ticks,
+  so a race's select, launch, RESULTS, and rematch cost about 300. The
+  worst case: race 1 to the 6000-tick cap (6001 race ticks, which race 1
+  does not accept, but the run must still end inside the deadline), races
+  2 and 3 about 310 and 340 race ticks (the desync is found by race tick 303
+  and the kill comes at about 300 to 340), three times 300 for the selects
+  and RESULTS, two REMATCH_WAITs of at most 300 each (rematchWaitTimeoutTicks),
+  and EXIT's 60: about 8200, 61% of 13500. It is not raised.
+- Report v3 (FormatReport): the header "arcade link autopilot v3"; after
+  "race ticks <n>", "freeze tick <n>" and "desync tick <n>" (0 when absent;
+  this amends LR-73, which reported them nowhere); per race k, after its
+  agreed and validated lines, "race <k> end reason <NAME>" (the flow end
+  reason's name) once its RESULTS entry was observed; "end races
+  <validated>". NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_BYTES stays 2048: the
+  widest report (every field at its maximum, the longest names) is 1647
+  bytes, 201 for the header, 475 per race, and 21 for the end line, pinned
+  by TestReport.
+- The glue (game/MAIN/MainArcadeLinkAutopilot.c) changes only its comments
+  and its final log line ("%u ended" for racesEnded).
+- Pinned by native_arcade_link_autopilot_unit (TestEndAccepted: every race
+  0..5 and reason 0..7 and UINT32_MAX; TestDecideResults: a decision on each
+  race's RESULTS exactly for its accepted ends, REMATCH after races 1 and 2,
+  EXIT after race 3; TestFullRun: the three-race run to PASS with race 2
+  ending either way; TestFailures: every rejected reason of every race is
+  RACE_FAILED with the reason recorded, an accepted end of an unvalidated or
+  unstarted race is EVIDENCE_MISSING in every race, a RESULTS entry after
+  three ends is UNEXPECTED_RACE, an early title, a missing rematch, and an
+  EXIT after race 2 are SESSION_LOST; TestFaultAt: race 3 never injects;
+  TestReport: the v3 lines and the widest report) and
+  native_arcade_link_autopilot_isolation 1c (RACES 3u, EndAccepted's exact
+  body and the only FINISHED decision, Observe's and Decide's order, the v3
+  report's order).
+
+LR-76 The gate (LR-S13 part B, LR-16's checks).
+tools/arcade-link-launch-check.ps1 runs LR-16's three races in one run of
+the two cabinets.
+
+- The options. Both cabinets get --arcade-link-autopilot-race-ticks 6000
+  (LR-16's race-1 limit; LR-67's 300 is gone: races 2 and 3 end earlier by
+  their faults) and --capture-frame N=<output directory>\<cab>.race1.bmp,
+  an absolute path (a relative one resolves against the asset base
+  directory). cab2 alone gets --arcade-link-autopilot-freeze 600 and
+  --arcade-link-autopilot-desync 300. main.c allows --capture-frame with
+  the autopilot; only --exit-after-frame is rejected.
+- The kill. While waiting, the checker reads cab2's stdout every 500 ms for
+  its third race's per-tick line (the third race is the launch number of its
+  third "race <n> validated" line) with race tick >= 300, then kills cab2 and
+  logs when and which race tick it saw. stdout stays fully buffered (4 KB
+  chunks), so the kill lands a little after race tick 300. cab2 exiting
+  before the kill fails, and so does cab1 exiting before it or nonzero;
+  cab2's exit after the kill is expected, and it writes no report. cab1
+  must exit 0 with its report's "result PASS (0)".
+- cab1's report: v3, cab 1, PASS, race ticks 6000, freeze tick 0, desync
+  tick 0, three agreed, validated, and end reason lines (FINISHED, DESYNC or
+  PEER_TIMEOUT, PEER_TIMEOUT) numbered 1..3 in order, "end races 3". It
+  must agree with cab1's stdout: the k-th agreed match, the k-th validated
+  line's launch number and digests, and the k-th "ended (reason r)" line's
+  reason name. cab2's evidence is its stdout.
+- Both stdouts: three agreed-match lines, three validated lines, and one
+  "race tick limit 6000" line (main.c's; cab2 has no report to carry the
+  cap, and LR-60 needs the same cap on both). The k-th race's agreed match
+  and config, plan, bots, and bank digests are equal across the two, each
+  race's config differs from the previous race's, and LR-8's triples and
+  pin readbacks are checked per race on both, as before.
+- Races are paired by order, never by launch number: a race's lines on one
+  cabinet are those of its launch number (the k-th validated line's), and a
+  line with no launch number (ended, out of sync, banner, capture) belongs
+  to race k when it lies between the k-th and the (k+1)-th validated line.
+  The ended lines are paired by order (three on cab1, two on cab2).
+- The per-tick digest lines (LR-74): per cabinet and race, one line per race
+  tick from 0, in order, with no duplicate, and up to the race's drive end
+  tick exactly (the drive projects and logs its end tick before it ends);
+  cab2's race 3 has no end and runs to its last flushed line (the kill cuts
+  the buffer; a cut line fails the full-line pattern and is not counted).
+  For every race tick both cabinets logged in the k-th race, the digest text
+  after "digests" is equal.
+- Race 1. Exactly one drive end per cabinet and race; race 1's is "end of
+  race" or "finish grace" (printed), equal kind and tick on both; "race
+  tick limit" or any other kind fails. Both first ended lines have reason 1.
+  No out-of-sync line outside race 2 on either cabinet. cab2 has exactly one
+  freeze line, in its race 1: "race <n> race tick 600 froze 45 tick
+  periods"; cab1 has none. The hold range: cab2 freezes on its race tick 600
+  before its race step, so its last bundle is the one its tick 599 sent,
+  frame 599 + D = 601 (LR-45); cab1 can take up to frame 601 and holds on
+  race tick 602 = 600 + D at the latest. It holds earlier only if it had not
+  reached 602 when a bundle for 600 or 601 was late, which on loopback does
+  not happen, but it would still be the freeze's hold. So cab1 must have a
+  hold line in race 1 at a race tick in 600..602 with at least 10 periods
+  (the banner grace). cab1 must log at least one "hold banner presented as
+  capture frame <n> in the game font" line in race 1 and no other banner
+  line there (LR-72's automated check, live).
+- Race 2. cab2 has exactly one desync injection line, at its race 2's race
+  tick 300, and cab1 none. At least one cabinet logs "race <m> out of sync at
+  race tick 300 domains 0x1 ..." in its race 2 with m equal to the number of
+  its race 2 ended line (both are the adapter's match count, LR-70; neither
+  is compared to launch numbers) and reason 3 there; both race 2 ended lines
+  have reason 3 or 2, and both race 2 drive ends are "outcome".
+- Race 3. Both cabinets validated it; cab1's drive end is "outcome" and its
+  third ended line reason 2; cab2 has no race 3 drive end. cab1's hold line
+  at its race 3 end tick is the stall timeout: at least 90 periods (LR-44:
+  the timeout is counted on the first new period >= 90, so 90 unless a late
+  pump jumps past it; LR-12's 90-period row) and a wall time from 90 periods
+  (3,009,150 us) to 90 periods plus 25% (3,761,438 us), the margin chosen for
+  a loaded machine. No ended line with reason 4 (LINK ERROR) on either
+  cabinet.
+- The captures (criterion 9): each BMP exists, starts with "BM", and is
+  larger than its 54-byte header; its stdout has exactly one "frame capture
+  wrote <path>" line, for that path. The in-race-1 check comes from the log
+  order: the capture line must lie between race 1's first and last per-tick
+  lines, so the captured frame is the frame of the race 1 race tick whose
+  line precedes it (the capture follows the present, which follows the
+  hook). The checker prints that race tick and its margins to race tick 0
+  and to the end tick.
+- -TimeoutSeconds is 780 (the script default and the CMake argument);
+  ctest TIMEOUT stays 900. The checker prints the total gate time.
+- Pinned by native_arcade_link_autopilot_isolation 7 and 7b (the cap 6000,
+  the v3 header, the fault options in cab2's spec alone and each named once,
+  the capture option once and its absolute path, the kill and its race
+  tick, the freeze, desync, stall, and margin constants, the accepted ends,
+  the race 1 end kinds, no --exit-after-frame, and the 780 s and 900 s
+  timeouts).
 
 Review changes. The plan review (on befa152a9) changed these defaults:
 
@@ -5412,7 +5580,8 @@ lingering launch records.
 
 ### LR-S13 -- one-machine race gate
 
-Status: planned. Review required. Run 5.
+Status: part A done; part B in progress (its recorded gate run follows).
+Review required. Run 5.
 
 Plan: LR-16.
 
@@ -5523,6 +5692,21 @@ gate to three races and passes the new options.
   arcade_link_launch runs on the committed tree; its result, the per-tick
   line counts, and the gate time are reported with the commit, not recorded
   here.
+
+Part B result: the three-race run and the gate (LR-75, LR-76).
+
+- Files: include/platform/native_arcade_link_autopilot.h and
+  platform/native_arcade_link_autopilot.c (RACES 3, EndAccepted, the race
+  entry's ended and endReason, racesEnded, Observe's and Decide's rules, the
+  v3 report, the header comment); game/MAIN/MainArcadeLinkAutopilot.c
+  (comments and the final log line); tools/arcade-link-launch-check.ps1 (the
+  three races, the kill, the captures, and the new checks);
+  CMakeLists.txt (the gate's comment, -TimeoutSeconds 780);
+  tests/native_arcade_link_autopilot_test.c and
+  tests/native_arcade_link_autopilot_isolation_test.cmake.
+- API: NativeArcadeLinkAutopilot_EndAccepted; struct
+  NativeArcadeLinkAutopilotRace gains ended and endReason; struct
+  NativeArcadeLinkAutopilot's racesFinished is renamed racesEnded.
 
 ### LR-S14 -- docs close-out
 

@@ -14,7 +14,7 @@
  * Internal builds only: main.c rejects the option in any other build.
  *
  *   --arcade-link-autopilot <report path>   drive this link cabinet through
- *                                           two races and write the report
+ *                                           three races and write the report
  *                                           to this path
  *   --arcade-link-autopilot-race-ticks <n>  lower the linked race's length
  *                                           bound to n race ticks (decimal
@@ -42,15 +42,18 @@
  * --arcade-link-autopilot. main.c hands the count to the link host's race
  * tick limit setter after its Configure; 0 (absent) keeps the default bound.
  * The freeze and desync ticks reach the run through the game glue's
- * Configure (0: absent, no injection) and are reported nowhere. main.c
+ * Configure (0: absent, no injection); the report records them (LR-75). main.c
  * requires --arcade-link with the autopilot and rejects it (and so every
  * option that needs it) in non-internal builds and together with
  * --arcade-roster-proof, --exit-after-frame, and every replay record or
  * playback option.
  *
- * The run (RL-15): START on the attract screen, CROSS to confirm each select
- * item, REMATCH after race 1, EXIT after race 2, then exit with the result
- * code. The autopilot never touches a pad: installed pads belong to the race
+ * The run (RL-15; since LR-S13 part B the LR-16 scenario, docs/LOCKSTEP_RACE_MILESTONE.md
+ * LR-75): START on the attract screen, CROSS to confirm each select item,
+ * race 1 (the finish), REMATCH, race 2 (the desync), REMATCH, race 3 (the
+ * peer drop), EXIT, then exit with the result code. The run's shape is fixed:
+ * race k's RESULTS end reason must be one of EndAccepted's (below). The
+ * autopilot never touches a pad: installed pads belong to the race
  * caller (RL-10), which steers its own local sample with Steering (below)
  * while the autopilot runs. It feeds the link host's own inputs instead:
  * the game glue (game/MAIN/MainArcadeLinkAutopilot.c) replaces the arcade-link
@@ -67,8 +70,9 @@
  * - SELECT, picking, current item not DONE: CROSS, or DOWN (next) on the
  *   character item while a peer holds the local cursor's character (it
  *   cannot be confirmed);
- * - RESULTS with the rows enabled after a FINISHED race: the wanted row is
- *   REMATCH until NATIVE_ARCADE_LINK_AUTOPILOT_RACES races finished, then
+ * - RESULTS with the rows enabled after an accepted end (the view's end
+ *   reason is one EndAccepted accepts for the latest ended race): the wanted
+ *   row is REMATCH until NATIVE_ARCADE_LINK_AUTOPILOT_RACES races ended, then
  *   EXIT; DOWN (next) moves to it, CROSS confirms it;
  * - every other screen: nothing.
  * The decision is state-driven: a press that changed nothing is simply made
@@ -77,55 +81,73 @@
  * Observe (after every host tick of a link frame, owned or ticked). The
  * caller records each START_RACE's agreed match (RecordMatch) and each race
  * the race caller validated (RecordValidated) first. Then, in order:
- * - a RESULTS entry with an end reason other than FINISHED fails RACE_FAILED;
- *   a FINISHED entry must come with every started race validated, else
- *   EVIDENCE_MISSING;
+ * - a RESULTS entry is the end of race k, k the races ended so far plus 1: a
+ *   RESULTS entry after RACES ends fails UNEXPECTED_RACE; otherwise its end
+ *   reason is recorded for the report, an end reason EndAccepted(k, reason)
+ *   rejects fails RACE_FAILED, and an accepted end must come with every
+ *   started race ended and validated, else EVIDENCE_MISSING;
  * - a RESULTS -> REMATCH_WAIT or RESULTS -> EXIT change on a tick the
  *   decision confirmed that row counts as this autopilot's REMATCH or EXIT;
- * - an EXIT screen with end reason OPPONENT_LEFT fails SESSION_LOST;
+ * - an EXIT screen with end reason OPPONENT_LEFT fails SESSION_LOST (an EXIT
+ *   confirmed on RESULTS keeps the race's end reason, PEER_TIMEOUT after race
+ *   3: only REMATCH_WAIT sets OPPONENT_LEFT, platform/native_arcade_flow.c);
  * - RETURN_TO_TITLE passes only after exactly NATIVE_ARCADE_LINK_AUTOPILOT_RACES
- *   started, validated, and finished races, RACES - 1 rematches, and this
- *   autopilot's own EXIT; otherwise it fails SESSION_LOST;
+ *   started and validated races whose ends were accepted, RACES - 1
+ *   rematches, and this autopilot's own EXIT; otherwise it fails
+ *   SESSION_LOST;
  * - NATIVE_ARCADE_LINK_AUTOPILOT_DEADLINE_TICKS observed ticks fail TIMEOUT.
  * Once done (pass or fail) every call is inert.
  *
+ * The accepted ends (EndAccepted, the LR-16 scenario the live gate's fault
+ * options produce): race 1 FINISHED (the natural finish, the finish grace, or
+ * the race tick cap); race 2 DESYNC or PEER_TIMEOUT (the digest injection:
+ * the cabinet that does not detect it may stall instead, risk 7); race 3
+ * PEER_TIMEOUT (the peer is killed). Every other reason, and any race outside
+ * 1..RACES, is rejected. The autopilot only accepts these ends; the gate
+ * checks that they happened for the reasons given (the logs).
+ *
  * Report (FormatReport; WriteReport is this module's only I/O):
  *
- *   arcade link autopilot v2
+ *   arcade link autopilot v3
  *   cab <1|2>
  *   result <NAME> (<code>)
  *   last screen <NAME> end reason <NAME>
  *   ticks <observed ticks>
  *   race ticks <raceTickLimit: the configured race tick cap, 0 when absent>
+ *   freeze tick <freezeTick, 0 when absent>
+ *   desync tick <desyncTick, 0 when absent>
  *   race <k> agreed match track ... (the hook's agreed-match log text)
  *   race <k> validated launch <n> config <64 hex> plan <64 hex> bots <64 hex> bank <64 hex>
+ *   race <k> end reason <NAME>
  *   ...
  *   end races <validated races>
  *
  * k counts this cabinet's races in order (1-based); n is the race caller's
  * launch number, which may differ between cabinets (RL-S7 interpretation
  * (d)): the checker pairs the k-th lines, never equal n. A race line appears
- * only for a recorded match or validation. The race ticks line is the
- * autopilot's raceTickLimit, which the game-side glue copies from the options
- * at Configure; the live gate requires the same nonzero cap on both cabinets
- * (docs/LOCKSTEP_RACE_MILESTONE.md LR-S10 part 2).
+ * only for a recorded match, validation, or RESULTS entry (the end reason is
+ * the flow's, recorded whether or not the end was accepted). The race ticks,
+ * freeze tick, and desync tick lines are the values the game-side glue copies
+ * from the options at Configure; the live gate requires the same nonzero cap
+ * on both cabinets (docs/LOCKSTEP_RACE_MILESTONE.md LR-S10 part 2, LR-75).
  *
  * Process exit codes while the autopilot runs (enum
  * NativeArcadeLinkAutopilotResult, also the report's result). Exit code 0
  * alone does not prove a pass: a window close or SDL quit while the
  * autopilot runs can also exit 0, without a report
  * (platform/native_platform.c; only the roster proof guards those paths). The proof is the report's
- * "result PASS (0)" line with both races (the checker requires both).
+ * "result PASS (0)" line with all three races (the checker requires them).
  *    0  PASS                 the run above, completed (report written)
  *    1  (startup failure)    main.c's generic failure; never a result
  *   40  TIMEOUT              not done within DEADLINE_TICKS observed ticks
- *   41  RACE_FAILED          a RESULTS screen with an end reason other than
- *                            FINISHED (link error, peer timeout, desync)
+ *   41  RACE_FAILED          a RESULTS screen with an end reason the run does
+ *                            not accept for that race (EndAccepted)
  *   42  SESSION_LOST         the opponent left, or the session returned to
  *                            the title before the run completed
- *   43  UNEXPECTED_RACE      more START_RACEs or validations than races
- *   44  EVIDENCE_MISSING     a START_RACE without an agreed match, or a
- *                            finished race that was not validated
+ *   43  UNEXPECTED_RACE      more START_RACEs, validations, or RESULTS
+ *                            entries than races
+ *   44  EVIDENCE_MISSING     a START_RACE without an agreed match, or an
+ *                            accepted end of a race that was not validated
  *   45  REPORT_WRITE_FAILED  done, but the report could not be written
  *                            (exit code only)
  *
@@ -174,11 +196,14 @@
  * default bound, which the override may only lower (LR-42). The link host
  * refuses anything above it too. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_RACE_TICKS_MAX 18000u
-/* Races in one run: race 1, REMATCH, race 2, EXIT. */
-#define NATIVE_ARCADE_LINK_AUTOPILOT_RACES 2u
+/* Races in one run (LR-16, LR-75): race 1, REMATCH, race 2, REMATCH, race 3,
+ * EXIT. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_RACES 3u
 /* A button is held on one decision in this many. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD 8u
-/* Observed host ticks before TIMEOUT: 450 s at 30 Hz. */
+/* Observed host ticks before TIMEOUT: 450 s at 30 Hz. Holds and loads pass
+ * no observed tick; the three-race run's worst case (race 1 to the gate's
+ * 6000-tick cap) stays well inside it (LR-75). */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_DEADLINE_TICKS 13500u
 #define NATIVE_ARCADE_LINK_AUTOPILOT_DIGEST_BYTES 32u
 /* Setup digests per race: config, race plan, bot setup plan, bank (RL-12). */
@@ -241,9 +266,13 @@ struct NativeArcadeLinkAutopilotRace
 	uint8_t matchRecorded;
 	/* 1 once RecordValidated stored the race's setup digests */
 	uint8_t validated;
-	uint8_t reserved[2];
+	/* 1 once Observe saw the race's RESULTS entry (endReason holds it) */
+	uint8_t ended;
+	uint8_t reserved[1];
 	/* the race caller's launch number of the validated race */
 	uint32_t launchNumber;
+	/* the flow end reason of the race's RESULTS entry, once ended */
+	uint32_t endReason;
 	struct NativeArcadeLinkHostMatch match;
 	uint8_t digests[NATIVE_ARCADE_LINK_AUTOPILOT_DIGEST_COUNT][NATIVE_ARCADE_LINK_AUTOPILOT_DIGEST_BYTES];
 };
@@ -271,13 +300,14 @@ struct NativeArcadeLinkAutopilot
 	uint32_t lastEndReason;
 	uint32_t racesStarted;
 	uint32_t racesValidated;
-	uint32_t racesFinished;
+	/* races whose RESULTS end was accepted (EndAccepted) */
+	uint32_t racesEnded;
 	uint32_t rematches;
 	/* the --arcade-link-autopilot-race-ticks cap the run was configured
 	 * with (0: absent, the default bound); reported only, never decides */
 	uint32_t raceTickLimit;
 	/* the fault injections' race ticks the run was configured with (0:
-	 * absent); only FaultAt reads them, and no report line names them */
+	 * absent); FaultAt decides on them, and the report records them (LR-75) */
 	uint32_t freezeTick;
 	uint32_t desyncTick;
 	struct NativeArcadeLinkAutopilotRace races[NATIVE_ARCADE_LINK_AUTOPILOT_RACES];
@@ -359,6 +389,11 @@ int NativeArcadeLinkAutopilot_RecordValidated(struct NativeArcadeLinkAutopilot *
  */
 int NativeArcadeLinkAutopilot_Observe(struct NativeArcadeLinkAutopilot *autopilot, const struct NativeArcadeLinkHostView *view,
 	uint32_t action);
+
+/* 1 when the run accepts endReason (enum NativeArcadeFlowEndReason) as the
+ * RESULTS end of its race-th race (1-based; see the accepted ends above); 0
+ * otherwise, and for any race outside 1..RACES. */
+int NativeArcadeLinkAutopilot_EndAccepted(uint32_t race, uint32_t endReason);
 
 /* "PASS", "TIMEOUT", ... for a result; "unknown" otherwise. */
 const char *NativeArcadeLinkAutopilot_ResultName(uint32_t result);

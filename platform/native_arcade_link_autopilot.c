@@ -215,10 +215,12 @@ int NativeArcadeLinkAutopilot_Decide(struct NativeArcadeLinkAutopilot *autopilot
 		}
 		break;
 	case NATIVE_ARCADE_FLOW_SCREEN_RESULTS:
-		if (pressDecision && (view->rowsEnabled != 0u) && (view->endReason == NATIVE_ARCADE_FLOW_END_FINISHED))
+		/* Only after the latest race's end was accepted (LR-75). */
+		if (pressDecision && (view->rowsEnabled != 0u) && (autopilot->racesEnded != 0u) &&
+			NativeArcadeLinkAutopilot_EndAccepted(autopilot->racesEnded, view->endReason))
 		{
-			wantedRow = (autopilot->racesFinished >= NATIVE_ARCADE_LINK_AUTOPILOT_RACES) ? NATIVE_ARCADE_FLOW_ROW_EXIT
-																						  : NATIVE_ARCADE_FLOW_ROW_REMATCH;
+			wantedRow = (autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_RACES) ? NATIVE_ARCADE_FLOW_ROW_EXIT
+																					   : NATIVE_ARCADE_FLOW_ROW_REMATCH;
 			if (view->selectedRow != wantedRow)
 			{
 				output->heldButtons = NATIVE_ARCADE_MENU_BUTTON_DOWN;
@@ -318,13 +320,24 @@ int NativeArcadeLinkAutopilot_Observe(struct NativeArcadeLinkAutopilot *autopilo
 
 		if ((view->screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (previous != NATIVE_ARCADE_FLOW_SCREEN_RESULTS))
 		{
-			if (view->endReason != NATIVE_ARCADE_FLOW_END_FINISHED)
+			/* The end of race k = racesEnded + 1 (LR-75). */
+			struct NativeArcadeLinkAutopilotRace *race;
+
+			if (autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_RACES)
+			{
+				NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);
+				return 1;
+			}
+			race = &autopilot->races[autopilot->racesEnded];
+			race->endReason = view->endReason;
+			race->ended = 1u;
+			if (!NativeArcadeLinkAutopilot_EndAccepted(autopilot->racesEnded + 1u, view->endReason))
 			{
 				NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_RACE_FAILED);
 				return 1;
 			}
-			autopilot->racesFinished++;
-			if ((autopilot->racesFinished != autopilot->racesStarted) || (autopilot->racesValidated != autopilot->racesStarted))
+			autopilot->racesEnded++;
+			if ((autopilot->racesEnded != autopilot->racesStarted) || (autopilot->racesValidated != autopilot->racesStarted))
 			{
 				NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_EVIDENCE_MISSING);
 				return 1;
@@ -339,7 +352,7 @@ int NativeArcadeLinkAutopilot_Observe(struct NativeArcadeLinkAutopilot *autopilo
 			}
 			else if ((view->screen == NATIVE_ARCADE_FLOW_SCREEN_EXIT) &&
 				(confirmedRow == (uint8_t)(NATIVE_ARCADE_FLOW_ROW_EXIT + 1u)) &&
-				(autopilot->racesFinished == NATIVE_ARCADE_LINK_AUTOPILOT_RACES))
+				(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_RACES))
 			{
 				autopilot->exitConfirmed = 1u;
 			}
@@ -355,7 +368,7 @@ int NativeArcadeLinkAutopilot_Observe(struct NativeArcadeLinkAutopilot *autopilo
 	{
 		if ((autopilot->exitConfirmed != 0u) && (autopilot->racesStarted == NATIVE_ARCADE_LINK_AUTOPILOT_RACES) &&
 			(autopilot->racesValidated == NATIVE_ARCADE_LINK_AUTOPILOT_RACES) &&
-			(autopilot->racesFinished == NATIVE_ARCADE_LINK_AUTOPILOT_RACES) &&
+			(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_RACES) &&
 			(autopilot->rematches == NATIVE_ARCADE_LINK_AUTOPILOT_RACES - 1u))
 		{
 			autopilot->result = NATIVE_ARCADE_LINK_AUTOPILOT_PASS;
@@ -373,6 +386,24 @@ int NativeArcadeLinkAutopilot_Observe(struct NativeArcadeLinkAutopilot *autopilo
 		return 1;
 	}
 	return 0;
+}
+
+/* The LR-16 scenario's ends (LR-75): race 1 the finish, race 2 the desync
+ * (or, on the cabinet that does not detect it, the stall, risk 7), race 3 the
+ * peer drop. */
+int NativeArcadeLinkAutopilot_EndAccepted(uint32_t race, uint32_t endReason)
+{
+	switch (race)
+	{
+	case 1u:
+		return endReason == NATIVE_ARCADE_FLOW_END_FINISHED;
+	case 2u:
+		return (endReason == NATIVE_ARCADE_FLOW_END_DESYNC) || (endReason == NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT);
+	case 3u:
+		return endReason == NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT;
+	default:
+		return 0;
+	}
 }
 
 const char *NativeArcadeLinkAutopilot_ResultName(uint32_t result)
@@ -552,7 +583,7 @@ int NativeArcadeLinkAutopilot_FormatReport(const struct NativeArcadeLinkAutopilo
 	text.ok = 1;
 	buffer[0] = '\0';
 
-	NativeArcadeLinkAutopilot_Append(&text, "arcade link autopilot v2\n");
+	NativeArcadeLinkAutopilot_Append(&text, "arcade link autopilot v3\n");
 	NativeArcadeLinkAutopilot_Append(&text, "cab %u\n", (unsigned)autopilot->localCab);
 	NativeArcadeLinkAutopilot_Append(&text, "result %s (%u)\n", NativeArcadeLinkAutopilot_ResultName(autopilot->result),
 		(unsigned)autopilot->result);
@@ -560,6 +591,8 @@ int NativeArcadeLinkAutopilot_FormatReport(const struct NativeArcadeLinkAutopilo
 		NativeArcadeLinkAutopilot_EndReasonName(autopilot->lastEndReason));
 	NativeArcadeLinkAutopilot_Append(&text, "ticks %u\n", (unsigned)autopilot->ticks);
 	NativeArcadeLinkAutopilot_Append(&text, "race ticks %u\n", (unsigned)autopilot->raceTickLimit);
+	NativeArcadeLinkAutopilot_Append(&text, "freeze tick %u\n", (unsigned)autopilot->freezeTick);
+	NativeArcadeLinkAutopilot_Append(&text, "desync tick %u\n", (unsigned)autopilot->desyncTick);
 	for (uint32_t k = 0; k < NATIVE_ARCADE_LINK_AUTOPILOT_RACES; k++)
 	{
 		const struct NativeArcadeLinkAutopilotRace *race = &autopilot->races[k];
@@ -582,6 +615,11 @@ int NativeArcadeLinkAutopilot_FormatReport(const struct NativeArcadeLinkAutopilo
 				}
 			}
 			NativeArcadeLinkAutopilot_Append(&text, "\n");
+		}
+		if (race->ended != 0u)
+		{
+			NativeArcadeLinkAutopilot_Append(&text, "race %u end reason %s\n", (unsigned)(k + 1u),
+				NativeArcadeLinkAutopilot_EndReasonName(race->endReason));
 		}
 	}
 	NativeArcadeLinkAutopilot_Append(&text, "end races %u\n", (unsigned)autopilot->racesValidated);

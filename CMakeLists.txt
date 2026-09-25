@@ -2003,24 +2003,35 @@ if(BUILD_TESTING)
             RUN_SERIAL TRUE
             LABELS live)
 
-        # The two-process live launch gate (docs/RACE_LAUNCH_MILESTONE.md
-        # RL-15, RL-S10): two internal ctr_native processes linked over
-        # loopback (127.0.0.1 ports 7001 and 7002, cab1 and cab2), each driven
-        # by --arcade-link-autopilot through START, the select, race 1,
-        # REMATCH, race 2, and EXIT; the check compares the k-th validated
-        # race of each report (the agreed match and the config, plan, bots,
-        # and bank digests) and requires race 2's config to differ from race
-        # 1's. RUN_SERIAL like the other live tests, and because the ports are
-        # fixed. Needs the user-supplied assets/ctr-u.bin, a desktop session
-        # with a display, an internal build, and a known build identity (a
-        # build from a clean tree); skips (77) otherwise, and a skip is not a
-        # pass. Reports and logs are written only under the build tree.
+        # The two-process live race gate (docs/RACE_LAUNCH_MILESTONE.md
+        # RL-15, RL-S10; since LR-S13 part B the one-machine proof of
+        # docs/LOCKSTEP_RACE_MILESTONE.md LR-16, LR-76): two internal
+        # ctr_native processes linked over loopback (127.0.0.1 ports 7001 and
+        # 7002, cab1 and cab2), each driven by --arcade-link-autopilot through
+        # START, the select, and three lockstep races with a 6000-tick cap:
+        # race 1 to the natural finish (or the finish grace) on the same race
+        # tick, with cab2 frozen for 45 tick periods at race tick 600 (cab1
+        # holds with the banner in the game font); REMATCH; race 2, where
+        # cab2 flips its CONTROL digest of race tick 300 (RACE OUT OF SYNC);
+        # REMATCH; race 3, where the check kills cab2 at its race tick 300 and
+        # cab1 ends OPPONENT DISCONNECTED after the 90-period stall timeout,
+        # takes EXIT, and exits 0 with PASS. The check compares the k-th race
+        # of the two cabinets (the agreed match, the config, plan, bots, and
+        # bank digests, the LR-8 triples, and every per-tick V4 digest line),
+        # requires each race's config to differ from the previous race's, and
+        # checks each race's end, and one race 1 frame capture per cabinet
+        # (criterion 9, kept under the build tree). RUN_SERIAL like the other
+        # live tests, and because the ports are fixed. Needs the user-supplied
+        # assets/ctr-u.bin, a desktop session with a display, an internal
+        # build, and a known build identity (a build from a clean tree); skips
+        # (77) otherwise, and a skip is not a pass. Reports, captures, and
+        # logs are written only under the build tree.
         add_test(NAME arcade_link_launch
             COMMAND powershell -NoProfile -ExecutionPolicy Bypass
                 -File "${CMAKE_SOURCE_DIR}/tools/arcade-link-launch-check.ps1"
                 -Executable "$<TARGET_FILE:ctr_native>"
                 -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_link_launch/$<CONFIG>"
-                -TimeoutSeconds 600)
+                -TimeoutSeconds 780)
         set_tests_properties(arcade_link_launch PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 900

@@ -1,9 +1,11 @@
 /*
  * Internal arcade-link autopilot glue (docs/RACE_LAUNCH_MILESTONE.md RL-15,
  * slice RL-S10): drives one link cabinet through START, the select items,
- * race 1, REMATCH, race 2, and EXIT for the two-process live gate
- * (tools/arcade-link-launch-check.ps1, ctest arcade_link_launch), then
- * writes the report and exits with the result code.
+ * race 1, REMATCH, race 2, REMATCH, race 3, and EXIT (since LR-S13 part B
+ * the LR-16 scenario of the linked-race plan, LR-75) for the
+ * two-process live gate (tools/arcade-link-launch-check.ps1, ctest
+ * arcade_link_launch), then writes the report and exits with the result
+ * code.
  *
  * Every decision is the pure platform/native_arcade_link_autopilot.c's; this
  * file reads the host view, the hook's enter window (the arcade-link
@@ -66,7 +68,8 @@ void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOpt
 	NativeArcadeLinkAutopilot_Init(&state->autopilot);
 	/* The report records the race tick cap main.c handed the link host. */
 	state->autopilot.raceTickLimit = options->raceTickLimit;
-	/* The fault injections' race ticks (LR-73), for FaultAt only. */
+	/* The fault injections' race ticks (LR-73), for FaultAt and the report
+	 * (LR-75). */
 	state->autopilot.freezeTick = options->freezeTick;
 	state->autopilot.desyncTick = options->desyncTick;
 	memcpy(state->reportPath, options->reportPath, sizeof(state->reportPath));
@@ -169,9 +172,9 @@ static void MainArcadeLinkAutopilot_Finish(void)
 			exitCode = (int)NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_WRITE_FAILED;
 		}
 	}
-	Platform_Log(MAIN_ARCADE_LINK_AUTOPILOT_LOG "%s after %u ticks (%u races started, %u validated, %u finished; last screen %s end reason %s); exit code %d\n",
+	Platform_Log(MAIN_ARCADE_LINK_AUTOPILOT_LOG "%s after %u ticks (%u races started, %u validated, %u ended; last screen %s end reason %s); exit code %d\n",
 		NativeArcadeLinkAutopilot_ResultName(autopilot->result), (unsigned)autopilot->ticks, (unsigned)autopilot->racesStarted,
-		(unsigned)autopilot->racesValidated, (unsigned)autopilot->racesFinished, NativeArcadeLinkAutopilot_ScreenName(autopilot->lastScreen),
+		(unsigned)autopilot->racesValidated, (unsigned)autopilot->racesEnded, NativeArcadeLinkAutopilot_ScreenName(autopilot->lastScreen),
 		NativeArcadeLinkAutopilot_EndReasonName(autopilot->lastEndReason), exitCode);
 	Platform_RequestExit(exitCode);
 }

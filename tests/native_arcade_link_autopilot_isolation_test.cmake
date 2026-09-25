@@ -58,6 +58,19 @@
 #      MainArcadeLinkAutopilot_Active calls, and one MainArcadeLinkAutopilot_Fault
 #      call, all inside its CTR_INTERNAL part, and its autopilot tick returns
 #      first while the autopilot is inactive.
+# Since LR-S13 part B (docs/LOCKSTEP_RACE_MILESTONE.md LR-75, LR-76):
+#  1c. the run is three races (RACES 3u); EndAccepted is exactly the LR-16
+#      scenario's table (race 1 FINISHED, race 2 DESYNC or PEER_TIMEOUT,
+#      race 3 PEER_TIMEOUT) and the only place the module decides on
+#      FINISHED; Observe records each RESULTS entry's end reason, then fails a
+#      rejected one, then checks the evidence of the accepted one; Decide acts
+#      on RESULTS only after an accepted end; the report is v3 with the fault
+#      tick lines after the race ticks line and an end reason line per race;
+#  7b. the live gate runs the three races: the checker passes the 6000-tick
+#      cap to both cabinets and the freeze (600) and desync (300) options to
+#      cab2 alone, one --capture-frame per cabinet, kills cab2 at its race 3
+#      tick 300, checks the 90-period stall timeout, reads the v3 report, and
+#      waits 780 s (ctest TIMEOUT 900).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade link autopilot isolation")
@@ -242,6 +255,62 @@ if(NOT freeze_periods_hits EQUAL 1)
 endif()
 ctr_require_literal("${module_header}" "${header_code}"
     "uint32_t NativeArcadeLinkAutopilot_FaultAt(const struct NativeArcadeLinkAutopilot *autopilot, uint32_t raceTick);")
+# 1c. The three-race run (LR-75).
+ctr_count("${header_code}" "#define NATIVE_ARCADE_LINK_AUTOPILOT_RACES 3u\n" races_hits)
+if(NOT races_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${module_header} must define NATIVE_ARCADE_LINK_AUTOPILOT_RACES as 3u (LR-16's three races)")
+endif()
+ctr_require_literal("${module_header}" "${header_code}" "int NativeArcadeLinkAutopilot_EndAccepted(uint32_t race, uint32_t endReason);")
+ctr_block_text("${module_source}" "${module_code}" "int NativeArcadeLinkAutopilot_EndAccepted(uint32_t race, uint32_t endReason)" accepted_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " accepted_flat "${accepted_block}")
+if(NOT accepted_flat STREQUAL "{ switch (race) { case 1u: return endReason == NATIVE_ARCADE_FLOW_END_FINISHED; case 2u: return (endReason == NATIVE_ARCADE_FLOW_END_DESYNC) || (endReason == NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT); case 3u: return endReason == NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT; default: return 0; } }")
+    message(FATAL_ERROR "${prefix}: NativeArcadeLinkAutopilot_EndAccepted must be exactly the LR-16 scenario's ends (found '${accepted_flat}')")
+endif()
+# FINISHED is decided on only in EndAccepted (the other use is its name).
+ctr_count("${module_code}" "NATIVE_ARCADE_FLOW_END_FINISHED" finished_hits)
+if(NOT finished_hits EQUAL 2)
+    message(FATAL_ERROR "${prefix}: ${module_source} may name NATIVE_ARCADE_FLOW_END_FINISHED only in EndAccepted and EndReasonName (found ${finished_hits})")
+endif()
+ctr_block_text("${module_source}" "${module_code}"
+    "int NativeArcadeLinkAutopilot_Observe(struct NativeArcadeLinkAutopilot *autopilot, const struct NativeArcadeLinkHostView *view,\n\tuint32_t action)"
+    observe_block)
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Observe)" "${observe_block}"
+    "if ((view->screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (previous != NATIVE_ARCADE_FLOW_SCREEN_RESULTS))"
+    "if (autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_RACES)"
+    "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);"
+    "race = &autopilot->races[autopilot->racesEnded];" "race->endReason = view->endReason;" "race->ended = 1u;"
+    "if (!NativeArcadeLinkAutopilot_EndAccepted(autopilot->racesEnded + 1u, view->endReason))"
+    "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_RACE_FAILED);"
+    "autopilot->racesEnded++;"
+    "if ((autopilot->racesEnded != autopilot->racesStarted) || (autopilot->racesValidated != autopilot->racesStarted))"
+    "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_EVIDENCE_MISSING);"
+    "(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_RACES)"
+    "if (action == NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)"
+    "(autopilot->exitConfirmed != 0u) && (autopilot->racesStarted == NATIVE_ARCADE_LINK_AUTOPILOT_RACES)"
+    "(autopilot->racesValidated == NATIVE_ARCADE_LINK_AUTOPILOT_RACES)"
+    "(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_RACES)"
+    "(autopilot->rematches == NATIVE_ARCADE_LINK_AUTOPILOT_RACES - 1u)")
+ctr_count("${module_code}" "racesEnded\\+\\+" ended_increments)
+if(NOT ended_increments EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${module_source} must count an ended race only once, after its end was accepted (found ${ended_increments})")
+endif()
+ctr_block_text("${module_source}" "${module_code}"
+    "int NativeArcadeLinkAutopilot_Decide(struct NativeArcadeLinkAutopilot *autopilot, const struct NativeArcadeLinkHostView *view,\n\tuint8_t enterReady, struct NativeArcadeLinkAutopilotOutput *output)"
+    decide_block)
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Decide)" "${decide_block}"
+    "case NATIVE_ARCADE_FLOW_SCREEN_RESULTS:"
+    "(view->rowsEnabled != 0u) && (autopilot->racesEnded != 0u) &&"
+    "NativeArcadeLinkAutopilot_EndAccepted(autopilot->racesEnded, view->endReason))"
+    "(autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_RACES) ? NATIVE_ARCADE_FLOW_ROW_EXIT")
+ctr_block_text("${module_source}" "${module_code}"
+    "int NativeArcadeLinkAutopilot_FormatReport(const struct NativeArcadeLinkAutopilot *autopilot, char *buffer, size_t capacity, size_t *length)"
+    report_block)
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_FormatReport)" "${report_block}"
+    "\"arcade link autopilot v3\\n\"" "\"race ticks %u\\n\", (unsigned)autopilot->raceTickLimit"
+    "\"freeze tick %u\\n\", (unsigned)autopilot->freezeTick" "\"desync tick %u\\n\", (unsigned)autopilot->desyncTick"
+    "\"race %u validated launch %u\"" "if (race->ended != 0u)" "\"race %u end reason %s\\n\""
+    "NativeArcadeLinkAutopilot_EndReasonName(race->endReason)" "\"end races %u\\n\"")
+ctr_forbid("${module_source}" "${module_code}" "autopilot v2")
 
 ctr_read_source("CMakeLists.txt" cmake)
 string(FIND "${cmake}" "add_library(ctr_native_arcade_link_autopilot STATIC platform/native_arcade_link_autopilot.c)" library_at)
@@ -603,9 +672,30 @@ ctr_require_order("CMakeLists.txt (arcade_link_launch)" "${live_block}"
     "set_tests_properties(arcade_link_launch PROPERTIES"
     "SKIP_RETURN_CODE 77" "TIMEOUT" "RUN_SERIAL TRUE" "LABELS live)")
 ctr_read_source("tools/arcade-link-launch-check.ps1" checker)
-foreach(literal IN ITEMS "--arcade-link-autopilot" "'--arcade-link-autopilot-race-ticks', \$raceTickCap" "\$raceTickCap = 300"
-        "^race ticks ([0-9]+)\$" "'arcade link autopilot v2'" "127.0.0.1:7002" "127.0.0.1:7001" "'7001'" "'7002'" "'cab1'" "'cab2'"
+foreach(literal IN ITEMS "--arcade-link-autopilot" "'--arcade-link-autopilot-race-ticks', \$raceTickCap" "\$raceTickCap = 6000"
+        "^race ticks ([0-9]+)\$" "'arcade link autopilot v3'" "127.0.0.1:7002" "127.0.0.1:7001" "'7001'" "'7002'" "'cab1'" "'cab2'"
         "Start-Process" "exit \$skipExitCode" "--arcade-link-autopilot is available in internal builds only."
         "arcade link requires a known build and content identity." "No displays available")
     ctr_require_literal("tools/arcade-link-launch-check.ps1" "${checker}" "${literal}")
 endforeach()
+# 7b. The three races (LR-76): the fault options go to cab2 alone, the capture
+# to both, and the kill and the stall timeout are checked.
+foreach(literal IN ITEMS "\$races = 3\n" "\$freezeTick = 600\n" "\$desyncTick = 300\n" "\$freezePeriods = 45\n" "\$killRaceTick = 300\n"
+        "\$stallTimeoutPeriods = 90\n" "\$stallMarginPercent = 25\n" "[int]\$TimeoutSeconds = 780\n"
+        "@{ Name = 'cab1'; Cab = 'cab1'; CabNumber = 1; Port = '7001'; Peer = '127.0.0.1:7002'; FaultArguments = @() },"
+        "@{ Name = 'cab2'; Cab = 'cab2'; CabNumber = 2; Port = '7002'; Peer = '127.0.0.1:7001'\n            FaultArguments = @('--arcade-link-autopilot-freeze', \"\$freezeTick\", '--arcade-link-autopilot-desync', \"\$desyncTick\") })"
+        "'--capture-frame', \"\$captureFrame=\$(\$Run.CapturePath)\") + \$Run.FaultArguments"
+        "CapturePath = Join-Path \$resolvedOutput \"\$(\$spec.Name).race1.bmp\""
+        "if (\$watch.Tick -ge \$killRaceTick)" "\$Victim.Process.Kill()"
+        "\$expectedReportEnds = @('FINISHED', 'DESYNC|PEER_TIMEOUT', 'PEER_TIMEOUT')"
+        "\$raceOneEndKinds = @('end of race', 'finish grace')")
+    ctr_require_literal("tools/arcade-link-launch-check.ps1" "${checker}" "${literal}")
+endforeach()
+foreach(option IN ITEMS "'--arcade-link-autopilot-freeze'" "'--arcade-link-autopilot-desync'" "'--capture-frame'")
+    ctr_count("${checker}" "${option}" option_hits)
+    if(NOT option_hits EQUAL 1)
+        message(FATAL_ERROR "${prefix}: tools/arcade-link-launch-check.ps1 must name ${option} exactly once (found ${option_hits})")
+    endif()
+endforeach()
+ctr_forbid("tools/arcade-link-launch-check.ps1" "${checker}" "--exit-after-frame")
+ctr_require_order("CMakeLists.txt (arcade_link_launch)" "${live_block}" "-TimeoutSeconds 780)" "TIMEOUT 900")

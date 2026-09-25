@@ -368,10 +368,15 @@ static int TestFaultAt(void)
 
 		CHECK(fault == ((tick == 300u) ? NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_DESYNC : NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE));
 	}
-	/* Beyond race 2 (a later run shape): neither. */
-	autopilot.racesStarted = 3u;
-	CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 600u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
-	CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 300u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+	/* Race 3 (the peer drop, LR-75) and beyond: neither. */
+	for (uint32_t race = 3u; race <= 4u; race++)
+	{
+		autopilot.racesStarted = race;
+		for (tick = 0u; tick <= 1200u; tick++)
+		{
+			CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, tick) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+		}
+	}
 
 	/* The same tick for both: each in its own race. */
 	NativeArcadeLinkAutopilot_Init(&autopilot);
@@ -394,7 +399,8 @@ static int TestFaultAt(void)
 		autopilot.racesStarted = 1u;
 		CHECK(memcmp(&before, &autopilot, sizeof(autopilot)) == 0);
 	}
-	/* The report does not name the injections (LR-73: reported nowhere). */
+	/* Since LR-75 the report records the injections' ticks in their own two
+	 * lines, and nowhere else. */
 	{
 		char text[NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_BYTES];
 		char plain[NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_BYTES];
@@ -403,11 +409,46 @@ static int TestFaultAt(void)
 
 		NativeArcadeLinkAutopilot_Init(&autopilot);
 		CHECK(NativeArcadeLinkAutopilot_FormatReport(&autopilot, plain, sizeof(plain), &plainLength) == 1);
+		CHECK(strcmp(plain, "arcade link autopilot v3\ncab 0\nresult PASS (0)\nlast screen OFF end reason NONE\nticks 0\nrace ticks 0\n"
+				    "freeze tick 0\ndesync tick 0\nend races 0\n") == 0);
 		autopilot.freezeTick = 600u;
 		autopilot.desyncTick = 300u;
 		CHECK(NativeArcadeLinkAutopilot_FormatReport(&autopilot, text, sizeof(text), &length) == 1);
-		CHECK(length == plainLength && strcmp(text, plain) == 0);
+		CHECK(strcmp(text, "arcade link autopilot v3\ncab 0\nresult PASS (0)\nlast screen OFF end reason NONE\nticks 0\nrace ticks 0\n"
+				   "freeze tick 600\ndesync tick 300\nend races 0\n") == 0);
+		CHECK(length == plainLength + 4u);
 	}
+	return 0;
+}
+
+/* LR-75: the run's accepted ends, race by race. */
+static int TestEndAccepted(void)
+{
+	CHECK(NATIVE_ARCADE_LINK_AUTOPILOT_RACES == 3u);
+	for (uint32_t race = 0u; race <= NATIVE_ARCADE_LINK_AUTOPILOT_RACES + 2u; race++)
+	{
+		for (uint32_t reason = 0u; reason <= (uint32_t)NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT + 2u; reason++)
+		{
+			int expected = 0;
+
+			if (race == 1u)
+			{
+				expected = (reason == NATIVE_ARCADE_FLOW_END_FINISHED);
+			}
+			else if (race == 2u)
+			{
+				expected = (reason == NATIVE_ARCADE_FLOW_END_DESYNC) || (reason == NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT);
+			}
+			else if (race == 3u)
+			{
+				expected = (reason == NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT);
+			}
+			CHECK(NativeArcadeLinkAutopilot_EndAccepted(race, reason) == expected);
+		}
+		CHECK(NativeArcadeLinkAutopilot_EndAccepted(race, UINT32_MAX) == 0);
+	}
+	CHECK(NativeArcadeLinkAutopilot_EndAccepted(UINT32_MAX, NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT) == 0);
+	CHECK(NativeArcadeLinkAutopilot_EndAccepted(4u, NATIVE_ARCADE_FLOW_END_FINISHED) == 0);
 	return 0;
 }
 
@@ -614,18 +655,47 @@ static int TestDecideResults(void)
 	struct NativeArcadeLinkAutopilot autopilot;
 	struct NativeArcadeLinkHostView view;
 
-	/* Rows not enabled, or a race that did not finish: nothing. */
+	/* Rows not enabled, or no accepted end yet: nothing. */
 	NativeArcadeLinkAutopilot_Init(&autopilot);
+	autopilot.racesEnded = 1u;
 	ResultsView(&view, NATIVE_ARCADE_FLOW_END_FINISHED, 0u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
 	CHECK(Held(&autopilot, &view) == 0u);
 	CHECK(autopilot.confirmedRow == 0u);
 	NativeArcadeLinkAutopilot_Init(&autopilot);
-	ResultsView(&view, NATIVE_ARCADE_FLOW_END_LINK_ERROR, 1u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
+	ResultsView(&view, NATIVE_ARCADE_FLOW_END_FINISHED, 1u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
 	CHECK(Held(&autopilot, &view) == 0u);
+
+	/* LR-75: on each race's RESULTS, a decision only for an end the run
+	 * accepts for that race; REMATCH after races 1 and 2, EXIT after race 3
+	 * (DOWN to it first). */
+	for (uint32_t race = 1u; race <= NATIVE_ARCADE_LINK_AUTOPILOT_RACES + 1u; race++)
+	{
+		for (uint32_t reason = 0u; reason <= (uint32_t)NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT + 1u; reason++)
+		{
+			const int accepted = NativeArcadeLinkAutopilot_EndAccepted(race, reason);
+			const uint32_t expected =
+				!accepted ? 0u : ((race < NATIVE_ARCADE_LINK_AUTOPILOT_RACES) ? NATIVE_ARCADE_MENU_BUTTON_CROSS : NATIVE_ARCADE_MENU_BUTTON_DOWN);
+
+			NativeArcadeLinkAutopilot_Init(&autopilot);
+			autopilot.racesEnded = race;
+			ResultsView(&view, reason, 1u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
+			CHECK(Held(&autopilot, &view) == expected);
+			CHECK(autopilot.confirmedRow == ((expected == NATIVE_ARCADE_MENU_BUTTON_CROSS) ? NATIVE_ARCADE_FLOW_ROW_REMATCH + 1u : 0u));
+		}
+	}
+	/* Race 2's two accepted ends both lead to REMATCH. */
+	for (uint32_t reason = NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT; reason <= NATIVE_ARCADE_FLOW_END_DESYNC; reason++)
+	{
+		NativeArcadeLinkAutopilot_Init(&autopilot);
+		autopilot.racesEnded = 2u;
+		ResultsView(&view, reason, 1u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
+		CHECK(Held(&autopilot, &view) == NATIVE_ARCADE_MENU_BUTTON_CROSS);
+		CHECK(autopilot.confirmedRow == NATIVE_ARCADE_FLOW_ROW_REMATCH + 1u);
+	}
 
 	/* Before the last race: REMATCH, the default row, is confirmed. */
 	NativeArcadeLinkAutopilot_Init(&autopilot);
-	autopilot.racesFinished = 1u;
+	autopilot.racesEnded = 1u;
 	ResultsView(&view, NATIVE_ARCADE_FLOW_END_FINISHED, 1u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
 	CHECK(Held(&autopilot, &view) == NATIVE_ARCADE_MENU_BUTTON_CROSS);
 	CHECK(autopilot.confirmedRow == NATIVE_ARCADE_FLOW_ROW_REMATCH + 1u);
@@ -634,15 +704,15 @@ static int TestDecideResults(void)
 	CHECK(autopilot.confirmedRow == 0u);
 	/* On EXIT it moves back to REMATCH (next wraps). */
 	NativeArcadeLinkAutopilot_Init(&autopilot);
-	autopilot.racesFinished = 1u;
+	autopilot.racesEnded = 1u;
 	ResultsView(&view, NATIVE_ARCADE_FLOW_END_FINISHED, 1u, NATIVE_ARCADE_FLOW_ROW_EXIT);
 	CHECK(Held(&autopilot, &view) == NATIVE_ARCADE_MENU_BUTTON_DOWN);
 	CHECK(autopilot.confirmedRow == 0u);
 
-	/* After the last race: DOWN to EXIT, then CROSS. */
+	/* After the last race (a peer timeout): DOWN to EXIT, then CROSS. */
 	NativeArcadeLinkAutopilot_Init(&autopilot);
-	autopilot.racesFinished = NATIVE_ARCADE_LINK_AUTOPILOT_RACES;
-	ResultsView(&view, NATIVE_ARCADE_FLOW_END_FINISHED, 1u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
+	autopilot.racesEnded = NATIVE_ARCADE_LINK_AUTOPILOT_RACES;
+	ResultsView(&view, NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT, 1u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
 	CHECK(Held(&autopilot, &view) == NATIVE_ARCADE_MENU_BUTTON_DOWN);
 	CHECK(autopilot.confirmedRow == 0u);
 	for (uint32_t i = 1u; i < NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD; i++)
@@ -669,11 +739,18 @@ static int Frame(struct NativeArcadeLinkAutopilot *autopilot, const struct Nativ
 	return NativeArcadeLinkAutopilot_Observe(autopilot, after, action);
 }
 
+/* The LR-16 scenario's end of race k (LR-75): FINISHED, DESYNC, PEER_TIMEOUT. */
+static uint32_t ScenarioEnd(uint32_t k)
+{
+	return (k == 1u) ? NATIVE_ARCADE_FLOW_END_FINISHED : ((k == 2u) ? NATIVE_ARCADE_FLOW_END_DESYNC : NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT);
+}
+
 /*
  * Drives one race from START_RACE to its RESULTS entry: the start with the
- * agreed match, the validation, the racing frames, and the finished RESULTS.
+ * agreed match, the validation, the racing frames, and the RESULTS entry
+ * with endReason.
  */
-static int RunRace(struct NativeArcadeLinkAutopilot *autopilot, uint32_t k, uint32_t launchNumber, uint64_t seed)
+static int RunRaceEnding(struct NativeArcadeLinkAutopilot *autopilot, uint32_t k, uint32_t launchNumber, uint64_t seed, uint32_t endReason)
 {
 	struct NativeArcadeLinkHostView before;
 	struct NativeArcadeLinkHostView after;
@@ -692,21 +769,31 @@ static int RunRace(struct NativeArcadeLinkAutopilot *autopilot, uint32_t k, uint
 	CHECK(NativeArcadeLinkAutopilot_RecordValidated(autopilot, k, launchNumber, digests) == 0);
 	CHECK(autopilot->racesValidated == k);
 	CHECK(Frame(autopilot, &after, &after, NATIVE_ARCADE_FLOW_ACTION_NONE, NULL) == 0);
-	ResultsView(&before, NATIVE_ARCADE_FLOW_END_FINISHED, 0u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
+	ResultsView(&before, endReason, 0u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
 	CHECK(Frame(autopilot, &after, &before, NATIVE_ARCADE_FLOW_ACTION_NONE, NULL) == 0);
-	CHECK(autopilot->racesFinished == k);
+	CHECK(autopilot->racesEnded == k);
+	CHECK((autopilot->races[k - 1u].ended == 1u) && (autopilot->races[k - 1u].endReason == endReason));
 	return 0;
 }
 
-/* Presses through RESULTS until the confirming decision, then observes the tick moving to next. */
-static int ConfirmResults(struct NativeArcadeLinkAutopilot *autopilot, uint32_t wantedRow, uint32_t nextScreen, uint32_t action)
+/* One race of the scenario: race k ends with its scenario end. */
+static int RunRace(struct NativeArcadeLinkAutopilot *autopilot, uint32_t k, uint32_t launchNumber, uint64_t seed)
+{
+	return RunRaceEnding(autopilot, k, launchNumber, seed, ScenarioEnd(k));
+}
+
+/* Presses through RESULTS (showing endReason) until the confirming decision,
+ * then observes the tick moving to next, which keeps the end reason (the
+ * flow sets OPPONENT_LEFT only from REMATCH_WAIT). */
+static int ConfirmResults(struct NativeArcadeLinkAutopilot *autopilot, uint32_t endReason, uint32_t wantedRow, uint32_t nextScreen,
+	uint32_t action)
 {
 	struct NativeArcadeLinkHostView view;
 	struct NativeArcadeLinkHostView next;
 	struct NativeArcadeLinkAutopilotOutput output;
 	uint32_t row = NATIVE_ARCADE_FLOW_ROW_REMATCH;
 
-	ResultsView(&view, NATIVE_ARCADE_FLOW_END_FINISHED, 1u, row);
+	ResultsView(&view, endReason, 1u, row);
 	for (uint32_t frame = 0; frame < 8u * NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD; frame++)
 	{
 		view.selectedRow = row;
@@ -719,7 +806,7 @@ static int ConfirmResults(struct NativeArcadeLinkAutopilot *autopilot, uint32_t 
 		{
 			CHECK(row == wantedRow);
 			View(&next, nextScreen);
-			next.endReason = NATIVE_ARCADE_FLOW_END_FINISHED;
+			next.endReason = endReason;
 			return (NativeArcadeLinkAutopilot_Observe(autopilot, &next, action) == 0) ? 0 : 1;
 		}
 		else
@@ -732,8 +819,9 @@ static int ConfirmResults(struct NativeArcadeLinkAutopilot *autopilot, uint32_t 
 	return 1;
 }
 
-/* The whole run up to the EXIT screen, launch numbers as given. */
-static int RunToExit(struct NativeArcadeLinkAutopilot *autopilot, uint32_t launch1, uint32_t launch2)
+/* The whole run up to the EXIT screen, race 2 ending race2End (DESYNC or
+ * PEER_TIMEOUT), launch numbers as given. */
+static int RunToExitWith(struct NativeArcadeLinkAutopilot *autopilot, uint32_t launch1, uint32_t launch2, uint32_t launch3, uint32_t race2End)
 {
 	struct NativeArcadeLinkHostView view;
 	struct NativeArcadeLinkAutopilotOutput output;
@@ -745,14 +833,25 @@ static int RunToExit(struct NativeArcadeLinkAutopilot *autopilot, uint32_t launc
 	View(&view, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
 	CHECK(NativeArcadeLinkAutopilot_Observe(autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY) == 0);
 	CHECK(RunRace(autopilot, 1u, launch1, UINT64_C(0x0123456789ABCDEF)) == 0);
-	CHECK(ConfirmResults(autopilot, NATIVE_ARCADE_FLOW_ROW_REMATCH, NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT,
+	CHECK(ConfirmResults(autopilot, NATIVE_ARCADE_FLOW_END_FINISHED, NATIVE_ARCADE_FLOW_ROW_REMATCH, NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT,
 			  NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH) == 0);
 	CHECK(autopilot->rematches == 1u);
-	CHECK(RunRace(autopilot, 2u, launch2, UINT64_C(0xFEDCBA9876543210)) == 0);
-	CHECK(ConfirmResults(autopilot, NATIVE_ARCADE_FLOW_ROW_EXIT, NATIVE_ARCADE_FLOW_SCREEN_EXIT, NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK) == 0);
+	CHECK(RunRaceEnding(autopilot, 2u, launch2, UINT64_C(0xFEDCBA9876543210), race2End) == 0);
+	CHECK(ConfirmResults(autopilot, race2End, NATIVE_ARCADE_FLOW_ROW_REMATCH, NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT,
+			  NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH) == 0);
+	CHECK(autopilot->rematches == 2u);
+	CHECK(autopilot->exitConfirmed == 0u);
+	CHECK(RunRace(autopilot, 3u, launch3, UINT64_C(0x00000000CAFEF00D)) == 0);
+	CHECK(ConfirmResults(autopilot, NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT, NATIVE_ARCADE_FLOW_ROW_EXIT, NATIVE_ARCADE_FLOW_SCREEN_EXIT,
+			  NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK) == 0);
 	CHECK(autopilot->exitConfirmed == 1u);
 	CHECK(autopilot->done == 0u);
 	return 0;
+}
+
+static int RunToExit(struct NativeArcadeLinkAutopilot *autopilot, uint32_t launch1, uint32_t launch2, uint32_t launch3)
+{
+	return RunToExitWith(autopilot, launch1, launch2, launch3, NATIVE_ARCADE_FLOW_END_DESYNC);
 }
 
 /* A confirmation lasts one tick only, and only a confirmed row counts. */
@@ -813,26 +912,37 @@ static int TestFullRun(void)
 	struct NativeArcadeLinkHostView off;
 	uint32_t ticks;
 
-	/* Launch numbers need not be k (RL-S7 interpretation (d)). */
-	CHECK(RunToExit(&autopilot, 1u, 3u) == 0);
-	View(&view, NATIVE_ARCADE_FLOW_SCREEN_EXIT);
-	view.endReason = NATIVE_ARCADE_FLOW_END_FINISHED;
-	for (uint32_t i = 0; i < 10u; i++)
+	/* Launch numbers need not be k (RL-S7 interpretation (d)); race 2 may
+	 * end in either accepted way (LR-75). The EXIT screen after race 3 keeps
+	 * its PEER_TIMEOUT: not the OPPONENT_LEFT of SESSION_LOST. */
+	for (uint32_t race2End = NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT; race2End <= NATIVE_ARCADE_FLOW_END_DESYNC; race2End++)
 	{
-		CHECK(Frame(&autopilot, &view, &view, NATIVE_ARCADE_FLOW_ACTION_NONE, &output) == 0);
-		CHECK((output.heldButtons == 0u) && (output.enter == 0u));
+		CHECK(RunToExitWith(&autopilot, 1u, 3u, 4u, race2End) == 0);
+		View(&view, NATIVE_ARCADE_FLOW_SCREEN_EXIT);
+		view.endReason = NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT;
+		for (uint32_t i = 0; i < 10u; i++)
+		{
+			CHECK(Frame(&autopilot, &view, &view, NATIVE_ARCADE_FLOW_ACTION_NONE, &output) == 0);
+			CHECK((output.heldButtons == 0u) && (output.enter == 0u));
+		}
+		ticks = autopilot.ticks;
+		View(&off, NATIVE_ARCADE_FLOW_SCREEN_OFF);
+		CHECK(Frame(&autopilot, &view, &off, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE, NULL) == 1);
+		CHECK(autopilot.done == 1u);
+		CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_PASS);
+		CHECK(autopilot.ticks == ticks + 1u);
+		CHECK((autopilot.racesStarted == 3u) && (autopilot.racesValidated == 3u) && (autopilot.racesEnded == 3u));
+		CHECK(autopilot.rematches == 2u);
+		CHECK(autopilot.races[0].launchNumber == 1u);
+		CHECK(autopilot.races[1].launchNumber == 3u);
+		CHECK(autopilot.races[2].launchNumber == 4u);
+		CHECK(autopilot.races[1].match.masterSeed == UINT64_C(0xFEDCBA9876543210));
+		CHECK(autopilot.races[1].digests[0][0] == 0x20u);
+		CHECK(autopilot.races[2].match.masterSeed == UINT64_C(0x00000000CAFEF00D));
+		CHECK(autopilot.races[2].digests[0][0] == 0x30u);
+		CHECK((autopilot.races[0].endReason == NATIVE_ARCADE_FLOW_END_FINISHED) && (autopilot.races[1].endReason == race2End) &&
+		      (autopilot.races[2].endReason == NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT));
 	}
-	ticks = autopilot.ticks;
-	View(&off, NATIVE_ARCADE_FLOW_SCREEN_OFF);
-	CHECK(Frame(&autopilot, &view, &off, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE, NULL) == 1);
-	CHECK(autopilot.done == 1u);
-	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_PASS);
-	CHECK(autopilot.ticks == ticks + 1u);
-	CHECK((autopilot.racesStarted == 2u) && (autopilot.racesValidated == 2u) && (autopilot.racesFinished == 2u));
-	CHECK(autopilot.races[0].launchNumber == 1u);
-	CHECK(autopilot.races[1].launchNumber == 3u);
-	CHECK(autopilot.races[1].match.masterSeed == UINT64_C(0xFEDCBA9876543210));
-	CHECK(autopilot.races[1].digests[0][0] == 0x20u);
 
 	/* Done: inert, never enters again, no more ticks. */
 	CHECK(NativeArcadeLinkAutopilot_Decide(&autopilot, &off, 1u, &output) == 1);
@@ -866,25 +976,80 @@ static int TestFailures(void)
 	CHECK((autopilot.done == 1u) && (autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_RACE_FAILED));
 	CHECK(autopilot.lastScreen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
 	CHECK(autopilot.lastEndReason == NATIVE_ARCADE_FLOW_END_LINK_ERROR);
-	/* So is a race that ends in a peer timeout or desync. */
-	for (uint32_t reason = NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT; reason <= NATIVE_ARCADE_FLOW_END_DESYNC; reason++)
+	/* LR-75: race k's RESULTS entry with any end reason the run does not
+	 * accept for race k is RACE_FAILED (race 1 a peer timeout or desync,
+	 * race 2 a finish, race 3 a finish or desync, any race a link error or
+	 * an unknown reason); the reason is still recorded for the report. */
+	for (uint32_t k = 1u; k <= NATIVE_ARCADE_LINK_AUTOPILOT_RACES; k++)
 	{
-		NativeArcadeLinkAutopilot_Init(&autopilot);
-		CHECK(NativeArcadeLinkAutopilot_RecordMatch(&autopilot, &match) == 1);
-		CHECK(NativeArcadeLinkAutopilot_RecordValidated(&autopilot, 1u, 1u, digests) == 1);
-		View(&view, NATIVE_ARCADE_FLOW_SCREEN_RACING);
-		CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_START_RACE) == 0);
-		ResultsView(&view, reason, 0u, 0u);
-		CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
-		CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_RACE_FAILED);
+		for (uint32_t reason = 0u; reason <= (uint32_t)NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT + 1u; reason++)
+		{
+			NativeArcadeLinkAutopilot_Init(&autopilot);
+			for (uint32_t j = 1u; j < k; j++)
+			{
+				CHECK(RunRace(&autopilot, j, j, j) == 0);
+			}
+			CHECK(NativeArcadeLinkAutopilot_RecordMatch(&autopilot, &match) == 1);
+			CHECK(NativeArcadeLinkAutopilot_RecordValidated(&autopilot, k, k, digests) == 1);
+			View(&view, NATIVE_ARCADE_FLOW_SCREEN_RACING);
+			CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_START_RACE) == 0);
+			ResultsView(&view, reason, 0u, 0u);
+			if (NativeArcadeLinkAutopilot_EndAccepted(k, reason))
+			{
+				CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+				CHECK((autopilot.done == 0u) && (autopilot.racesEnded == k));
+			}
+			else
+			{
+				CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
+				CHECK((autopilot.done == 1u) && (autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_RACE_FAILED));
+				CHECK(autopilot.racesEnded == k - 1u);
+			}
+			CHECK((autopilot.races[k - 1u].ended == 1u) && (autopilot.races[k - 1u].endReason == reason));
+		}
 	}
 
-	/* A FINISHED race that was never validated is EVIDENCE_MISSING. */
+	/* An accepted end of a race that was never validated is EVIDENCE_MISSING,
+	 * in every race (LR-75: not only FINISHED). */
+	for (uint32_t k = 1u; k <= NATIVE_ARCADE_LINK_AUTOPILOT_RACES; k++)
+	{
+		NativeArcadeLinkAutopilot_Init(&autopilot);
+		for (uint32_t j = 1u; j < k; j++)
+		{
+			CHECK(RunRace(&autopilot, j, j, j) == 0);
+		}
+		CHECK(NativeArcadeLinkAutopilot_RecordMatch(&autopilot, &match) == 1);
+		View(&view, NATIVE_ARCADE_FLOW_SCREEN_RACING);
+		CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_START_RACE) == 0);
+		ResultsView(&view, ScenarioEnd(k), 0u, 0u);
+		CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
+		CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_EVIDENCE_MISSING);
+		CHECK(autopilot.racesEnded == k);
+		/* So is an accepted end of a race that never started. */
+		NativeArcadeLinkAutopilot_Init(&autopilot);
+		for (uint32_t j = 1u; j < k; j++)
+		{
+			CHECK(RunRace(&autopilot, j, j, j) == 0);
+		}
+		View(&view, NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+		CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+		ResultsView(&view, ScenarioEnd(k), 0u, 0u);
+		CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
+		CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_EVIDENCE_MISSING);
+	}
+
+	/* A RESULTS entry after the third race's end is UNEXPECTED_RACE. */
 	NativeArcadeLinkAutopilot_Init(&autopilot);
-	CHECK(NativeArcadeLinkAutopilot_RecordMatch(&autopilot, &match) == 1);
-	ResultsView(&view, NATIVE_ARCADE_FLOW_END_FINISHED, 0u, 0u);
+	for (uint32_t j = 1u; j <= NATIVE_ARCADE_LINK_AUTOPILOT_RACES; j++)
+	{
+		CHECK(RunRace(&autopilot, j, j, j) == 0);
+	}
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+	ResultsView(&view, NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT, 0u, 0u);
 	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
-	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_EVIDENCE_MISSING);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);
+	CHECK(autopilot.racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_RACES);
 	/* So is a START_RACE without an agreed match, or a validation without digests. */
 	NativeArcadeLinkAutopilot_Init(&autopilot);
 	CHECK(NativeArcadeLinkAutopilot_RecordMatch(&autopilot, NULL) == 0);
@@ -894,7 +1059,7 @@ static int TestFailures(void)
 	CHECK(NativeArcadeLinkAutopilot_RecordValidated(&autopilot, 1u, 1u, NULL) == 0);
 	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_EVIDENCE_MISSING);
 
-	/* A validation before any START_RACE, a jump of two, or a third race is UNEXPECTED_RACE. */
+	/* A validation before any START_RACE, a jump of two, or a fourth race is UNEXPECTED_RACE. */
 	NativeArcadeLinkAutopilot_Init(&autopilot);
 	CHECK(NativeArcadeLinkAutopilot_RecordValidated(&autopilot, 0u, 1u, digests) == 0);
 	CHECK(autopilot.done == 0u);
@@ -922,20 +1087,48 @@ static int TestFailures(void)
 	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
 	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);
 
-	/* Back to the title early (after one race) is SESSION_LOST. */
+	/* Back to the title early (after one or two races) is SESSION_LOST. */
+	for (uint32_t races = 1u; races < NATIVE_ARCADE_LINK_AUTOPILOT_RACES; races++)
+	{
+		NativeArcadeLinkAutopilot_Init(&autopilot);
+		for (uint32_t j = 1u; j <= races; j++)
+		{
+			CHECK(RunRace(&autopilot, j, j, 7u) == 0);
+		}
+		View(&view, NATIVE_ARCADE_FLOW_SCREEN_OFF);
+		CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE) == 1);
+		CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);
+	}
+	/* Three accepted races with this autopilot's EXIT, but one rematch short
+	 * (the second came from the peer): SESSION_LOST. */
+	CHECK(RunToExit(&autopilot, 1u, 2u, 3u) == 0);
+	autopilot.rematches = 1u;
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);
+	/* An EXIT confirmed after race 2 (an EXIT row the run never wants) is
+	 * not this autopilot's EXIT: back to the title, SESSION_LOST. */
 	NativeArcadeLinkAutopilot_Init(&autopilot);
 	CHECK(RunRace(&autopilot, 1u, 1u, 7u) == 0);
+	CHECK(ConfirmResults(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED, NATIVE_ARCADE_FLOW_ROW_REMATCH, NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT,
+			  NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH) == 0);
+	CHECK(RunRace(&autopilot, 2u, 2u, 8u) == 0);
+	autopilot.confirmedRow = (uint8_t)(NATIVE_ARCADE_FLOW_ROW_EXIT + 1u);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_EXIT);
+	view.endReason = NATIVE_ARCADE_FLOW_END_DESYNC;
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK) == 0);
+	CHECK(autopilot.exitConfirmed == 0u);
 	View(&view, NATIVE_ARCADE_FLOW_SCREEN_OFF);
 	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE) == 1);
 	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);
 
-	/* Two races, but the RESULTS idle timeout took EXIT, not this autopilot:
+	/* Three races, but the RESULTS idle timeout took EXIT, not this autopilot:
 	 * the EXIT change came on a tick without its confirmation. */
-	CHECK(RunToExit(&autopilot, 1u, 2u) == 0);
+	CHECK(RunToExit(&autopilot, 1u, 2u, 3u) == 0);
 	autopilot.exitConfirmed = 0u;
 	autopilot.lastScreen = NATIVE_ARCADE_FLOW_SCREEN_RESULTS;
 	View(&view, NATIVE_ARCADE_FLOW_SCREEN_EXIT);
-	view.endReason = NATIVE_ARCADE_FLOW_END_FINISHED;
+	view.endReason = NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT;
 	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK) == 0);
 	CHECK(autopilot.exitConfirmed == 0u);
 	View(&view, NATIVE_ARCADE_FLOW_SCREEN_OFF);
@@ -1192,14 +1385,17 @@ static int TestReport(void)
 	CHECK(NativeArcadeLinkAutopilot_FormatMatch(NULL, text, sizeof(text), &length) == 0);
 
 	/* A passed run: every line, in order. */
-	CHECK(RunToExit(&autopilot, 1u, 2u) == 0);
+	CHECK(RunToExit(&autopilot, 1u, 2u, 3u) == 0);
 	View(&view, NATIVE_ARCADE_FLOW_SCREEN_OFF);
 	view.localCab = 2u;
 	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE) == 1);
 	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_PASS);
-	/* The glue copies the configured cap at Configure; no decision reads it. */
-	CHECK(autopilot.raceTickLimit == 0u);
-	autopilot.raceTickLimit = 300u;
+	/* The glue copies the configured cap and fault ticks at Configure; no
+	 * menu decision reads them. */
+	CHECK((autopilot.raceTickLimit == 0u) && (autopilot.freezeTick == 0u) && (autopilot.desyncTick == 0u));
+	autopilot.raceTickLimit = 6000u;
+	autopilot.freezeTick = 600u;
+	autopilot.desyncTick = 300u;
 	for (uint32_t k = 0; k < 2u; k++)
 	{
 		for (uint32_t i = 0; i < NATIVE_ARCADE_LINK_AUTOPILOT_DIGEST_BYTES; i++)
@@ -1214,19 +1410,28 @@ static int TestReport(void)
 	/* Race k's digests are 0x10k + i over the 128 bytes; the first two of
 	 * the four are checked in full, the last two by prefix below. */
 	CHECK(strncmp(text,
-		      "arcade link autopilot v2\ncab 2\nresult PASS (0)\nlast screen OFF end reason NONE\nticks ",
-		      strlen("arcade link autopilot v2\ncab 2\nresult PASS (0)\nlast screen OFF end reason NONE\nticks ")) == 0);
-	/* The race tick cap line follows the ticks line (the cap is 300 here). */
-	CHECK(strstr(text, "\nrace ticks 300\nrace 1 agreed match ") != NULL);
+		      "arcade link autopilot v3\ncab 2\nresult PASS (0)\nlast screen OFF end reason NONE\nticks ",
+		      strlen("arcade link autopilot v3\ncab 2\nresult PASS (0)\nlast screen OFF end reason NONE\nticks ")) == 0);
+	/* The race tick cap and the fault ticks follow the ticks line (LR-75). */
+	CHECK(strstr(text, "\nrace ticks 6000\nfreeze tick 600\ndesync tick 300\nrace 1 agreed match ") != NULL);
 	(void)snprintf(expected, sizeof(expected), "race 1 agreed match track 4 laps 3 seed 0x0123456789ABCDEF slots 0 1 6 4 2 3 0 0 (12BBBB--)\n"
 		"race 1 validated launch 1 config %s plan %s bots ", digestHex[0], digestHex[1]);
 	CHECK(strstr(text, expected) != NULL);
 	(void)snprintf(expected, sizeof(expected), "race 2 agreed match track 5 laps 3 seed 0xFEDCBA9876543210 slots 0 1 6 4 2 3 0 0 (12BBBB--)\n"
 		"race 2 validated launch 2 config %s plan %s bots ", digestHex[2], digestHex[3]);
 	CHECK(strstr(text, expected) != NULL);
-	expectedLength = strlen("end races 2\n");
-	CHECK((length > expectedLength) && (strcmp(text + length - expectedLength, "end races 2\n") == 0));
-	/* Exactly 6 header lines, 4 race lines, and the end line. */
+	/* Each race's end reason line follows its validated line. */
+	CHECK(strstr(text, "\nrace 1 end reason FINISHED\nrace 2 agreed match ") != NULL);
+	CHECK(strstr(text, "\nrace 2 end reason DESYNC\nrace 3 agreed match track 6 laps 3 seed 0x00000000CAFEF00D ") != NULL);
+	{
+		const char *race3 = strstr(text, "\nrace 3 validated launch 3 config 303132");
+
+		CHECK(race3 != NULL);
+		CHECK(strstr(race3, "\nrace 3 end reason PEER_TIMEOUT\nend races 3\n") != NULL);
+	}
+	expectedLength = strlen("end races 3\n");
+	CHECK((length > expectedLength) && (strcmp(text + length - expectedLength, "end races 3\n") == 0));
+	/* Exactly 8 header lines, 3 lines for each of the 3 races, and the end line. */
 	{
 		uint32_t lines = 0u;
 
@@ -1234,7 +1439,7 @@ static int TestReport(void)
 		{
 			lines += (text[i] == '\n') ? 1u : 0u;
 		}
-		CHECK(lines == 11u);
+		CHECK(lines == 18u);
 	}
 	/* The race 1 validated line holds all four digests, each 64 hex digits. */
 	{
@@ -1258,8 +1463,65 @@ static int TestReport(void)
 	ResultsView(&view, NATIVE_ARCADE_FLOW_END_LINK_ERROR, 0u, 0u);
 	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
 	CHECK(NativeArcadeLinkAutopilot_FormatReport(&autopilot, text, sizeof(text), &length) == 1);
-	CHECK(strcmp(text, "arcade link autopilot v2\ncab 1\nresult RACE_FAILED (41)\nlast screen RESULTS end reason LINK_ERROR\nticks 1\nrace ticks 0\n"
-			   "race 1 agreed match track 3 laps 3 seed 0x0000000000000009 slots 0 1 6 4 2 3 0 0 (12BBBB--)\nend races 0\n") == 0);
+	CHECK(strcmp(text, "arcade link autopilot v3\ncab 1\nresult RACE_FAILED (41)\nlast screen RESULTS end reason LINK_ERROR\nticks 1\nrace ticks 0\n"
+			   "freeze tick 0\ndesync tick 0\n"
+			   "race 1 agreed match track 3 laps 3 seed 0x0000000000000009 slots 0 1 6 4 2 3 0 0 (12BBBB--)\n"
+			   "race 1 end reason LINK_ERROR\nend races 0\n") == 0);
+
+	/* The buffer bound: every field at its widest (every race recorded, every
+	 * number at its maximum, the longest names) fits REPORT_BYTES. */
+	{
+		char widest[NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_BYTES];
+		size_t widestLength = 0u;
+		size_t longest = 0u;
+		uint32_t longestReason = 0u;
+		struct NativeArcadeLinkAutopilot wide;
+
+		for (uint32_t reason = 0u; reason <= (uint32_t)NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT + 1u; reason++)
+		{
+			if (strlen(NativeArcadeLinkAutopilot_EndReasonName(reason)) > longest)
+			{
+				longest = strlen(NativeArcadeLinkAutopilot_EndReasonName(reason));
+				longestReason = reason;
+			}
+		}
+		CHECK(strcmp(NativeArcadeLinkAutopilot_EndReasonName(longestReason), "OPPONENT_LEFT") == 0);
+		NativeArcadeLinkAutopilot_Init(&wide);
+		wide.localCab = UINT8_MAX;
+		/* REPORT_WRITE_FAILED is the longest result name (a code outside the
+		 * enum prints "unknown (4294967295)", shorter). */
+		wide.result = NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_WRITE_FAILED;
+		wide.lastScreen = NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT;
+		wide.lastEndReason = longestReason;
+		wide.ticks = UINT32_MAX;
+		wide.raceTickLimit = UINT32_MAX;
+		wide.freezeTick = UINT32_MAX;
+		wide.desyncTick = UINT32_MAX;
+		wide.racesValidated = UINT32_MAX;
+		for (uint32_t k = 0; k < NATIVE_ARCADE_LINK_AUTOPILOT_RACES; k++)
+		{
+			struct NativeArcadeLinkAutopilotRace *race = &wide.races[k];
+
+			race->matchRecorded = 1u;
+			race->validated = 1u;
+			race->ended = 1u;
+			race->launchNumber = UINT32_MAX;
+			race->endReason = longestReason;
+			race->match.trackID = UINT32_MAX;
+			race->match.lapCount = UINT32_MAX;
+			race->match.masterSeed = UINT64_MAX;
+			memset(race->match.slotCharacter, 0xFF, sizeof(race->match.slotCharacter));
+			memset(race->match.slotRole, 0xFF, sizeof(race->match.slotRole));
+			memset(race->digests, 0xFF, sizeof(race->digests));
+		}
+		CHECK(NativeArcadeLinkAutopilot_FormatReport(&wide, widest, sizeof(widest), &widestLength) == 1);
+		/* 201 header bytes, 475 per race (126 + 317 + 32), and 21 for the end line. */
+		CHECK(widestLength == 1647u);
+		CHECK(widestLength < sizeof(widest));
+		CHECK(strstr(widest, "\nresult REPORT_WRITE_FAILED (45)\nlast screen SELECT_RESULT end reason OPPONENT_LEFT\n") != NULL);
+		CHECK(strstr(widest, "\nfreeze tick 4294967295\ndesync tick 4294967295\n") != NULL);
+		CHECK(strstr(widest, "race 3 end reason OPPONENT_LEFT\nend races 4294967295\n") != NULL);
+	}
 
 	/* The writer: the formatted bytes, replaced on a second write. */
 	{
@@ -1290,6 +1552,7 @@ int main(void)
 	CHECK(TestRaceTicksOption() == 0);
 	CHECK(TestFaultOptions() == 0);
 	CHECK(TestFaultAt() == 0);
+	CHECK(TestEndAccepted() == 0);
 	CHECK(TestDesyncTarget() == 0);
 	CHECK(TestDecideEnter() == 0);
 	CHECK(TestDecideSelect() == 0);
