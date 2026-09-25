@@ -629,7 +629,15 @@ static int MainArcadeRaceLaunch_HoldStep(void *context, uint32_t periods, int ne
 	return (state->holdStatus == NATIVE_ARCADE_LINK_HOST_RACE_HOLD) ? 1 : 0;
 }
 
-/* The drive tick's result back to the core. */
+/* The drive tick's result back to the core. A refusal is only logged: it
+ * would leave the result due and every later Step refused (a wedged race),
+ * but it cannot happen here. The core refuses only a NULL, a result outside
+ * GO..OUTCOME, or no result due; this is called exactly once per driveStep
+ * frame (the Step that set driveStep left the result due, in the drive
+ * phase, and nothing touches the core in between), always with one of the
+ * four results. main_arcade_race_launch_core_unit
+ * (TestDriveResultCallerPattern) pins that the core never refuses it in
+ * this pattern. */
 static void MainArcadeRaceLaunch_DriveResult(struct MainArcadeRaceLaunchCoreOutput *output, uint32_t result)
 {
 	struct MainArcadeRaceLaunchState *state = &s_mainArcadeRaceLaunch;

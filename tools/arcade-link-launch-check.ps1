@@ -65,9 +65,12 @@ param(
 #     "arcade race setup: pinned rcntTotalUnits ..." line between the
 #     previous race's "validated" line (or the start) and this race's, and
 #     it is exactly the pin readback "pinned rcntTotalUnits 0
-#     clockFrameStart -200; read back 0 -200"; no other such line appears.
-# It also prints each race's "drive end" line from both stdouts (the end
-# kind and its race tick), for the log only.
+#     clockFrameStart -200; read back 0 -200"; no other such line appears;
+#   - the drive's end (LR-S10 part 2): each process's stdout has exactly one
+#     "arcade link: race <n> drive end: <kind> at race tick <t>" line for
+#     the k-th race (n its launch number) and no other drive end line, and
+#     it is "race tick limit at race tick 300" (the cap); the end kind and
+#     race tick of the k-th race are equal across the two processes.
 #
 # Skips (77) without the disc image, without a display, with a non-internal
 # build (the option is rejected), or with an unknown build identity (a build
@@ -90,6 +93,11 @@ $races = 2
 $raceTickCap = 300
 $raceTicksPattern = '^race ticks ([0-9]+)$'
 $stdoutDriveEndPattern = '^\[CTR Native\] arcade link: race ([0-9]+) drive end: (.*)$'
+# The end text of the caller's drive end lines: the kind (with the failure
+# reason for a local failure), then its race tick.
+$driveEndTextPattern = '^(.*) at race tick ([0-9]+)( \(the drive did not run\))?$'
+# Every race of the gate ends on the cap.
+$expectedDriveEndKind = 'race tick limit'
 $agreedPattern = '^race ([0-9]+) (agreed match track [0-9]+ laps [0-9]+ seed 0x[0-9A-F]{16} slots( [0-9]+){8} \([12B-]{8}\))$'
 $validatedPattern = '^race ([0-9]+) validated launch ([0-9]+) config ([0-9a-f]{64}) plan ([0-9a-f]{64}) bots ([0-9a-f]{64}) bank ([0-9a-f]{64})$'
 $stdoutAgreedPattern = '^\[CTR Native\] arcade link: (agreed match .*)$'
@@ -391,6 +399,44 @@ function Read-ElapsedTimes($Run, $Report) {
     return $result
 }
 
+# LR-S10 part 2: the drive's end of each of the report's races, from the
+# run's stdout.  Values[k] holds the k-th race's end as an object with Kind
+# and Tick; the k-th race (its launch number) must have exactly one drive
+# end line, ending on the cap, and the stdout no drive end line of any
+# other launch.
+function Read-DriveEnds($Run, $Report) {
+    $result = [pscustomobject]@{ Values = @(); Problems = @() }
+    $lines = @()
+    foreach ($line in ((Read-SharedText $Run.StdoutPath) -split "`r?`n")) {
+        if ($line -match $stdoutDriveEndPattern) {
+            $lines += [pscustomobject]@{ Launch = [int]$Matches[1]; Text = $Matches[2] }
+        }
+    }
+    if ($lines.Count -ne $Report.Validated.Count) {
+        $result.Problems += "run $($Run.Name): $($lines.Count) drive end lines on stdout, expected $($Report.Validated.Count) (one per race)"
+    }
+    for ($k = 0; $k -lt $Report.Validated.Count; $k++) {
+        $launch = $Report.Validated[$k].Launch
+        $found = @($lines | Where-Object { $_.Launch -eq $launch })
+        if ($found.Count -ne 1) {
+            $result.Problems += "run $($Run.Name): race $($k + 1) (launch $launch) has $($found.Count) drive end lines on stdout, expected 1"
+            $result.Values += $null
+            continue
+        }
+        if ($found[0].Text -notmatch $driveEndTextPattern) {
+            $result.Problems += "run $($Run.Name): race $($k + 1) (launch $launch) drive end '$($found[0].Text)' does not read '<kind> at race tick <t>'"
+            $result.Values += $null
+            continue
+        }
+        $end = [pscustomobject]@{ Kind = $Matches[1]; Tick = [int]$Matches[2]; Text = $found[0].Text }
+        if (($end.Kind -ne $expectedDriveEndKind) -or ($end.Tick -ne $raceTickCap) -or ($end.Text -ne "$expectedDriveEndKind at race tick $raceTickCap")) {
+            $result.Problems += "run $($Run.Name): race $($k + 1) (launch $launch) drive end is '$($end.Text)', expected '$expectedDriveEndKind at race tick $raceTickCap'"
+        }
+        $result.Values += $end
+    }
+    return $result
+}
+
 try {
     if ([string]::IsNullOrWhiteSpace($AssetsFile)) {
         $scriptDirectory = $PSScriptRoot
@@ -487,6 +533,9 @@ try {
             $elapsed = Read-ElapsedTimes $run $report
             $failures += @($elapsed.Problems)
             $report | Add-Member -NotePropertyName Elapsed -NotePropertyValue $elapsed.Values
+            $driveEnds = Read-DriveEnds $run $report
+            $failures += @($driveEnds.Problems)
+            $report | Add-Member -NotePropertyName DriveEnds -NotePropertyValue $driveEnds.Values
         }
         $reports[$run.Name] = $report
     }
@@ -523,6 +572,14 @@ try {
             $failures += "race $number LR-8 elapsedTimeMS/rcntTotalUnits/clockFrameStart of race ticks 0..2 differs: cab1 $elapsed1, cab2 $elapsed2"
         }
         Write-Output "race ${number}: LR-8 elapsedTimeMS/rcntTotalUnits/clockFrameStart race ticks 0..2: cab1 $elapsed1, cab2 $elapsed2"
+        # LR-S10 part 2: the drive's end kind and race tick, equal on both
+        # machines (each was also checked against the cap).
+        $end1 = $cab1.DriveEnds[$k]
+        $end2 = $cab2.DriveEnds[$k]
+        if (($end1.Kind -ne $end2.Kind) -or ($end1.Tick -ne $end2.Tick)) {
+            $failures += "race $number drive end differs: cab1 '$($end1.Text)', cab2 '$($end2.Text)'"
+        }
+        Write-Output "race ${number}: drive end: cab1 $($end1.Text), cab2 $($end2.Text)"
     }
     # The same nonzero race tick cap on both cabinets (each report was also
     # checked against the value passed).
@@ -530,15 +587,6 @@ try {
         $failures += "the race tick cap differs or is 0: cab1 $($cab1.RaceTicks[0]), cab2 $($cab2.RaceTicks[0])"
     }
     Write-Output "race tick cap: cab1 $($cab1.RaceTicks[0]), cab2 $($cab2.RaceTicks[0])"
-    # For the log: how each race's drive ended on each cabinet (the reports'
-    # PASS already requires both races to end FINISHED).
-    foreach ($run in $runs) {
-        foreach ($line in ((Read-SharedText $run.StdoutPath) -split "`r?`n")) {
-            if ($line -match $stdoutDriveEndPattern) {
-                Write-Output "$($run.Name): race $($Matches[1]) drive end: $($Matches[2])"
-            }
-        }
-    }
     # The rematch went through a new select: a new config.
     foreach ($pair in @(@('cab1', $cab1), @('cab2', $cab2))) {
         if ($pair[1].Validated[1].Config -eq $pair[1].Validated[0].Config) {
@@ -552,6 +600,7 @@ try {
         Write-Output "races 1 and 2: LR-8 elapsedTimeMS, rcntTotalUnits, and clockFrameStart of race ticks 0..2 equal across cab1 and cab2"
         Write-Output "races 1 and 2: the setup's LR-8 pin readback ('pinned rcntTotalUnits 0 clockFrameStart -200; read back 0 -200') once per race on both cabinets"
         Write-Output "both reports: race tick cap $raceTickCap"
+        Write-Output "races 1 and 2: one drive end per race on both cabinets, '$expectedDriveEndKind at race tick $raceTickCap', equal across cab1 and cab2"
     }
     Write-Output ''
     if ($failures.Count -ne 0) {

@@ -1940,6 +1940,110 @@ static int TestDriveEndOnRaceTickZero(void)
 	return 0;
 }
 
+/* A small LCG for TestDriveResultCallerPattern (fixed seed, reproducible). */
+static uint32_t CallerPatternNext(uint32_t *seed)
+{
+	*seed = (*seed * 1664525u) + 1013904223u;
+	return *seed >> 16;
+}
+
+/* Seven frames in eight the input that moves the race on from the core's
+ * phase; otherwise any valid input (START_RACE only on RACING). */
+static Input CallerPatternInput(const struct MainArcadeRaceLaunchCore *core, uint32_t *seed)
+{
+	Input input;
+	uint32_t level;
+	uint32_t stage;
+	uint8_t loadingBit;
+	uint32_t status;
+	uint8_t racing;
+
+	if ((CallerPatternNext(seed) & 7u) != 0u)
+	{
+		switch (core->phase)
+		{
+		case P_IDLE:
+		case P_WAIT_WINDOW:
+			return StartOn(TitleOpen(S_IDLE));
+		case P_WAIT_VALIDATED:
+			return In(LVL_PLAN, ST_OTHER, 1u, S_VALIDATED, 1u);
+		case P_WAIT_RACE_TICK:
+		case P_DRIVE:
+			return In(LVL_PLAN, ST_IDLE, 0u, S_VALIDATED, 1u);
+		default:
+			return In(LVL_MENU, ST_IDLE, 0u, S_IDLE, 0u);
+		}
+	}
+	/* One draw per statement: the order of the draws is fixed. */
+	level = CallerPatternNext(seed) % 3u;
+	stage = CallerPatternNext(seed) % (ST_OTHER + 1u);
+	loadingBit = (uint8_t)(CallerPatternNext(seed) & 1u);
+	status = CallerPatternNext(seed) % (S_FAILED + 1u);
+	racing = (uint8_t)(CallerPatternNext(seed) & 1u);
+	input = In((level == 0u) ? LVL_MENU : ((level == 1u) ? LVL_PLAN : LVL_OTHER), stage, loadingBit, status, racing);
+	input.titleWindowOpen = (uint8_t)(CallerPatternNext(seed) & 1u);
+	input.startRace = (uint8_t)(CallerPatternNext(seed) & input.hostRacing);
+	return input;
+}
+
+/*
+ * LR-S10 part 2 review: the race caller's pattern (MainArcadeRaceLaunch_Frame
+ * and MainArcadeRaceLaunch_Drive): Step, LaunchResult on an armAndLaunch
+ * frame, and on every driveStep frame exactly one DriveResult with a valid
+ * result (GO, FINISHED, FAILED, or OUTCOME) on the same output, before the
+ * next Step. In that pattern the core never refuses a DriveResult: the
+ * caller's wrapper only logs a refusal, which would leave the result due and
+ * every later Step refused (a wedged race). Nor is any Step refused. Many
+ * races on pseudo-random valid inputs (mostly those that move the race on)
+ * and pseudo-random results (GO most of the time, else an end); every result
+ * and a drive end without a result (the flow off RACING or the setup not
+ * VALIDATED) are seen.
+ */
+static int TestDriveResultCallerPattern(void)
+{
+	static const uint32_t launchResults[3] = {R_LAUNCHED, R_ARM_FAILED, R_LAUNCH_FAILED};
+	static const uint32_t endResults[3] = {D_FINISHED, D_FAILED, D_OUTCOME};
+	struct MainArcadeRaceLaunchCore core;
+	uint32_t seed = 0x5EEDu;
+	uint32_t seen[D_OUTCOME + 1u];
+	uint32_t driveSteps = 0u;
+	uint32_t endsWithoutResult = 0u;
+	Output out;
+
+	memset(seen, 0, sizeof(seen));
+	MainArcadeRaceLaunchCore_Init(&core);
+	for (uint32_t frame = 0; frame < 400000u; frame++)
+	{
+		Input input = CallerPatternInput(&core, &seed);
+
+		CHECK(core.driveDue == 0u);
+		CHECK(MainArcadeRaceLaunchCore_Step(&core, &input, &out) == 1);
+		if (out.armAndLaunch != 0u)
+		{
+			CHECK(out.driveStep == 0u);
+			CHECK(MainArcadeRaceLaunchCore_LaunchResult(&core, launchResults[CallerPatternNext(&seed) % 3u], &out) == 1);
+		}
+		if (out.driveStep != 0u)
+		{
+			uint32_t result = ((CallerPatternNext(&seed) % 64u) != 0u) ? D_GO : endResults[CallerPatternNext(&seed) % 3u];
+
+			CHECK(core.driveDue == 1u && core.phase == P_DRIVE);
+			CHECK(MainArcadeRaceLaunchCore_DriveResult(&core, result, &out) == 1);
+			CHECK(core.driveDue == 0u);
+			CHECK(out.driveEnded == ((result == D_GO) ? 0u : 1u));
+			seen[result]++;
+			driveSteps++;
+		}
+		else if (out.driveEnded != 0u)
+		{
+			endsWithoutResult++;
+		}
+	}
+	CHECK(driveSteps > 10000u && seen[D_GO] != 0u && seen[D_FINISHED] != 0u && seen[D_FAILED] != 0u && seen[D_OUTCOME] != 0u);
+	CHECK(endsWithoutResult != 0u);
+	return 0;
+}
+
 /* ---- the finish latch (raceFinishedInput, the host's raceFinished input) ---- */
 
 /* RL-S8b review S1: the finish is held from the finish frame while the flow
@@ -2133,6 +2237,8 @@ int main(void)
 	if (TestDriveEnds(D_OUTCOME) != 0)
 		return 1;
 	if (TestDriveEndOnRaceTickZero() != 0)
+		return 1;
+	if (TestDriveResultCallerPattern() != 0)
 		return 1;
 	if (TestFinishLatch() != 0)
 		return 1;

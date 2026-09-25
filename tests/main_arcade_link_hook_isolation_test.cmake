@@ -1190,9 +1190,12 @@ endif()
 #      - a drive failure is reported once: the drive's own local failure end
 #        (LOCAL_FAILURE, which the host reported) maps to FAILED without a
 #        report, and only MainArcadeRaceLaunch_DriveFailed reports (the
-#        pads, the projection, or an end without a kind);
-#      - LR-16: ptr_restart_points is named only inside the
-#        #if defined(CTR_INTERNAL) part, which also asks
+#        pads, the projection, or an end without a kind); since the part 2
+#        review, each of the drive tick's two DriveFailed calls (the pads,
+#        the projection) is followed directly by its return, so no race step
+#        runs after a reported failure;
+#      - LR-16: ptr_restart_points, level1, and cnt_restart_points are named
+#        only inside the #if defined(CTR_INTERNAL) part, which also asks
 #        MainArcadeLinkAutopilot_Active;
 #      - LR-18: the caller never writes actionsFlagSet or gameMode1 (no
 #        assignment, compound assignment, increment, or address taken),
@@ -1219,6 +1222,18 @@ ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_Drive)" "${drive_
     "MainArcadeRaceLaunch_DriveResult(output, MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVE_RESULT_GO);"
     "return;"
     "MainArcadeRaceLaunch_DriveEnd(output);")
+# Each reported failure ends the drive tick at once: both DriveFailed calls
+# are followed directly by return and the end of their if block.
+# (Counted through markers: a ';' in a match would split the list.)
+string(REGEX REPLACE "[ \t\r\n]+" " " drive_flat "${drive_block}")
+string(REPLACE "MainArcadeRaceLaunch_DriveFailed(output); return; }" "@FAILED_RETURN@" drive_marked "${drive_flat}")
+string(REGEX MATCHALL "@FAILED_RETURN@" drive_failed_returns "${drive_marked}")
+string(REGEX MATCHALL "MainArcadeRaceLaunch_DriveFailed\\(output\\)|@FAILED_RETURN@" drive_failed_calls "${drive_marked}")
+list(LENGTH drive_failed_calls drive_failed_call_count)
+list(LENGTH drive_failed_returns drive_failed_return_count)
+if(NOT drive_failed_call_count EQUAL 2 OR NOT drive_failed_return_count EQUAL 2)
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_Drive must call MainArcadeRaceLaunch_DriveFailed exactly twice, each followed directly by 'return; }' (found ${drive_failed_call_count} calls, ${drive_failed_return_count} with the return)")
+endif()
 foreach(name IN ITEMS NativeArcadeLinkHost_RaceStep NativeArcadeLinkHost_RaceHold MainArcadeRaceDigest_ProjectState
         Platform_InputCapturePadSnapshots MainCanonicalState_FreezeInputV1 Platform_InputSampleLocalPad MainArcadeLinkAutopilot_Active)
     string(REGEX MATCHALL "${name}\\(" name_hits "${caller_code}")
@@ -1320,12 +1335,14 @@ string(SUBSTRING "${caller_code}" ${internal_at} ${internal_length} caller_inter
 string(SUBSTRING "${caller_code}" 0 ${internal_at} caller_before_internal)
 string(SUBSTRING "${caller_code}" ${internal_else_at} -1 caller_after_internal)
 foreach(part IN ITEMS caller_before_internal caller_after_internal)
-    string(FIND "${${part}}" "ptr_restart_points" outside_restart_at)
-    if(NOT outside_restart_at EQUAL -1)
-        message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} names ptr_restart_points outside its CTR_INTERNAL part (LR-16)")
-    endif()
+    foreach(term IN ITEMS "ptr_restart_points" "level1" "cnt_restart_points")
+        string(FIND "${${part}}" "${term}" outside_restart_at)
+        if(NOT outside_restart_at EQUAL -1)
+            message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} names ${term} outside its CTR_INTERNAL part (LR-16)")
+        endif()
+    endforeach()
 endforeach()
-foreach(term IN ITEMS "ptr_restart_points" "MainArcadeLinkAutopilot_Active()")
+foreach(term IN ITEMS "ptr_restart_points" "level1" "cnt_restart_points" "MainArcadeLinkAutopilot_Active()")
     ctr_require_literal("${caller_source_path} (CTR_INTERNAL part)" "${caller_internal_part}" "${term}")
 endforeach()
 # LR-18: reads only. The scan must itself catch every write spelling.
@@ -1364,3 +1381,143 @@ list(LENGTH finished_names finished_name_count)
 if(NOT finished_name_count EQUAL 0)
     message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} names ACTION_RACE_FINISHED outside the mirror's static assert (found ${finished_name_count}); LR-18: only that read")
 endif()
+
+# 16k. The duplicated steering (LR-16, LR-S10 part 2 review): the caller's
+#      internal steering pad follows the roster proof's autopilot
+#      (game/MAIN/MainArcadeRosterProof.c), as 16f and 16f2 pin LeaveTitle
+#      and the return step. Compared on the comment-free code, whitespace
+#      collapsed, after normalizing only what legitimately differs:
+#      - the names: the helpers' prefixes (MainArcadeRaceLaunch_Steer* and
+#        MainArcadeRosterProof_Autopilot*; Buttons/Steer, Next, and Nearest
+#        map to STEER, NEXT, and NEAREST) and the constants' prefixes
+#        (MAIN_ARCADE_RACE_LAUNCH_STEER_ and
+#        MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_ map to K_);
+#      - the target's storage: the caller keeps one target
+#        (s_mainArcadeRaceLaunchSteer, steerState->target and
+#        ->targetValid), the proof one per player
+#        (s_mainArcadeRosterProofAutopilot, autopilot->target[player] and
+#        ->targetValid[player]); each state pointer's declaration is
+#        dropped and the fields map to TARGET and VALID;
+#      - the steering helper's signature (the proof's takes the player), so
+#        its body is compared from its opening brace.
+#      Then Next and Nearest are identical whole functions and the steering
+#      bodies are identical (the pass loop over
+#      NativeArcadeLinkAutopilot_Passed, the lookahead aim loop, and the
+#      NativeArcadeLinkAutopilot_Steer call); the restart-point count guard
+#      is the same text in both; and the constants are equal: the lookahead,
+#      world shift, and max points to the proof's, and the pad id (0x41),
+#      analog centre (0x80), and no-button word (0xFFFF) to the roster
+#      proof's scripted pad (include/platform/native_arcade_roster_proof.h),
+#      which the steering sample uses.
+function(ctr_steer_normalize text out_var)
+    string(REGEX REPLACE "[ \t\r\n]+" " " flat "${text}")
+    string(REPLACE "struct MainArcadeRaceLaunchSteer *steerState = &s_mainArcadeRaceLaunchSteer; " "" flat "${flat}")
+    string(REPLACE "struct MainArcadeRosterProofAutopilotState *autopilot = &s_mainArcadeRosterProofAutopilot; " "" flat "${flat}")
+    string(REPLACE "steerState->targetValid" "VALID" flat "${flat}")
+    string(REPLACE "steerState->target" "TARGET" flat "${flat}")
+    string(REPLACE "autopilot->targetValid[player]" "VALID" flat "${flat}")
+    string(REPLACE "autopilot->target[player]" "TARGET" flat "${flat}")
+    string(REPLACE "MainArcadeRaceLaunch_SteerButtons" "STEER" flat "${flat}")
+    string(REPLACE "MainArcadeRaceLaunch_SteerNext" "NEXT" flat "${flat}")
+    string(REPLACE "MainArcadeRaceLaunch_SteerNearest" "NEAREST" flat "${flat}")
+    string(REPLACE "MainArcadeRosterProof_AutopilotSteer" "STEER" flat "${flat}")
+    string(REPLACE "MainArcadeRosterProof_AutopilotNext" "NEXT" flat "${flat}")
+    string(REPLACE "MainArcadeRosterProof_AutopilotNearest" "NEAREST" flat "${flat}")
+    string(REPLACE "MAIN_ARCADE_RACE_LAUNCH_STEER_" "K_" flat "${flat}")
+    string(REPLACE "MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_" "K_" flat "${flat}")
+    set(${out_var} "${flat}" PARENT_SCOPE)
+endfunction()
+# The text from opener (the signature) through its block's closing brace, or
+# from the block's opening brace when from_brace is set.
+function(ctr_steer_function relative_path source opener from_brace out_var)
+    string(FIND "${source}" "${opener}" opener_at)
+    ctr_find_block("${relative_path}" "${source}" "${opener}" block_begin block_end)
+    if(from_brace)
+        set(start ${block_begin})
+    else()
+        set(start ${opener_at})
+    endif()
+    math(EXPR span "${block_end} - ${start} + 1")
+    string(SUBSTRING "${source}" ${start} ${span} text)
+    set(${out_var} "${text}" PARENT_SCOPE)
+endfunction()
+foreach(pair IN ITEMS
+        "static uint32_t MainArcadeRaceLaunch_SteerNext(|static uint32_t MainArcadeRosterProof_AutopilotNext("
+        "static uint32_t MainArcadeRaceLaunch_SteerNearest(|static uint32_t MainArcadeRosterProof_AutopilotNearest(")
+    string(REPLACE "|" ";" pair_list "${pair}")
+    list(GET pair_list 0 caller_opener)
+    list(GET pair_list 1 proof_opener)
+    ctr_steer_function("${caller_source_path}" "${caller_code}" "${caller_opener}" FALSE caller_function)
+    ctr_steer_function("${proof_source_path}" "${proof_code}" "${proof_opener}" FALSE proof_function)
+    ctr_steer_normalize("${caller_function}" caller_function_flat)
+    ctr_steer_normalize("${proof_function}" proof_function_flat)
+    if(NOT caller_function_flat STREQUAL proof_function_flat)
+        message(FATAL_ERROR "arcade link hook isolation: ${caller_opener}...) must be the roster proof's ${proof_opener}...) after the names are normalized ('${caller_function_flat}' vs '${proof_function_flat}')")
+    endif()
+endforeach()
+ctr_steer_function("${caller_source_path}" "${caller_code}" "static uint32_t MainArcadeRaceLaunch_SteerButtons(" TRUE caller_steer)
+ctr_steer_function("${proof_source_path}" "${proof_code}" "static uint32_t MainArcadeRosterProof_AutopilotSteer(" TRUE proof_steer)
+ctr_steer_normalize("${caller_steer}" caller_steer_flat)
+ctr_steer_normalize("${proof_steer}" proof_steer_flat)
+if(NOT caller_steer_flat STREQUAL proof_steer_flat)
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_SteerButtons must steer as the roster proof's MainArcadeRosterProof_AutopilotSteer after the names and the target's storage are normalized ('${caller_steer_flat}' vs '${proof_steer_flat}')")
+endif()
+# The compared bodies are the steering, not two empty matches.
+ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_SteerButtons)" "${caller_steer_flat}"
+    "TARGET = NEAREST(level, count, kartX, kartY, kartZ);" "VALID = 1u;"
+    "for (uint32_t guard = 0; guard < count; guard++)" "if (!NativeArcadeLinkAutopilot_Passed(&pass))" "target = NEXT(level, count, target);"
+    "TARGET = target;" "for (uint32_t step = 0; step < K_LOOKAHEAD; step++)" "aim = NEXT(level, count, aim);"
+    "return NativeArcadeLinkAutopilot_Steer(&steer);")
+# The restart-point count guard.
+set(steer_count_guard "if ((level != NULL) && (level->ptr_restart_points != NULL) && (level->cnt_restart_points > 0) && (level->cnt_restart_points < K_MAX_POINTS)) { count = (uint32_t)level->cnt_restart_points; }")
+ctr_steer_normalize("${caller_code}" caller_code_steer_flat)
+ctr_steer_normalize("${proof_code}" proof_code_steer_flat)
+ctr_require_literal("${caller_source_path}" "${caller_code_steer_flat}" "${steer_count_guard}")
+ctr_require_literal("${proof_source_path}" "${proof_code_steer_flat}" "${steer_count_guard}")
+# The constants.
+function(ctr_define_value relative_path source name out_var)
+    string(REGEX MATCHALL "#[ \t]*define[ \t]+${name}[ \t]+[^ \t\r\n]+" definitions "${source}")
+    list(LENGTH definitions definition_count)
+    if(NOT definition_count EQUAL 1)
+        message(FATAL_ERROR "arcade link hook isolation: ${relative_path} must define ${name} exactly once (found ${definition_count})")
+    endif()
+    string(REGEX REPLACE "^#[ \t]*define[ \t]+${name}[ \t]+" "" value "${definitions}")
+    set(${out_var} "${value}" PARENT_SCOPE)
+endfunction()
+set(proof_header_path "include/platform/native_arcade_roster_proof.h")
+ctr_read_source("${proof_header_path}" proof_header)
+foreach(entry IN ITEMS
+        "MAIN_ARCADE_RACE_LAUNCH_STEER_LOOKAHEAD|${proof_source_path}|MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_LOOKAHEAD|1u"
+        "MAIN_ARCADE_RACE_LAUNCH_STEER_WORLD_SHIFT|${proof_source_path}|MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_WORLD_SHIFT|8"
+        "MAIN_ARCADE_RACE_LAUNCH_STEER_MAX_POINTS|${proof_source_path}|MAIN_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_POINTS|0xFF"
+        "MAIN_ARCADE_RACE_LAUNCH_STEER_PAD_ID|${proof_header_path}|NATIVE_ARCADE_ROSTER_PROOF_PAD_ID_DIGITAL|0x41u"
+        "MAIN_ARCADE_RACE_LAUNCH_STEER_ANALOG|${proof_header_path}|NATIVE_ARCADE_ROSTER_PROOF_PAD_ANALOG_CENTRE|0x80u"
+        "MAIN_ARCADE_RACE_LAUNCH_STEER_NONE_HELD|${proof_header_path}|NATIVE_ARCADE_ROSTER_PROOF_BUTTONS_NONE|0xFFFFu")
+    string(REPLACE "|" ";" entry_list "${entry}")
+    list(GET entry_list 0 caller_name)
+    list(GET entry_list 1 other_path)
+    list(GET entry_list 2 other_name)
+    list(GET entry_list 3 expected_value)
+    if(other_path STREQUAL proof_header_path)
+        set(other_text "${proof_header}")
+    else()
+        set(other_text "${proof_code}")
+    endif()
+    ctr_define_value("${caller_source_path}" "${caller_code}" "${caller_name}" caller_value)
+    ctr_define_value("${other_path}" "${other_text}" "${other_name}" other_value)
+    if(NOT caller_value STREQUAL expected_value OR NOT other_value STREQUAL expected_value)
+        message(FATAL_ERROR "arcade link hook isolation: ${caller_name} (${caller_value}) and ${other_name} of ${other_path} (${other_value}) must both be ${expected_value}")
+    endif()
+endforeach()
+ctr_find_block("${caller_source_path}" "${caller_code}"
+    "static int MainArcadeRaceLaunch_AutopilotSample(const struct GameTracker *gGT, uint32_t raceTick, struct NativeArcadeLinkHostPad *sample)"
+    steer_sample_begin steer_sample_end)
+math(EXPR steer_sample_length "${steer_sample_end} - ${steer_sample_begin} + 1")
+string(SUBSTRING "${caller_code}" ${steer_sample_begin} ${steer_sample_length} steer_sample_block)
+ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_AutopilotSample)" "${steer_sample_block}"
+    "uint32_t held = NATIVE_ARCADE_LINK_AUTOPILOT_BUTTON_CROSS;"
+    "held = MainArcadeRaceLaunch_SteerButtons(level, count, driver);"
+    "word = MAIN_ARCADE_RACE_LAUNCH_STEER_NONE_HELD & ~held;"
+    "sample->id = MAIN_ARCADE_RACE_LAUNCH_STEER_PAD_ID;"
+    "sample->buttons[0] = (uint8_t)(word & 0xFFu);" "sample->buttons[1] = (uint8_t)((word >> 8) & 0xFFu);"
+    "sample->analog[axis] = MAIN_ARCADE_RACE_LAUNCH_STEER_ANALOG;")

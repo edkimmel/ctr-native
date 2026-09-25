@@ -2522,7 +2522,12 @@ NativeArcadeLinkAutopilot_Steer's turn: active low (0xFFFF with the held
 bits cleared, low byte first), status 0, id 0x41, analog 0x80, connected
 1. It is built from race tick k's facts as tick k's sample; the drive
 commits it for a later tick (LR-3). ptr_restart_points is named only in
-the caller's CTR_INTERNAL part.
+the caller's CTR_INTERNAL part (since the part 2 review, level1 and
+cnt_restart_points too), and the steering helpers are the roster proof's
+autopilot helpers under other names (hook 16k). The non-internal #else
+stand-in is never compiled today: ctr_native always defines CTR_INTERNAL
+(CMakeLists.txt, its target_compile_definitions), so it only keeps the
+source building should a non-internal target be added.
 
 LR-66 The committed pads' install (LR-S10 part 2, LR-4). The committed
 pads of a GO go to the pad bus only through
@@ -2530,7 +2535,13 @@ MainArcadeRaceLaunch_InstallCommitted, the one conversion from
 NativeArcadeLinkHostPad to PlatformInputPadSnapshot (field by field,
 reserved zeroed), called only in Apply's installCommitted block, which
 comes before, and excludes, the neutral install. A failed install is
-logged once per race (the neutral install's rule). The caller
+logged once per race (the neutral install's rule) and nothing more: the
+core took the GO already, so it is not a DRIVE_FAILED; the cabinet would
+run the tick on its previous pads, and the next digests would disagree,
+ending the race as a desync (OUTCOME). It is practically unreachable:
+Platform_InputInstallPadSnapshots fails only for a NULL source or a count
+below 4, and the caller passes a stack array and
+PLATFORM_INPUT_PAD_COUNT (4). The caller
 static-asserts the mirror: the same size and every field's offset, and
 NATIVE_ARCADE_LINK_HOST_RACE_PADS == PLATFORM_INPUT_PAD_COUNT.
 
@@ -2545,8 +2556,12 @@ options right after the Init (reported only; no decision reads it), and
 the report, now "arcade link autopilot v2", gains the line "race ticks
 <n>" right after "ticks <n>". The checker requires exactly one such line
 in each report, equal to the 300 it passed, and so the same nonzero cap on
-both cabinets (which LR-60 requires), and prints each race's drive end
-line from both stdouts.
+both cabinets (which LR-60 requires). Since the part 2 review it also
+requires, on each cabinet's stdout, exactly one "race <n> drive end:
+<kind> at race tick <t>" line per race (n its launch number) and no
+other, reading "race tick limit at race tick 300", with the end kind and
+race tick of the k-th race equal across the cabinets (it only printed
+them before).
 
 LR-68 The isolation of the race caller (LR-S10 part 2).
 main_arcade_link_hook_isolation 16j pins the drive tick's order, the one
@@ -2556,7 +2571,14 @@ sample's conversion, the pad mirror's static asserts, the one report per
 drive failure, ptr_restart_points only in the CTR_INTERNAL part, and
 LR-18: no write of actionsFlagSet or gameMode1 in any spelling, no
 MainGameEnd_Initialize (comments included), and ACTION_RACE_FINISHED only
-in its mirror's static assert. native_arcade_link_host_isolation rule 3g
+in its mirror's static assert. Since the part 2 review 16j also pins that
+both of the drive tick's DriveFailed calls are followed directly by their
+return, and names level1 and cnt_restart_points only in the CTR_INTERNAL
+part; and a new 16k pins the steering to the roster proof's autopilot
+(Next and Nearest identical, the steering body identical once the names
+and the target's storage are normalized, the same restart-point count
+guard, and the constants: lookahead 1, world shift 8, max points 0xFF,
+and the scripted pad's id 0x41, analog 0x80, and no-button word 0xFFFF). native_arcade_link_host_isolation rule 3g
 allows exactly one game source to name RaceStep and RaceHold, the caller,
 once each, raw text. main_canonical_runtime_isolation: the caller names no
 MainCanonicalRuntime token and projects through ProjectState.
@@ -4573,6 +4595,47 @@ Result, part 2:
   no digest-end failure, and no hold of a full tick period was logged. No
   desync: 300 race ticks per race were committed on both cabinets with
   the V4 digests exchanged.
+
+Review follow-ups (part 2). The follow-ups to the part 2 review change no
+game behaviour; they pin, assert, and document:
+
+- Hook 16j: both DriveFailed calls of MainArcadeRaceLaunch_Drive (the pads,
+  the projection) are followed directly by "return; }", so no race step
+  runs on a stale state after a reported failure; and level1 and
+  cnt_restart_points join ptr_restart_points as names only the
+  CTR_INTERNAL part may use.
+- Hook 16k (new): the duplicated steering is pinned to the roster proof's
+  autopilot, as 16f and 16f2 pin LeaveTitle and the return step (LR-65,
+  LR-68).
+- The gate (tools/arcade-link-launch-check.ps1) asserts the drive end
+  instead of printing it (LR-67): exactly one "race tick limit at race
+  tick 300" drive end per race on each cabinet, equal across them.
+- MainArcadeRaceLaunch_DriveResult says why its logged-only refusal cannot
+  happen; main_arcade_race_launch_core_unit's new
+  TestDriveResultCallerPattern pins it: 400000 frames of the caller's
+  pattern (Step, LaunchResult on an armAndLaunch frame, one valid
+  DriveResult on every driveStep frame) over pseudo-random valid inputs
+  and results, with no DriveResult and no Step refused, every result and
+  a result-less drive end seen.
+- LR-65 notes that the non-internal stand-in is never compiled today;
+  LR-66 notes that a failed committed install is only logged and would
+  surface as a desync (OUTCOME), not DRIVE_FAILED, and is practically
+  unreachable.
+- Probes, each reverted (the tree was byte-identical afterwards): the
+  return after the pad-freeze DriveFailed removed, the caller's aim loop
+  stepping from the target, the caller's Nearest taking ties (<=), the
+  caller's analog centre 0x7F, level1 read in the facts, and
+  cnt_restart_points named in the #else stand-in:
+  main_arcade_link_hook_isolation failed each time; the core refusing a
+  DriveResult whose frame's stage is OTHER:
+  main_arcade_race_launch_core_unit failed in
+  TestDriveResultCallerPattern; the gate's drive end check, run on
+  synthetic stdouts (race tick 299, an outcome end, two ends for race 1,
+  none for race 2), reported each and passed the good log.
+- Fast suite (-LE live): 154 of 154 passed. The live gate
+  arcade_link_launch runs on the committed follow-up tree; its result is
+  reported with the commit, not recorded here (recording it would change
+  the tree the gate ran on).
 
 Plan:
 
