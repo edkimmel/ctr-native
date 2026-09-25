@@ -818,8 +818,8 @@ static int TestLeadParkedDivergence(void)
 /*
  * A forged digest for frame r + D + 1, one past the lead bound, is the
  * VERIFY_AHEAD protocol fault, never a divergence.  Its report holds the
- * bundle's frameIndex and senderSlot, and detail is r + 1, the number of
- * frames recorded (0 while nothing is): this replaces the "never simulated"
+ * bundle's frameIndex and senderSlot, and detail is r + 1, the first frame not
+ * yet recorded (0 while nothing is recorded): this replaces the "never simulated"
  * FRAME_UNAVAILABLE case.  D and the consumed frame are pinned: D = 2 at
  * consumed frame r and D = 3 at r + 1 reach the session, and D = 3 at r is a
  * WINDOW_OVERRUN instead.  The bound itself, frame r + D, parks.
@@ -1066,6 +1066,273 @@ static int TestFrameUnavailableRetired(void)
 	CHECK(report->remoteCombinedDigest == state.combinedDigest);
 	CHECK(NativeLockstepSession_FirstFault(&g_b) == NULL);
 	CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_DIVERGED);
+	return 0;
+}
+
+/*
+ * On arrival, a digest for a frame at or below r that recording skipped is
+ * FRAME_UNAVAILABLE as well: the history holds no record of it.  D = 2 and
+ * frames 0 to 3 and 5 are recorded, so r is 5 and frame 4, inside the D + 2 = 4
+ * deep history, was skipped; its slot (4 % 4) still holds frame 0's bytes, so
+ * the frame tag is what refuses it.
+ */
+static int TestFrameUnavailableSkippedOnArrival(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeCanonicalStateV4 state;
+	const struct NativeLockstepDivergenceReport *report;
+	uint8_t crafted[BUNDLE_BYTES];
+	const uint32_t skipped = 4u;
+
+	FillConfig(&config, UINT32_C(0x01020304));
+	NativeLockstepSession_Init(&g_b);
+	CHECK(NativeLockstepSession_Open(&g_b, &config, INPUT_DELAY, (uint8_t)SLOT_B) == 1);
+	for (uint32_t frame = 0; frame <= skipped + 1u; frame++)
+	{
+		if (frame == skipped)
+		{
+			continue;
+		}
+		CHECK(MakeState(&state, frame, 0u) == 0);
+		CHECK(NativeLockstepSession_RecordLocalDigests(&g_b, &state) == 1);
+	}
+	CHECK(g_b.recordedFrame == skipped + 1u);
+	/* Not retired: only the skip makes the frame incomparable. */
+	CHECK((g_b.recordedFrame - skipped) < g_b.historyCapacity);
+	CHECK(g_b.localDigests[skipped % g_b.historyCapacity].present == 1u);
+	CHECK(g_b.localDigests[skipped % g_b.historyCapacity].frameIndex == 0u);
+
+	/* Frame 3, recorded, still compares clean on arrival. */
+	CHECK(MakeState(&state, 3u, 0u) == 0);
+	CHECK(CraftBundle(&g_b, (uint8_t)SLOT_A, 3u + INPUT_DELAY + 1u, 3u, 1, state.domainDigests, state.combinedDigest, crafted) == 0);
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, crafted, sizeof(crafted)) == NATIVE_LOCKSTEP_SESSION_OK);
+	CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_RUNNING);
+
+	/* Frame 4, skipped: the digests are the ones a clean record would hold. */
+	CHECK(MakeState(&state, skipped, 0u) == 0);
+	CHECK(CraftBundle(&g_b, (uint8_t)SLOT_A, skipped + INPUT_DELAY + 1u, skipped, 1, state.domainDigests, state.combinedDigest,
+	                  crafted) == 0);
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, crafted, sizeof(crafted)) == NATIVE_LOCKSTEP_SESSION_DIVERGENCE);
+	report = NativeLockstepSession_FirstDivergence(&g_b);
+	CHECK(report != NULL);
+	CHECK(report->mask == NATIVE_LOCKSTEP_DIVERGENCE_FRAME_UNAVAILABLE);
+	CHECK(report->canonicalDomainMask == 0u);
+	CHECK(report->frameIndex == skipped);
+	CHECK(report->senderSlot == SLOT_A);
+	CHECK(report->localCombinedDigest == 0u);
+	CHECK(report->remoteCombinedDigest == state.combinedDigest);
+	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+	{
+		CHECK(report->localDomainDigests[i] == 0u);
+		CHECK(report->remoteDomainDigests[i] == state.domainDigests[i]);
+	}
+	/* Compared on arrival, not parked, and a divergence, not a fault. */
+	CHECK(ParkedCount(&g_b, SLOT_A) == 0u);
+	CHECK(NativeLockstepSession_FirstFault(&g_b) == NULL);
+	CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_DIVERGED);
+	return 0;
+}
+
+/*
+ * The match config admits only the two-cabinet profile's two humans, so Open
+ * never makes a third peer.  The peer and park arrays are indexed by config
+ * slot for every NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY slot, though, so a third
+ * peer is added the way Open adds one: a window at the session's delay and the
+ * slot marked active.
+ */
+#define SLOT_C 2u
+
+static int AddPeer(struct NativeLockstepSession *session, uint32_t slot)
+{
+	CHECK(session->peerActive[slot] == 0u);
+	CHECK(NativeLockstepInputWindow_Init(&session->peers[slot], session->inputDelay) == 1);
+	session->peerActive[slot] = 1u;
+	session->peerCount++;
+	return 0;
+}
+
+/* B with peers A and C, frames 0 to r recorded clean. */
+static int OpenThreeSlot(uint32_t r)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeCanonicalStateV4 state;
+
+	FillConfig(&config, UINT32_C(0x01020304));
+	NativeLockstepSession_Init(&g_b);
+	CHECK(NativeLockstepSession_Open(&g_b, &config, INPUT_DELAY, (uint8_t)SLOT_B) == 1);
+	CHECK(AddPeer(&g_b, SLOT_C) == 0);
+	CHECK(g_b.peerCount == 2u);
+	for (uint32_t frame = 0; frame <= r; frame++)
+	{
+		CHECK(MakeState(&state, frame, 0u) == 0);
+		CHECK(NativeLockstepSession_RecordLocalDigests(&g_b, &state) == 1);
+	}
+	return 0;
+}
+
+/*
+ * Three slots (LR-30's order).  Peers A (slot 0) and C (slot 2) both park frame
+ * r + 1, C's record delivered first.  With both digests flipped differently the
+ * lower slot's divergence is the one reported, whatever the arrival order; with
+ * only C's flipped, C's is.  A re-open clears C's park.
+ */
+static int TestThreeSlotParkOrder(void)
+{
+	static const struct
+	{
+		uint32_t worldA;
+		uint32_t worldC;
+		uint32_t reported;
+	} cases[] = {{1u, 2u, SLOT_A}, {0u, 2u, SLOT_C}};
+	struct NativeMatchConfigV1 config;
+	struct NativeCanonicalStateV4 clean;
+	struct NativeCanonicalStateV4 remoteA;
+	struct NativeCanonicalStateV4 remoteC;
+	const struct NativeCanonicalStateV4 *expected;
+	const struct NativeLockstepDivergenceReport *report;
+	uint8_t fromA[BUNDLE_BYTES];
+	uint8_t fromC[BUNDLE_BYTES];
+	static const uint8_t zeroPark[sizeof(g_b.parked)] = {0};
+	const uint32_t r = 3u;
+	const uint32_t parkedFrame = r + 1u;
+	const uint32_t frameIndex = parkedFrame + INPUT_DELAY + 1u;
+
+	FillConfig(&config, UINT32_C(0x01020304));
+	CHECK(MakeState(&clean, parkedFrame, 0u) == 0);
+	for (size_t n = 0; n < sizeof(cases) / sizeof(cases[0]); n++)
+	{
+		CHECK(MakeState(&remoteA, parkedFrame, cases[n].worldA) == 0);
+		CHECK(MakeState(&remoteC, parkedFrame, cases[n].worldC) == 0);
+		CHECK(remoteC.combinedDigest != remoteA.combinedDigest);
+		CHECK(remoteC.combinedDigest != clean.combinedDigest);
+		expected = (cases[n].reported == SLOT_A) ? &remoteA : &remoteC;
+
+		CHECK(OpenThreeSlot(r) == 0);
+		CHECK(CraftBundle(&g_b, (uint8_t)SLOT_C, frameIndex, parkedFrame, 1, remoteC.domainDigests, remoteC.combinedDigest, fromC) == 0);
+		CHECK(CraftBundle(&g_b, (uint8_t)SLOT_A, frameIndex, parkedFrame, 1, remoteA.domainDigests, remoteA.combinedDigest, fromA) == 0);
+		CHECK(NativeLockstepSession_AcceptBundle(&g_b, fromC, sizeof(fromC)) == NATIVE_LOCKSTEP_SESSION_OK);
+		CHECK(NativeLockstepSession_AcceptBundle(&g_b, fromA, sizeof(fromA)) == NATIVE_LOCKSTEP_SESSION_OK);
+		CHECK(ParkedCount(&g_b, SLOT_A) == 1u);
+		CHECK(ParkedCount(&g_b, SLOT_C) == 1u);
+		CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_RUNNING);
+
+		CHECK(RecordFrame(&g_b, parkedFrame, 0u) == 0);
+		CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_DIVERGED);
+		report = NativeLockstepSession_FirstDivergence(&g_b);
+		CHECK(report != NULL);
+		CHECK(report->senderSlot == cases[n].reported);
+		CHECK(report->frameIndex == parkedFrame);
+		CHECK(report->mask == (NATIVE_LOCKSTEP_DIVERGENCE_COMBINED | NATIVE_LOCKSTEP_DIVERGENCE_CANONICAL_DOMAIN));
+		CHECK(report->canonicalDomainMask == (UINT32_C(1) << DOMAIN_WORLD));
+		CHECK(report->localCombinedDigest == clean.combinedDigest);
+		CHECK(report->remoteCombinedDigest == expected->combinedDigest);
+		CHECK(memcmp(report->localDomainDigests, clean.domainDigests, sizeof(report->localDomainDigests)) == 0);
+		CHECK(memcmp(report->remoteDomainDigests, expected->domainDigests, sizeof(report->remoteDomainDigests)) == 0);
+		/* Both entries were settled by that one record. */
+		CHECK(ParkedCount(&g_b, SLOT_A) == 0u);
+		CHECK(ParkedCount(&g_b, SLOT_C) == 0u);
+		CHECK(NativeLockstepSession_FirstFault(&g_b) == NULL);
+	}
+
+	/* A re-open clears C's park.  Open itself zeroes the session, so the
+	 * park is cleared even on a struct Init did not wipe first. */
+	CHECK(OpenThreeSlot(r) == 0);
+	CHECK(CraftBundle(&g_b, (uint8_t)SLOT_C, frameIndex, parkedFrame, 1, remoteC.domainDigests, remoteC.combinedDigest, fromC) == 0);
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, fromC, sizeof(fromC)) == NATIVE_LOCKSTEP_SESSION_OK);
+	CHECK(ParkedCount(&g_b, SLOT_C) == 1u);
+	g_b.mode = NATIVE_LOCKSTEP_IDLE;
+	CHECK(NativeLockstepSession_Open(&g_b, &config, INPUT_DELAY, (uint8_t)SLOT_B) == 1);
+	CHECK(memcmp(g_b.parked, zeroPark, sizeof(zeroPark)) == 0);
+	/* And through the documented path, Init then Open. */
+	CHECK(OpenThreeSlot(r) == 0);
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, fromC, sizeof(fromC)) == NATIVE_LOCKSTEP_SESSION_OK);
+	CHECK(ParkedCount(&g_b, SLOT_C) == 1u);
+	CHECK(OpenThreeSlot(r) == 0);
+	CHECK(memcmp(g_b.parked, zeroPark, sizeof(zeroPark)) == 0);
+	/* Nothing is left to compare at the record of that frame. */
+	CHECK(RecordFrame(&g_b, parkedFrame, 0u) == 0);
+	CHECK(NativeLockstepSession_Mode(&g_b) == NATIVE_LOCKSTEP_RUNNING);
+	CHECK(NativeLockstepSession_FirstDivergence(&g_b) == NULL);
+	CHECK(NativeLockstepSession_FirstFault(&g_b) == NULL);
+	return 0;
+}
+
+/*
+ * The send order (ComposeBundle's header comment): the r + D bound holds
+ * only if the receiver sends the bundle for frame f after recording f - D and
+ * nothing before its first record.  ComposeBundle permits one frame earlier and
+ * does not enforce the order, so a receiver that sends early lets a leader that
+ * keeps LR-2's order reach a digest past the bound: VERIFY_AHEAD.
+ */
+static int TestSendOrderBound(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct LeadRun run;
+	const struct NativeLockstepFaultReport *fault;
+	const uint32_t d = INPUT_DELAY;
+	uint32_t r;
+
+	/* 1. B sends frame r + D + 1 right after recording r, one frame early. */
+	InitLeadRun(&run, d, 1u);
+	r = run.r;
+	CHECK(DriveToReceiverRecord(&run) == 0);
+	CHECK(SendFrame(&g_b, SLOT_B, r + d + 1u, g_sentB) == 0);
+	CHECK(NativeLockstepSession_AcceptBundle(&g_a, g_sentB[r + d + 1u], BUNDLE_BYTES) == NATIVE_LOCKSTEP_SESSION_OK);
+	/* A keeps LR-2's order and can now take r + D + 1 as well. */
+	for (uint32_t k = r; k <= r + d + 2u; k++)
+	{
+		CHECK(RecordFrame(&g_a, k, 0u) == 0);
+		CHECK(SendFrame(&g_a, SLOT_A, k + d, g_sentA) == 0);
+		CHECK(TakeFrame(&g_a, k) == ((k <= r + d + 1u) ? NATIVE_LOCKSTEP_SESSION_OK : NATIVE_LOCKSTEP_SESSION_STALL));
+	}
+	for (uint32_t frame = r + d; frame <= r + 2u * d + 1u; frame++)
+	{
+		CHECK(NativeLockstepSession_AcceptBundle(&g_b, g_sentA[frame], BUNDLE_BYTES) == NATIVE_LOCKSTEP_SESSION_OK);
+	}
+	CHECK(ParkedCount(&g_b, SLOT_A) == d);
+	/* A's bundle for r + 2D + 2 carries frame r + D + 1. */
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, g_sentA[r + 2u * d + 2u], BUNDLE_BYTES) == NATIVE_LOCKSTEP_SESSION_FAULT);
+	fault = NativeLockstepSession_FirstFault(&g_b);
+	CHECK(fault != NULL);
+	CHECK(fault->cause == NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD);
+	CHECK(fault->frameIndex == r + 2u * d + 2u);
+	CHECK(fault->senderSlot == SLOT_A);
+	CHECK(fault->detail == r + 1u);
+	CHECK(NativeLockstepSession_FirstDivergence(&g_b) == NULL);
+
+	/* 2. B sends the digest-free frames 0 to D - 1 before its first record. */
+	FillConfig(&config, UINT32_C(0x01020304));
+	CHECK(OpenPair(&config, &config, d, d) == 0);
+	for (uint32_t frame = 0; frame < d; frame++)
+	{
+		CHECK(SendFrame(&g_b, SLOT_B, frame, g_sentB) == 0);
+		CHECK(NativeLockstepSession_AcceptBundle(&g_a, g_sentB[frame], BUNDLE_BYTES) == NATIVE_LOCKSTEP_SESSION_OK);
+	}
+	/* A keeps LR-2's order: race tick 0 records frame 0 before it composes
+	 * frames 0 to D - 1. */
+	for (uint32_t k = 0; k < d; k++)
+	{
+		CHECK(RecordFrame(&g_a, k, 0u) == 0);
+		for (uint32_t frame = 0; (k == 0u) && (frame < d); frame++)
+		{
+			CHECK(SendFrame(&g_a, SLOT_A, frame, g_sentA) == 0);
+		}
+		CHECK(SendFrame(&g_a, SLOT_A, k + d, g_sentA) == 0);
+		CHECK(TakeFrame(&g_a, k) == NATIVE_LOCKSTEP_SESSION_OK);
+	}
+	CHECK(g_b.recordedAny == 0u);
+	for (uint32_t frame = 0; frame <= d; frame++)
+	{
+		CHECK(NativeLockstepSession_AcceptBundle(&g_b, g_sentA[frame], BUNDLE_BYTES) == NATIVE_LOCKSTEP_SESSION_OK);
+	}
+	/* A's bundle for D + 1, sent on its tick 1, carries frame 0. */
+	CHECK(NativeLockstepSession_AcceptBundle(&g_b, g_sentA[d + 1u], BUNDLE_BYTES) == NATIVE_LOCKSTEP_SESSION_FAULT);
+	fault = NativeLockstepSession_FirstFault(&g_b);
+	CHECK(fault != NULL);
+	CHECK(fault->cause == NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD);
+	CHECK(fault->frameIndex == d + 1u);
+	CHECK(fault->detail == 0u);
+	CHECK(NativeLockstepSession_FirstDivergence(&g_b) == NULL);
 	return 0;
 }
 
@@ -1598,9 +1865,12 @@ int main(void)
 	CHECK(TestDivergence() == 0);
 	CHECK(TestVerifyAheadFault() == 0);
 	CHECK(TestFrameUnavailableRetired() == 0);
+	CHECK(TestFrameUnavailableSkippedOnArrival() == 0);
 	CHECK(TestLeadParksAndComparesClean() == 0);
 	CHECK(TestLeadParkedDivergence() == 0);
 	CHECK(TestParkedLatchRules() == 0);
+	CHECK(TestThreeSlotParkOrder() == 0);
+	CHECK(TestSendOrderBound() == 0);
 	CHECK(TestOutOfOrderLowerVerifiedFrameStillCompared() == 0);
 	CHECK(TestLateRedeliveryIsNotADivergence() == 0);
 	CHECK(TestWindowOverrunLatchesNoDivergence() == 0);

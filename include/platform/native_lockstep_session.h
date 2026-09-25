@@ -73,14 +73,16 @@ enum NativeLockstepSessionResult
 /*
  * Same bit-flag idiom as enum NativeReplaySchedulerV4MismatchMask.
  * FRAME_UNAVAILABLE covers a peer digest for a frame the local side cannot
- * compare: a frame already retired from the digest history when the digest
- * arrives, or a parked digest (see AcceptBundle) whose frame recording skipped,
- * so no local digest of that frame ever existed.  It is a divergence, not a
- * protocol fault: the bundle is well formed but the two simulations are no
- * longer comparable, so it never produces an enum NativeLockstepFaultCause
- * value.  A digest for a frame never simulated and beyond the lead bound, more
- * than inputDelay frames after the last recorded frame, is not this divergence
- * but the protocol fault NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD.
+ * compare.  On arrival that is a frame already retired from the digest
+ * history, or a frame at or below r, the last recorded frame, that recording
+ * skipped.  At a record it is a parked digest (see AcceptBundle) whose frame
+ * recording skipped.  In the skipped cases no local digest of that frame ever
+ * existed.  It is a divergence, not a protocol fault: the bundle is well formed
+ * but the two simulations are no longer comparable, so it never produces an
+ * enum NativeLockstepFaultCause value.  A digest for a frame never simulated
+ * and beyond the lead bound, more than inputDelay frames after the last
+ * recorded frame, is not this divergence but the protocol fault
+ * NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD.
  */
 enum NativeLockstepDivergenceMask
 {
@@ -120,9 +122,8 @@ struct NativeLockstepDivergenceReport
  * NATIVE_LOCKSTEP_FAULT_WINDOW_OVERRUN it is the peer window's consumedFrame,
  * for a NATIVE_LOCKSTEP_FAULT_BAD_SLOT raised by an unexpected sender it is
  * the local slot, and for the session-local
- * NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD it is the number of frames recorded
- * locally when the record arrived, recordedFrame + 1, or 0 while nothing has
- * been recorded: the bound the record's verified frame broke.
+ * NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD it is recordedFrame + 1 when the record
+ * arrived, the first frame not yet recorded (0 while nothing is recorded).
  */
 struct NativeLockstepFaultReport
 {
@@ -281,6 +282,18 @@ int NativeLockstepSession_RecordLocalDigests(struct NativeLockstepSession *sessi
  * lagging frame's digests must already have been recorded; if they have not, or
  * have been retired from the history, the call is refused rather than silently
  * sending an unverified bundle.  Requires the RUNNING mode.
+ *
+ * Send order.  AcceptBundle's lead bound (a peer digest at most inputDelay
+ * frames past the receiver's last recorded frame, and none before its first
+ * record) holds only if every peer keeps the step order of
+ * docs/LOCKSTEP_RACE_MILESTONE.md LR-2 (record frame k, submit, then send the
+ * bundle for k + inputDelay): a peer sends the bundle for frame f only after
+ * recording frame f - inputDelay, and sends no bundle at all, not even the
+ * digest-free frames 0 to inputDelay - 1, before its first record.  This call
+ * requires only frame f - inputDelay - 1 recorded, one frame earlier, and does
+ * not enforce the order, because harnesses compose early digest-free frames.
+ * A caller that sends earlier lets a peer that conforms reach a digest past
+ * the bound, which the receiver latches as the VERIFY_AHEAD fault.
  */
 int NativeLockstepSession_ComposeBundle(const struct NativeLockstepSession *session, uint32_t frameIndex, uint8_t *bytes, size_t capacity,
                                         size_t *sizeOut);
@@ -304,13 +317,19 @@ int NativeLockstepSession_ComposeBundle(const struct NativeLockstepSession *sess
  * An ACCEPTED record carrying a digest is classified against r, the last
  * locally recorded frame, and D, the input delay.  A verified frame at or below
  * r is compared on arrival against the local digest history (FRAME_UNAVAILABLE
- * once retired from it).  A verified frame from r + 1 to r + D is parked, and
- * RecordLocalDigests compares it when it records that frame: a peer leading by
- * up to D + 1 ticks is the normal state of a linked race, not a desync.  A
- * verified frame after r + D, or any digest while nothing has been recorded, is
- * impossible from a conforming peer and latches the protocol fault
+ * once retired from it, or when recording skipped that frame).  A verified
+ * frame from r + 1 to r + D is parked, and RecordLocalDigests compares it when
+ * it records that frame: a peer leading by up to D + 1 ticks is the normal
+ * state of a linked race, not a desync.  A verified frame after r + D, or any
+ * digest while nothing has been recorded, latches the protocol fault
  * NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD; the record stays in the peer window, but
- * a FAULTED session never takes it.  No explicit dedup structure keeps one
+ * a FAULTED session never takes it.  That bound is impossible to break for a
+ * conforming peer only while this side keeps the send order of ComposeBundle:
+ * the bundle for frame f sent only after recording f - D, and no bundle at all
+ * before the first record.  The peer's lead is limited by the frames this side
+ * has sent, so a bundle sent one frame early lets a conforming peer's digest
+ * reach r + D + 1, and one sent before the first record lets it send a digest
+ * while nothing is recorded.  No explicit dedup structure keeps one
  * verifiedFrameIndex from being compared or parked twice: the window's
  * occupancy-slot check in Offer
  * (platform/native_lockstep_input_window.c:83-97) accepts a given frameIndex

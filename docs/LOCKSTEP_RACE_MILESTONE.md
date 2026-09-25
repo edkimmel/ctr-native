@@ -1009,21 +1009,22 @@ record (LR-9). The glue logs the divergence report once:
 
     arcade link: race <n> out of sync at race tick <v> domains <mask> local <hex16> remote <hex16>
 
-A lead is not a desync. Today the session compares a digest on arrival and
-latches FRAME_UNAVAILABLE when the frame is newer than its last recorded
-one (section 2.4). But one cabinet leading the other by one or more ticks
-is the normal state of a linked race under fixed pacing (risk 4), and the
-adapter drains bundles before the caller records (LR-2). So the session
-changes (LR-S5, Review required):
+A lead is not a desync. Before LR-S5 the session compared a digest on
+arrival and latched FRAME_UNAVAILABLE when the frame was newer than its
+last recorded one (section 2.4). But one cabinet leading the other by one
+or more ticks is the normal state of a linked race under fixed pacing
+(risk 4), and the adapter drains bundles before the caller records
+(LR-2). So the session changes (LR-S5, Review required):
 
 - A peer digest for a frame not yet recorded locally is parked, and
   RecordLocalDigests compares it when it records that frame. A mismatch
   latches exactly the divergence the on-arrival comparison would have:
   the same frame, sender, masks, and both digests.
 - A digest for a frame still in the history is compared on arrival, as
-  today.
+  before LR-S5.
 - FRAME_UNAVAILABLE stays only for a frame already retired from the
-  history, and for a parked frame that recording skips.
+  history, or a frame at or below r (the last recorded frame) that
+  recording skipped, and for a parked frame that recording skips.
 
 The bound. A leader can take only the frames the other cabinet has sent.
 Let r be the other cabinet's last recorded frame. It sent frame f on race
@@ -1681,6 +1682,13 @@ recorded or its frame is after r + D, parked from r + 1 to r + D, and
 compared on arrival at or below r. A VERIFY_AHEAD record stays in the peer
 window, but a FAULTED session never takes it. Classification is the same
 in every non-IDLE mode, so a fault still latches after a divergence.
+The r + D bound is sound only while every cabinet keeps LR-2's step
+order: it sends the bundle for frame f only after recording f - D, and
+sends no bundle at all, not even the digest-free frames 0 to D - 1,
+before its first record. ComposeBundle needs only f - D - 1 recorded and
+does not enforce the order (the peer-link harnesses compose early
+digest-free frames), so the drive core keeps it (LR-S8), and a bundle
+sent one frame early lets a conforming peer trip VERIFY_AHEAD.
 
 LR-30 Settling parked digests (LR-S5). RecordLocalDigests writes the
 record first, then settles the parked frames from the previous r + 1 up
@@ -1689,7 +1697,9 @@ frame below the recorded one was skipped and is FRAME_UNAVAILABLE (local
 digests zero, remote from the park); the recorded frame is compared. Every
 settled entry is cleared. The once-only latch therefore keeps the earliest
 frame: a skipped clean frame outranks a real mismatch parked after it. The
-call returns 1 whatever it latched.
+call returns 1 whatever it latched. On arrival, a digest for a frame at or
+below r that recording skipped is FRAME_UNAVAILABLE too: FindDigests finds
+no record of it.
 
 LR-31 Latch priority with parked entries (LR-S5). No call both compares a
 parked digest and faults: AcceptBundle parks or faults, and
@@ -2520,6 +2530,14 @@ Result:
   naming it in the window source failed native_lockstep_isolation.
 - All other lockstep, peer-link, netplay, and lobby tests pass unchanged.
   Fast suite (-LE live): 151 of 151 passed.
+- Review follow-ups: the headers and LR-29 state the send order the r + D
+  bound needs (LR-S8 keeps it; TestSendOrderBound shows an early send
+  trips VERIFY_AHEAD); FRAME_UNAVAILABLE also names a skipped frame at or
+  below r on arrival (TestFrameUnavailableSkippedOnArrival); the
+  VERIFY_AHEAD detail is worded as the first frame not yet recorded;
+  TestThreeSlotParkOrder covers slot order and a re-open with three
+  slots; section 10 counts every fault-cause enumerator and requires
+  explicit values.
 
 Plan: LR-11's park, in platform/native_lockstep_session.{c,h}:
 
@@ -2536,10 +2554,10 @@ Plan: LR-11's park, in platform/native_lockstep_session.{c,h}:
 - a verified frame after r + D latches FAULT with the appended local
   cause NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD. Its fault report holds the
   bundle's frameIndex and senderSlot, as every decoded fault does, and
-  detail holds the number of frames recorded locally (r + 1; 0 while
-  nothing is recorded), the bound the digest broke;
-- a retired frame, or a parked frame that recording skips, stays
-  FRAME_UNAVAILABLE.
+  detail holds r + 1, the first frame not yet recorded (0 while nothing
+  is recorded);
+- a retired frame, a frame at or below r that recording skipped, or a
+  parked frame that recording skips, stays FRAME_UNAVAILABLE.
 
 The session header comments that this contradicts are updated in the
 same slice (include/platform/native_lockstep_session.h):
@@ -2619,7 +2637,10 @@ Plan: LR-2, LR-3, LR-5, LR-9 accounting and take classification, LR-12,
 LR-13, LR-14, LR-18. platform/native_arcade_race_drive.{c,h}, library
 ctr_native_arcade_race_drive. It covers:
 
-- per-tick step order;
+- per-tick step order. The drive core must keep LR-2's record, submit,
+  send order: the bundle for frame f only after recording f - D, and no
+  bundle before race tick 0's record, because the session's r + D lead
+  bound depends on it and ComposeBundle does not enforce it (LR-29);
 - the zero frames at race tick 0;
 - the resend window and the kept-bundle ring;
 - the refusal of D above 3;
@@ -2637,6 +2658,9 @@ through the real session library in memory. It covers:
 
 - equal inputs, stall and resume, stall timeout at 90, the start wait at
   900;
+- the send order (LR-29): on every tick, including race tick 0 and a
+  tick after a stall, no bundle for frame f is composed or sent before
+  frame f - D is recorded, and none at all before the first record;
 - a lead of 1 to D + 1 ticks with no divergence;
 - a peer drop and a forced desync on both sides, and a REJECTED take
   after each classified as the outcome, not a local failure;
