@@ -2388,6 +2388,16 @@ LR-60 The internal race-tick-limit override (LR-S10 part 1, for LR-42).
   main.c, which must name it exactly once, in its one call, inside a
   CTR_INTERNAL region (a preprocessor-region scan with its own
   self-check).
+- Both cabinets must be given the same race tick limit. The value is
+  host-local: it is not in the match config and not on the wire, so
+  nothing in band checks that the two sides agree. A mismatch is a stall,
+  not a silent desync: the side with the lower cap L ends at race tick L
+  as RACE_TICK_LIMIT (RACE COMPLETE), stops sending once its
+  finishLingerTicks = 15 linger is over, and the other side, still
+  racing, stalls in the hold into the stall timeout and shows OPPONENT
+  DISCONNECTED. Part 2 records the cap in the autopilot report, so the
+  gate can prove that both cabinets ran with the same cap; part 1 does
+  not change the report.
 - The live gate's value is chosen in part 2, which also adds the option to
   tools/arcade-link-launch-check.ps1; part 1 leaves the script unchanged.
 

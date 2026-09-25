@@ -473,7 +473,10 @@ static int TestPoisonedRaceThenCleanRace(void)
 	return 1;
 }
 
-/* ProjectState's outputs and their snapshots (file scope: the state is large). */
+/* ProjectState's state output and its snapshot, at file scope so that
+ * FillOutputs and Untouched share them without passing them around (the
+ * tests still keep a state of their own on the stack, as TestProjectState's
+ * expected does). */
 static struct NativeCanonicalStateV4 s_state;
 static struct NativeCanonicalStateV4 s_stateBefore;
 

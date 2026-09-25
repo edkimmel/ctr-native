@@ -457,6 +457,18 @@ foreach(pair IN ITEMS "stateScratch|2" "stateOut|3" "wantState|4")
         message(FATAL_ERROR "${prefix}: ${digest_source}'s ProjectTick names ${name} ${hits} time(s), expected ${expected}")
     endif()
 endforeach()
+# Whole file: the scratch is named only by its declaration and ProjectTick's
+# two uses, and ProjectTick only by its definition and the two public calls,
+# so no later accessor can hand the scratch (or the helper) out.
+foreach(pair IN ITEMS "stateScratch|3" "MainArcadeRaceDigest_ProjectTick|3")
+    string(REPLACE "|" ";" pair "${pair}")
+    list(GET pair 0 name)
+    list(GET pair 1 expected)
+    ctr_count_identifier("${digest_c_code}" "${name}" hits)
+    if(NOT hits EQUAL expected)
+        message(FATAL_ERROR "${prefix}: ${digest_source} names ${name} ${hits} time(s), expected ${expected}")
+    endif()
+endforeach()
 ctr_require("${digest_source}" "${digest_c_code}" "\tstruct NativeCanonicalStateV4 stateScratch;\n")
 ctr_require("${digest_header}" "${digest_h_code}"
     "int MainArcadeRaceDigest_ProjectState(uint32_t raceTick, const struct MainArcadeRaceDigestSources *sources,\n\tstruct MainArcadeRaceDigestTick *out, struct NativeCanonicalStateV4 *stateOut);")

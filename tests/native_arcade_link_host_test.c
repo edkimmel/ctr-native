@@ -3055,6 +3055,38 @@ static int TestDriveRefusalsAndResets(void)
 	return 0;
 }
 
+/* LR-60: the next race tick is the limit tick of a capped drive: after both
+ * adapters' Ticks the host's step records it and ends as RACE_TICK_LIMIT (a
+ * finish kind: the finish linger armed, nothing reported), and the caller's
+ * finish report shows RACE COMPLETE with this race number. */
+static int HostLimitTickEnds(uint32_t limit, uint32_t raceNumber)
+{
+	struct NativeArcadeLinkHostDriveState state;
+	uint32_t hostAction = ACT_NONE;
+	uint32_t peerAction = ACT_NONE;
+
+	CHECK(g_hostNext == limit);
+	NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+	CHECK((hostAction == ACT_NONE) && (peerAction == ACT_NONE));
+	CHECK(HostStep(0u) == RACE_END);
+	CHECK(g_driveBad == 0);
+	CHECK(g_hostNext == limit);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_RACE_TICK_LIMIT);
+	CHECK(state.endTick == limit);
+	CHECK(state.raceTick == limit);
+	CHECK(state.graceStartTick == NATIVE_ARCADE_LINK_HOST_NO_TICK);
+	CHECK(state.lingerTicksLeft == NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS);
+	CHECK(state.failureReported == 0u);
+	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalLocalRaceFailure() == 0u);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+	CHECK(CheckRaceEnd(raceNumber, NATIVE_ARCADE_FLOW_END_FINISHED, 0u) == 0);
+	return 0;
+}
+
 /*
  * LR-60: the internal race tick limit. The setter stores 0..18000 in any
  * mode and refuses anything above with nothing changed; Shutdown, and so
@@ -3062,9 +3094,13 @@ static int TestDriveRefusalsAndResets(void)
  * Configure begins its drive with 5: race ticks 0..4 GO with the expected
  * pads on both sides, and race tick 5 records and ends as RACE_TICK_LIMIT
  * (a finish kind: end tick 5, the finish linger armed, nothing reported),
- * and the caller's finish report shows RACE COMPLETE. A limit set before
- * Configure is gone: that race's drive runs with the default 18000 and
- * goes past race tick 5.
+ * and the caller's finish report shows RACE COMPLETE. The stored limit
+ * survives RaceEnd, so race 2 of the same configured session (REMATCH, no
+ * new Configure) begins its drive with 5 and ends on tick 5 the same way;
+ * it survives AbortToTitle's normal path too, so race 3 (a new pairing in
+ * the same configuration) does as well. A limit set before Configure is
+ * gone: that race's drive runs with the default 18000 and goes past race
+ * tick 5.
  */
 static int TestDriveRaceTickLimit(void)
 {
@@ -3141,6 +3177,36 @@ static int TestDriveRaceTickLimit(void)
 	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
 	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
 	CHECK(CheckRaceEnd(1u, NATIVE_ARCADE_FLOW_END_FINISHED, 0u) == 0);
+	/* RaceEnd keeps the stored limit. */
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(g_pacing == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == limit);
+
+	/* Race 2, a REMATCH in the same configured session (no new Configure):
+	 * its drive begins with the stored limit and ends on tick 5 again. */
+	CHECK(RematchToRace() == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == limit);
+	CHECK(NativeArcadeLinkHost_InternalDriveRaceTickLimit() == 0u);
+	CHECK(BeginRaceDrives() == 0);
+	CHECK(NativeArcadeLinkHost_InternalDriveRaceTickLimit() == limit);
+	CHECK(RoundsBoth(limit) == 0);
+	CHECK(HostLimitTickEnds(limit, 2u) == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(g_pacing == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == limit);
+
+	/* AbortToTitle's normal path keeps it too: race 3, a new pairing in the
+	 * same configuration, begins its drive with the stored limit. */
+	NativeArcadeLinkHost_AbortToTitle();
+	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == limit);
+	CHECK(RepairToRace(entropy ^ UINT64_C(0xA5A5)) == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == limit);
+	CHECK(BeginRaceDrives() == 0);
+	CHECK(NativeArcadeLinkHost_InternalDriveRaceTickLimit() == limit);
+	CHECK(RoundsBoth(limit) == 0);
+	CHECK(HostLimitTickEnds(limit, 1u) == 0);
 	StopDriveRace();
 	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
 

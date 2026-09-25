@@ -2152,12 +2152,15 @@ static int RunRace(uint32_t limit, uint32_t humans, const uint32_t finishTicks[4
 	}
 	REQUIRE(CheckSamePads(endTick));
 
-	/* The linger: frames F - 3..F + 1, verbatim, for 15 host ticks. */
+	/* The linger: frames F - 3..F + 1, verbatim, for 15 host ticks (from
+	 * frame 0 when F < 3, an end at or below D + 1). */
 	for (uint32_t tick = 1u; tick <= NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS; tick++)
 	{
+		const uint32_t low = (endTick >= 3u) ? endTick - 3u : 0u;
+
 		g_a.callSendCount = 0u;
-		REQUIRE(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 1) == 5u);
-		CheckCallSends(&g_a, endTick - 3u, endTick + 1u);
+		REQUIRE(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 1) == endTick + 2u - low);
+		CheckCallSends(&g_a, low, endTick + 1u);
 		REQUIRE(NativeArcadeRaceDrive_LingerTicksLeft(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS - tick);
 	}
 	{
@@ -2209,6 +2212,10 @@ static void TestDriveFinish(void)
 	/* The lowered bound alone; and END_OF_RACE on the bound's tick. */
 	CHECK(RunRace(50u, 2u, none, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_RACE_TICK_LIMIT, 50u, NO_TICK));
 	CHECK(RunRace(50u, 2u, none, 50u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 50u, NO_TICK));
+	/* A bound at or below D (2 here, LR-60's lowest caps): it still ends
+	 * cleanly as RACE_TICK_LIMIT on both sides on that tick. */
+	CHECK(RunRace(1u, 2u, none, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_RACE_TICK_LIMIT, 1u, NO_TICK));
+	CHECK(RunRace(2u, 2u, none, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_RACE_TICK_LIMIT, 2u, NO_TICK));
 	/* A grace that would end after the bound: the bound ends it. */
 	CHECK(RunRace(600u, 2u, first100, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_RACE_TICK_LIMIT, 600u, 100u));
 	/* No human finishing runs to the race-length bound: tick 18000 ends. */
