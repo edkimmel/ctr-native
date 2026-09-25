@@ -61,10 +61,10 @@
  *   observed, ARCADE_ONE_CAB writes all eight), then REQUEST_LOAD. The count
  *   is the same for both profiles (LAUNCH_OP_COUNT, 15).
  * - OnFinalizeInitBegin (LAUNCHED): GAME_MODE1, GAME_MODE2, ARCADE_DIFFICULTY,
- *   BOOL_DEMO_MODE (the re-apply), then TIMER and FRAME_TIMER_CONFETTI (the
- *   pinned boot-relative counters, RS-17, see "Boot-relative counters"
- *   below), then RANDOM_NUMBER, ADV_RNG0, ADV_RNG1, PSX_RAND_SEED, AUDIO_RNG
- *   (the seeds, RS-7, in this order).
+ *   BOOL_DEMO_MODE (the re-apply), then TIMER, FRAME_TIMER_CONFETTI (RS-17),
+ *   RCNT_TOTAL_UNITS, CLOCK_FRAME_START (LR-8; the pins, see "Boot-relative
+ *   counters" below), then RANDOM_NUMBER, ADV_RNG0, ADV_RNG1, PSX_RAND_SEED,
+ *   AUDIO_RNG (the seeds, RS-7, in this order).
  * - Disarm: GAME_MODE1 only when the vibration bits are restored.
  * Every other step writes nothing. LAUNCH_OP_COUNT and BEGIN_OP_COUNT below
  * are those exact counts; a static assert proves each fits MAX_OPS, and a step
@@ -175,10 +175,36 @@
  *   startFrame stored at HOWL_OtherFX.c:122); plus the options menu voice
  *   preview every 25 frames (HOWL_Settings.c:317, no stored timestamp).
  *   LEAVE (a reset would also make bogus deltas).
- * - gGT->clockFrameStart and clockDurationStall: root-counter snapshots
- *   (MainFrame.c:188, MainFrame_RenderFrame.c:1265, :1333); only their
- *   deltas matter, as the per-tick elapsedTimeMS, which is not
- *   boot-relative. A reset would make a bogus first delta. LEAVE.
+ * - sdata->rcntTotalUnits and gGT->clockFrameStart (LR-8, corrected; the
+ *   R-6c audit said "only their deltas matter ... LEAVE", which missed the
+ *   wrap below). rcntTotalUnits accumulates the root counter per emitted
+ *   VBlank (MainDrawCb.c:32, its only retail writer; the LR-8 pin is the
+ *   only other), never reset by a load. clockFrameStart is the previous
+ *   GameLogic's Timer_GetTime_Total snapshot; MainFrame_GameLogic turns the
+ *   difference into this tick's elapsedTimeMS (MainFrame.c:188-203), a
+ *   simulation input. The delta is not phase-free: Timer_GetTime_Total
+ *   computes (units * 1000) / 0x147e in 32-bit signed arithmetic
+ *   (Timer.c:31-43); the multiply wraps (signed overflow, UB in C17; MSVC
+ *   x86, the reference toolchain, wraps it), so where units * 1000 crosses
+ *   zero from below, 2 VBlanks give 99 ms and elapsedTimeMS 31, not 32,
+ *   once every 16,331 VBlanks of uptime, at a different race tick on each
+ *   cabinet (Timer.c:58-61's correction does not remove it). PIN both:
+ *   rcntTotalUnits 0 and clockFrameStart -200. The first race GameLogic
+ *   sees no VBlank since the pin (observed on both cabinets: rcntTotalUnits
+ *   0, 526, 1052 at race ticks 0..2, LR-S3 (b)), so the crossing falls on
+ *   race tick 8,166 on both (tests/game_timer_wrap_test.c), and race tick 0
+ *   computes a phase-free 200 ms delta (64 after the scale and clamp).
+ *   Retail stores 32 instead: the load set gameMode1_prevFrame to 1
+ *   (LOAD_TenStages.c:499), a PAUSE_ALL bit (MainFrame.c:200-203). Race
+ *   ticks 0..2 log 32 32 32 with the pin on both cabinets and in all eleven
+ *   proof runs; without it, inferred from identical A/F control digests
+ *   (they encode elapsedTimeMS, platform/native_canonical_state.c:40). That
+ *   GameLogic replaces clockFrameStart; from race tick 1 only rcntTotalUnits
+ *   holds the phase. The only other root-counter reader, clockDurationStall
+ *   (MainFrame_RenderFrame.c:1277,
+ *   :1345): snapshot and turned into a delta within one frame, and read
+ *   nowhere else in game/. LEAVE clockDurationStall. game/Timer.c itself
+ *   stays retail (the pin is the remedy, not a Timer.c fix).
  * - gGT->frameTimer_notPaused (never read) and gGT->vSync_between_drawSync
  *   (platform, reset every frame, MainMain.c:513). LEAVE.
  * - Already race- or level-relative, nothing to pin: framesInThisLEV and
@@ -190,8 +216,8 @@
  *
  * The pins are written only by OnFinalizeInitBegin in LAUNCHED, after the
  * load-field verification and before the seeds, so default boot and every
- * load not launched here never see them. The adapter reads both fields back
- * right after it applied them (MainArcadeRaceSetupCore_RecordPinReadback).
+ * load not launched here never see them. The adapter reads all four fields
+ * back right after it applied them (MainArcadeRaceSetupCore_RecordPinReadback).
  */
 
 /* Mirrors of retail values the steps compare against; the adapter
@@ -204,14 +230,20 @@
 #define MAIN_ARCADE_RACE_SETUP_CORE_MODE_OP_COUNT 4u /* GAME_MODE1, GAME_MODE2, ARCADE_DIFFICULTY, BOOL_DEMO_MODE */
 #define MAIN_ARCADE_RACE_SETUP_CORE_LAUNCH_OP_COUNT \
 	(MAIN_ARCADE_RACE_SETUP_CORE_MODE_OP_COUNT + 2u + MAIN_ARCADE_RACE_SETUP_CHARACTER_COUNT + 1u)
-#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_OP_COUNT 2u /* TIMER, FRAME_TIMER_CONFETTI */
+#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_OP_COUNT 4u /* TIMER, FRAME_TIMER_CONFETTI, RCNT_TOTAL_UNITS, CLOCK_FRAME_START */
 #define MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT \
 	(MAIN_ARCADE_RACE_SETUP_CORE_MODE_OP_COUNT + MAIN_ARCADE_RACE_SETUP_CORE_PIN_OP_COUNT + \
 		NATIVE_ARCADE_BOT_RULES_SEED_TARGET_COUNT)
-/* The pinned values of the boot-relative counters (RS-17, "Boot-relative
- * counters" above). 0 is no sentinel for either field. */
+/* The pinned values of the boot-relative counters (RS-17 and LR-8,
+ * "Boot-relative counters" above). 0 is no sentinel for any of these fields.
+ * CLOCK_FRAME_START is 200 ms before the pinned root-counter time 0, so the
+ * first race GameLogic, with no VBlank since the pin, computes the delta
+ * 200 ms, (200 * 32) / 100 = 64 (MainFrame.c:188-199), before retail's
+ * after-load override to 32 (MainFrame.c:200-203). */
 #define MAIN_ARCADE_RACE_SETUP_CORE_PIN_TIMER 0
 #define MAIN_ARCADE_RACE_SETUP_CORE_PIN_FRAME_TIMER_CONFETTI 0
+#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_RCNT_TOTAL_UNITS 0
+#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_CLOCK_FRAME_START (-200)
 #define MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES 32u
 
 enum MainArcadeRaceSetupStatus
@@ -261,14 +293,18 @@ enum MainArcadeRaceSetupCoreTarget
 	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_PSX_RAND_SEED,      /* the PSX BIOS rand seed */
 	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_AUDIO_RNG,          /* the audio RNG */
 	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER,              /* gGT->timer (int), RS-17 */
-	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI /* gGT->frameTimer_Confetti (int), RS-17 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI, /* gGT->frameTimer_Confetti (int), RS-17 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RCNT_TOTAL_UNITS,   /* sdata->rcntTotalUnits (int), LR-8 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CLOCK_FRAME_START   /* gGT->clockFrameStart (int), LR-8 */
 };
 
-/* The pinned boot-relative counters (RS-17), each at 32 bits. */
+/* The pinned boot-relative counters (RS-17, LR-8), each at 32 bits. */
 struct MainArcadeRaceSetupPins
 {
 	int32_t timer;              /* gGT->timer */
 	int32_t frameTimerConfetti; /* gGT->frameTimer_Confetti */
+	int32_t rcntTotalUnits;     /* sdata->rcntTotalUnits */
+	int32_t clockFrameStart;    /* gGT->clockFrameStart */
 };
 
 struct MainArcadeRaceSetupCoreOp
@@ -504,8 +540,9 @@ int MainArcadeRaceSetupCore_RecordSeedReadback(struct MainArcadeRaceSetupCore *c
 int MainArcadeRaceSetupCore_SeedReadback(const struct MainArcadeRaceSetupCore *core,
 	struct NativeArcadeRetailRngSeedsV1 *produced, struct NativeArcadeRetailRngSeedsV1 *readback);
 
-/* The same for the pinned counters (RS-17): gGT->timer and
- * gGT->frameTimer_Confetti as read back right after the SEEDED writes.
+/* The same for the pinned counters (RS-17, LR-8): gGT->timer,
+ * gGT->frameTimer_Confetti, sdata->rcntTotalUnits, and gGT->clockFrameStart
+ * as read back right after the SEEDED writes.
  * Accepted once, only in SEEDED (returns 1); otherwise 0 and nothing changes. */
 int MainArcadeRaceSetupCore_RecordPinReadback(struct MainArcadeRaceSetupCore *core,
 	const struct MainArcadeRaceSetupPins *readback);

@@ -1127,7 +1127,7 @@ static int TestTickLines(void)
 	(void)remove(path);
 	text[length] = '\0';
 	{
-		static const char head[] = "arcade roster proof v9\ndrivers digest excludes physics\nresult PASS (0)\nprofile ONE_CAB\n"
+		static const char head[] = "arcade roster proof v10\ndrivers digest excludes physics\nresult PASS (0)\nprofile ONE_CAB\n"
 		                           "setup status VALIDATED (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
@@ -1199,9 +1199,22 @@ static int TestSeedsAndFinalResult(void)
 	CHECK(NativeArcadeRosterProof_SeedsMatch(NULL, &stored) == 0);
 	CHECK(NativeArcadeRosterProof_SeedsMatch(&produced, NULL) == 0);
 
-	/* The pinned counters (RS-17): either one differing, or swapped, is a mismatch. */
+	/* The pinned counters (RS-17, LR-8): any one differing, or swapped, is a mismatch. */
 	pinsProduced.timer = 0;
 	pinsProduced.frameTimerConfetti = 0;
+	pinsProduced.rcntTotalUnits = 0;
+	pinsProduced.clockFrameStart = -200;
+	pinsStored = pinsProduced;
+	CHECK(NativeArcadeRosterProof_PinsMatch(&pinsProduced, &pinsStored) == 1);
+	pinsStored.rcntTotalUnits = 526;
+	CHECK(NativeArcadeRosterProof_PinsMatch(&pinsProduced, &pinsStored) == 0);
+	pinsStored = pinsProduced;
+	pinsStored.clockFrameStart = 0;
+	CHECK(NativeArcadeRosterProof_PinsMatch(&pinsProduced, &pinsStored) == 0);
+	pinsStored = pinsProduced;
+	pinsStored.rcntTotalUnits = -200;
+	pinsStored.clockFrameStart = 0;
+	CHECK(NativeArcadeRosterProof_PinsMatch(&pinsProduced, &pinsStored) == 0);
 	pinsStored = pinsProduced;
 	CHECK(NativeArcadeRosterProof_PinsMatch(&pinsProduced, &pinsStored) == 1);
 	pinsStored.timer = 37;
@@ -1476,10 +1489,12 @@ static int TestSingletonAndReport(void)
 	report.pinMatch = 1u;
 	report.pinStored.timer = 0;
 	report.pinStored.frameTimerConfetti = 0;
+	report.pinStored.rcntTotalUnits = 0;
+	report.pinStored.clockFrameStart = -200;
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(length == strlen(text));
 	{
-		static const char head[] = "arcade roster proof v9\ndrivers digest excludes physics\nresult PASS (0)\n"
+		static const char head[] = "arcade roster proof v10\ndrivers digest excludes physics\nresult PASS (0)\n"
 		                           "profile TWO_CAB\nsetup status VALIDATED (4)\nsetup failure NONE (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
@@ -1548,18 +1563,21 @@ static int TestSingletonAndReport(void)
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(strstr(text, "bank digest 0000000000000000000000000000000000000000000000000000000000000000\n"
 	                   "seeded randomNumber 0x7D2E advRng0 0x60C79386 advRng1 0x78DFDBA8 psxRand 0x1472E10B audioRNG 0x75599A57 "
-	                   "timer 0 frameTimerConfetti 0 match 1\n"
+	                   "timer 0 frameTimerConfetti 0 rcntTotalUnits 0 clockFrameStart -200 match 1\n"
 	                   "slot 0 ") != NULL);
 	/* "match" is 1 only when both the seeds and the pins match. */
 	report.seedMatch = 0u;
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
-	CHECK(strstr(text, "audioRNG 0x75599A57 timer 0 frameTimerConfetti 0 match 0\n") != NULL);
+	CHECK(strstr(text, "audioRNG 0x75599A57 timer 0 frameTimerConfetti 0 rcntTotalUnits 0 clockFrameStart -200 match 0\n") != NULL);
 	report.seedMatch = 1u;
 	report.pinMatch = 0u;
 	report.pinStored.timer = -37;
 	report.pinStored.frameTimerConfetti = 74;
+	report.pinStored.rcntTotalUnits = 4294968;
+	report.pinStored.clockFrameStart = -2147483647 - 1;
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
-	CHECK(strstr(text, "audioRNG 0x75599A57 timer -37 frameTimerConfetti 74 match 0\n") != NULL);
+	CHECK(strstr(text, "audioRNG 0x75599A57 timer -37 frameTimerConfetti 74 rcntTotalUnits 4294968 clockFrameStart -2147483648 match 0\n") !=
+	      NULL);
 	report.pinValid = 0u;
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(strstr(text, "\nseeded none\n") != NULL);

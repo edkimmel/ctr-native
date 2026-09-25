@@ -165,7 +165,7 @@ static int MainArcadeRosterProof_ReadSeeds(struct NativeArcadeRetailRngSeedsV1 *
 	return 1;
 }
 
-/* The pin readback of the setup (RS-17), the same way. */
+/* The pin readback of the setup (RS-17, LR-8), the same way. */
 static int MainArcadeRosterProof_ReadPins(struct NativeArcadeRosterProofPins *stored, uint8_t *match)
 {
 	struct MainArcadeRaceSetupPins setupProduced;
@@ -178,8 +178,12 @@ static int MainArcadeRosterProof_ReadPins(struct NativeArcadeRosterProofPins *st
 	}
 	produced.timer = setupProduced.timer;
 	produced.frameTimerConfetti = setupProduced.frameTimerConfetti;
+	produced.rcntTotalUnits = setupProduced.rcntTotalUnits;
+	produced.clockFrameStart = setupProduced.clockFrameStart;
 	stored->timer = setupStored.timer;
 	stored->frameTimerConfetti = setupStored.frameTimerConfetti;
+	stored->rcntTotalUnits = setupStored.rcntTotalUnits;
+	stored->clockFrameStart = setupStored.clockFrameStart;
 	*match = NativeArcadeRosterProof_PinsMatch(&produced, stored) ? 1u : 0u;
 	return 1;
 }
@@ -928,6 +932,20 @@ void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct Native
 		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "race tick 0 counters: timer %ld frameCounter %ld frameTimer %ld frameTimerConfetti %ld\n",
 			(long)frameState->control.timer, (long)frameState->control.frameCounter, (long)frameState->control.frameTimer,
 			(long)state->raceTickZeroCounters.frameTimerConfetti);
+	}
+	/* LR-8 evidence, log only: the elapsedTimeMS the first three race
+	 * GameLogic passes computed (MainFrame.c:188-203), from the same V1
+	 * control snapshot as the digests (timer is race tick + 1 after the
+	 * RS-17 pin). Observed 32 at race ticks 0..2 (race tick 0: the after-load
+	 * override, gameMode1_prevFrame 1, MainFrame.c:200-203). With them, the
+	 * root-counter phase the LR-8 pin set, as read here: sdata->rcntTotalUnits
+	 * after this frame's RenderVSYNC, and gGT->clockFrameStart as this
+	 * GameLogic left it. */
+	if (state->raceTick < 3u)
+	{
+		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "race tick %u elapsedTimeMS %ld (timer %ld) rcntTotalUnits %ld clockFrameStart %ld\n",
+			(unsigned)state->raceTick, (long)frameState->control.elapsedTimeMS, (long)frameState->control.timer,
+			(long)sdata->rcntTotalUnits, (long)gGT->clockFrameStart);
 	}
 	/* The hold's frameTimer evidence: race ticks HOLD_TICK - 1 and HOLD_TICK. */
 	if ((NativeArcadeRosterProof_Hold() != 0u) && (state->raceTick == (NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK - 1u)))

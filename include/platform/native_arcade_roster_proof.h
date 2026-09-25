@@ -195,7 +195,9 @@ struct NativeCanonicalStateV1;
  *                            failed at a logged race tick, or a tick line
  *                            could not be kept
  *   32  PIN_MISMATCH         VALIDATED, but a pinned boot-relative counter
- *                            (gGT->timer, gGT->frameTimer_Confetti; RS-17)
+ *                            (gGT->timer, gGT->frameTimer_Confetti; RS-17;
+ *                            sdata->rcntTotalUnits, gGT->clockFrameStart;
+ *                            LR-8)
  *                            read back right after the SEEDED writes differs
  *                            from the value the setup pinned
  *   33  TICK_LOG_TIMEOUT     race tick 0 was reached, but the requested race
@@ -406,12 +408,15 @@ struct NativeArcadeRosterProofHold
 	uint32_t independentValid;
 };
 
-/* The boot-relative counters the race setup pins at its seeding point
- * (RS-17): gGT->timer and gGT->frameTimer_Confetti. */
+/* The boot-relative counters the race setup pins at its seeding point:
+ * gGT->timer and gGT->frameTimer_Confetti (RS-17), and the root-counter
+ * phase sdata->rcntTotalUnits and gGT->clockFrameStart (LR-8). */
 struct NativeArcadeRosterProofPins
 {
 	int32_t timer;
 	int32_t frameTimerConfetti;
+	int32_t rcntTotalUnits;
+	int32_t clockFrameStart;
 };
 
 /*
@@ -574,7 +579,7 @@ const char *NativeArcadeRosterProof_LogPath(void);
 /*
  * Formats the report as text into buffer (NUL-terminated) and stores its
  * length without the NUL. Returns 0 on NULL arguments or a buffer too small.
- * The format is line based: a header line ("arcade roster proof v9"), the
+ * The format is line based: a header line ("arcade roster proof v10"), the
  * line "drivers digest excludes physics", then "result", "profile" (TWO_CAB
  * or ONE_CAB, the configured profile; UNKNOWN for any other value), "setup
  * status",
@@ -585,9 +590,10 @@ const char *NativeArcadeRosterProof_LogPath(void);
  * "validated tick", "race tick 0 tick",
  * "race tick 0 counters" (the same, at race tick 0), the four digests as
  * lowercase hex (or "none"), the "seeded" line (the five retail seed fields
- * and the two pinned counters, timer and frameTimerConfetti as signed
- * decimal, as read back, then "match 1" when every one equals what the setup
- * wrote, else "match 0"; "seeded none" without both readbacks), one
+ * and the four pinned counters, timer, frameTimerConfetti, rcntTotalUnits,
+ * and clockFrameStart as signed decimal (the last two since v10, LR-8), as
+ * read back, then "match 1" when every one equals what the setup wrote, else
+ * "match 0"; "seeded none" without both readbacks), one
  * "slot" line per slot, and the "hold" line (v9, LR-S2 (a)): "hold none"
  * without a requested hold, "hold missing" when it was requested but did
  * not run, otherwise
@@ -605,8 +611,8 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 int NativeArcadeRosterProof_SeedsMatch(const struct NativeArcadeRetailRngSeedsV1 *produced,
 	const struct NativeArcadeRetailRngSeedsV1 *stored);
 
-/* 1 when both pinned counters equal their readback; 0 otherwise (also for
- * NULL). */
+/* 1 when all four pinned counters equal their readback; 0 otherwise (also
+ * for NULL). */
 int NativeArcadeRosterProof_PinsMatch(const struct NativeArcadeRosterProofPins *produced,
 	const struct NativeArcadeRosterProofPins *stored);
 

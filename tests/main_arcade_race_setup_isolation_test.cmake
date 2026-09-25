@@ -58,8 +58,9 @@
 #     member spelling, (*gGT).x and (gGT)->x included; compound assignment,
 #     increment, address taken, or mem* destination) and never calls
 #     PSX_BIOS_SetRandSeed or MainRaceTrack_RequestLoad; the core names the
-#     two boot-relative pin targets (gGT->timer, gGT->frameTimer_Confetti;
-#     RS-17, R-6c) exactly once each, only in its seeding step, after the
+#     four boot-relative pin targets (gGT->timer, gGT->frameTimer_Confetti;
+#     RS-17, R-6c; sdata->rcntTotalUnits, gGT->clockFrameStart; LR-8) exactly
+#     once each, only in its seeding step, after the
 #     load-field verification and before the first seed, at their documented
 #     values;
 # 12. the proof's scripted pads and per-tick digests (R-6):
@@ -72,7 +73,19 @@
 #     proof's V1 state is local only (never handed to the replay scheduler);
 #     the proof hook extracts only the Meta drivers candidate, names no
 #     Physics symbol, encodes through NativeCanonicalDriversDetailedV1_Encode,
-#     and installs its pads in one place.
+#     and installs its pads in one place;
+# 13. LR-8's pinned root-counter phase (docs/LOCKSTEP_RACE_MILESTONE.md
+#     LR-8): of game/, platform/, include/, and main.c (code only, string
+#     literals blanked), sdata->rcntTotalUnits is named only by its
+#     declaration, the VBlank callback (MainDrawCb.c), game/Timer.c, and the
+#     adapter, and gGT->clockFrameStart only by its declaration,
+#     MainFrame.c, and the adapter; the race caller and the roster proof
+#     each read both exactly once, as the cast rvalues
+#     (long)sdata->rcntTotalUnits and (long)gGT->clockFrameStart of their
+#     LR-8 log lines; the pin plumbing (the core, the roster proof, and the
+#     platform proof module and header) names them otherwise only as
+#     pins-struct members; any other use (sdata_static.<field>, any -> or .
+#     member access) fails.
 # The roster input caller rules live in
 # main_canonical_drivers_roster_input_isolation_test.cmake, and the decision
 # core's purity in main_arcade_race_setup_core_isolation_test.cmake.
@@ -734,9 +747,11 @@ set(expected_PSX_RAND_SEED "PSX_BIOS_SetRandSeed((uint32_t)op->value);")
 set(expected_AUDIO_RNG "sdata->audioRNG = (uint32_t)op->value;")
 set(expected_TIMER "gGT->timer = (int)(int32_t)op->value;")
 set(expected_FRAME_TIMER_CONFETTI "gGT->frameTimer_Confetti = (int)(int32_t)op->value;")
+set(expected_RCNT_TOTAL_UNITS "sdata->rcntTotalUnits = (int)(int32_t)op->value;")
+set(expected_CLOCK_FRAME_START "gGT->clockFrameStart = (int)(int32_t)op->value;")
 list(LENGTH declared_targets declared_target_count)
-if(NOT declared_target_count EQUAL 15)
-    message(FATAL_ERROR "${prefix}: ${core_header_path} declares ${declared_target_count} write targets besides NONE, expected 15; map every new target here and in MainArcadeRaceSetup_Apply")
+if(NOT declared_target_count EQUAL 17)
+    message(FATAL_ERROR "${prefix}: ${core_header_path} declares ${declared_target_count} write targets besides NONE, expected 17; map every new target here and in MainArcadeRaceSetup_Apply")
 endif()
 set(apply_remaining "${apply_body}")
 foreach(target IN LISTS declared_targets)
@@ -788,14 +803,15 @@ if(NOT "${outside_stores}" STREQUAL "")
     message(FATAL_ERROR "${prefix}: ${adapter_source} stores to retail state outside MainArcadeRaceSetup_Apply (${outside_stores})")
 endif()
 
-# 11, continued. The boot-relative pins (RS-17, R-6c): the core names each pin target
+# 11, continued. The boot-relative pins (RS-17, R-6c; LR-8): the core names each pin target
 # exactly once, inside MainArcadeRaceSetupCore_OnFinalizeInitBegin, after the
 # load-field verification and the seed derivation and between the re-applied
 # mode fields and the first seed, with the documented values.
 ctr_find_block("${core_source}" "${core_code}" "int MainArcadeRaceSetupCore_OnFinalizeInitBegin(" begin_body_begin begin_body_end)
 math(EXPR begin_body_length "${begin_body_end} - ${begin_body_begin} + 1")
 string(SUBSTRING "${core_code}" ${begin_body_begin} ${begin_body_length} begin_body)
-foreach(pin IN ITEMS MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI)
+foreach(pin IN ITEMS MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI
+        MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RCNT_TOTAL_UNITS MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CLOCK_FRAME_START)
     ctr_count_identifier("${core_code}" "${pin}" pin_hits)
     ctr_count_identifier("${begin_body}" "${pin}" pin_body_hits)
     if(NOT pin_hits EQUAL 1 OR NOT pin_body_hits EQUAL 1)
@@ -808,12 +824,18 @@ ctr_require_order("${core_source} (MainArcadeRaceSetupCore_OnFinalizeInitBegin)"
     "NativeArcadeBotRules_DeriveRetailSeedsV1(&scratch->seedBank, &seeds)"
     "pins.timer = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_TIMER;"
     "pins.frameTimerConfetti = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_FRAME_TIMER_CONFETTI;"
+    "pins.rcntTotalUnits = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_RCNT_TOTAL_UNITS;"
+    "pins.clockFrameStart = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_CLOCK_FRAME_START;"
     "MainArcadeRaceSetupCore_PushModeFields(outcome, &fields);"
     "MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER, 0u, (int64_t)pins.timer);"
     "MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI, 0u,"
+    "MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RCNT_TOTAL_UNITS, 0u, (int64_t)pins.rcntTotalUnits);"
+    "MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CLOCK_FRAME_START, 0u, (int64_t)pins.clockFrameStart);"
     "MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RANDOM_NUMBER")
 ctr_require("${core_header_path}" "${core_header_code}" "#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_TIMER 0\n")
 ctr_require("${core_header_path}" "${core_header_code}" "#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_FRAME_TIMER_CONFETTI 0\n")
+ctr_require("${core_header_path}" "${core_header_code}" "#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_RCNT_TOTAL_UNITS 0\n")
+ctr_require("${core_header_path}" "${core_header_code}" "#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_CLOCK_FRAME_START (-200)\n")
 
 # 12. The proof's scripted pads and per-tick digests (R-6).
 set(mainmain_path "game/MAIN/MainMain.c")
@@ -945,4 +967,73 @@ endif()
 ctr_count_identifier("${proof_code}" "Platform_InputInstallPadSnapshots" install_hits)
 if(NOT install_hits EQUAL 1)
     message(FATAL_ERROR "${prefix}: ${proof_source} must install its pads through Platform_InputInstallPadSnapshots in one place (found ${install_hits})")
+endif()
+
+# 13. LR-8: the pinned root-counter phase has no other native writer. Of
+# game/, platform/, include/, and main.c (code only, string literals
+# blanked), rcntTotalUnits is named only by its declaration
+# (include/regionsEXE.h), its one retail writer (the VBlank callback), its
+# one reader (game/Timer.c), and the adapter; clockFrameStart only by its
+# declaration (include/namespace_Main.h), MainFrame_GameLogic, and the
+# adapter. Two read-only log points may read each retail field exactly once,
+# and only as the cast rvalue (long)sdata->rcntTotalUnits and
+# (long)gGT->clockFrameStart, which no store can take: the race caller's
+# LR-8 race tick line and the roster proof's. The pin plumbing (the core, the
+# roster proof, and the platform proof module and header) names both only as
+# a pins-struct member: a declaration "int32_t <field>;" or an access through
+# one of the pins-struct objects (pins, produced, stored, setupProduced,
+# setupStored, pinStored). Every other use of either name in any other file
+# fails, sdata_static.<field>, gGT-><field>, or any other pointer or struct
+# member access included.
+set(lr8_names_rcntTotalUnits "include/regionsEXE.h" "game/MAIN/MainDrawCb.c" "game/Timer.c" "${adapter_source}")
+set(lr8_names_clockFrameStart "include/namespace_Main.h" "game/MAIN/MainFrame.c" "${adapter_source}")
+set(lr8_read_rcntTotalUnits "(long)sdata->rcntTotalUnits")
+set(lr8_read_clockFrameStart "(long)gGT->clockFrameStart")
+set(lr8_log_readers "${caller_source}" "${proof_source}")
+set(lr8_pin_plumbing "${core_source}" "${core_header_path}" "${proof_source}" "include/platform/native_arcade_roster_proof.h"
+    "platform/native_arcade_roster_proof.c")
+set(lr8_pin_objects "pins|produced|stored|setupProduced|setupStored|pinStored")
+set(lr8_scanned 0)
+foreach(path IN LISTS scan_files)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    math(EXPR lr8_scanned "${lr8_scanned} + 1")
+    file(READ "${path}" source)
+    foreach(field IN ITEMS rcntTotalUnits clockFrameStart)
+        string(FIND "${source}" "${field}" raw_field_hit)
+        list(FIND lr8_log_readers "${relative_path}" reader_at)
+        if(raw_field_hit EQUAL -1)
+            if(NOT reader_at EQUAL -1)
+                message(FATAL_ERROR "${prefix}: ${relative_path} must read ${lr8_read_${field}} once for its LR-8 log line")
+            endif()
+            continue()
+        endif()
+        list(FIND lr8_names_${field} "${relative_path}" field_owner_at)
+        if(NOT field_owner_at EQUAL -1)
+            continue()
+        endif()
+        ctr_strip_comments("${source}" code)
+        string(REGEX REPLACE "\"([^\"\\\\]|\\\\.)*\"" "\"\"" code "${code}")
+        if(NOT reader_at EQUAL -1)
+            string(REPLACE "${lr8_read_${field}}" "@LR8_READ@" read_masked "${code}")
+            string(REGEX MATCHALL "@LR8_READ@" read_hits "${read_masked}")
+            list(LENGTH read_hits read_count)
+            if(NOT read_count EQUAL 1)
+                message(FATAL_ERROR "${prefix}: ${relative_path} must read ${lr8_read_${field}} exactly once, for its LR-8 log line (found ${read_count})")
+            endif()
+            set(code "${read_masked}")
+        endif()
+        list(FIND lr8_pin_plumbing "${relative_path}" plumbing_at)
+        if(NOT plumbing_at EQUAL -1)
+            string(REGEX REPLACE "(^|[^A-Za-z0-9_])(${lr8_pin_objects})[ \t\r\n]*(->|\\.)[ \t\r\n]*${field}([^A-Za-z0-9_]|$)"
+                "\\1@LR8_PIN_MEMBER@\\4" code "${code}")
+            string(REGEX REPLACE "(^|[^A-Za-z0-9_])int32_t[ \t]+${field}[ \t]*;" "\\1@LR8_PIN_MEMBER@;" code "${code}")
+        endif()
+        ctr_count_identifier("${code}" "${field}" field_hits)
+        if(field_hits GREATER 0)
+            message(FATAL_ERROR "${prefix}: ${relative_path} names ${field} (${field_hits} use(s) left); only ${lr8_names_${field}} may, the log readers ${lr8_log_readers} only as ${lr8_read_${field}}, and the pin plumbing only as a pins-struct member (LR-8)")
+        endif()
+    endforeach()
+endforeach()
+if(lr8_scanned LESS 300)
+    message(FATAL_ERROR "${prefix}: scanned only ${lr8_scanned} files for the LR-8 fields; the scan is broken")
 endif()

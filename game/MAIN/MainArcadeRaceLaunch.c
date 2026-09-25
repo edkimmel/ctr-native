@@ -14,7 +14,9 @@
  * fixed VBlank pacing on, LR-7; and the result fed back on the same frame),
  * then leaving the title, the host report, the return to the main-menu
  * level, the rehearsal pads, and the Disarm (followed by the host's
- * NativeArcadeLinkHost_RaceEnd, which turns that pacing off again).
+ * NativeArcadeLinkHost_RaceEnd, which turns that pacing off again). Last,
+ * log only, the elapsedTimeMS of the race's first three GameLogic passes
+ * (LR-8 evidence, MainArcadeRaceLaunch_LogElapsed).
  *
  * The host flow is read twice per frame, in two separate calls:
  * MainArcadeLink_Gather reads NativeArcadeLinkHost_Racing before the host
@@ -87,6 +89,10 @@ struct MainArcadeRaceLaunchState
 	uint32_t validatedRaces;
 	uint32_t validatedRace;
 	uint8_t validatedDigests[4u * MAIN_ARCADE_RACE_LAUNCH_DIGEST_BYTES];
+	/* LR-8 evidence, log only: the launch number whose first race ticks
+	 * were logged, and a bit per race tick 0..2 already logged. */
+	uint32_t elapsedRace;
+	uint8_t elapsedLogged;
 };
 
 static struct MainArcadeRaceLaunchState s_mainArcadeRaceLaunch;
@@ -378,6 +384,46 @@ static void MainArcadeRaceLaunch_Apply(struct GameTracker *gGT, const struct Mai
 	}
 }
 
+/*
+ * LR-8 evidence, log only: the elapsedTimeMS of a launched race's first three
+ * GameLogic passes (LR-8's race ticks 0..2), read after MainFrame_GameLogic
+ * computed it (MainFrame.c:188-203; this runs from RenderFrame, after
+ * GameLogic). The setup's RS-17 pin sets gGT->timer to 0 at race init and
+ * each GameLogic adds 1, so LR-8 race tick n is the frame whose timer is
+ * n + 1 once the setup is VALIDATED. LR-8 race tick n + 1 is the launch
+ * core's race tick n (LR-2). One line per race tick, logged once, with the
+ * root-counter phase the LR-8 pin set (sdata->rcntTotalUnits and
+ * gGT->clockFrameStart as this GameLogic left them, before this pass's
+ * RenderVSYNC); the two-process gate (tools/arcade-link-launch-check.ps1)
+ * requires the three lines of every race and compares them across the
+ * cabinets. Reads only: nothing here feeds the core, the host, or the game.
+ */
+static void MainArcadeRaceLaunch_LogElapsed(const struct GameTracker *gGT, uint32_t raceNumber)
+{
+	struct MainArcadeRaceLaunchState *state = &s_mainArcadeRaceLaunch;
+	uint32_t tick;
+
+	if ((state->planLevelValid == 0u) || ((int32_t)gGT->levelID != state->planLevel) ||
+	    (MainArcadeRaceSetup_Status() != MAIN_ARCADE_RACE_SETUP_VALIDATED) || (gGT->timer < 1) || (gGT->timer > 3))
+	{
+		return;
+	}
+	if (state->elapsedRace != raceNumber)
+	{
+		state->elapsedRace = raceNumber;
+		state->elapsedLogged = 0u;
+	}
+	tick = (uint32_t)gGT->timer - 1u;
+	if (((state->elapsedLogged >> tick) & 1u) != 0u)
+	{
+		return;
+	}
+	state->elapsedLogged = (uint8_t)(state->elapsedLogged | (1u << tick));
+	Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u LR-8 race tick %u elapsedTimeMS %ld (timer %ld) rcntTotalUnits %ld clockFrameStart %ld\n",
+		(unsigned)raceNumber, (unsigned)tick, (long)gGT->elapsedTimeMS, (long)gGT->timer, (long)sdata->rcntTotalUnits,
+		(long)gGT->clockFrameStart);
+}
+
 void MainArcadeRaceLaunch_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 {
 	struct MainArcadeRaceLaunchState *state = &s_mainArcadeRaceLaunch;
@@ -416,6 +462,7 @@ void MainArcadeRaceLaunch_Frame(struct GameTracker *gGT, struct GamepadSystem *g
 		MainArcadeRaceLaunch_ArmAndLaunch(&output);
 	}
 	MainArcadeRaceLaunch_Apply(gGT, &output);
+	MainArcadeRaceLaunch_LogElapsed(gGT, output.raceNumber);
 }
 
 #endif

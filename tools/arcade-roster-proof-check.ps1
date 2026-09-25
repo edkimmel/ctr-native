@@ -93,9 +93,11 @@ param(
 # every ended period; and every due banner presented.  Every other run's
 # hold line must be "hold none".
 #
-# Every report must be format v9 with result PASS, the profile line right
+# Every report must be format v10 with result PASS, the profile line right
 # after the result line, the expected launch window, both counter lines, a
-# seeded line ending "match 1", eight slot lines, exactly the run's requested
+# seeded line whose pin readback is the pinned values (timer 0,
+# frameTimerConfetti 0, and, since v10, LR-8's rcntTotalUnits 0 and
+# clockFrameStart -200) ending "match 1", eight slot lines, exactly the run's requested
 # tick lines numbered from 0, and "end ticks N".  The slot lines must carry the
 # profile's roles: TWO_CAB slot 0 CAB1_HUMAN, slot 1 CAB2_HUMAN, slots 2..5
 # BOT (all present), slots 6..7 "role INACTIVE"; ONE_CAB slot 0 CAB1_HUMAN
@@ -145,6 +147,10 @@ $noDisplayMarker = 'No displays available'
 $notInternalMarker = '--arcade-roster-proof is available in internal builds only.'
 $tickPattern = '^tick ([0-9]+) control ([0-9a-f]{16}) rcontrol ([0-9a-f]{16}) rng ([0-9a-f]{16}) input ([0-9a-f]{16}) drivers ([0-9a-f]{64})$'
 $countersPattern = '^timer (-?[0-9]+) frameCounter (-?[0-9]+) frameTimer (-?[0-9]+) frameTimerConfetti (-?[0-9]+)$'
+# The seeded line (v10): the five seeds, then the pin readback at the pinned
+# values, RS-17's timer and frameTimerConfetti and LR-8's rcntTotalUnits and
+# clockFrameStart.
+$seededPattern = '^seeded randomNumber 0x[0-9A-F]{4} advRng0 0x[0-9A-F]{8} advRng1 0x[0-9A-F]{8} psxRand 0x[0-9A-F]{8} audioRNG 0x[0-9A-F]{8} timer 0 frameTimerConfetti 0 rcntTotalUnits 0 clockFrameStart -200 match 1$'
 $holdPattern = '^hold tick ([0-9]+) periods ([0-9]+) wall us ([0-9]+) independent us ([0-9]+|none) expected us ([0-9]+) pumps ([0-9]+) min pumps per period ([0-9]+|none) banners due ([0-9]+) presented ([0-9]+) vsync entry (-?[0-9]+) exit (-?[0-9]+) frameTimer before (-?[0-9]+|none) after (-?[0-9]+|none)$'
 # Run K's hold (NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK and _HOLD_PERIODS).
 $holdTick = 300
@@ -312,8 +318,8 @@ function Read-Report($Run) {
             $report.Header[$Matches[1]] = $Matches[2]
         }
     }
-    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v9') -or ($lines[1] -ne 'drivers digest excludes physics')) {
-        $report.Problems += 'the report does not start with the v9 header and "drivers digest excludes physics"'
+    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v10') -or ($lines[1] -ne 'drivers digest excludes physics')) {
+        $report.Problems += 'the report does not start with the v10 header and "drivers digest excludes physics"'
     }
     # The hold line: "hold none" without the hold, the evidence line with it.
     if ($Run.Hold) {
@@ -363,6 +369,9 @@ function Read-Report($Run) {
     }
     if (($null -eq $report.Seeded) -or (-not $report.Seeded.EndsWith(' match 1'))) {
         $report.Problems += "the seeded line is missing or does not match: '$($report.Seeded)'"
+    }
+    elseif ($report.Seeded -notmatch $seededPattern) {
+        $report.Problems += "the seeded line's pin readback is not the pinned values (RS-17, LR-8): '$($report.Seeded)'"
     }
     if ($report.Slots.Count -ne 8) {
         $report.Problems += "$($report.Slots.Count) slot lines, expected 8"

@@ -1755,6 +1755,28 @@ if(BUILD_TESTING)
     target_link_libraries(main_arcade_race_hold_test PRIVATE ctr_native_arcade_race_hold_core)
     add_test(NAME main_arcade_race_hold_unit COMMAND $<TARGET_FILE:main_arcade_race_hold_test>)
 
+    # Root-counter wrap (LR-S3 (b), LR-8): the real game/Timer.c, included
+    # through the real game headers with a stubbed sdata and root counter,
+    # shows the elapsedTimeMS 31 crossing and that the race setup's pin puts
+    # it on the same race tick for every boot-relative phase. Signed overflow
+    # is UB in C17: only the reference toolchain (MSVC x86) is evidence, so
+    # the test is registered only there.
+    if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+        add_executable(game_timer_wrap_test tests/game_timer_wrap_test.c)
+        set_target_properties(game_timer_wrap_test PROPERTIES
+            C_STANDARD 17
+            C_STANDARD_REQUIRED ON
+            C_EXTENSIONS OFF
+        )
+        target_compile_definitions(game_timer_wrap_test PRIVATE CTR_NATIVE)
+        target_include_directories(game_timer_wrap_test PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
+        if(CTR_NATIVE_MSVC_FRONTEND)
+            # The game headers' mixed-enum masks, as for ctr_native.
+            target_compile_options(game_timer_wrap_test PRIVATE /wd5287)
+        endif()
+        add_test(NAME game_timer_wrap_unit COMMAND $<TARGET_FILE:game_timer_wrap_test>)
+    endif()
+
     add_executable(native_hold_banner_test tests/native_hold_banner_test.c)
     set_target_properties(native_hold_banner_test PROPERTIES
         C_STANDARD 17

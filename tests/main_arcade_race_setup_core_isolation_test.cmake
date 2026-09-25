@@ -1,6 +1,8 @@
 # Structural isolation for the race setup decision core (game/MAIN/
 # MainArcadeRaceSetupCore, docs/ROSTER_MILESTONE.md section 3.2, R-5c):
-#  1. the module is pure: no game global, load, heap, stdio, clock, platform,
+#  1. the module is pure: no game global, load, heap, stdio, clock (excepted
+#     only: the LR-8 pins-struct member clockFrameStart, a retail field
+#     mirror, in its declaration and its pins.clockFrameStart uses), platform,
 #     lease or topology (lease verbs included), checkpoint, replay, lockstep,
 #     or match-select token in its code; the only canonical names it may use
 #     are the drivers roster input it forwards (no canonical-state token); and
@@ -110,8 +112,16 @@ set(canonical_seen 0)
 foreach(relative_path IN ITEMS "${module_header}" "${module_source}")
     ctr_read_source("${relative_path}" source)
     ctr_strip_comments("${source}" code)
+    # The one allowed 'clock': clockFrameStart, the pins-struct member that
+    # mirrors the retail field the setup pins (LR-8), exempted only in its
+    # two uses: the struct MainArcadeRaceSetupPins member declaration
+    # "int32_t clockFrameStart;" and the seeding step's "pins.clockFrameStart"
+    # accesses. Every other 'clock' (clock(), clock_gettime, a clockFrameStart
+    # reached any other way, ...) is still forbidden.
+    string(REGEX REPLACE "(^|[^A-Za-z0-9_])int32_t[ \t]+clockFrameStart[ \t]*;" "\\1@PIN_MEMBER@;" pure_code "${code}")
+    string(REGEX REPLACE "(^|[^A-Za-z0-9_])pins\\.clockFrameStart([^A-Za-z0-9_]|$)" "\\1@PIN_MEMBER@\\2" pure_code "${pure_code}")
     foreach(term IN LISTS pure_tokens)
-        ctr_forbid("${relative_path}" "${code}" "${term}")
+        ctr_forbid("${relative_path}" "${pure_code}" "${term}")
     endforeach()
     # Retail load names start an identifier with LOAD_ (the failure code
     # MAIN_ARCADE_RACE_SETUP_FAILURE_LOAD_FIELDS_MISMATCH and its "LOAD_FIELDS_MISMATCH"

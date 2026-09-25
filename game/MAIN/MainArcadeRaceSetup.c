@@ -47,6 +47,8 @@ _Static_assert(MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES == NATIVE_SHA256_DIGEST_BYTES
 _Static_assert(MAIN_ARCADE_BOT_SETUP_NAV_PATH_COUNT == sizeof(sdata->NavPath_ptrHeader) / sizeof(sdata->NavPath_ptrHeader[0]), "MAIN_ARCADE_BOT_SETUP_NAV_PATH_COUNT must match NavPath_ptrHeader");
 _Static_assert(sizeof(sdata->gGT->timer) == sizeof(int32_t), "the TIMER pin is a 32-bit field");
 _Static_assert(sizeof(sdata->gGT->frameTimer_Confetti) == sizeof(int32_t), "the FRAME_TIMER_CONFETTI pin is a 32-bit field");
+_Static_assert(sizeof(sdata->rcntTotalUnits) == sizeof(int32_t), "the RCNT_TOTAL_UNITS pin is a 32-bit field");
+_Static_assert(sizeof(sdata->gGT->clockFrameStart) == sizeof(int32_t), "the CLOCK_FRAME_START pin is a 32-bit field");
 
 #define MAIN_ARCADE_RACE_SETUP_LOG "[CTR Native] arcade race setup: "
 
@@ -179,6 +181,12 @@ static void MainArcadeRaceSetup_Apply(struct GameTracker *gGT, const struct Main
 		case MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI:
 			gGT->frameTimer_Confetti = (int)(int32_t)op->value;
 			break;
+		case MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RCNT_TOTAL_UNITS:
+			sdata->rcntTotalUnits = (int)(int32_t)op->value;
+			break;
+		case MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CLOCK_FRAME_START:
+			gGT->clockFrameStart = (int)(int32_t)op->value;
+			break;
 		default:
 			break;
 		}
@@ -197,13 +205,15 @@ static void MainArcadeRaceSetup_ReadSeeds(struct NativeArcadeRetailRngSeedsV1 *s
 	stored->audioRNG = (uint32_t)sdata->audioRNG;
 }
 
-/* The pinned counters as they are now stored (RS-17), read right after
- * MainArcadeRaceSetup_Apply wrote them. */
+/* The pinned counters as they are now stored (RS-17, LR-8), read right
+ * after MainArcadeRaceSetup_Apply wrote them. */
 static void MainArcadeRaceSetup_ReadPins(const struct GameTracker *gGT, struct MainArcadeRaceSetupPins *stored)
 {
 	memset(stored, 0, sizeof(*stored));
 	stored->timer = (int32_t)gGT->timer;
 	stored->frameTimerConfetti = (int32_t)gGT->frameTimer_Confetti;
+	stored->rcntTotalUnits = (int32_t)sdata->rcntTotalUnits;
+	stored->clockFrameStart = (int32_t)gGT->clockFrameStart;
 }
 
 /* One log line per state change or failure, as the core reports it. */
@@ -335,6 +345,9 @@ void MainArcadeRaceSetup_OnFinalizeInitBegin(struct GameTracker *gGT)
 		Platform_Log(MAIN_ARCADE_RACE_SETUP_LOG "pinned timer %ld frameTimer_Confetti %ld; read back %ld %ld\n",
 			(long)outcome->pins.timer, (long)outcome->pins.frameTimerConfetti, (long)pinsStored.timer,
 			(long)pinsStored.frameTimerConfetti);
+		Platform_Log(MAIN_ARCADE_RACE_SETUP_LOG "pinned rcntTotalUnits %ld clockFrameStart %ld; read back %ld %ld\n",
+			(long)outcome->pins.rcntTotalUnits, (long)outcome->pins.clockFrameStart, (long)pinsStored.rcntTotalUnits,
+			(long)pinsStored.clockFrameStart);
 		Platform_Log(MAIN_ARCADE_RACE_SETUP_LOG "seeded randomNumber 0x%04X advRng 0x%08X 0x%08X psxRand 0x%08X audioRNG 0x%08X\n",
 			(unsigned)outcome->seeds.randomNumber, (unsigned)outcome->seeds.advRng0, (unsigned)outcome->seeds.advRng1,
 			(unsigned)outcome->seeds.psxRandSeed, (unsigned)outcome->seeds.audioRNG);

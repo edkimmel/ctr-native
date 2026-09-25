@@ -557,6 +557,7 @@ static int TestFinalizeInitBegin(void)
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_GAME_MODE1, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_GAME_MODE2,
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ARCADE_DIFFICULTY, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_BOOL_DEMO_MODE,
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI,
+		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RCNT_TOTAL_UNITS, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CLOCK_FRAME_START,
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RANDOM_NUMBER, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG0,
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG1, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_PSX_RAND_SEED,
 		MAIN_ARCADE_RACE_SETUP_CORE_TARGET_AUDIO_RNG};
@@ -633,13 +634,20 @@ static int TestFinalizeInitBegin(void)
 	CHECK(s_outcome.ops[1].value == (int64_t)MAIN_ARCADE_RACE_SETUP_GM2_TRANSIENT_MASK);
 	CHECK(s_outcome.ops[2].value == (int64_t)s_plan.arcadeDifficulty);
 	CHECK(s_outcome.ops[3].value == 0);
-	/* The pinned boot-relative counters (RS-17): both at 0, before the seeds. */
+	/* The pinned boot-relative counters (RS-17): both at 0, before the seeds;
+	 * then the pinned root-counter phase (LR-8): rcntTotalUnits 0 and
+	 * clockFrameStart -200, so the first race GameLogic computes a 200 ms
+	 * delta, 64 after the scale (before retail's after-load override to 32). */
 	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_PIN_TIMER == 0 && MAIN_ARCADE_RACE_SETUP_CORE_PIN_FRAME_TIMER_CONFETTI == 0);
+	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_PIN_RCNT_TOTAL_UNITS == 0 && MAIN_ARCADE_RACE_SETUP_CORE_PIN_CLOCK_FRAME_START == -200);
 	CHECK(s_outcome.ops[4].value == 0 && s_outcome.ops[5].value == 0);
+	CHECK(s_outcome.ops[6].value == 0 && s_outcome.ops[7].value == -200);
 	CHECK(s_outcome.pins.timer == 0 && s_outcome.pins.frameTimerConfetti == 0);
+	CHECK(s_outcome.pins.rcntTotalUnits == 0 && s_outcome.pins.clockFrameStart == -200);
+	CHECK((MAIN_ARCADE_RACE_SETUP_CORE_PIN_RCNT_TOTAL_UNITS - MAIN_ARCADE_RACE_SETUP_CORE_PIN_CLOCK_FRAME_START) * 32 / 100 == 64);
 	for (uint32_t i = 0; i < 5u; i++)
 	{
-		CHECK(s_outcome.ops[6u + i].value == goldenSeeds[i]);
+		CHECK(s_outcome.ops[8u + i].value == goldenSeeds[i]);
 	}
 	CHECK((int64_t)s_outcome.seeds.randomNumber == goldenSeeds[0] && (int64_t)s_outcome.seeds.audioRNG == goldenSeeds[4]);
 	/* The core keeps the post-seed bank: five draws in. */
@@ -686,6 +694,8 @@ static int TestFinalizeInitBegin(void)
 		CHECK(MainArcadeRaceSetupCore_PinReadback(&s_core, &pinsProduced, &pinsReadback) == 0);
 		pinsStored = s_outcome.pins;
 		pinsStored.frameTimerConfetti = 74;
+		pinsStored.rcntTotalUnits = 526;
+		pinsStored.clockFrameStart = 100;
 		CHECK(MainArcadeRaceSetupCore_RecordPinReadback(&s_core, NULL) == 0);
 		CHECK(MainArcadeRaceSetupCore_RecordPinReadback(NULL, &pinsStored) == 0);
 		CHECK(MainArcadeRaceSetupCore_RecordPinReadback(&s_core, &pinsStored) == 1);
@@ -693,7 +703,9 @@ static int TestFinalizeInitBegin(void)
 		CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_SEEDED);
 		CHECK(MainArcadeRaceSetupCore_PinReadback(&s_core, &pinsProduced, &pinsReadback) == 1);
 		CHECK(pinsProduced.timer == 0 && pinsProduced.frameTimerConfetti == 0);
+		CHECK(pinsProduced.rcntTotalUnits == 0 && pinsProduced.clockFrameStart == -200);
 		CHECK(pinsReadback.timer == 0 && pinsReadback.frameTimerConfetti == 74);
+		CHECK(pinsReadback.rcntTotalUnits == 526 && pinsReadback.clockFrameStart == 100);
 		CHECK(MainArcadeRaceSetupCore_PinReadback(&s_core, NULL, &pinsReadback) == 0);
 		CHECK(MainArcadeRaceSetupCore_PinReadback(&s_core, &pinsProduced, NULL) == 0);
 		CHECK(MainArcadeRaceSetupCore_PinReadback(NULL, &pinsProduced, &pinsReadback) == 0);
@@ -942,7 +954,7 @@ static int TestDisarm(void)
 	return 0;
 }
 
-/* The number of ops that write a pinned boot-relative counter (RS-17). */
+/* The number of ops that write a pinned boot-relative counter (RS-17, LR-8). */
 static uint32_t PinOpCount(const struct MainArcadeRaceSetupCoreOutcome *outcome)
 {
 	uint32_t count = 0;
@@ -950,7 +962,9 @@ static uint32_t PinOpCount(const struct MainArcadeRaceSetupCoreOutcome *outcome)
 	for (uint32_t i = 0; (i < outcome->opCount) && (i < MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS); i++)
 	{
 		if ((outcome->ops[i].target == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER) ||
-		    (outcome->ops[i].target == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI))
+		    (outcome->ops[i].target == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI) ||
+		    (outcome->ops[i].target == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RCNT_TOTAL_UNITS) ||
+		    (outcome->ops[i].target == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CLOCK_FRAME_START))
 		{
 			count++;
 		}
@@ -1036,9 +1050,9 @@ static int TestPinsOnlyWhenSeeding(void)
 	CHECK(MainArcadeRaceSetupCore_Launch(&s_core, &launch, &s_outcome) == 0);
 	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_FAILED);
 	CHECK(ExpectPinsOnlyWhenSeeding(&s_core, 0) == 0);
-	/* The op count covers exactly the two pins. */
-	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_PIN_OP_COUNT == 2u);
-	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT == 11u);
+	/* The op count covers exactly the four pins (RS-17's two, LR-8's two). */
+	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_PIN_OP_COUNT == 4u);
+	CHECK(MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT == 13u);
 	return 0;
 }
 
@@ -1233,7 +1247,7 @@ static int TestOneCab(void)
 	CHECK(s_outcome.opCount == MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT && s_outcome.overflowed == 0u);
 	for (uint32_t i = 0; i < 5u; i++)
 	{
-		CHECK(s_outcome.ops[6u + i].value == goldenSeeds[i]);
+		CHECK(s_outcome.ops[8u + i].value == goldenSeeds[i]);
 	}
 	CHECK(StreamDraws(&s_core.bank, NATIVE_DETERMINISTIC_RNG_STREAM_MATCH_SETUP) == 5u);
 

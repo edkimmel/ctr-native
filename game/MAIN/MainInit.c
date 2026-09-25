@@ -418,8 +418,8 @@ void MainInit_FinalizeInit(struct GameTracker *gGT)
 	 * Arcade race setup, pre-drivers hook (docs/ROSTER_MILESTONE.md section
 	 * 3.2): a no-op unless a setup was launched. It verifies the fields the
 	 * load consumed, re-applies the mode words, arcadeDifficulty, and
-	 * boolDemoMode, pins gGT->timer and gGT->frameTimer_Confetti (RS-17), and
-	 * seeds the retail RNG states, before anything below reads them.
+	 * boolDemoMode, pins the RS-17 and LR-8 counters, and seeds the retail RNG
+	 * states, before anything below reads them.
 	 * deadcoed_struct stays retail: it is reset further down.
 	 */
 	MainArcadeRaceSetup_OnFinalizeInitBegin(gGT);

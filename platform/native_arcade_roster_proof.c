@@ -735,7 +735,8 @@ int NativeArcadeRosterProof_PinsMatch(const struct NativeArcadeRosterProofPins *
 	const struct NativeArcadeRosterProofPins *stored)
 {
 	return (produced != NULL) && (stored != NULL) && (produced->timer == stored->timer) &&
-	       (produced->frameTimerConfetti == stored->frameTimerConfetti);
+	       (produced->frameTimerConfetti == stored->frameTimerConfetti) &&
+	       (produced->rcntTotalUnits == stored->rcntTotalUnits) && (produced->clockFrameStart == stored->clockFrameStart);
 }
 
 uint32_t NativeArcadeRosterProof_FinalResult(uint32_t requested, const struct NativeArcadeRosterProofReport *report)
@@ -949,7 +950,7 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_Name(report->setupStatusName, statusName);
 	NativeArcadeRosterProof_Name(report->setupFailureName, failureName);
 
-	NativeArcadeRosterProof_Append(&text, "arcade roster proof v9\n");
+	NativeArcadeRosterProof_Append(&text, "arcade roster proof v10\n");
 	NativeArcadeRosterProof_Append(&text, "drivers digest excludes physics\n");
 	NativeArcadeRosterProof_Append(&text, "result %s (%u)\n", NativeArcadeRosterProof_ResultName(report->result),
 		(unsigned)report->result);
@@ -998,10 +999,11 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	{
 		NativeArcadeRosterProof_Append(&text,
 			"seeded randomNumber 0x%04X advRng0 0x%08X advRng1 0x%08X psxRand 0x%08X audioRNG 0x%08X "
-			"timer %ld frameTimerConfetti %ld match %u\n",
+			"timer %ld frameTimerConfetti %ld rcntTotalUnits %ld clockFrameStart %ld match %u\n",
 			(unsigned)report->seedStored.randomNumber, (unsigned)report->seedStored.advRng0,
 			(unsigned)report->seedStored.advRng1, (unsigned)report->seedStored.psxRandSeed,
 			(unsigned)report->seedStored.audioRNG, (long)report->pinStored.timer, (long)report->pinStored.frameTimerConfetti,
+			(long)report->pinStored.rcntTotalUnits, (long)report->pinStored.clockFrameStart,
 			((report->seedMatch != 0u) && (report->pinMatch != 0u)) ? 1u : 0u);
 	}
 	for (uint32_t slot = 0; slot < NATIVE_ARCADE_ROSTER_PROOF_SLOT_COUNT; slot++)

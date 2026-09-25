@@ -317,13 +317,17 @@ int MainArcadeRaceSetupCore_OnFinalizeInitBegin(struct MainArcadeRaceSetupCore *
 		return 0;
 	}
 	/* 4. The ops: the re-applied mode fields, the pinned boot-relative
-	 * counters (RS-17), then the seeds. */
+	 * counters (RS-17) and root-counter phase (LR-8), then the seeds. */
 	pins.timer = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_TIMER;
 	pins.frameTimerConfetti = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_FRAME_TIMER_CONFETTI;
+	pins.rcntTotalUnits = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_RCNT_TOTAL_UNITS;
+	pins.clockFrameStart = (int32_t)MAIN_ARCADE_RACE_SETUP_CORE_PIN_CLOCK_FRAME_START;
 	MainArcadeRaceSetupCore_PushModeFields(outcome, &fields);
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER, 0u, (int64_t)pins.timer);
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI, 0u,
 		(int64_t)pins.frameTimerConfetti);
+	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RCNT_TOTAL_UNITS, 0u, (int64_t)pins.rcntTotalUnits);
+	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CLOCK_FRAME_START, 0u, (int64_t)pins.clockFrameStart);
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RANDOM_NUMBER, 0u, (int64_t)seeds.randomNumber);
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG0, 0u, (int64_t)seeds.advRng0);
 	MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_ADV_RNG1, 0u, (int64_t)seeds.advRng1);

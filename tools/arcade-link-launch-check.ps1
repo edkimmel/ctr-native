@@ -43,7 +43,20 @@ param(
 #     a new select);
 #   - each report agrees with its own stdout: the k-th "arcade link: agreed
 #     match" line and the k-th "arcade link: race <n> validated" line (with
-#     n its report's launch number) carry the same text and digests.
+#     n its report's launch number) carry the same text and digests;
+#   - LR-8 (docs/LOCKSTEP_RACE_MILESTONE.md, LR-S3 (b)): each process's
+#     stdout has exactly one "arcade link: race <n> LR-8 race tick <t>
+#     elapsedTimeMS <v> (timer <t+1>) rcntTotalUnits <u> clockFrameStart
+#     <c>" line for t = 0, 1, and 2 of the k-th race (n its launch number),
+#     and the three (elapsedTimeMS, rcntTotalUnits, clockFrameStart) triples
+#     of the k-th race are equal across the two processes: the first race
+#     ticks' elapsed time and root-counter phase are identical on both
+#     machines;
+#   - LR-8: each process's stdout has, for each of its races, exactly one
+#     "arcade race setup: pinned rcntTotalUnits ..." line between the
+#     previous race's "validated" line (or the start) and this race's, and
+#     it is exactly the pin readback "pinned rcntTotalUnits 0
+#     clockFrameStart -200; read back 0 -200"; no other such line appears.
 #
 # Skips (77) without the disc image, without a display, with a non-internal
 # build (the option is rejected), or with an unknown build identity (a build
@@ -65,6 +78,10 @@ $agreedPattern = '^race ([0-9]+) (agreed match track [0-9]+ laps [0-9]+ seed 0x[
 $validatedPattern = '^race ([0-9]+) validated launch ([0-9]+) config ([0-9a-f]{64}) plan ([0-9a-f]{64}) bots ([0-9a-f]{64}) bank ([0-9a-f]{64})$'
 $stdoutAgreedPattern = '^\[CTR Native\] arcade link: (agreed match .*)$'
 $stdoutValidatedPattern = '^\[CTR Native\] arcade link: race ([0-9]+) validated config ([0-9a-f]{64}) plan ([0-9a-f]{64}) bots ([0-9a-f]{64}) bank ([0-9a-f]{64})$'
+$stdoutElapsedPattern = '^\[CTR Native\] arcade link: race ([0-9]+) LR-8 race tick ([0-9]+) elapsedTimeMS (-?[0-9]+) \(timer (-?[0-9]+)\) rcntTotalUnits (-?[0-9]+) clockFrameStart (-?[0-9]+)$'
+$stdoutPinPrefix = '[CTR Native] arcade race setup: pinned rcntTotalUnits '
+$stdoutPinLine = '[CTR Native] arcade race setup: pinned rcntTotalUnits 0 clockFrameStart -200; read back 0 -200'
+$elapsedTicks = 3
 $runs = @()
 
 function Exit-Skipped([string]$Reason) {
@@ -289,6 +306,65 @@ function Compare-WithStdout($Run, $Report) {
     return $found
 }
 
+# LR-8: the elapsedTimeMS, rcntTotalUnits, and clockFrameStart of race ticks
+# 0..2 of each of the report's races, from the run's stdout.  Values[k] holds
+# the k-th race's three "elapsedTimeMS/rcntTotalUnits/clockFrameStart"
+# triples; each must come from exactly one line whose timer is the race
+# tick + 1.  Each race must also have exactly one setup pin readback line
+# (the LR-8 pin) before its validated line, and every pin readback line must
+# be the pinned values.
+function Read-ElapsedTimes($Run, $Report) {
+    $result = [pscustomobject]@{ Values = @(); Problems = @() }
+    $lines = @()
+    $pinsBefore = @{}
+    $pinsSince = 0
+    foreach ($line in ((Read-SharedText $Run.StdoutPath) -split "`r?`n")) {
+        if ($line -match $stdoutElapsedPattern) {
+            $lines += [pscustomobject]@{ Launch = [int]$Matches[1]; Tick = [int]$Matches[2]; Elapsed = [int]$Matches[3]; Timer = [int]$Matches[4]; Units = [int]$Matches[5]; ClockFrameStart = [int]$Matches[6] }
+        }
+        elseif ($line.StartsWith($stdoutPinPrefix)) {
+            if ($line -ne $stdoutPinLine) {
+                $result.Problems += "run $($Run.Name): the setup's LR-8 pin readback is not the pinned values: '$line'"
+            }
+            $pinsSince++
+        }
+        elseif ($line -match $stdoutValidatedPattern) {
+            $pinsBefore[[int]$Matches[1]] = $pinsSince
+            $pinsSince = 0
+        }
+    }
+    for ($k = 0; $k -lt $Report.Validated.Count; $k++) {
+        $launch = $Report.Validated[$k].Launch
+        $pins = 0
+        if ($pinsBefore.ContainsKey($launch)) {
+            $pins = $pinsBefore[$launch]
+        }
+        if ($pins -ne 1) {
+            $result.Problems += "run $($Run.Name): race $($k + 1) (launch $launch) has $pins setup LR-8 pin readback lines before its validated line on stdout, expected 1 ('$stdoutPinLine')"
+        }
+    }
+    for ($k = 0; $k -lt $Report.Validated.Count; $k++) {
+        $launch = $Report.Validated[$k].Launch
+        $values = @()
+        for ($tick = 0; $tick -lt $elapsedTicks; $tick++) {
+            $found = @($lines | Where-Object { ($_.Launch -eq $launch) -and ($_.Tick -eq $tick) })
+            if ($found.Count -ne 1) {
+                $result.Problems += "run $($Run.Name): race $($k + 1) (launch $launch) has $($found.Count) LR-8 elapsedTimeMS lines for race tick $tick on stdout, expected 1"
+                $values += $null
+            }
+            elseif ($found[0].Timer -ne ($tick + 1)) {
+                $result.Problems += "run $($Run.Name): race $($k + 1) (launch $launch) LR-8 race tick $tick was logged at timer $($found[0].Timer), expected $($tick + 1)"
+                $values += $null
+            }
+            else {
+                $values += "$($found[0].Elapsed)/$($found[0].Units)/$($found[0].ClockFrameStart)"
+            }
+        }
+        $result.Values += , $values
+    }
+    return $result
+}
+
 try {
     if ([string]::IsNullOrWhiteSpace($AssetsFile)) {
         $scriptDirectory = $PSScriptRoot
@@ -382,6 +458,9 @@ try {
         }
         if ($report.Problems.Count -eq 0) {
             $failures += @(Compare-WithStdout $run $report)
+            $elapsed = Read-ElapsedTimes $run $report
+            $failures += @($elapsed.Problems)
+            $report | Add-Member -NotePropertyName Elapsed -NotePropertyValue $elapsed.Values
         }
         $reports[$run.Name] = $report
     }
@@ -410,6 +489,14 @@ try {
         Write-Output "race ${number}: cab2 $($cab2.Agreed[$k].Line)"
         Write-Output "race ${number}: cab1 $($cab1.Validated[$k].Line)"
         Write-Output "race ${number}: cab2 $($cab2.Validated[$k].Line)"
+        # LR-8: race ticks 0..2's elapsedTimeMS, rcntTotalUnits, and
+        # clockFrameStart, equal on both machines.
+        $elapsed1 = $cab1.Elapsed[$k] -join ' '
+        $elapsed2 = $cab2.Elapsed[$k] -join ' '
+        if ($elapsed1 -ne $elapsed2) {
+            $failures += "race $number LR-8 elapsedTimeMS/rcntTotalUnits/clockFrameStart of race ticks 0..2 differs: cab1 $elapsed1, cab2 $elapsed2"
+        }
+        Write-Output "race ${number}: LR-8 elapsedTimeMS/rcntTotalUnits/clockFrameStart race ticks 0..2: cab1 $elapsed1, cab2 $elapsed2"
     }
     # The rematch went through a new select: a new config.
     foreach ($pair in @(@('cab1', $cab1), @('cab2', $cab2))) {
@@ -421,6 +508,8 @@ try {
         Write-Output "races 1 and 2: agreed match, config, plan, bots, and bank equal across cab1 and cab2 (paired by race order; launch numbers cab1 $($cab1.Validated[0].Launch),$($cab1.Validated[1].Launch) cab2 $($cab2.Validated[0].Launch),$($cab2.Validated[1].Launch))"
         Write-Output "race 2 config differs from race 1 config on both cabinets (a new select)"
         Write-Output "both reports agree with their stdout (agreed-match and RL-12 lines)"
+        Write-Output "races 1 and 2: LR-8 elapsedTimeMS, rcntTotalUnits, and clockFrameStart of race ticks 0..2 equal across cab1 and cab2"
+        Write-Output "races 1 and 2: the setup's LR-8 pin readback ('pinned rcntTotalUnits 0 clockFrameStart -200; read back 0 -200') once per race on both cabinets"
     }
     Write-Output ''
     if ($failures.Count -ne 0) {

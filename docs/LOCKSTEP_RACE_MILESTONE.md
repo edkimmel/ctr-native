@@ -147,26 +147,35 @@ order:
   Timer_GetTime_Elapsed adds 0xc7e18 when the value goes backwards
   (Timer.c:48-64). MainFrame.c:188-203 then scales the result by 32/100 and
   clamps it to 64. A pause gives 32. Two VBlanks per tick give 32. The
-  first GameLogic after a load sees the whole load and clamps to 64.
+  first GameLogic after a load computes up to 64 from the whole load. It
+  stores 32, though: the load set gameMode1_prevFrame to 1
+  (LOAD_TenStages.c:499), and MainFrame.c:200-203 overrides the value
+  after a paused previous frame (observed in LR-S3 (b)).
 - The arithmetic wraps. The multiply overflows a signed 32-bit int, which
   is undefined behaviour in C17; MSVC, the reference toolchain, wraps it.
   That makes the per-tick delta depend on the absolute, boot-relative
-  rcntTotalUnits (include/regionsEXE.h:3720; its only writer is
-  MainDrawCb.c:32). A simulation of 2 VBlanks per tick through Timer.c's
+  rcntTotalUnits (include/regionsEXE.h:3720; its only retail writer is
+  MainDrawCb.c:32, and since LR-S3 (b) the setup's LR-8 pin,
+  MainArcadeRaceSetup_Apply, is the only other). A simulation of 2 VBlanks per tick through Timer.c's
   arithmetic gives a delta of 99 ms, so elapsedTimeMS 31, at the tick where
   units * 1000 crosses zero from below. That happens once every
   2^32 / 1000 units, about 16,331 VBlanks or 273 s of uptime, for most
   counter phases. Two cabinets never share a boot history, so that tick
   differs between them.
-- The RS-17 audit says gGT->clockFrameStart is harmless because "only
-  their deltas matter" (game/MAIN/MainArcadeRaceSetupCore.h:178-181). That
-  misses the wrap (LR-8). The roster proof launches about 5,400 to 6,600
-  proof ticks after boot (include/platform/native_arcade_roster_proof.h:56-60)
-  and races 900 ticks, so its races appear to end just before the first
-  such crossing. That would explain why the live proof never met it.
+- The RS-17 audit said gGT->clockFrameStart is harmless because "only
+  their deltas matter" (game/MAIN/MainArcadeRaceSetupCore.h:178-181 before
+  LR-S3 (b)). That missed the wrap (LR-8). LR-S3 (b) corrected it, and
+  rcntTotalUnits and clockFrameStart are now pinned
+  (MainArcadeRaceSetupCore.h:178-207). The roster proof launches about
+  5,400 to 6,600 proof ticks after boot
+  (include/platform/native_arcade_roster_proof.h:56-60) and races 900
+  ticks, so its races appear to end just before the first such crossing.
+  That would explain why the live proof never met it.
 - The setup pins gGT->timer and gGT->frameTimer_Confetti to 0 at race init
-  (RS-17). The pin is written only by OnFinalizeInitBegin in LAUNCHED
-  (MainArcadeRaceSetupCore.h:191-194), which runs at game/MAIN/MainInit.c:425.
+  (RS-17), and since LR-S3 (b) sdata->rcntTotalUnits to 0 and
+  gGT->clockFrameStart to -200 (LR-8). The pins are written only by
+  OnFinalizeInitBegin in LAUNCHED (MainArcadeRaceSetupCore.h:217-220),
+  which runs at game/MAIN/MainInit.c:425.
   sdata->frameCounter and frameTimer_VsyncCallback stay boot-relative
   (MainArcadeRaceSetupCore.h:155-168):
   - frameCounter has no race-simulation reader.
@@ -727,11 +736,13 @@ every race tick emits exactly 2 VBlanks, whatever the host frame time. So:
   Confetti starts from its RS-17 pin, and pause is impossible (LR-6).
 - The root counter advances 526 units per tick, and elapsedTimeMS is 32
   from race tick 1 on. MainMain.c:231 pins it to 32 only while a load
-  runs, and no load runs in the race. The pass before race tick 0 sees 64
-  (LR-8). Race tick 0 sees the value the VBlanks of that pass give; their
-  count depends on the vsyncTillFlip the load left, not on host time, so
-  it is the same on both cabinets. LR-S3 logs elapsedTimeMS of the first
-  three race GameLogic passes to confirm it.
+  runs, and no load runs in the race. The pass before race tick 0 sees 32:
+  the load set gameMode1_prevFrame to 1, and MainFrame.c:200-203 overrides
+  the computed 64 (LR-8). Race tick 0 sees the value the VBlanks of that
+  pass give; their count depends on the vsyncTillFlip the load left, not
+  on host time, so it is the same on both cabinets. LR-S3 (b) logged
+  elapsedTimeMS of the first three race GameLogic passes as 32 32 32 on
+  both cabinets.
 
 LR-8 Root-counter pin. The wrap of section 2.2 makes elapsedTimeMS a
 function of the boot-relative sdata->rcntTotalUnits on one tick about every
@@ -743,16 +754,28 @@ Confetti pins, also writes:
 - gGT->clockFrameStart = -200.
 
 The first race GameLogic then sees no VBlank since the pin, a delta of
-200 ms, and elapsedTimeMS 64 (MainFrame.c:188-199). That is the value
-retail computes after any load. The dangerous crossing then falls on the
-same race tick on both cabinets, about race tick 8,165. Both run the same
-build (the link requires a known identity), so both wrap the same way.
+200 ms, which scales to 64 (MainFrame.c:188-199). Observed in LR-S3 (b):
+both cabinets log rcntTotalUnits 0, 526, and 1052 and clockFrameStart 0,
+100, and 200 at race ticks 0..2, after GameLogic and before that pass's
+RenderVSYNC. Retail then stores 32
+instead. The load set gameMode1_prevFrame to 1 (LOAD_TenStages.c:499), and
+MainFrame.c:200-203 stores 32 after a paused previous frame. Settled in
+LR-S3 (b): race ticks 0..2 log 32 32 32 with the pin on both cabinets and
+in all eleven proof runs; without the pin, inferred from identical A/F
+control digests (the control digest encodes elapsedTimeMS,
+platform/native_canonical_state.c:40). The dangerous crossing then falls on the
+same race tick on both cabinets, race tick 8,166 at 2 VBlanks per tick
+(then 16,331; tests/game_timer_wrap_test.c). That tick assumes no VBlank
+between the pin and race tick 0, as observed; N such VBlanks would move it
+(8,165 for N = 1 or 2), so both cabinets must also agree on N, which the
+link check now requires. Both run the same build (the
+link requires a known identity), so both wrap the same way.
 
 The only readers of the root counter are elapsedTimeMS and the render
 statistic clockDurationStall (MainFrame_RenderFrame.c:1277, :1345). The
 adapter reads both values back, as for the RS-17 pins, and the RS-17 audit
-comment (MainArcadeRaceSetupCore.h:178-181) is corrected. This is a setup
-seam change. Review required.
+comment (MainArcadeRaceSetupCore.h:178-181) is corrected (done in LR-S3
+(b); now :178-207). This is a setup seam change. Review required.
 
 The pin applies to every launched race, including the roster proof's,
 which launches through the same seam (MainArcadeRosterProof.c:289-296).
@@ -761,14 +784,17 @@ boot-relative counter phases, the very thing the pin removes. What changes
 for the proof:
 
 - Its per-tick digests are expected not to change. Its first race
-  GameLogic already clamps to 64 after the load, and its 900-tick races
-  end before the crossing both before and after the pin (section 2.2).
-  LR-S3 compares a pre-pin and a post-pin proof run tick by tick and
-  records the result. Any change must be explained before an expectation
-  moves.
+  GameLogic stores 32 after the load with or without the pin (the
+  paused-previous-frame override above), and its 900-tick races end
+  before the crossing both before and after the pin (section 2.2). LR-S3
+  compares a pre-pin and a post-pin proof run tick by tick and records
+  the result. Any change must be explained before an expectation moves.
+  Settled in LR-S3 (b): the 900 tick lines of A and of F are
+  byte-identical pre vs post.
 - The pin readback (the two new fields) appears in the setup's log and
-  the proof report; the next report version and
-  tools/arcade-roster-proof-check.ps1's counters pattern come with it.
+  the proof report (the seeded line, report v10), and
+  tools/arcade-roster-proof-check.ps1's seeded-line pattern requires the
+  pinned values.
 - The C - A, E - A, I - F, and J - F counter offsets the check prints are
   unchanged: rcntTotalUnits and clockFrameStart are not among the four
   counters it compares.
@@ -881,7 +907,7 @@ a level that can reuse addresses. The domains:
   LR-7 they read 2k and k on race tick k. A pacing fault would therefore
   show in the digest, where dropping the fields would hide it. timer is
   already race-relative through its pin. Every other field is level- or
-  race-relative (MainArcadeRaceSetupCore.h:184-189).
+  race-relative (MainArcadeRaceSetupCore.h:210-215).
 - Retail RNG. The MainMain.c:80-84 fields.
 - Deterministic bank. A copy of *MainArcadeRaceSetup_Bank(). It is
   constant during the race, so "project" means the RNG domain proves every
@@ -1751,8 +1777,8 @@ native_host_wait_isolation, and arcade_roster_proof_autopilot_isolation
 
 ### LR-S3 -- deterministic time for linked races
 
-Status: (a) LR-7 done, (b) LR-8 pending. Review required (the setup seam
-and the pacing switch). Run 1.
+Status: done ((a) LR-7, (b) LR-8). Review required (the setup seam and
+the pacing switch). Run 1.
 
 (a) result (LR-7, the pacing switch only):
 
@@ -1807,6 +1833,172 @@ and the pacing switch). Run 1.
   clone at 1ed6b4daf also passed (77.16 s). Without memcards/ it failed
   in the same way at 1ed6b4daf and with this change: Launch PRECONDITION,
   "the game options are not loaded yet".
+
+(b) result (LR-8, the root-counter pin):
+
+- Pins. MainArcadeRaceSetupCore_OnFinalizeInitBegin in LAUNCHED pushes
+  two new ops right after TIMER and FRAME_TIMER_CONFETTI and before the
+  seeds: RCNT_TOTAL_UNITS 0 and CLOCK_FRAME_START -200
+  (game/MAIN/MainArcadeRaceSetupCore.c:319-330; the values are
+  MAIN_ARCADE_RACE_SETUP_CORE_PIN_RCNT_TOTAL_UNITS and _PIN_CLOCK_FRAME_START,
+  MainArcadeRaceSetupCore.h:243-246). PIN_OP_COUNT is 4 and BEGIN_OP_COUNT
+  13 (MAX_OPS 16). The adapter maps them to sdata->rcntTotalUnits and
+  gGT->clockFrameStart in MainArcadeRaceSetup_Apply
+  (game/MAIN/MainArcadeRaceSetup.c:184-189), with 32-bit static asserts
+  (:50-51). The MainInit.c hook comment names them.
+- Readback. struct MainArcadeRaceSetupPins gains rcntTotalUnits and
+  clockFrameStart. The adapter reads both back with the RS-17 pins
+  (MainArcadeRaceSetup_ReadPins) and logs "pinned rcntTotalUnits 0
+  clockFrameStart -200; read back 0 -200" (:348). The roster proof copies
+  them into NativeArcadeRosterProofPins, and NativeArcadeRosterProof_PinsMatch
+  compares all four.
+- Audit comment. The RS-17 bullet on clockFrameStart and
+  clockDurationStall is replaced (MainArcadeRaceSetupCore.h:178-207).
+  rcntTotalUnits and clockFrameStart are now PIN, for the wrap and with
+  the evidence below. clockDurationStall stays LEAVE: it is snapshot and
+  turned into a delta within one frame, and nothing else in game/ reads
+  it. game/Timer.c is unchanged.
+- Report v10. The proof report's "seeded" line appends "rcntTotalUnits <n>
+  clockFrameStart <n>" before "match". tools/arcade-roster-proof-check.ps1
+  requires the v10 header and a seeded line whose pin readback is exactly
+  "timer 0 frameTimerConfetti 0 rcntTotalUnits 0 clockFrameStart -200 match
+  1" ($seededPattern). The counters lines, and with them the four compared
+  counters, are unchanged.
+- elapsedTimeMS log (read-only). The roster proof logs "race tick <n>
+  elapsedTimeMS <v> (timer <n+1>) rcntTotalUnits <u> clockFrameStart <c>"
+  for its race ticks 0..2: elapsedTimeMS and timer from the V1 control
+  snapshot the digests use, rcntTotalUnits and clockFrameStart read from
+  the game at MainArcadeRosterProof_EndFrame, after the frame's RenderVSYNC
+  (game/MAIN/MainArcadeRosterProof.c:946). The race caller logs "arcade
+  link: race <launch> LR-8 race tick <n> elapsedTimeMS <v> (timer <n+1>)
+  rcntTotalUnits <u> clockFrameStart <c>" from RenderFrame, after
+  GameLogic and before that pass's RenderVSYNC
+  (MainArcadeRaceLaunch_LogElapsed, game/MAIN/MainArcadeRaceLaunch.c:401).
+  LR-8 race tick n is the race's n-th GameLogic pass, the frame whose
+  gGT->timer is n + 1 after the RS-17 pin with the setup VALIDATED. That
+  is the proof's race tick numbering. The launch core's race tick 0 (LR-2)
+  is LR-8 race tick 1: the caller logs "race N tick 0" between LR-8 race
+  ticks 0 and 1.
+- Observed elapsedTimeMS of race ticks 0..2: 32 32 32 on both cabinets,
+  for both races of arcade_link_launch, and 32 32 32 in all eleven roster
+  proof runs. With them, at the caller's log point, rcntTotalUnits 0, 526,
+  1052 and clockFrameStart 0, 100, 200 at race ticks 0, 1, 2, identical on
+  both cabinets for both races: no VBlank falls between the pin and race
+  tick 0, as the plan assumed, so the crossing tick stays 8,166. The
+  proof's log point is one RenderVSYNC later: rcntTotalUnits 526, 1052,
+  1578 and clockFrameStart 0, 100, 200 in all eleven proof runs of
+  arcade_roster_determinism (the same phase; that run, from the same
+  throwaway clone, passed in 266.02 s). Every run's setup logged "pinned
+  rcntTotalUnits 0 clockFrameStart -200; read back 0 -200". Without the
+  pin, 32 32 32 is inferred, not logged (the pre-pin build had no such
+  line): the pre-pin and post-pin A and F control digests are identical,
+  and the control digest encodes elapsedTimeMS
+  (platform/native_canonical_state.c:40).
+  The plan expected 64 for race tick 0, and that was wrong.
+  The first race GameLogic does compute 64, from the pinned 200 ms delta
+  (the wrap test checks this). Retail then overrides it: the load's stage
+  sets gGT->gameMode1_prevFrame = 1, a PAUSE_ALL bit
+  (game/LOAD/LOAD_TenStages.c:499), and MainFrame.c:200-203 stores 32
+  after a paused previous frame. The first GameLogic's snapshot then
+  replaces clockFrameStart. So the clockFrameStart pin only keeps that one
+  overridden delta phase-free. From race tick 1 on, rcntTotalUnits alone
+  carries the pinned phase.
+- Pre-pin vs post-pin roster proof, tick by tick. Both sides were built
+  from a dirty tree, so they share the unknown build identity. Pre-pin
+  was HEAD f180c9d29 plus one trailing-whitespace line in this document,
+  reverted afterwards. Post-pin was this change. Both exes were copied to
+  build-msvc-x86/prepin and postpin. Each ran A's options (TWO_CAB, seed
+  0x5EED, dwell 0, 900 ticks) and F's options (ONE_CAB, the same). All
+  four exited 0. The 900 tick lines of A, and the 900 of F, are
+  byte-identical pre vs post: 1,800 lines, 9,000 digests (control,
+  rcontrol, rng, input, drivers) compared, and none differ. The reports
+  differ only in the header version (v9 vs v10) and the seeded line's two
+  new fields.
+- arcade_roster_determinism passed with this change (266.46 s). A's
+  launch and race tick 0 counters equal the pre-change report's (timer
+  696 / 1, frameCounter 733 / 763, frameTimer 2315 / 2377,
+  frameTimerConfetti 2315 / 2). The printed offsets are unchanged: C - A
+  and I - F at launch timer +5329, E - A and J - F +37, and 0 for timer
+  and frameTimerConfetti at race tick 0.
+- The wrap test, tests/game_timer_wrap_test.c (ctest game_timer_wrap_unit),
+  includes the real game/Timer.c through the real game headers. It stubs
+  sdata_static and GetRCnt/SetRCnt/StartRCnt/StopRCnt, and copies only
+  MainFrame.c:188-203's scale, clamps, and paused-frame override. Its
+  expectations are computed without Timer.c: a tick is a crossing when
+  units * 1000 modulo 2^32 goes down. It shows that:
+  - unpinned, every non-32 race tick is a crossing tick with
+    elapsedTimeMS 31, and the tick moves with the boot phase: boot units
+    625151 give race ticks 6947 and 15113, and boot units 1420743 give
+    5435 and 13600;
+  - pinned, with the observed 0 VBlanks between the pin and race tick 0,
+    the first crossing is at race tick 8166 (then 16331) for every one of
+    7 boot unit phases times 3 pre-pin gaps;
+  - N VBlanks between the pin and race tick 0 shift the crossing (the
+    assumption behind 8166): N = 1 and 2 give race tick 8165, N = 3 and 4
+    give 8164, each still the same for every boot phase;
+  - race tick 0 is 64 before the override and 32 after it.
+  Only MSVC x86 behaviour is evidence: signed overflow is UB in C17, so
+  CMakeLists.txt registers game_timer_wrap_unit only for MSVC with 4-byte
+  pointers (the reference toolchain).
+- Tests. main_arcade_race_setup_core_unit covers the op order and values,
+  the four pins, and the readback of all four fields. The PIN_OP_COUNT and
+  BEGIN_OP_COUNT constants are 4 and 13, and the four targets are pinned
+  only when seeding. main_arcade_race_setup_isolation covers 17 write
+  targets, the two new Apply cases, the pins named once and in order in
+  the seeding step, and their #defines. A new LR-8 rule (rule 13 of its
+  list) covers game/, platform/, include/, and main.c, on code with
+  comments removed and string literals blanked:
+  - rcntTotalUnits may be named only by regionsEXE.h, MainDrawCb.c,
+    Timer.c, and the adapter;
+  - clockFrameStart may be named only by namespace_Main.h, MainFrame.c,
+    and the adapter;
+  - the race caller and the roster proof each read both exactly once, as
+    the cast rvalues (long)sdata->rcntTotalUnits and
+    (long)gGT->clockFrameStart of their LR-8 log lines, which no store can
+    take;
+  - the pin plumbing may name them otherwise only as pins-struct members:
+    the "int32_t <field>;" declaration, or an access through pins,
+    produced, stored, setupProduced, setupStored, or pinStored;
+  - any other use fails, sdata_static.<field> and any -> or . member
+    access included.
+  The rule was probed with violating lines: sdata_static.rcntTotalUnits
+  and a pointer's ->rcntTotalUnits in the roster proof, a pointer's
+  ->clockFrameStart in the platform proof module, a store to
+  sdata->rcntTotalUnits and a second (long)gGT->clockFrameStart read in the
+  caller, a struct's .clockFrameStart in MainMain.c, and
+  sdata->rcntTotalUnits in the core; each failed, and the probes were
+  reverted. main_arcade_race_setup_core_isolation's clock token now
+  exempts only the pins-struct member clockFrameStart's declaration and
+  its pins.clockFrameStart uses; a probe with clock() and one with a
+  pointer's ->clockFrameStart in the core each still tripped it.
+  native_arcade_roster_proof_unit covers v10, the seeded line, and
+  PinsMatch on the new fields. game_timer_wrap_unit is new.
+- arcade_link_launch ran non-skipped and passed (88.96 s; runs 78.1 s
+  each). The check now also requires the three LR-8 elapsedTimeMS lines
+  (timer n + 1) of every race on each cabinet's stdout, equal across cab1
+  and cab2. It printed "race 1: LR-8 elapsedTimeMS race ticks 0..2: cab1
+  32 32 32, cab2 32 32 32" and the same for race 2. After review, the
+  lines also carry rcntTotalUnits and clockFrameStart, and the check
+  requires all three values of each race tick equal across cab1 and cab2
+  (a pinned race and an unpinned one both give 32 32 32; the root-counter
+  phase tells them apart). It also requires exactly one setup pin readback
+  line, "pinned rcntTotalUnits 0 clockFrameStart -200; read back 0 -200",
+  per race on each cabinet, before that race's validated line. A rerun in
+  a fresh throwaway clone passed (80.05 s) with both races at
+  32/0/0 32/526/100 32/1052/200 (elapsedTimeMS/rcntTotalUnits/
+  clockFrameStart, race ticks 0..2) on both cabinets. Run on tampered
+  copies of a cabinet's stdout, the check's parser reported a changed
+  readback and a removed pin line, and returned a changed rcntTotalUnits
+  as a triple that differs from the other cabinet's. The first run came from a
+  clean-tree build of this change in a throwaway clone at a local commit,
+  on a subst drive, with assets\ linked and memcards\ copied. The clone,
+  the link, and the drive were removed afterwards, and the repository's
+  refs were not touched. Only comment edits followed that build (the
+  MainInit.c hook comment and the core header's "Writes" paragraph,
+  reflowed to keep the documented line numbers).
+- Normal boot and replay are unchanged: the pins are written only by the
+  seeding step of a LAUNCHED setup, the race caller returns first without
+  the link, and the proof log runs only while the proof is active.
 
 Plan: LR-7 and LR-8.
 
