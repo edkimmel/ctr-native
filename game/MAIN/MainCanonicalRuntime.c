@@ -39,7 +39,23 @@ static int MainCanonicalRuntime_V4RequestMatches(const struct MainCanonicalRunti
 		(memcmp(request->identity.build, workspace->preparedRequest.v4.identity.build, NATIVE_IDENTITY_DIGEST_BYTES) == 0) &&
 		(memcmp(request->identity.content, workspace->preparedRequest.v4.identity.content, NATIVE_IDENTITY_DIGEST_BYTES) == 0) &&
 		(memcmp(&request->config, &workspace->preparedRequest.v4.config, sizeof(request->config)) == 0) &&
-		(memcmp(request->configDigest, workspace->preparedRequest.v4.configDigest, NATIVE_SHA256_DIGEST_BYTES) == 0);
+		(memcmp(request->configDigest, workspace->preparedRequest.v4.configDigest, NATIVE_SHA256_DIGEST_BYTES) == 0) &&
+		(request->bank == workspace->preparedRequest.v4.bank);
+}
+
+/* The V4 staging bank: a copy of the request's bank when it carries one (a
+ * linked race's post-setup bank, LR-10), else the config's fresh derivation.
+ * The projector validates either against the config. */
+static int MainCanonicalRuntime_StageBankV4(struct MainCanonicalRuntimeWorkspace *workspace,
+	const struct MainCanonicalRuntimeV4Request *request)
+{
+	if (request->bank != NULL)
+	{
+		workspace->v4Scratch.deterministicRng=*request->bank;
+		return 1;
+	}
+	return NativeDeterministicRngBankV1_InitInPlace(&workspace->v4Scratch.deterministicRng,request->config.masterSeed,
+		request->config.rngDerivationVersion);
 }
 
 static void MainCanonicalRuntime_Poison(struct MainCanonicalRuntimeWorkspace *workspace,
@@ -307,14 +323,18 @@ int MainCanonicalRuntime_PrepareV4(struct MainCanonicalRuntimeWorkspace *workspa
 	}
 	workspace->stageCounts.project++;
 	/* WORLD and TOPOLOGY are the gated domains supplied by the caller: the
-	 * isolated mine/counter extractors, D231, NavHeader.last, and the topology
-	 * lease stay untouched here, and the projector revalidates every value.
+	 * mine/counter extractors, D231, and the topology lease stay untouched
+	 * here, and the projector revalidates every value.  NavHeader.last was
+	 * read above, check-only, by the drivers extraction's
+	 * MainCanonicalDrivers_BotNavIndex (LR-17, ruled (a)); nothing here reads
+	 * it.  The bank is the request's copy when it carries one (LR-10) and a
+	 * fresh derivation otherwise; the projector checks either against the
+	 * config's masterSeed and derivation version.
 	 * The bounded in-place projector keeps the whole-state value in the
 	 * workspace and uses the reserved staging region for context, RNG, and the
 	 * per-domain payload. */
 	if (MAIN_CANONICAL_RUNTIME_FORCED(MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT) ||
-		!NativeDeterministicRngBankV1_InitInPlace(&workspace->v4Scratch.deterministicRng,request->config.masterSeed,
-			request->config.rngDerivationVersion) ||
+		!MainCanonicalRuntime_StageBankV4(workspace,request) ||
 		!MainCanonicalState_ProjectV4InPlaceWithScratch(&workspace->stateCandidate.v4,&workspace->preparedRequest.v4Context,&request->identity,
 			request->replayFrame,control,retailRng,&workspace->v4Scratch.deterministicRng,input,&workspace->drivers.summary,
 			worldCounters,mineRegistry,topology,workspace->v4Scratch.projectorScratch,sizeof(workspace->v4Scratch.projectorScratch)))

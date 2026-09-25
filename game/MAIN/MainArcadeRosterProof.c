@@ -11,8 +11,10 @@
  * entry point returns as its first statement and touches nothing.
  *
  * The per-tick evidence is local only: the V1 state MainMain.c projects for
- * the proof and the drivers candidate extracted here go into the proof's
- * report and nowhere else (no scheduler, no recording, no saved state).
+ * the proof, the drivers candidate extracted here, and the live V4 state the
+ * race digest projects each race tick (MAIN/MainArcadeRaceDigest.h, Task 8
+ * race plan LR-10, slice LR-S4) go into the proof's report and nowhere else
+ * (no scheduler, no recording, no saved state).
  *
  * LR-S2 (a)'s hold (--arcade-roster-proof-hold): on the frame logged as race
  * tick HOLD_TICK, MainArcadeRosterProof_Frame (after GameLogic, before the
@@ -42,6 +44,7 @@
 
 #include "MAIN/MainArcadeBotSetup.h"
 #include "MAIN/MainArcadeLink.h"
+#include "MAIN/MainArcadeRaceDigest.h"
 #include "MAIN/MainArcadeRaceHold.h"
 #include "MAIN/MainArcadeRaceHoldCore.h"
 #include "MAIN/MainArcadeRaceSetup.h"
@@ -697,6 +700,44 @@ static int MainArcadeRosterProof_DriversDigest(uint8_t digest[NATIVE_SHA256_DIGE
 	return 1;
 }
 
+/*
+ * LR-S4: the live V4 state of race tick state->raceTick, projected through
+ * the race digest (MAIN/MainArcadeRaceDigest.h) from this frame's game state,
+ * the frozen pads of the frame's V1 state (the pads GameLogic read), the
+ * setup's post-setup bank, and the racing overlay's mine pool. Race tick 0
+ * resets the runtime and takes the race-relative base. Fills the line's v4
+ * fields; 0 (logged) on a projection failure.
+ */
+static int MainArcadeRosterProof_ProjectV4(const struct GameTracker *gGT, const struct NativeCanonicalStateV1 *frameState,
+	struct NativeArcadeRosterProofTickLine *line)
+{
+	const struct MainArcadeRosterProofState *state = &s_mainArcadeRosterProof;
+	struct MainArcadeRaceDigestSources sources;
+	struct MainArcadeRaceDigestTick tick;
+
+	sources.gGT = gGT;
+	sources.sourceData = sdata;
+	sources.mineSource = &D231;
+	sources.config = NativeArcadeRosterProof_Config();
+	sources.bank = MainArcadeRaceSetup_Bank();
+	sources.input = &frameState->input;
+	if (!MainArcadeRaceDigest_Project(state->raceTick, &sources, &tick))
+	{
+		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "the V4 projection failed at race tick %u (%s, runtime reason %u)\n",
+			(unsigned)state->raceTick, MainArcadeRaceDigest_FailureName(MainArcadeRaceDigest_Failure()),
+			(unsigned)MainArcadeRaceDigest_RuntimeFailure());
+		return 0;
+	}
+	/* The domain digests by name, whatever the canonical domain order. */
+	if (!NativeArcadeRosterProof_SetTickLineV4(line, tick.combinedDigest, tick.domainDigests))
+	{
+		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "the V4 domain digests of race tick %u do not map to the tick line\n",
+			(unsigned)state->raceTick);
+		return 0;
+	}
+	return 1;
+}
+
 /* The restart point after index (forward); index itself when it has no valid link. */
 static uint32_t MainArcadeRosterProof_AutopilotNext(const struct Level *level, uint32_t count, uint32_t index)
 {
@@ -911,6 +952,11 @@ void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct Native
 		MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED);
 		return;
 	}
+	if (!MainArcadeRosterProof_ProjectV4(gGT, frameState, &line))
+	{
+		MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_V4_FAILED);
+		return;
+	}
 	if (state->raceTick == 0u)
 	{
 		/* The boot-relative counters as race tick 0 saw them (RS-12 evidence). */
@@ -971,6 +1017,15 @@ void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct Native
 	state->raceTick++;
 	if (state->raceTick >= NativeArcadeRosterProof_Ticks())
 	{
+		/* The proof race's end frame for the race digest (LR-10): it
+		 * clears the runtime's per-level state for the next race. */
+		if (!MainArcadeRaceDigest_EndRace())
+		{
+			Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "the V4 end frame failed after race tick %u (%s)\n",
+				(unsigned)(state->raceTick - 1u), MainArcadeRaceDigest_FailureName(MainArcadeRaceDigest_Failure()));
+			MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_V4_FAILED);
+			return;
+		}
 		MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PASS);
 	}
 }

@@ -83,6 +83,7 @@ global_variable const struct NativePerfBucketInfo s_bucketInfo[NATIVE_PERF_BUCKE
     {"swap_window_ms", 1},
     {"vsync_wait_ms", 0},
     {"audio_vblank_ms", 1},
+    {"arcade_race_digest_ms", 1},
 };
 
 global_variable FILE *s_csvFile;

@@ -83,7 +83,7 @@ param(
 # redraws the displayed frame with a banner once per period after the grace,
 # so the race must not notice it: every line of K's report except its "hold"
 # line must equal A's (the header, the setup evidence, and the control,
-# rcontrol, rng, input, and drivers digests of every tick).  K's hold line
+# rcontrol, rng, input, drivers, and V4 digests of every tick).  K's hold line
 # must show the hold at race tick 300 for 45 periods; frameTimer
 # (gGT->frameTimer_VsyncCallback) advancing by exactly 2 from race tick 299
 # to race tick 300 and not at all inside the hold (entry = exit); a wall
@@ -93,12 +93,17 @@ param(
 # every ended period; and every due banner presented.  Every other run's
 # hold line must be "hold none".
 #
-# Every report must be format v10 with result PASS, the profile line right
+# Every report must be format v11 with result PASS, the profile line right
 # after the result line, the expected launch window, both counter lines, a
 # seeded line whose pin readback is the pinned values (timer 0,
 # frameTimerConfetti 0, and, since v10, LR-8's rcntTotalUnits 0 and
 # clockFrameStart -200) ending "match 1", eight slot lines, exactly the run's requested
-# tick lines numbered from 0, and "end ticks N".  The slot lines must carry the
+# tick lines numbered from 0, and "end ticks N".  Since v11 each tick line
+# also carries the live V4 projection (LR-10, LR-S4): the combined digest
+# and the domain digests v4control (race-relative), v4rng, v4input,
+# v4drivers (Physics included), v4world, and v4topology, which must be the
+# unavailable summary's digest ($unavailableTopologyDigest) on every tick.
+# The slot lines must carry the
 # profile's roles: TWO_CAB slot 0 CAB1_HUMAN, slot 1 CAB2_HUMAN, slots 2..5
 # BOT (all present), slots 6..7 "role INACTIVE"; ONE_CAB slot 0 CAB1_HUMAN
 # and slots 1..7 BOT, all present.  F differs from A in the config digest
@@ -110,7 +115,10 @@ param(
 #
 # C and E must match A in the config, race plan, bot setup plan, and bank
 # digests, the seeded line, the slot lines, and at every race tick the rng,
-# input, drivers, and race-relative control (rcontrol) digests.  rcontrol is
+# input, drivers, and race-relative control (rcontrol) digests and the V4
+# combined and domain digests (every V4 domain is race-relative or the
+# unavailable topology summary, so V4 must match wherever the V1 rng, input,
+# and drivers digests must).  rcontrol is
 # the V1 control digest with the boot-relative counters (frameTimer,
 # frameCounter, timer) zeroed; the full control digest also carries those
 # counters.  The race setup pins gGT->timer and gGT->frameTimer_Confetti at
@@ -145,8 +153,13 @@ param(
 $skipExitCode = 77
 $noDisplayMarker = 'No displays available'
 $notInternalMarker = '--arcade-roster-proof is available in internal builds only.'
-$tickPattern = '^tick ([0-9]+) control ([0-9a-f]{16}) rcontrol ([0-9a-f]{16}) rng ([0-9a-f]{16}) input ([0-9a-f]{16}) drivers ([0-9a-f]{64})$'
-$countersPattern = '^timer (-?[0-9]+) frameCounter (-?[0-9]+) frameTimer (-?[0-9]+) frameTimerConfetti (-?[0-9]+)$'
+$tickPattern = '^tick ([0-9]+) control ([0-9a-f]{16}) rcontrol ([0-9a-f]{16}) rng ([0-9a-f]{16}) input ([0-9a-f]{16}) drivers ([0-9a-f]{64}) v4 ([0-9a-f]{16}) v4control ([0-9a-f]{16}) v4rng ([0-9a-f]{16}) v4input ([0-9a-f]{16}) v4drivers ([0-9a-f]{16}) v4world ([0-9a-f]{16}) v4topology ([0-9a-f]{16})$'
+# The V4 TOPOLOGY domain digest of the unavailable summary
+# (NativeCanonicalTopologyV1_Init), which the race digest projects on every
+# tick (LR-10); tests/main_arcade_race_digest_test.c pins the same value and
+# tests/main_arcade_race_digest_isolation_test.cmake keeps the two equal.
+$unavailableTopologyDigest = 'd75d92ae427cd357'
+$countersPattern ='^timer (-?[0-9]+) frameCounter (-?[0-9]+) frameTimer (-?[0-9]+) frameTimerConfetti (-?[0-9]+)$'
 # The seeded line (v10): the five seeds, then the pin readback at the pinned
 # values, RS-17's timer and frameTimerConfetti and LR-8's rcntTotalUnits and
 # clockFrameStart.
@@ -292,7 +305,8 @@ function Read-Report($Run) {
         if ($line -match $tickPattern) {
             $report.Ticks += [pscustomobject]@{
                 Tick = [int]$Matches[1]; Control = $Matches[2]; RaceControl = $Matches[3]; Rng = $Matches[4]; Input = $Matches[5]
-                Drivers = $Matches[6]; Line = $line
+                Drivers = $Matches[6]; V4 = $Matches[7]; V4Control = $Matches[8]; V4Rng = $Matches[9]; V4Input = $Matches[10]
+                V4Drivers = $Matches[11]; V4World = $Matches[12]; V4Topology = $Matches[13]; Line = $line
             }
         }
         elseif ($line -match '^slot [0-9]+ ') {
@@ -318,8 +332,8 @@ function Read-Report($Run) {
             $report.Header[$Matches[1]] = $Matches[2]
         }
     }
-    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v10') -or ($lines[1] -ne 'drivers digest excludes physics')) {
-        $report.Problems += 'the report does not start with the v10 header and "drivers digest excludes physics"'
+    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v11') -or ($lines[1] -ne 'drivers digest excludes physics')) {
+        $report.Problems += 'the report does not start with the v11 header and "drivers digest excludes physics"'
     }
     # The hold line: "hold none" without the hold, the evidence line with it.
     if ($Run.Hold) {
@@ -361,6 +375,14 @@ function Read-Report($Run) {
     for ($i = 0; $i -lt $report.Ticks.Count; $i++) {
         if ($report.Ticks[$i].Tick -ne $i) {
             $report.Problems += "tick line $i is numbered $($report.Ticks[$i].Tick)"
+            break
+        }
+    }
+    # Task 8 does not compare TOPOLOGY: every tick's V4 topology digest is the
+    # unavailable summary's (LR-10).
+    for ($i = 0; $i -lt $report.Ticks.Count; $i++) {
+        if ($report.Ticks[$i].V4Topology -ne $unavailableTopologyDigest) {
+            $report.Problems += "tick $i v4topology is $($report.Ticks[$i].V4Topology), not the unavailable summary's $unavailableTopologyDigest"
             break
         }
     }
@@ -452,7 +474,8 @@ function Get-CounterOffsets($A, $Other, [switch]$Launch) {
 
 # Compares $Other with the reference report $Base (named $BaseName) as C
 # and E must match A, and I and J must match F: the setup evidence and, at
-# every race tick, the rng, input, drivers, and rcontrol digests.  The full
+# every race tick, the rng, input, drivers, and rcontrol digests and the V4
+# combined and domain digests (v11, LR-10).  The full V1
 # control digest is informational.  Returns the failures and the messages
 # to print.
 function Compare-WithBase($Base, [string]$BaseName, $Other, [string]$Name) {
@@ -484,7 +507,7 @@ function Compare-WithBase($Base, [string]$BaseName, $Other, [string]$Name) {
             }
         }
         if ($null -eq $firstSimulation) {
-            foreach ($domain in @('Rng', 'Input', 'Drivers', 'RaceControl')) {
+            foreach ($domain in @('Rng', 'Input', 'Drivers', 'RaceControl', 'V4', 'V4Control', 'V4Rng', 'V4Input', 'V4Drivers', 'V4World', 'V4Topology')) {
                 if ($tickBase.$domain -ne $tickOther.$domain) {
                     $label = $domain.ToLowerInvariant()
                     if ($domain -eq 'RaceControl') {
@@ -500,7 +523,7 @@ function Compare-WithBase($Base, [string]$BaseName, $Other, [string]$Name) {
         $found += "$Name differs from $BaseName at $firstSimulation"
     }
     elseif ($found.Count -eq 0) {
-        $messages += "$Name = ${BaseName}: config, race plan, bot setup, and bank digests, the seeded line, 8 slot lines, and the rng, input, drivers, and rcontrol digests of all $Ticks ticks"
+        $messages += "$Name = ${BaseName}: config, race plan, bot setup, and bank digests, the seeded line, 8 slot lines, the rng, input, drivers, and rcontrol digests, and the V4 combined and domain digests of all $Ticks ticks"
     }
     if ($controlDifferences -eq 0) {
         $messages += "$Name vs $BaseName control digests (informational, RS-12): identical at all $Ticks ticks"

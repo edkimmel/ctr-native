@@ -69,10 +69,17 @@ int MainCanonicalTopologyLease_Validate(const struct MainCanonicalTopologyLease 
 	const struct MainCanonicalTopologyLeaseAuthority *authority,
 	const struct GameTracker *gGT,const struct sData *sourceData);
 
-/* This deliberately named post-init reader is the sole API that observes
- * NavHeader.last.  It proves each range before dereference and requires last
- * to equal the one-past end of the in-header frame array.  Failure leaves the
- * supplied pointer-free observation unchanged. */
+/* This deliberately named post-init reader is the lease's only API that
+ * observes NavHeader.last.  It proves each range before dereference and
+ * requires last to equal the one-past end of the in-header frame array.
+ * Failure leaves the supplied pointer-free observation unchanged.  One other
+ * first-party reader exists, outside the lease: MainCanonicalDrivers_BotNavIndex
+ * (MainCanonicalDrivers.c) reads a bot path's last check-only, to prove the
+ * bot's botNavFrame lies in that path's frame array.  The owner ruled that
+ * read allowed on the live path (the Task 8 race plan's LR-17, ruled (a)); it
+ * is never written and never used to acquire, activate, capture, or publish
+ * the lease.  tests/main_arcade_race_digest_isolation_test.cmake pins
+ * these two as the only readers. */
 int MainCanonicalTopologyLease_ObservePostInit(struct NativeTopologyResidencyObservedV1 *observedOut,
 	const struct MainCanonicalTopologyLease *lease,
 	const struct MainCanonicalTopologyLeaseAuthority *authority,

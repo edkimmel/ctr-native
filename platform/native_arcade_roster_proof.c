@@ -674,6 +674,42 @@ int NativeArcadeRosterProof_RaceControlDigest(const struct NativeCanonicalStateV
 	return 1;
 }
 
+int NativeArcadeRosterProof_SetTickLineV4(struct NativeArcadeRosterProofTickLine *line, uint64_t combined,
+	const uint64_t *domainDigests)
+{
+	/* The line's domain fields, in field order. */
+	static const uint32_t domains[NATIVE_CANONICAL_DOMAIN_COUNT] = {NATIVE_CANONICAL_DOMAIN_CONTROL, NATIVE_CANONICAL_DOMAIN_RNG,
+		NATIVE_CANONICAL_DOMAIN_INPUT, NATIVE_CANONICAL_DOMAIN_DRIVERS, NATIVE_CANONICAL_DOMAIN_WORLD, NATIVE_CANONICAL_DOMAIN_TOPOLOGY};
+	uint64_t digests[NATIVE_CANONICAL_DOMAIN_COUNT];
+
+	if ((line == NULL) || (domainDigests == NULL))
+	{
+		return 0;
+	}
+	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+	{
+		uint32_t index = 0;
+
+		while ((index < NATIVE_CANONICAL_DOMAIN_COUNT) && (NativeCanonicalDomainOrder[index] != domains[i]))
+		{
+			index++;
+		}
+		if (index >= NATIVE_CANONICAL_DOMAIN_COUNT)
+		{
+			return 0;
+		}
+		digests[i] = domainDigests[index];
+	}
+	line->v4 = combined;
+	line->v4Control = digests[0];
+	line->v4Rng = digests[1];
+	line->v4Input = digests[2];
+	line->v4Drivers = digests[3];
+	line->v4World = digests[4];
+	line->v4Topology = digests[5];
+	return 1;
+}
+
 uint64_t NativeArcadeRosterProof_Seed(void)
 {
 	return (s_nativeArcadeRosterProof.active != 0u) ? s_nativeArcadeRosterProof.options.seed : 0u;
@@ -718,6 +754,8 @@ const char *NativeArcadeRosterProof_ResultName(uint32_t result)
 		return "PIN_MISMATCH";
 	case NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT:
 		return "TICK_LOG_TIMEOUT";
+	case NATIVE_ARCADE_ROSTER_PROOF_V4_FAILED:
+		return "V4_FAILED";
 	default:
 		return "UNKNOWN";
 	}
@@ -950,7 +988,7 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_Name(report->setupStatusName, statusName);
 	NativeArcadeRosterProof_Name(report->setupFailureName, failureName);
 
-	NativeArcadeRosterProof_Append(&text, "arcade roster proof v10\n");
+	NativeArcadeRosterProof_Append(&text, "arcade roster proof v11\n");
 	NativeArcadeRosterProof_Append(&text, "drivers digest excludes physics\n");
 	NativeArcadeRosterProof_Append(&text, "result %s (%u)\n", NativeArcadeRosterProof_ResultName(report->result),
 		(unsigned)report->result);
@@ -1060,7 +1098,16 @@ int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofT
 	{
 		NativeArcadeRosterProof_Append(&text, "%02x", (unsigned)line->drivers[i]);
 	}
-	NativeArcadeRosterProof_Append(&text, "\n");
+	/* v11 (LR-S4): the live V4 state's combined and domain digests. */
+	NativeArcadeRosterProof_Append(&text, " v4 %08x%08x v4control %08x%08x v4rng %08x%08x v4input %08x%08x",
+		(unsigned)(uint32_t)(line->v4 >> 32), (unsigned)(uint32_t)(line->v4 & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->v4Control >> 32), (unsigned)(uint32_t)(line->v4Control & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->v4Rng >> 32), (unsigned)(uint32_t)(line->v4Rng & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->v4Input >> 32), (unsigned)(uint32_t)(line->v4Input & 0xFFFFFFFFu));
+	NativeArcadeRosterProof_Append(&text, " v4drivers %08x%08x v4world %08x%08x v4topology %08x%08x\n",
+		(unsigned)(uint32_t)(line->v4Drivers >> 32), (unsigned)(uint32_t)(line->v4Drivers & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->v4World >> 32), (unsigned)(uint32_t)(line->v4World & 0xFFFFFFFFu),
+		(unsigned)(uint32_t)(line->v4Topology >> 32), (unsigned)(uint32_t)(line->v4Topology & 0xFFFFFFFFu));
 	if (!text.ok)
 	{
 		buffer[0] = '\0';

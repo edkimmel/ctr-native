@@ -1232,6 +1232,44 @@ static int DetailedFromMetaCandidate(const struct MainCanonicalDriversRosterRace
 	return NativeCanonicalDriversDetailedV1_Validate(detailed);
 }
 
+/* LR-18: a finished human is converted to a bot (BOTS_Driver_Convert,
+ * game/BOTS.c) and projected as one until the race ends.  Slot 0 is the
+ * fixture's human slot (numPlyrCurrGame 1); it gets what Convert leaves:
+ * ACTION_BOT with ACTION_RACE_FINISHED, a botPath, a botNavFrame inside that
+ * path, its navBotList entry (added at the front), and BOTS_ThTick_Drive.
+ * The extractor reaches MainCanonicalDrivers_ExtractMetaAndBot, as the live V4
+ * path does, and so the check-only nav index read (LR-17, ruled (a)). */
+static int ConvertedHumanProjectionTest(void)
+{
+	struct SourceFixture fixture;
+	struct MainCanonicalDriversRosterRaceDynamicsActivePendingBotMetaCandidate value,before;
+	struct NativeCanonicalDriversDetailedV1 detailed;
+	struct Driver *human,*bot;
+	struct sData *sd=&sdata_static;
+	SourceFixtureInit(&fixture);human=FLD(&fixture,0);bot=FLD(&fixture,2);
+	if(fixture.tracker.numPlyrCurrGame!=1)return 0;
+	human->actionsFlagSet=ACTION_BOT|ACTION_RACE_FINISHED;
+	human->botData.botPath=0;human->botData.botNavFrame=&fixture.navPaths[0].frames[1];
+	human->botData.item.prev=NULL;human->botData.item.next=&bot->botData.item;bot->botData.item.prev=&human->botData.item;
+	sd->navBotList[0].first=&human->botData.item;sd->navBotList[0].last=&bot->botData.item;sd->navBotList[0].count=2;
+	FLT(&fixture,0)->funcThTick=BOTS_ThTick_Drive;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value))return 0;
+	if(value.roster.kind[0]!=NATIVE_CANONICAL_DRIVER_KIND_BOT||value.meta[0].driverKind!=NATIVE_CANONICAL_DRIVER_KIND_BOT||
+		value.meta[0].actionsFlagSet!=(uint32_t)(ACTION_BOT|ACTION_RACE_FINISHED)||value.roster.threadBehaviorID[0]!=2||
+		value.bot[0].botPath!=0||value.bot[0].botNavFrameIndex!=1||
+		value.roster.prelude.navListCount[0]!=2||value.roster.prelude.navListOrder[0][0]!=0||value.roster.prelude.navListOrder[0][1]!=2||
+		value.meta[2].driverKind!=NATIVE_CANONICAL_DRIVER_KIND_BOT||value.bot[2].botNavFrameIndex!=0)return 0;
+	/* It assembles into a valid detailed record. */
+	if(!DetailedFromMetaCandidate(&value,&detailed))return 0;
+	/* The nav index read is a check: a converted human whose botNavFrame lies
+	 * outside its path, or whose path header's last is wrong, is refused. */
+	before=value;human->botData.botNavFrame=&fixture.navPaths[1].frames[0];
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	human->botData.botNavFrame=&fixture.navPaths[0].frames[1];fixture.navPaths[0].header.last=&fixture.navPaths[0].frames[1];
+	if(MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||memcmp(&value,&before,sizeof(value))!=0)return 0;
+	return 1;
+}
+
 static int MetaProjectionTest(void)
 {
 	struct SourceFixture fixture;
@@ -1631,6 +1669,30 @@ static int RuntimeWorkspaceV4Test(void)
 	wrong=request;wrong.configDigest[0]^=UINT8_C(1);beforeSubmission=submission;RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_GetSubmissionV4(&workspace,&wrong,&submission)&&!MainCanonicalRuntime_ReleaseV4(&workspace,&wrong)&&memcmp(&submission,&beforeSubmission,sizeof(submission))==0&&workspace.prepared);
 	RUNTIME_CHECK(!MainCanonicalRuntime_BeginFrame(&workspace)&&!MainCanonicalRuntime_InvalidateTopology(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_ReleaseV4(&workspace,&request)&&!workspace.prepared&&workspace.preparedKind==NATIVE_REPLAY_SCHEDULER_CANONICAL_KIND_NONE&&!workspace.frameActive&&!workspace.topologyContext.captureActive);
 
+	/* LR-10 (LR-19): a request that carries a bank projects a copy of that bank
+	 * (a linked race's post-setup bank, which has been drawn from) instead of a
+	 * fresh derivation; the pointer is part of the token; and the projector
+	 * still rejects a bank whose masterSeed or derivation version is not the
+	 * config's.  A NULL bank keeps the fresh derivation (every case above). */
+	{
+		struct NativeDeterministicRngBankV1 drawn=deterministicRng,other;uint32_t drawnValue=0;
+		RUNTIME_CHECK(NativeDeterministicRngBankV1_NextU32(&drawn,NATIVE_DETERMINISTIC_RNG_STREAM_MATCH_SETUP,NATIVE_DETERMINISTIC_RNG_GLOBAL_SLOT,NATIVE_DETERMINISTIC_RNG_GLOBAL_SLOT,&drawnValue));
+		RUNTIME_CHECK(memcmp(&drawn,&deterministicRng,sizeof(drawn))!=0);
+		request.bank=&drawn;
+		RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology));
+		RUNTIME_CHECK(memcmp(&workspace.state.v4.deterministicRng,&drawn,sizeof(drawn))==0);
+		RUNTIME_CHECK(MainCanonicalState_ProjectV4(&expected,&context,&request.identity,request.replayFrame,&control,&retailRng,&drawn,&input,&workspace.drivers.summary,&counters,&mines,&topology)&&memcmp(&expected,&workspace.state.v4,sizeof(expected))==0);
+		RUNTIME_CHECK(MainCanonicalState_ProjectV4(&beforeState,&context,&request.identity,request.replayFrame,&control,&retailRng,&deterministicRng,&input,&workspace.drivers.summary,&counters,&mines,&topology)&&beforeState.combinedDigest!=workspace.state.v4.combinedDigest);
+		wrong=request;wrong.bank=&deterministicRng;beforeSubmission=submission;RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&wrong)==NULL&&!MainCanonicalRuntime_GetSubmissionV4(&workspace,&wrong,&submission)&&!MainCanonicalRuntime_ReleaseV4(&workspace,&wrong)&&workspace.prepared);
+		wrong.bank=NULL;RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&wrong)==NULL);
+		RUNTIME_CHECK(MainCanonicalRuntime_ViewV4(&workspace,&request)!=NULL&&MainCanonicalRuntime_ReleaseV4(&workspace,&request));
+		other=drawn;other.masterSeed^=UINT64_C(1);request.bank=&other;
+		RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT);
+		MainCanonicalRuntime_Reset(&workspace);other=drawn;other.derivationVersion++;
+		RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(!MainCanonicalRuntime_PrepareV4(&workspace,&request,&rootless,&rootlessSource,&control,&retailRng,&input,&counters,&mines,&topology)&&MainCanonicalRuntime_FailureReason(&workspace)==MAIN_CANONICAL_RUNTIME_FAILURE_PROJECT);
+		MainCanonicalRuntime_Reset(&workspace);request.bank=NULL;
+	}
+
 	/* Rooted V4 frames reuse one topology generation across releases. */
 	SourceFixtureInit(&fixture);RUNTIME_CHECK(PhysicsTopologyInit(&fixture,&top,&unusedContext,&unusedSnapshot));for(uint8_t slot=0;slot<8;slot++)if(fixture.tracker.drivers[slot]){fixture.tracker.drivers[slot]->terrainMeta1=&data.MetaDataTerrain[0];fixture.tracker.drivers[slot]->terrainMeta2=&data.MetaDataTerrain[0];}
 	request.replayFrame=8u;RUNTIME_CHECK(MainCanonicalRuntime_BeginFrame(&workspace));RUNTIME_CHECK(MainCanonicalRuntime_PrepareV4(&workspace,&request,&fixture.tracker,&sdata_static,&control,&retailRng,&input,&counters,&mines,&topology)&&workspace.topologyContext.captureActive&&workspace.prepared);
@@ -1674,4 +1736,4 @@ static int RuntimeWorkspaceV4Test(void)
 	#undef RUNTIME_CHECK
 	return 1;
 }
-int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(ExtractRosterInputTest());C(ExtractRosterInputPreRaceTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());C(PhysicsProjectionTest());C(DetailedAssemblyTest());C(RuntimeWorkspaceTest());C(RuntimeWorkspaceV4Test());puts("main_canonical_drivers_binding_test: passed");return 0;}
+int main(void){DriverFunc driving[13]={NULL,VehPhysProc_Driving_Update,VehPhysProc_Driving_PhysLinear,VehPhysProc_Driving_Audio,VehPhysGeneral_PhysAngular,VehPhysForce_OnApplyForces,COLL_MOVED_PlayerSearch,VehPhysForce_CollideDrivers,COLL_FIXED_PlayerSearch,VehPhysGeneral_JumpAndFriction,VehPhysForce_TranslateMatrix,VehFrameProc_Driving,VehEmitter_DriverMain};uint8_t id=0x5a,keep=id;int binding=MainCanonicalDrivers_ValidateProductionBinding();C(binding==1);C(MainCanonicalDrivers_ProductionRegistry()!=NULL);C(MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);driving[7]=UnknownDriver;C(!MainCanonicalDrivers_ResolveBehavior(driving,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(NULL,&id)&&id==0);C(MainCanonicalDrivers_ResolveThread(VehBirth_NullThread,&id)&&id==1);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_Drive,&id)&&id==2);C(MainCanonicalDrivers_ResolveThread(BOTS_ThTick_RevEngine,&id)&&id==3);id=keep;C(!MainCanonicalDrivers_ResolveThread(UnknownThread,&id)&&id==keep);C(ProjectPreludeTest());C(SourcePreludeTest());C(ExtractRosterInputTest());C(ExtractRosterInputPreRaceTest());C(PoolOwnershipTest());C(PoolPhysicalAllocationTest());C(MetaFlagsTest());C(ThreadOwnershipTest());C(ExhaustiveProductionTokens());C(RaceProjectionTest());C(DynamicsProjectionTest());C(ActiveProjectionTest());C(ActiveCandidateTest());C(PendingDamageTest());C(BotProjectionTest());C(MetaProjectionTest());C(ConvertedHumanProjectionTest());C(PhysicsProjectionTest());C(DetailedAssemblyTest());C(RuntimeWorkspaceTest());C(RuntimeWorkspaceV4Test());puts("main_canonical_drivers_binding_test: passed");return 0;}

@@ -656,30 +656,42 @@ add_library(ctr_native_topology_residency STATIC platform/native_topology_reside
 set_target_properties(ctr_native_topology_residency PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(ctr_native_topology_residency PUBLIC ${CMAKE_SOURCE_DIR}/include)
 
-# Standalone, fixture-only M2 WORLD mine registry.  It is intentionally not
-# linked into any canonical-state, replay, scheduler, or game-runtime target.
+# Standalone M2 WORLD mine registry value.  No replay or scheduler target links
+# it directly; ctr_native gets it through the V4 state library, for the
+# game-owned mine registry extractor below (Task 8 race plan LR-10).
 add_library(ctr_native_canonical_world_mine_registry_v1 STATIC platform/native_canonical_world_mine_registry.c)
 set_target_properties(ctr_native_canonical_world_mine_registry_v1 PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(ctr_native_canonical_world_mine_registry_v1 PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_world_mine_registry_v1 PUBLIC ctr_native_canonical_codec)
 
-# Standalone, source-only M2 WORLD counter facts.  No game source adapter or
-# canonical-state/replay/runtime link consumes this dormant foundation.
+# Standalone, source-only M2 WORLD counter facts.  No replay or runtime target
+# links it directly; ctr_native gets it through the V4 state library, for the
+# game-owned counter extractor below (Task 8 race plan LR-10).
 add_library(ctr_native_canonical_world_counters_v1 STATIC platform/native_canonical_world_counters.c)
 set_target_properties(ctr_native_canonical_world_counters_v1 PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(ctr_native_canonical_world_counters_v1 PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_canonical_world_counters_v1 PUBLIC ctr_native_canonical_codec)
 
-# Dormant game-owned M2 WORLD counter extraction.  This deliberately remains a
-# separate static target: no unity inclusion or runtime/state/replay consumer.
+# Game-owned M2 WORLD counter extraction.  No runtime, state, or replay target
+# links it; this target serves its unit test.  ctr_native compiles the source
+# through the unity chain (game/game_unity.h), like the other MainCanonical*
+# sources, for its one live caller, the V4 race digest
+# (game/MAIN/MainArcadeRaceDigest.c, Task 8 race plan LR-10).  ctr_native must
+# not link this target: a pulled member would define sdata a second time
+# (include/regionsEXE.h).
 add_library(ctr_native_main_canonical_world_counters STATIC game/MAIN/MainCanonicalWorldCounters.c)
 set_target_properties(ctr_native_main_canonical_world_counters PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(ctr_native_main_canonical_world_counters PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
 target_compile_definitions(ctr_native_main_canonical_world_counters PRIVATE CTR_NATIVE)
 target_link_libraries(ctr_native_main_canonical_world_counters PUBLIC ctr_native_canonical_world_counters_v1)
 
-# Dormant mine-pool adapter: deliberately isolated from unity and all runtime,
-# replay, canonical-state, and codec-consumer targets.
+# Mine-pool adapter: no runtime, replay, canonical-state, or codec-consumer
+# target links it; this target serves its unit test.  ctr_native compiles the
+# source through the unity chain (game/game_unity.h), like the other
+# MainCanonical* sources, for its one live caller, the V4 race digest
+# (game/MAIN/MainArcadeRaceDigest.c, Task 8 race plan LR-10).  ctr_native must
+# not link this target: a pulled member would define sdata a second time
+# (include/regionsEXE.h).
 add_library(ctr_native_main_canonical_world_mine_registry STATIC game/MAIN/MainCanonicalWorldMineRegistry.c)
 set_target_properties(ctr_native_main_canonical_world_mine_registry PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(ctr_native_main_canonical_world_mine_registry PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/game)
@@ -2000,6 +2012,19 @@ if(BUILD_TESTING)
     target_compile_definitions(main_canonical_drivers_binding_test PRIVATE CTR_NATIVE CTR_INTERNAL)
     target_link_libraries(main_canonical_drivers_binding_test PRIVATE ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_state_v3 ctr_native_canonical_state_v4 ctr_native_match_config ctr_native_replay_scheduler_seam)
     add_test(NAME main_canonical_drivers_binding_unit COMMAND $<TARGET_FILE:main_canonical_drivers_binding_test>)
+
+    # The live V4 race digest (game/MAIN/MainArcadeRaceDigest.c, Task 8 race
+    # plan LR-10, slice LR-S4) over the real runtime, drivers extraction,
+    # projector, and world extractors (all included as sources, as the unity
+    # chain includes them); NativePerf is stubbed.
+    add_executable(main_arcade_race_digest_test tests/main_arcade_race_digest_test.c)
+    set_target_properties(main_arcade_race_digest_test PROPERTIES C_STANDARD 17 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_include_directories(main_arcade_race_digest_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
+    target_compile_definitions(main_arcade_race_digest_test PRIVATE CTR_NATIVE CTR_INTERNAL)
+    target_link_libraries(main_arcade_race_digest_test PRIVATE ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_state_v3 ctr_native_canonical_state_v4 ctr_native_match_config ctr_native_replay_scheduler_seam)
+    add_test(NAME main_arcade_race_digest_unit COMMAND $<TARGET_FILE:main_arcade_race_digest_test>)
+    add_test(NAME main_arcade_race_digest_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_digest_isolation_test.cmake")
 
     add_executable(native_canonical_driver_behavior_test tests/native_canonical_driver_behavior_test.c)
     set_target_properties(native_canonical_driver_behavior_test PROPERTIES

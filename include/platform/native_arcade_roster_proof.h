@@ -115,6 +115,9 @@ struct NativeCanonicalStateV1;
  * Per-tick digests. From race tick 0, for `ticks` race ticks, the game hook
  * appends one line per tick after its frame was simulated:
  *   tick <n> control <16 hex> rcontrol <16 hex> rng <16 hex> input <16 hex> drivers <64 hex>
+ *     v4 <16 hex> v4control <16 hex> v4rng <16 hex> v4input <16 hex>
+ *     v4drivers <16 hex> v4world <16 hex> v4topology <16 hex>
+ * (on one line; the v4 fields since v11, LR-S4).
  * control, rng, and input are the V1 canonical domain digests of that frame
  * (the live V1 projection, MainCanonicalState_ProjectLive); rcontrol is the
  * race-relative control digest (NativeArcadeRosterProof_RaceControlDigest):
@@ -124,7 +127,14 @@ struct NativeCanonicalStateV1;
  * encoding (NativeCanonicalDriversDetailedV1_Encode) of the topology-free
  * drivers candidate, a detailed record whose Physics groups are all at their
  * exact zero value (the report header says "drivers digest excludes
- * physics"). The report header also carries four boot-relative counters (the
+ * physics"). v4 is the combined digest of the live V4 canonical state of the
+ * same frame, projected through the race digest (game/MAIN/MainArcadeRaceDigest.h,
+ * the Task 8 race plan's LR-10): frame number the race tick, race-relative
+ * control, the retail RNG with the post-setup bank, the frozen pads, the
+ * complete drivers (Physics included), the world counters and mine
+ * registry, and the unavailable topology summary; v4control through
+ * v4topology are its six domain digests. A projection failure ends the proof
+ * with V4_FAILED. The report header also carries four boot-relative counters (the
  * three above and gGT->frameTimer_Confetti) at the launch tick (before the
  * race setup pinned gGT->timer and gGT->frameTimer_Confetti, RS-17) and as
  * race tick 0 saw them. The report ends with "end ticks <count>".
@@ -203,6 +213,9 @@ struct NativeCanonicalStateV1;
  *   33  TICK_LOG_TIMEOUT     race tick 0 was reached, but the requested race
  *                            ticks were not all logged within
  *                            ticks + TICK_LOG_SLACK_TICKS proof ticks of it
+ *   34  V4_FAILED            the live V4 projection (the race digest) failed
+ *                            at a logged race tick, or its end-frame topology
+ *                            invalidation failed after the last one (LR-S4)
  *
  * The failure codes start at 20 so that none collides with 1 or with the C
  * runtime's abort() code 3. The table is the same for both profiles: a
@@ -317,7 +330,8 @@ enum NativeArcadeRosterProofResult
 	NATIVE_ARCADE_ROSTER_PROOF_DRIVERS_FAILED = 30,       /* the drivers extraction or encoding failed after race tick 0 */
 	NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED = 31,        /* the V1 projection failed at a logged tick, or a line was not kept */
 	NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH = 32,         /* a pinned counter read back differs from the pinned value */
-	NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT = 33      /* race tick 0 reached, but not every tick line logged in time */
+	NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT = 33,     /* race tick 0 reached, but not every tick line logged in time */
+	NATIVE_ARCADE_ROSTER_PROOF_V4_FAILED = 34             /* the live V4 projection failed at a logged tick, or at the end frame */
 };
 
 /* One scripted pad, in the shape of the host pad snapshot. */
@@ -341,6 +355,13 @@ struct NativeArcadeRosterProofTickLine
 	uint64_t rng;         /* V1 RNG domain digest */
 	uint64_t input;   /* V1 INPUT domain digest */
 	uint8_t drivers[NATIVE_SHA256_DIGEST_BYTES];
+	uint64_t v4;          /* V4 combined digest (v11) */
+	uint64_t v4Control;   /* V4 CONTROL domain digest (race-relative control) */
+	uint64_t v4Rng;       /* V4 RNG domain digest (retail RNG and the post-setup bank) */
+	uint64_t v4Input;     /* V4 INPUT domain digest */
+	uint64_t v4Drivers;   /* V4 DRIVERS domain digest (Physics included) */
+	uint64_t v4World;     /* V4 WORLD domain digest */
+	uint64_t v4Topology;  /* V4 TOPOLOGY domain digest (the unavailable summary) */
 };
 
 /* Where the proof launched from (the report's "launch window" line). */
@@ -559,6 +580,17 @@ uint32_t NativeArcadeRosterProof_TickCount(void);
  */
 int NativeArcadeRosterProof_RaceControlDigest(const struct NativeCanonicalStateV1 *state, uint64_t *digest);
 
+/*
+ * Fills the line's v4 fields from a V4 projection: v4 = combined, and each
+ * named domain field from domainDigests, which holds
+ * NATIVE_CANONICAL_DOMAIN_COUNT digests in NativeCanonicalDomainOrder (the
+ * layout of NativeCanonicalStateV4.domainDigests). The mapping by domain
+ * name lives here so the game hook never names a domain. 0 with the line
+ * untouched on NULL arguments or a domain missing from the order.
+ */
+int NativeArcadeRosterProof_SetTickLineV4(struct NativeArcadeRosterProofTickLine *line, uint64_t combined,
+	const uint64_t *domainDigests);
+
 /* One tick line as text (see above), with its newline, NUL-terminated;
  * *length excludes the NUL. 0 on NULL arguments or a buffer too small. */
 int NativeArcadeRosterProof_FormatTickLine(const struct NativeArcadeRosterProofTickLine *line, char *buffer,
@@ -579,8 +611,9 @@ const char *NativeArcadeRosterProof_LogPath(void);
 /*
  * Formats the report as text into buffer (NUL-terminated) and stores its
  * length without the NUL. Returns 0 on NULL arguments or a buffer too small.
- * The format is line based: a header line ("arcade roster proof v10"), the
- * line "drivers digest excludes physics", then "result", "profile" (TWO_CAB
+ * The format is line based: a header line ("arcade roster proof v11"; v11
+ * added the tick lines' v4 fields, LR-S4), the line "drivers digest excludes
+ * physics" (the V1-era drivers field; v4drivers includes it), then "result", "profile" (TWO_CAB
  * or ONE_CAB, the configured profile; UNKNOWN for any other value), "setup
  * status",
  * "setup failure", "seed", "dwell", "ticks" (requested), "menu ready tick",

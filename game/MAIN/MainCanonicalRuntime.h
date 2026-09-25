@@ -5,9 +5,11 @@
 #include "platform/native_canonical_projector.h"
 #include "platform/native_replay_scheduler.h"
 
-/* This static, non-checkpointed coordinator is the only future owner of the
- * full DRIVERS staging values.  It is deliberately dormant: no MainMain,
- * load, scheduler, or replay path calls it in this slice. */
+/* This static, non-checkpointed coordinator is the only owner of the full
+ * DRIVERS staging values.  No MainMain, load, scheduler, or replay path calls
+ * it.  Its one live caller is the race digest module, MainArcadeRaceDigest
+ * (the Task 8 race plan's LR-10), which projects V4 once per race tick
+ * through BeginFrame, PrepareV4, ViewV4, and ReleaseV4. */
 #define MAIN_CANONICAL_RUNTIME_PREPARE_STACK_BUDGET_BYTES 1536u
 #define MAIN_CANONICAL_RUNTIME_WORKSPACE_MAX_BYTES 16384u
 
@@ -46,6 +48,13 @@ struct MainCanonicalRuntimeV4Request
 	uint8_t configDigest[NATIVE_SHA256_DIGEST_BYTES];
 	uint32_t replayFrame;
 	int restoredThisFrame;
+	/* The deterministic bank to project (LR-10, LR-19).  NULL: PrepareV4
+	 * derives a fresh bank from config.masterSeed, as before.  Non-NULL (the
+	 * post-setup bank of a linked race): PrepareV4 copies it into its staging
+	 * instead, and the projector still rejects a bank whose masterSeed or
+	 * derivation version differs from the config.  The pointer is part of the
+	 * transaction token, so View and Release must present the same one. */
+	const struct NativeDeterministicRngBankV1 *bank;
 };
 
 struct MainCanonicalRuntimeWorkspace
@@ -136,8 +145,12 @@ int MainCanonicalRuntime_ReleaseV3(struct MainCanonicalRuntimeWorkspace *workspa
 
 /* V4 mirrors the V3 lifecycle but consumes a runtime-owned request.  WORLD and
  * TOPOLOGY are caller-supplied canonical domain values: this coordinator never
- * runs the isolated mine/counter extractors, reads D231, dereferences
- * NavHeader.last, or acquires/activates/publishes a topology lease. */
+ * runs the mine/counter extractors, reads D231, or acquires, activates,
+ * captures, or publishes a topology lease.  It does read NavHeader.last, once
+ * per bot, check-only: the drivers extraction's MainCanonicalDrivers_BotNavIndex
+ * proves each bot's botNavFrame lies in its own path's frame array.  That read
+ * is never written and never used for the lease (LR-17, ruled (a)); the lease's
+ * MainCanonicalTopologyLease_ObservePostInit is the only other reader. */
 int MainCanonicalRuntime_PrepareV4(struct MainCanonicalRuntimeWorkspace *workspace,
 	const struct MainCanonicalRuntimeV4Request *request,
 	const struct GameTracker *gGT,const struct sData *sourceData,

@@ -121,11 +121,22 @@
 #include "MAIN/MainCanonicalRuntime.c"
 #include "MAIN/MainCanonicalTopologyLeaseAuthority.c"
 #include "MAIN/MainCanonicalTopologyLeaseRuntime.c"
+// The M2 WORLD extractors (Task 8 race plan LR-10, slice LR-S4): their one
+// live caller is the V4 race digest below. Unity-included like the other
+// MainCanonical* sources; their libraries serve only their unit tests.
+#include "MAIN/MainCanonicalWorldCounters.c"
+#include "MAIN/MainCanonicalWorldMineRegistry.c"
 // Arcade race setup live adapter (docs/ROSTER_MILESTONE.md R-5b), CTR_NATIVE
 // only: after the MainCanonical* sources, whose roster input extractor it
 // calls, and before the arcade-link sources and every native launcher.
 // MainInit.c above calls its two hooks through MAIN/MainArcadeRaceSetup.h.
 #include "MAIN/MainArcadeRaceSetup.c"
+// Live V4 race digest (Task 8 race plan LR-10, slice LR-S4), CTR_NATIVE
+// only: after the MainCanonical* sources, whose V4 runtime it drives once
+// per race tick, and MainArcadeRaceSetup above, whose post-setup bank its
+// callers pass in, and the world extractors above; before the roster proof
+// and the race caller, its callers.
+#include "MAIN/MainArcadeRaceDigest.c"
 #include "MAIN/MainMain.c"
 #include "MAIN/MainDB.c"
 #include "MAIN/MainDrawCb.c"

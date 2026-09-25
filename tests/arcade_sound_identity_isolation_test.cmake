@@ -8,8 +8,9 @@
 # 1. The identity-bearing sources (match config, select rules, message, and
 #    session, the launch record, netplay, lobby, lockstep, bot rules,
 #    canonical codecs, the deterministic RNG, identity, the race setup plan,
-#    facts, core, and setup adapter, the roster, the bot setup, setup v4, and
-#    the MainCanonical* encoders) name no sound-ID identifier: countSounds,
+#    facts, core, and setup adapter, the race digest, the roster, the bot
+#    setup, setup v4, and the MainCanonical* encoders) name no sound-ID
+#    identifier: countSounds,
 #    CountSounds, any identifier starting with OtherFX_ (OtherFX_Play,
 #    OtherFX_Play_LowLevel, OtherFX_RecycleNew, ...), EngineAudio_,
 #    PlaySound3D, Level_Sound, Voiceline, howl_, or Howl_, and any identifier
@@ -200,6 +201,8 @@ set(identity_files
     include/platform/native_match_select_session.h
     game/MAIN/MainArcadeBotSetup.c
     game/MAIN/MainArcadeBotSetup.h
+    game/MAIN/MainArcadeRaceDigest.c
+    game/MAIN/MainArcadeRaceDigest.h
     game/MAIN/MainArcadeRaceSetup.c
     game/MAIN/MainArcadeRaceSetup.h
     game/MAIN/MainArcadeRaceSetupCore.c

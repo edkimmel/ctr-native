@@ -569,7 +569,8 @@ static int TestExitCodes(void)
 		NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT, NATIVE_ARCADE_ROSTER_PROOF_VALIDATE_TIMEOUT,
 		NATIVE_ARCADE_ROSTER_PROOF_SEED_MISMATCH, NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING,
 		NATIVE_ARCADE_ROSTER_PROOF_RACE_TICK_TIMEOUT, NATIVE_ARCADE_ROSTER_PROOF_DRIVERS_FAILED,
-		NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED, NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH, NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT};
+		NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED, NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH, NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT,
+		NATIVE_ARCADE_ROSTER_PROOF_V4_FAILED};
 	struct NativeIdentityV1 identity;
 	struct NativeArcadeRosterProofOptions options;
 
@@ -587,6 +588,8 @@ static int TestExitCodes(void)
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_DIGEST_FAILED), "DIGEST_FAILED") == 0);
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_PIN_MISMATCH), "PIN_MISMATCH") == 0);
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_TICK_LOG_TIMEOUT), "TICK_LOG_TIMEOUT") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_ResultName(NATIVE_ARCADE_ROSTER_PROOF_V4_FAILED), "V4_FAILED") == 0);
+	CHECK(strcmp(NativeArcadeRosterProof_ResultName(35u), "UNKNOWN") == 0);
 	CHECK(strcmp(NativeArcadeRosterProof_ResultName(1u), "UNKNOWN") == 0);
 
 	/* Inactive: every exit path keeps its own code (a default run is unchanged). */
@@ -1053,9 +1056,19 @@ static int TestTickLines(void)
 	line.rng = UINT64_C(0xFEDCBA9876543210);
 	line.input = UINT64_C(1);
 	FillCounting(line.drivers, sizeof(line.drivers), 0u);
+	/* v11: the V4 combined and domain digests, each field its own value. */
+	line.v4 = UINT64_C(0x1111111111111111);
+	line.v4Control = UINT64_C(0x2222222222222222);
+	line.v4Rng = UINT64_C(0x3333333333333333);
+	line.v4Input = UINT64_C(0x4444444444444444);
+	line.v4Drivers = UINT64_C(0x5555555555555555);
+	line.v4World = UINT64_C(0x6666666666666666);
+	line.v4Topology = UINT64_C(0x77777777ABCDEF00);
 	CHECK(NativeArcadeRosterProof_FormatTickLine(&line, text, sizeof(text), &length) == 1);
 	CHECK(strcmp(text, "tick 7 control 0123456789abcdef rcontrol a1b2c3d4e5f60718 rng fedcba9876543210 input 0000000000000001 drivers "
-	                   "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n") == 0);
+	                   "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+	                   " v4 1111111111111111 v4control 2222222222222222 v4rng 3333333333333333 v4input 4444444444444444"
+	                   " v4drivers 5555555555555555 v4world 6666666666666666 v4topology 77777777abcdef00\n") == 0);
 	CHECK(length == strlen(text));
 	CHECK(NativeArcadeRosterProof_FormatTickLine(&line, small, sizeof(small), &length) == 0);
 	CHECK(NativeArcadeRosterProof_FormatTickLine(NULL, text, sizeof(text), &length) == 0);
@@ -1127,7 +1140,7 @@ static int TestTickLines(void)
 	(void)remove(path);
 	text[length] = '\0';
 	{
-		static const char head[] = "arcade roster proof v10\ndrivers digest excludes physics\nresult PASS (0)\nprofile ONE_CAB\n"
+		static const char head[] = "arcade roster proof v11\ndrivers digest excludes physics\nresult PASS (0)\nprofile ONE_CAB\n"
 		                           "setup status VALIDATED (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
@@ -1394,6 +1407,43 @@ static int TestRaceControlDigest(void)
 	return 0;
 }
 
+/* SetTickLineV4 maps each domain digest by name through NativeCanonicalDomainOrder. */
+static int TestSetTickLineV4(void)
+{
+	struct NativeArcadeRosterProofTickLine line;
+	struct NativeArcadeRosterProofTickLine before;
+	uint64_t digests[NATIVE_CANONICAL_DOMAIN_COUNT];
+
+	for (uint32_t i = 0; i < NATIVE_CANONICAL_DOMAIN_COUNT; i++)
+	{
+		/* The digest of domain d is 0x1000 + d, wherever d sits in the order. */
+		digests[i] = UINT64_C(0x1000) + NativeCanonicalDomainOrder[i];
+	}
+	memset(&line, SENTINEL_BYTE, sizeof(line));
+	before = line;
+	CHECK(NativeArcadeRosterProof_SetTickLineV4(&line, UINT64_C(0xC0B1), digests) == 1);
+	CHECK(line.v4 == UINT64_C(0xC0B1));
+	CHECK(line.v4Control == UINT64_C(0x1000) + NATIVE_CANONICAL_DOMAIN_CONTROL);
+	CHECK(line.v4Rng == UINT64_C(0x1000) + NATIVE_CANONICAL_DOMAIN_RNG);
+	CHECK(line.v4Input == UINT64_C(0x1000) + NATIVE_CANONICAL_DOMAIN_INPUT);
+	CHECK(line.v4Drivers == UINT64_C(0x1000) + NATIVE_CANONICAL_DOMAIN_DRIVERS);
+	CHECK(line.v4World == UINT64_C(0x1000) + NATIVE_CANONICAL_DOMAIN_WORLD);
+	CHECK(line.v4Topology == UINT64_C(0x1000) + NATIVE_CANONICAL_DOMAIN_TOPOLOGY);
+	/* Only the v4 fields change. */
+	CHECK(line.tick == before.tick);
+	CHECK(line.control == before.control);
+	CHECK(line.raceControl == before.raceControl);
+	CHECK(line.rng == before.rng);
+	CHECK(line.input == before.input);
+	CHECK(memcmp(line.drivers, before.drivers, sizeof(line.drivers)) == 0);
+	/* NULL arguments leave the line untouched. */
+	before = line;
+	CHECK(NativeArcadeRosterProof_SetTickLineV4(NULL, 1u, digests) == 0);
+	CHECK(NativeArcadeRosterProof_SetTickLineV4(&line, 1u, NULL) == 0);
+	CHECK(memcmp(&line, &before, sizeof(line)) == 0);
+	return 0;
+}
+
 static int TestSingletonAndReport(void)
 {
 	struct NativeIdentityV1 identity;
@@ -1494,7 +1544,7 @@ static int TestSingletonAndReport(void)
 	CHECK(NativeArcadeRosterProof_FormatReport(&report, text, sizeof(text), &length) == 1);
 	CHECK(length == strlen(text));
 	{
-		static const char head[] = "arcade roster proof v10\ndrivers digest excludes physics\nresult PASS (0)\n"
+		static const char head[] = "arcade roster proof v11\ndrivers digest excludes physics\nresult PASS (0)\n"
 		                           "profile TWO_CAB\nsetup status VALIDATED (4)\nsetup failure NONE (0)\n";
 
 		CHECK(strncmp(text, head, sizeof(head) - 1u) == 0);
@@ -1628,6 +1678,7 @@ int main(void)
 	CHECK(TestScriptedPadsOneCab() == 0);
 	CHECK(TestTickLines() == 0);
 	CHECK(TestRaceControlDigest() == 0);
+	CHECK(TestSetTickLineV4() == 0);
 	CHECK(TestSingletonAndReport() == 0);
 	puts("native_arcade_roster_proof_test: ok");
 	return 0;

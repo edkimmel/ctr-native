@@ -531,7 +531,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-18; LR-17 is the owner's ruling)
+## 4. Decided design (defaults LR-1..LR-27; LR-17 is the owner's ruling)
 
 The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
 written, except that LR-18, the finish grace, amends LR-1, LR-12, LR-13,
@@ -540,7 +540,8 @@ LR-15. LR-17 is ruled (a). LR-3's D is accepted pending a feel test on
 the physical cabinets (LR-3). Before that, the plan review changed
 several defaults; "Review changes" at the end of this section lists what
 changed, and "Owner decisions (2026-09-25)" after it lists the owner's
-decisions.
+decisions. LR-19..LR-27 were added by LR-S4 and record the mechanics it
+settled.
 
 LR-1 Placement. The race driver lives under platform/, because game code
 may not name lockstep (tests/native_lockstep_isolation_test.cmake:128-157
@@ -1581,6 +1582,74 @@ writes actionsFlagSet or gameMode1, never names MainGameEnd_Initialize,
 and names ACTION_RACE_FINISHED only in a read. The count itself has a
 unit case (LR-S10).
 
+LR-19..LR-27 record the mechanics LR-S4 settled for LR-10. Each takes the
+safer option. None changes the canonical-state schema, the replay format,
+or any existing V4 byte.
+
+LR-19 Bank in the request. MainCanonicalRuntimeV4Request gains a last
+field, bank. NULL keeps the old fresh derivation, so every existing
+caller is unchanged. Non-NULL is copied into the state instead. The
+pointer is part of the transaction token: ViewV4, GetSubmissionV4, and
+ReleaseV4 refuse a request with another bank pointer. The projector still
+checks the bank's masterSeed and derivation version against the config.
+A mismatch fails PrepareV4 with reason PROJECT.
+
+LR-20 Digest API and sequence. MainArcadeRaceDigest_Project(raceTick,
+sources, out) takes an explicit race tick and a sources struct of const
+pointers. It returns a pointer-free tick: frameNumber, combined digest,
+and domain digests in NativeCanonicalDomainOrder. Race tick 0 resets the
+runtime and the module and starts a race. Every later call must be the
+next tick, with the same config bytes. Any failure is latched, with its
+cause and the runtime's reason, until the next race tick 0, and every
+call in between fails. MainArcadeRaceDigest_EndRace on the end frame
+invalidates the runtime's topology context. It fails after a latched
+failure or with no race. The module copies no state out: the V4 state
+copy for RecordLocalDigests, if LR-11 needs one, is LR-S10's.
+
+LR-21 Storage. The digest state (request, bank copy, extracted values,
+base) is one file-scope static, and the runtime workspace is its own
+file-scope global (MainCanonicalRuntime_Global). There is no heap. The
+state is not in any saved state, recording, or canonical state.
+
+LR-22 World extractors in the unity chain. ctr_native compiles
+MainCanonicalWorldCounters.c and MainCanonicalWorldMineRegistry.c
+through game/game_unity.h. It does not link their libraries: a pulled
+library member would define sdata a second time (LNK2005 against
+main.obj). The libraries remain for their own unit tests. The digest
+isolation test pins the unity includes and bans the two libraries from
+ctr_native's link line. This replaces LR-10's "newly linked".
+
+LR-23 Sources from the caller. The caller passes gGT, sdata, the mine
+pool (&D231), the config, the bank (MainArcadeRaceSetup_Bank()), and the
+frozen V1 input of the tick. The module names no game global, so its
+reads are exactly its sources.
+
+LR-24 Topology check. On every tick the module compares the view's
+TOPOLOGY value with the unavailable summary, after Release, and fails
+TOPOLOGY on any difference. Its digest, d75d92ae427cd357, is pinned in
+main_arcade_race_digest_unit and in tools/arcade-roster-proof-check.ps1,
+and the isolation test keeps the two equal. So a live topology cannot
+arrive unnoticed.
+
+LR-25 Cost bucket. The whole projection runs inside one NativePerf
+scope, arcade_race_digest_ms. It is a no-op outside CTR_INTERNAL.
+
+LR-26 Report v11. Each tick line appends v4, v4control, v4rng, v4input,
+v4drivers, v4world, and v4topology, 16 hex digits each. A projection or
+end-frame failure ends the proof with the new result V4_FAILED (34).
+The domain-to-field mapping is in the platform module
+(NativeArcadeRosterProof_SetTickLineV4), because
+main_arcade_race_setup_isolation bans topology tokens in the game hook.
+
+LR-27 The LR-17 pin. main_arcade_race_digest_isolation splits every
+game/MAIN/MainCanonical* and game/MAIN/MainArcade* source (comments
+removed, literals blanked) into top-level brace units. A unit that
+names NavHeader and reads a last member must be
+MainCanonicalTopologyLease_ObservePostInit or
+MainCanonicalDrivers_BotNavIndex, and both must read one. The scan is
+textual: a read through a pointer whose unit never names NavHeader is
+not seen. Review covers that case.
+
 Review changes. The plan review (on befa152a9) changed these defaults:
 
 - LR-11 no longer treats a lead as a desync. A peer digest for a frame
@@ -2205,9 +2274,80 @@ Tests:
 
 ### LR-S4 -- live V4 projection
 
-Status: planned. Review required (canonical state, the runtime's
+Status: done. Review required (canonical state, the runtime's
 authorization). This is the slice docs/GAME_LOOP_UI_MILESTONE.md Task 8
-points to. Run 2.
+points to. Run 2. New defaults LR-19..LR-27 (section 4).
+
+Result:
+
+- New module game/MAIN/MainArcadeRaceDigest.{c,h}, unity-included after
+  MainArcadeRaceSetup.c (game/game_unity.h:139). API:
+  MainArcadeRaceDigest_Project (one race tick: sources in, a pointer-free
+  MainArcadeRaceDigestTick out), _EndRace, _Failure, _FailureName,
+  _RuntimeFailure, and the pure helpers _CaptureBase, _ProjectControl, and
+  _ProjectRetailRng (LR-20). It runs Reset on race tick 0, then on every
+  tick the world extractors, the unavailable topology summary,
+  BeginFrame, PrepareV4 with the caller's bank, ViewV4, and ReleaseV4,
+  and checks the view's topology (LR-24). EndRace invalidates the
+  topology context.
+- The runtime request carries the bank (LR-19):
+  MainCanonicalRuntimeV4Request.bank (MainCanonicalRuntime.h:57),
+  staged by MainCanonicalRuntime_StageBankV4 (MainCanonicalRuntime.c:49)
+  and part of the token (:43).
+- The world extractors are compiled into ctr_native through the unity
+  chain (game/game_unity.h:127-128), not linked (LR-22).
+- LR-17 (a) comments: the lease header now says "the lease's only API"
+  and names MainCanonicalDrivers_BotNavIndex
+  (MainCanonicalTopologyLeaseAuthority.h:72-82). The runtime's V4
+  comments name the check-only read (MainCanonicalRuntime.h:150,
+  MainCanonicalRuntime.c:329).
+- The roster proof projects V4 on every logged race tick
+  (MainArcadeRosterProof_ProjectV4, game/MAIN/MainArcadeRosterProof.c:711,
+  called at :955) and ends the race on the last tick (:1022). The report
+  is v11 (LR-26). tools/arcade-roster-proof-check.ps1 requires v11, the
+  unavailable topology digest on every tick, and the V4 combined and
+  domain digests equal wherever it requires rng, input, and drivers
+  equal (K = A already compared every line).
+- NativePerf bucket arcade_race_digest_ms (LR-25). Per-tick cost, Debug
+  (unoptimized) MSVC x86: 900 race ticks of a run A (two-cab, seed
+  0x5EED, dwell 0, 900 ticks, --perf --perf-dir under build-msvc-x86),
+  from frame_times.csv's arcade_race_digest_ms column: mean 1.295 ms,
+  median 1.268 ms, p99 1.895 ms, max 2.346 ms, total 1165.6 ms. That is
+  about 21% of those frames' mean work (6.23 ms), far inside the 33.3 ms
+  tick. Its report was byte-identical to the ctest run's A.
+- Tests. New main_arcade_race_digest_unit (race-relative control and its
+  wrap, four ticks against an independent projection, the unavailable
+  topology, a different boot phase giving identical ticks, a pacing fault
+  changing only control, the SEQUENCE, ARGUMENT, CONFIG, WORLD, PREPARE,
+  and BEGIN_FRAME failures and their latch, EndRace, and a clean race 2
+  after a race 1 poisoned with MainCanonicalRuntime_TestForceFailure).
+  New main_arcade_race_digest_isolation (read-only, lease-free, the
+  include allow-list, the lifecycle order, the callers, the unity chain,
+  the LR-17 pin, the corrected comments, and the topology constant).
+  main_canonical_drivers_binding_unit gains the request-bank cases and
+  the converted human (LR-18): slot 0 with ACTION_BOT and
+  ACTION_RACE_FINISHED on a nav path projects as a BOT with its nav
+  index, and a botNavFrame outside the path or a wrong last is refused.
+  native_arcade_roster_proof_unit covers v11, V4_FAILED, and
+  NativeArcadeRosterProof_SetTickLineV4. main_canonical_runtime_isolation
+  now requires exactly one live caller file, MainArcadeRaceDigest.c, free
+  of lease, replay, and MainMain tokens. arcade_sound_identity_isolation
+  lists the digest module. main_canonical_runtime_stack_budget_v4 holds
+  on fresh Release listings: 1308 of 1536 bytes (PrepareV3 1288).
+- Probes, each reverted. With the lease header restored to its pre-slice
+  "sole API" comment, main_arcade_race_digest_isolation failed ("forbidden
+  token 'sole API'"). A probe function reading a NavHeader's last,
+  appended to MainCanonicalState.c, MainArcadeRaceSetup.c, and
+  MainCanonicalDrivers.c in turn, tripped the LR-17 pin each time. A
+  runtime and digest call added to MainArcadeRaceLaunch.c tripped both
+  caller rules.
+- arcade_roster_determinism ran non-skipped and passed (267.20 s). In its
+  reports every tick's v4topology is d75d92ae427cd357, B, C, E, and K
+  equal A and G, I, and J equal F in every V4 field of all 900 ticks,
+  and D, H, and F differ from their bases. v4world stays constant in
+  these runs (no weapon is fired).
+- Normal boot and replay are unchanged: only the roster proof
+  (CTR_INTERNAL) calls the module until LR-S10.
 
 Plan: LR-10, and LR-17's ruling (a).
 
