@@ -1737,9 +1737,9 @@ LR-35 The adapter adds up the drops over its links (LR-S6). Stale records
 usually land on the rematch lobby's link, and RELINK closes that link
 before the race it leads to. So the adapter reads the open link's count
 after every lobby poll and before every close or restart of the lobby.
-A read below the last one is a new link, and all of it is new. Only Init
-resets the running total, so the host's AbortToTitle, which re-runs Init,
-resets it too. One case is not counted: drops in a replay that also
+A read below the last one is a new link, and all of it is new. Init and
+each race end (LR-36) reset the running total; Close and restart never
+do. The host's AbortToTitle re-runs Init, so it resets the total too. One case is not counted: drops in a replay that also
 faults a still-HANDSHAKING link, in the same lobby poll that closes that
 link at its attempt budget. The counter feeds a log line only.
 
@@ -1760,7 +1760,11 @@ autopilot's AfterTick, and logs through Platform_Log:
 
 <r> is the NATIVE_ARCADE_FLOW_END_* value. main_arcade_link_hook_isolation
 (12b) pins the call site and the format. Drops after a session's last
-race are never logged.
+race are never logged. <k> is a lower bound: it counts only records
+screened on replay or while RUNNING. While a link is HANDSHAKING only the
+first 8 records are staged (and later screened and counted); the rest
+overflow into DroppedEarlyBundleCount, which is not included and not
+reported.
 
 Review changes. The plan review (on befa152a9) changed these defaults:
 
@@ -2723,14 +2727,26 @@ Result:
   - Latching on every RESULTS tick failed the once-per-race check.
   - Removing the log call failed main_arcade_link_hook_isolation.
 - Fast suite (-LE live): 151 of 151 passed.
+- Review follow-ups: LR-36 and the log comment call <k> a lower bound
+  (staging overflow is not counted), and LR-35 says Init and each race end
+  reset the total. native_arcade_link_host_isolation pins the host take
+  and its record's three fields. TestForeignIdentityCorruptStillFaults
+  stages [foreign, corrupt, own frame 0]: 1 drop, BAD_DIGEST, and frame 0
+  never reaches the session. TestRematchLinkLostKeepsStaleDrop carries a
+  RUNNING-link drop through PEER_LOST and RESTART_LOBBY to race 2's
+  record. Removing only the restart-path read does not fail it, because
+  the post-poll read in the same Tick sees the drop first. Removing both
+  reads fails it.
 
 Plan: LR-14's decision in platform/native_lockstep_peer_link.{c,h}: the
 identity check on replayed staged records and on RUNNING records, the
-foreign-bundle drop counter, and its accessor. The adapter logs the count
-at the end of each race.
+foreign-bundle drop counter, and its accessor. The adapter adds up the
+drops over its links (LR-35) and latches one end-of-race record per race;
+the game hook, MainArcadeLink, logs it (LR-36).
 
-Tests: the three peer-link cases and the three netplay loopback cases
-named in LR-14; native_lockstep_peer_link_process_unit still passes.
+Tests: the four peer-link cases and the three netplay loopback cases
+named in LR-14, plus the host take checks and hook isolation 12b;
+native_lockstep_peer_link_process_unit still passes.
 
 ### LR-S7 -- local sample seam and normalization
 

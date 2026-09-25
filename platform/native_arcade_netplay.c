@@ -141,6 +141,8 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
  * inside its own poll), so all of it is new. With no lobby or no open link
  * the count reads 0. Called after every lobby poll and before every close or
  * restart of the lobby, so no link's drops are lost when it closes.
+ * Assumes native_lobby_state.c reopens a link only at the end of its poll
+ * (inside PollHandshaking), so a lower reading here always means a new link.
  */
 static void NativeArcadeNetplay_ReadForeignDrops(struct NativeArcadeNetplay *netplay)
 {

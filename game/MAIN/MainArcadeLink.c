@@ -278,7 +278,10 @@ static void MainArcadeLink_LogAgreedMatch(const struct NativeArcadeLinkHostMatch
 /* Logs the end of a linked race (the linked-race plan, LR-14 and
  * LR-S6), once per race: its number, its end reason (the flow's
  * NATIVE_ARCADE_FLOW_END_* value), and the records of another match the link
- * dropped since the previous race end (stale bundles after a rematch). */
+ * dropped since the previous race end (stale bundles after a rematch). The
+ * count is a lower bound (LR-36): it covers only records screened on replay
+ * or while RUNNING. Records that overflowed the 8-slot staging buffer while a
+ * link was HANDSHAKING (DroppedEarlyBundleCount) are not included. */
 static void MainArcadeLink_LogRaceEnd(const struct NativeArcadeLinkHostRaceEnd *raceEnd)
 {
 	Platform_Log("[CTR Native] arcade link: race %u ended (reason %u); foreign bundles dropped %u\n",

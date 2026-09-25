@@ -425,7 +425,8 @@ struct NativeArcadeNetplay
 	 * as last read (after every lobby poll, and before every close or restart
 	 * of the lobby), and the drops read since the previous race end. A read
 	 * below the last one is a new link, whose whole count is new. Host-local,
-	 * like the race-end record below; only Init resets the running count. */
+	 * like the race-end record below. Init and each race end reset the
+	 * running count; Close and restart never do. */
 	uint32_t linkForeignDropsSeen;
 	uint32_t foreignDropsSinceRaceEnd;
 	/* 1 from the Tick whose flow moved RACING -> RESULTS until

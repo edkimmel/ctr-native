@@ -21,7 +21,9 @@
 # <platform.h> for its one platform call, the fixed VBlank pacing switch, made
 # only by RaceBegin (on), RaceEnd (off), and Shutdown (off); the header
 # declares RaceBegin and RaceEnd (rule 3f; the call sites are pinned by
-# tests/native_vblank_pacing_isolation_test.cmake).
+# tests/native_vblank_pacing_isolation_test.cmake). Since LR-S6 the header
+# also pins the end-of-race take, NativeArcadeLinkHost_TakeRaceEnd, and its
+# record's exact three fields, which the .c copies field by field.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -206,7 +208,8 @@ endforeach()
 foreach(literal IN ITEMS
         "int NativeArcadeLinkHost_GetAgreedConfig(struct NativeMatchConfigV1 *out);"
         "int NativeArcadeLinkHost_ReportRaceFailure(void);"
-        "uint8_t NativeArcadeLinkHost_Racing(void);")
+        "uint8_t NativeArcadeLinkHost_Racing(void);"
+        "int NativeArcadeLinkHost_TakeRaceEnd(struct NativeArcadeLinkHostRaceEnd *out);")
     string(FIND "${header}" "${literal}" literal_at)
     if(literal_at EQUAL -1)
         message(FATAL_ERROR "arcade link host isolation: required text '${literal}' missing from ${host_header}")
@@ -215,12 +218,28 @@ endforeach()
 foreach(literal IN ITEMS
         "agreed = NativeArcadeNetplay_AgreedConfig(&g_netplay);"
         "memcpy(out, agreed, sizeof(*out));"
-        "return NativeArcadeNetplay_ReportLocalRaceFailure(&g_netplay);")
+        "return NativeArcadeNetplay_ReportLocalRaceFailure(&g_netplay);"
+        "out->raceNumber = raceEnd.raceNumber;"
+        "out->endReason = raceEnd.endReason;"
+        "out->foreignBundleDrops = raceEnd.foreignBundleDrops;")
     string(FIND "${source}" "${literal}" literal_at)
     if(literal_at EQUAL -1)
         message(FATAL_ERROR "arcade link host isolation: required text '${literal}' missing from ${host_source}")
     endif()
 endforeach()
+# The end-of-race record (docs/LOCKSTEP_RACE_MILESTONE.md LR-36): the host
+# struct holds exactly the three fields TakeRaceEnd copies one by one above,
+# so a new field cannot be added without this rule and the copy changing.
+string(REGEX MATCH "struct NativeArcadeLinkHostRaceEnd[ \t\r\n]*\\{[^}]*\\};" race_end_struct "${header}")
+if(race_end_struct STREQUAL "")
+    message(FATAL_ERROR "arcade link host isolation: ${host_header} must define struct NativeArcadeLinkHostRaceEnd")
+endif()
+string(REGEX REPLACE "/\\*([^*]|\\*+[^*/])*\\*+/" "" race_end_struct "${race_end_struct}")
+string(REGEX REPLACE "[ \t\r\n]+" " " race_end_struct "${race_end_struct}")
+if(NOT race_end_struct STREQUAL
+        "struct NativeArcadeLinkHostRaceEnd { uint32_t raceNumber; uint32_t endReason; uint32_t foreignBundleDrops; };")
+    message(FATAL_ERROR "arcade link host isolation: struct NativeArcadeLinkHostRaceEnd must hold exactly raceNumber, endReason, and foreignBundleDrops (uint32_t), got '${race_end_struct}'")
+endif()
 
 # 3f. The race pacing switch (docs/LOCKSTEP_RACE_MILESTONE.md LR-7, LR-S3):
 #     the header declares RaceBegin and RaceEnd. The .c names exactly one

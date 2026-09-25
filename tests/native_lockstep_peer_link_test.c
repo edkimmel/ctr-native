@@ -76,7 +76,7 @@
 #define AUX_TERMINAL_PORT_A 48231u
 #define AUX_TERMINAL_PORT_B 48232u
 /* Foreign-identity drop tests (docs/LOCKSTEP_RACE_MILESTONE.md LR-14, LR-S6)
- * continue the band at 48233-48246. */
+ * continue the band at 48233-48248. */
 #define FOREIGN_STAGING_PORT_A 48233u
 #define FOREIGN_STAGING_PORT_B 48234u
 #define FOREIGN_RUNNING_PORT_A 48235u
@@ -91,6 +91,8 @@
 #define CURRENT_BAD_DELAY_PORT_B 48244u
 #define CURRENT_BAD_SLOT_PORT_A 48245u
 #define CURRENT_BAD_SLOT_PORT_B 48246u
+#define FOREIGN_MIXED_STAGED_PORT_A 48247u
+#define FOREIGN_MIXED_STAGED_PORT_B 48248u
 
 /* Wire offsets in a 128-byte bundle (platform/native_lockstep_protocol.c,
  * NativeLockstepBundle_WriteBody): the 8-byte match identity follows the
@@ -1567,7 +1569,11 @@ static int TestForeignIdentityDroppedWhileRunning(void)
  * record with one corrupted pad byte, sent while RUNNING; a current-identity
  * record (A's own frame 0) whose identity bytes are flipped without
  * recomputing its digest, sent while RUNNING; and the corrupt foreign
- * record again, staged while HANDSHAKING, which faults on replay.
+ * record again, staged while HANDSHAKING, which faults on replay. A last
+ * pair stages [a foreign record, the corrupt foreign record, A's own frame
+ * 0] (LR-33: a drop does not stop a replay; a fault still does): the replay
+ * drops and counts the first, faults BAD_DIGEST on the second, and stops
+ * there, so frame 0 never reaches the session.
  */
 static int TestForeignIdentityCorruptStillFaults(void)
 {
@@ -1577,6 +1583,9 @@ static int TestForeignIdentityCorruptStillFaults(void)
 	struct NativeUdpTransportAddress addrB;
 	uint8_t savedHello[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
 	uint8_t bundle[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	uint8_t foreign[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	const struct NativeLockstepFaultReport *fault;
+	struct NativeLockstepSession *session;
 	size_t savedHelloSize = 0;
 	size_t size = 0;
 	uint32_t i;
@@ -1620,6 +1629,39 @@ static int TestForeignIdentityCorruptStillFaults(void)
 	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, savedHello, savedHelloSize));
 	CHECK(ExpectFaultNotDropped(&linkB, (uint32_t)NATIVE_LOCKSTEP_FAULT_BAD_DIGEST) == 0);
 	CHECK(linkB.earlyBundleCount == 0u);
+	NativeLockstepPeerLink_Close(&linkA);
+	NativeLockstepPeerLink_Close(&linkB);
+
+	/* Staged [foreign, corrupt foreign, A's own frame 0]: the replay drops
+	 * the first, faults on the second, and stops before the third. */
+	memset(&linkA, 0, sizeof(linkA));
+	memset(&linkB, 0, sizeof(linkB));
+	CHECK(OpenHeldPair(&linkA, &linkB, (uint16_t)FOREIGN_MIXED_STAGED_PORT_A, (uint16_t)FOREIGN_MIXED_STAGED_PORT_B, &addrA,
+		&addrB, savedHello, &savedHelloSize) == 0);
+	CHECK(ComposeForeignBundle(0u, foreign) == 0);
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, foreign, sizeof(foreign)));
+	CHECK(ComposeForeignBundle(1u, bundle) == 0);
+	bundle[BUNDLE_PAD_BYTE_OFFSET] ^= 0x01u;
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, bundle, sizeof(bundle)));
+	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&linkA, 0u));
+	PumpPollUntilEarlyCount(&linkB, 3u);
+	CHECK(NativeLockstepPeerLink_Mode(&linkB) == NATIVE_LOCKSTEP_PEER_LINK_HANDSHAKING);
+	CHECK(linkB.earlyBundleCount == 3u);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(&linkB) == 0u);
+	CHECK(NativeUdpTransport_Send(&linkA.transport, &addrB, savedHello, savedHelloSize));
+	CHECK(PumpPollUntilMode(&linkB, NATIVE_LOCKSTEP_PEER_LINK_FAULTED) == NATIVE_LOCKSTEP_PEER_LINK_FAULTED);
+	CHECK(linkB.earlyBundleCount == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(&linkB) == 1u);
+	session = NativeLockstepPeerLink_Session(&linkB);
+	fault = NativeLockstepSession_FirstFault(session);
+	CHECK(fault != NULL);
+	CHECK(fault->cause == (uint32_t)NATIVE_LOCKSTEP_FAULT_BAD_DIGEST);
+	/* No peer window holds any frame: A's frame 0 never reached the
+	 * session. */
+	for (i = 0; i < NATIVE_LOCKSTEP_SESSION_PEER_CAPACITY; i++)
+	{
+		CHECK(session->peers[i].occupancyMask == 0u);
+	}
 	NativeLockstepPeerLink_Close(&linkA);
 	NativeLockstepPeerLink_Close(&linkB);
 	return 0;
