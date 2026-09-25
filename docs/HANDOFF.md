@@ -617,9 +617,9 @@ Task 7 (networked race launch) is complete and tracked in
    - Next: fold these decisions into `docs/LOCKSTEP_RACE_MILESTONE.md`, then
      LR-S4 onward. LR-1..LR-16 stand as written unless changed above.
    - LR-S2..LR-S3 are in progress.
-2. Package and ship, as soon as possible (owner directive). This comes
-   next, after the LR-S2..LR-S3 run and before the rest of Task 8, so the
-   cabinets get a build early.
+2. Package and ship, as soon as possible (owner directive). Overnight the
+   owner reprioritised: drive Task 8 autonomously to a real end-to-end
+   linked race first, then package; cabinets and hardware follow.
    - A Release build, checked against the Debug suite.
    - A package step that produces one self-contained folder: the exe,
      DLLs, and a per-cabinet config template (role, peer address,
