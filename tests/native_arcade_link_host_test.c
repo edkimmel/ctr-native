@@ -1917,10 +1917,14 @@ static enum NativeArcadeRaceDriveStatus PeerSpin(enum NativeArcadeRaceDriveStatu
 	return status;
 }
 
+/* Every datagram, of any size, the last DrainPeerBundles took. */
+static uint32_t g_peerDatagrams;
+
 /* Takes every datagram waiting on the peer's link socket, spinning until at
  * least want bundle-sized ones were taken (with want 0, for a quiet
  * period), then until it reads empty. Returns the bundle-sized datagrams
- * taken; everything taken is discarded. */
+ * taken, and leaves the count of every datagram taken in g_peerDatagrams;
+ * everything taken is discarded. */
 static uint32_t DrainPeerBundles(uint32_t want)
 {
 	struct NativeLockstepPeerLink *link = NativeArcadeNetplay_Link(&g_peer);
@@ -1930,6 +1934,7 @@ static uint32_t DrainPeerBundles(uint32_t want)
 	uint32_t spins;
 	enum NativeUdpTransportReceiveResult result;
 
+	g_peerDatagrams = 0u;
 	if (link == NULL)
 	{
 		return UINT32_MAX;
@@ -1939,7 +1944,13 @@ static uint32_t DrainPeerBundles(uint32_t want)
 		result = NativeUdpTransport_Receive(&link->transport, bytes, sizeof(bytes), &byteCount, NULL);
 		if (result == NATIVE_UDP_TRANSPORT_RECEIVE_OK)
 		{
+			g_peerDatagrams += 1u;
 			taken += (byteCount == NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES) ? 1u : 0u;
+		}
+		else if (result == NATIVE_UDP_TRANSPORT_RECEIVE_TOO_SMALL)
+		{
+			/* A datagram larger than the buffer is still one received. */
+			g_peerDatagrams += 1u;
 		}
 		else if ((result == NATIVE_UDP_TRANSPORT_RECEIVE_EMPTY) && (taken >= want) && ((want > 0u) || (spins >= DRIVE_QUIET_SPINS)))
 		{
@@ -2107,6 +2118,26 @@ static uint32_t HostPass(void)
 	return HostSpin(HostStep(0u), 0u);
 }
 
+/* A stray RaceStep and RaceHold while the finish linger runs (LR-54): both
+ * END with padsOut untouched, and the drive is kept as it was: the finish
+ * end, the begun flag, and the linger ticks left. */
+static int StrayStepAndHoldKeepLinger(uint32_t begun, uint32_t lingerTicksLeft)
+{
+	struct NativeArcadeLinkHostDriveState state;
+
+	CHECK(HostStep(0u) == RACE_END);
+	CHECK(HostHold(1u, 1) == RACE_END);
+	CHECK(HostHold(0u, 0) == RACE_END);
+	CHECK(g_driveBad == 0);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_OF_RACE);
+	CHECK(state.begun == begun);
+	CHECK(state.lingerTicksLeft == lingerTicksLeft);
+	CHECK(state.failureReported == 0u);
+	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 0u);
+	return 0;
+}
+
 /*
  * LR-S9 step, hold, and end over a real launch. 40 race ticks commit equal
  * pads on both sides. The peer pauses after race tick 39: the host runs D
@@ -2117,7 +2148,9 @@ static uint32_t HostPass(void)
  * next Ticks move both flows to RESULTS RACE COMPLETE; the host's linger
  * then resends its window of 2D + 1 kept bundles on exactly 15 host ticks
  * (a RaceEnd on the way keeps it: the linger overlaps the return load), then
- * nothing, and the drive is re-initialized.
+ * nothing, and the drive is re-initialized. A stray step and hold after the
+ * finish END (on RACING, and on RESULTS before and after that RaceEnd) are
+ * END, send nothing, and leave the linger running (LR-54).
  */
 static int TestDriveStepHoldEnd(void)
 {
@@ -2158,6 +2191,8 @@ static int TestDriveStepHoldEnd(void)
 		CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_NONE);
 		CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
 		CHECK(NativeArcadeLinkHost_InternalLocalRaceFailure() == 0u);
+		/* One counted stall report per new period, outside the start grace. */
+		CHECK(NativeArcadeLinkHost_InternalConsecutiveStalls() == period);
 	}
 	CHECK(g_driveBad == 0);
 
@@ -2175,6 +2210,8 @@ static int TestDriveStepHoldEnd(void)
 	CHECK(status == RACE_GO);
 	CHECK(g_driveBad == 0);
 	CHECK(g_hostNext == pauseAt + DRIVE_D + 1u);
+	/* The take that ended the hold was not a stall: the count is cleared. */
+	CHECK(NativeArcadeLinkHost_InternalConsecutiveStalls() == 0u);
 	for (tick = pauseAt; tick <= pauseAt + DRIVE_D; tick++)
 	{
 		CHECK(CheckCommitted(tick) == 0);
@@ -2211,6 +2248,10 @@ static int TestDriveStepHoldEnd(void)
 	CHECK(NativeArcadeNetplay_Tick(&g_peer, 0u, 1u) == NATIVE_ARCADE_FLOW_ACTION_NONE);
 	CHECK(PeerScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
 	(void)DrainPeerBundles(0u);
+	/* A stray step and hold after the finish END, still on RACING: END, and
+	 * the drive and its linger are kept (the drain below proves nothing was
+	 * sent). */
+	CHECK(StrayStepAndHoldKeepLinger(1u, NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS) == 0);
 	/* A host Tick that does not report the finish leaves the flow on
 	 * RACING: the linger waits for RESULTS and sends nothing. */
 	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
@@ -2236,6 +2277,14 @@ static int TestDriveStepHoldEnd(void)
 			CHECK(state.begun == 0u);
 			CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_OF_RACE);
 			CHECK(state.lingerTicksLeft == NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS - 5u);
+		}
+		if ((tick == 3u) || (tick == 9u))
+		{
+			/* A stray step and hold on RESULTS, before and after the Disarm:
+			 * END with nothing sent, and the linger runs on. */
+			CHECK(StrayStepAndHoldKeepLinger((tick < 6u) ? 1u : 0u, NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS - (tick - 1u)) == 0);
+			CHECK(DrainPeerBundles(0u) == 0u);
+			CHECK(g_peerDatagrams == 0u);
 		}
 		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
 		CHECK(DrainPeerBundles(DRIVE_LINGER_WINDOW) == DRIVE_LINGER_WINDOW);
@@ -2313,7 +2362,7 @@ static uint32_t PeerAuxAfterPolls(uint32_t want)
  * launch record (the other iterations none); the peer commits and starts
  * its race from them, its drive begins, and the host's hold ends GO with
  * equal pads on both sides. Nothing was reported as a stall (the start
- * grace).
+ * grace): the adapter's consecutive stall count stays 0 through the hold.
  */
 static int TestDriveHoldLaunchLinger(void)
 {
@@ -2393,6 +2442,8 @@ static int TestDriveHoldLaunchLinger(void)
 		CHECK(GetDriveState(&state) == 0);
 		CHECK(state.heldPeriods == period);
 		CHECK(state.raceTick == 0u);
+		/* The start grace: no period was reported as a stall. */
+		CHECK(NativeArcadeLinkHost_InternalConsecutiveStalls() == 0u);
 	}
 	CHECK(g_driveBad == 0);
 	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
@@ -2557,8 +2608,8 @@ static int TestDriveTakeClassification(void)
  * the host's Tick parks it. The host's step of 30 records 30, the parked
  * digest mismatches inside the record, and the step ends as the outcome on
  * that tick; the next Tick shows RACE OUT OF SYNC. From the host's step on,
- * the peer's socket receives no bundle from the host: no new bundle, no
- * resend, no hold, and no linger.
+ * the peer's socket receives nothing from the host, no datagram of any
+ * size: no new bundle, no resend, no hold, and no linger.
  */
 static int TestDriveParkedDigestMismatch(void)
 {
@@ -2602,7 +2653,9 @@ static int TestDriveParkedDigestMismatch(void)
 	{
 		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
 	}
+	/* Literally nothing: no datagram of any size since the latch. */
 	CHECK(DrainPeerBundles(0u) == 0u);
+	CHECK(g_peerDatagrams == 0u);
 	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 0u);
 	StopDriveRace();
 	CHECK(CheckInert() == 0);
@@ -2639,6 +2692,61 @@ static int RematchToRace(void)
 	return 0;
 }
 
+/* From any host screen, when a rematch is not on offer: the host aborts to
+ * the title, a fresh peer, Enter on both, and the next launch. */
+static int RepairToRace(uint64_t peerEntropy)
+{
+	struct NativeIdentityV1 identity;
+
+	NativeArcadeLinkHost_AbortToTitle();
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	CHECK(CheckDriveReset() == 0);
+	NativeArcadeNetplay_Shutdown(&g_peer);
+	NativeArcadeLinkLoopback_Identity(&identity);
+	CHECK(NativeArcadeLinkLoopback_PeerInit(&g_peer, &identity, TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, peerEntropy) == 1);
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(NativeArcadeNetplay_Enter(&g_peer) == NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY);
+	CHECK(DrivePairToRace() == 0);
+	return 0;
+}
+
+/* The host's step of its next race tick with END_OF_RACE, after both
+ * adapters' Ticks: a finish END on RACING with the full linger ahead. */
+static int HostFinishOnRacing(void)
+{
+	struct NativeArcadeLinkHostDriveState state;
+	uint32_t hostAction = ACT_NONE;
+	uint32_t peerAction = ACT_NONE;
+	const uint32_t tick = g_hostNext;
+
+	NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+	CHECK((hostAction == ACT_NONE) && (peerAction == ACT_NONE));
+	CHECK(HostStep(1u) == RACE_END);
+	CHECK(g_driveBad == 0);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_OF_RACE);
+	CHECK(state.endTick == tick);
+	CHECK(state.lingerTicksLeft == NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS);
+	CHECK(state.begun == 1u);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	return 0;
+}
+
+/* A few more host Ticks, and the peer's socket has received nothing at all
+ * since the caller last drained it. */
+static int HostTicksSendNothing(void)
+{
+	uint32_t tick;
+
+	for (tick = 0u; tick < 5u; tick++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	}
+	CHECK(DrainPeerBundles(0u) == 0u);
+	CHECK(g_peerDatagrams == 0u);
+	return 0;
+}
+
 /* RaceStep and RaceHold are END and send nothing; the drive stays (or is
  * made) re-initialized. */
 static int CheckDriveRefused(void)
@@ -2661,7 +2769,12 @@ static int CheckDriveRefused(void)
  * leaves RESULTS for REMATCH_WAIT re-initializes the drive. Race B: the
  * caller's own failure report moves the flow to RESULTS under a running
  * drive, and a step or hold there is refused with nothing sent and the
- * drive re-initialized. Race C: AbortToTitle re-initializes it. Race D:
+ * drive re-initialized. Race C: RaceEnd after a finish END still on RACING
+ * re-initializes the drive, so no linger follows. Race D: RaceEnd on
+ * RESULTS re-initializes a LOCAL_FAILURE drive, with no linger. Race E:
+ * AbortToTitle re-initializes it. Race F: RaceEnd on RESULTS re-initializes
+ * an OUTCOME drive, with no linger. Race G: the linger stops on RESULTS
+ * when the session leaves RUNNING, and the drive is re-initialized. Race H:
  * Shutdown does, and a new Configure starts from a re-initialized drive.
  */
 static int TestDriveRefusalsAndResets(void)
@@ -2671,6 +2784,12 @@ static int TestDriveRefusalsAndResets(void)
 	struct NativeIdentityV1 identity;
 	struct NativeArcadeLinkHostDriveState state;
 	struct NativeArcadeLinkHostDriveState sentinel;
+	uint32_t hostAction = ACT_NONE;
+	uint32_t peerAction = ACT_NONE;
+	uint32_t host = RACE_GO;
+	enum NativeArcadeRaceDriveStatus peer;
+	uint32_t tick;
+	uint32_t spins;
 
 	/* The pad mirror: 12 bytes, laid out as the platform pad snapshot. */
 	CHECK(sizeof(struct NativeArcadeLinkHostPad) == 12u);
@@ -2784,7 +2903,47 @@ static int TestDriveRefusalsAndResets(void)
 	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 1u);
 	NativeArcadeLinkHost_RaceEnd();
 
-	/* Race C: AbortToTitle. */
+	/* Race C: a finish END while the flow is still on RACING. RaceEnd there
+	 * re-initializes the drive (no linger is kept off RESULTS), so the Tick
+	 * that reports the finish, and the Ticks after it, send nothing. */
+	CHECK(RematchToRace() == 0);
+	CHECK(BeginRaceDrives() == 0);
+	CHECK(RoundsBoth(4u) == 0);
+	CHECK(HostFinishOnRacing() == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(g_pacing == 0);
+	CHECK(CheckDriveReset() == 0);
+	(void)DrainPeerBundles(0u);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+	CHECK(HostTicksSendNothing() == 0);
+	CHECK(CheckDriveReset() == 0);
+
+	/* Race D: a LOCAL_FAILURE drive on RESULTS; RaceEnd re-initializes it,
+	 * with no linger. */
+	CHECK(RematchToRace() == 0);
+	CHECK(BeginRaceDrives() == 0);
+	CHECK(RoundsBoth(3u) == 0);
+	g_hostNext += 5u;
+	CHECK(HostStep(0u) == RACE_END);
+	CHECK(g_driveBad == 0);
+	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 2u);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_LOCAL_FAILURE);
+	CHECK(state.begun == 1u);
+	CHECK(state.lingerTicksLeft == 0u);
+	(void)DrainPeerBundles(0u);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(g_pacing == 0);
+	CHECK(CheckDriveReset() == 0);
+	CHECK(HostTicksSendNothing() == 0);
+	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 2u);
+
+	/* Race E: AbortToTitle. */
 	CHECK(RematchToRace() == 0);
 	CHECK(BeginRaceDrives() == 0);
 	CHECK(RoundsBoth(3u) == 0);
@@ -2796,7 +2955,86 @@ static int TestDriveRefusalsAndResets(void)
 	NativeArcadeLinkHost_RaceEnd();
 	CHECK(g_pacing == 0);
 
-	/* Race D: Shutdown, then a new Configure. */
+	/* Race F: an OUTCOME drive on RESULTS (a desync from race tick 12, the
+	 * peer leading); RaceEnd re-initializes it, with no linger. A desync
+	 * offers no rematch, so the next race is a new pairing. */
+	CHECK(RepairToRace(UINT64_C(0x2E5E9)) == 0);
+	CHECK(BeginRaceDrives() == 0);
+	CHECK(RoundsBoth(12u) == 0);
+	g_peerKnob = 7u;
+	g_peerKnobFrom = 12u;
+	host = RACE_GO;
+	for (tick = 0u; (tick < 10u) && (host != RACE_END); tick++)
+	{
+		NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+		CHECK((hostAction == ACT_NONE) && (peerAction == ACT_NONE));
+		peer = PeerStep(0u);
+		host = HostStep(0u);
+		for (spins = 0u; (spins < DRIVE_HOLD_SPINS) && ((host == RACE_HOLD) || (peer == NATIVE_ARCADE_RACE_DRIVE_HOLD)); spins++)
+		{
+			host = (host == RACE_HOLD) ? HostHold(0u, 0) : host;
+			peer = (peer == NATIVE_ARCADE_RACE_DRIVE_HOLD) ? PeerHold(0u, 0) : peer;
+		}
+		CHECK(peer == NATIVE_ARCADE_RACE_DRIVE_GO);
+	}
+	CHECK(host == RACE_END);
+	CHECK(g_driveBad == 0);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_OUTCOME);
+	CHECK(state.lingerTicksLeft == 0u);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_DESYNC);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_OUTCOME);
+	CHECK(state.begun == 1u);
+	CHECK(state.lingerTicksLeft == 0u);
+	(void)DrainPeerBundles(0u);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(g_pacing == 0);
+	CHECK(CheckDriveReset() == 0);
+	CHECK(HostTicksSendNothing() == 0);
+
+	/* Race G: the linger stops on RESULTS when the session leaves RUNNING.
+	 * The host finishes on race tick 8, and its first linger tick on RESULTS
+	 * resends its window. The peer, still racing with a state that differs
+	 * from race tick 8, steps 8 and 9: its bundle of frame 11 carries its
+	 * digest of 8, which the host recorded before its finish, so the host's
+	 * next Tick drains it into a DIVERGED session. That Tick's linger tick
+	 * stops the linger with 14 ticks left, the flow still on RESULTS, and the
+	 * drive is re-initialized; nothing more is sent. */
+	CHECK(RepairToRace(UINT64_C(0x2E5EA)) == 0);
+	CHECK(BeginRaceDrives() == 0);
+	CHECK(RoundsBoth(8u) == 0);
+	CHECK(HostFinishOnRacing() == 0);
+	(void)DrainPeerBundles(0u);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+	CHECK(DrainPeerBundles(DRIVE_LINGER_WINDOW) == DRIVE_LINGER_WINDOW);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.lingerTicksLeft == NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS - 1u);
+	g_peerKnob = 3u;
+	g_peerKnobFrom = 8u;
+	for (tick = 0u; tick < 2u; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_peer, 0u, 0u) == NATIVE_ARCADE_FLOW_ACTION_NONE);
+		CHECK(PeerScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+		CHECK(PeerSpin(PeerStep(0u)) == NATIVE_ARCADE_RACE_DRIVE_GO);
+	}
+	CHECK(g_driveBad == 0);
+	CHECK(g_peerNext == 10u);
+	(void)DrainPeerBundles(0u);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(CheckDriveReset() == 0);
+	CHECK(HostTicksSendNothing() == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(g_pacing == 0);
+	NativeArcadeLinkHost_AbortToTitle();
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF);
+
+	/* Race H: Shutdown, then a new Configure. */
 	NativeArcadeNetplay_Shutdown(&g_peer);
 	CHECK(NativeArcadeLinkLoopback_PeerInit(&g_peer, &identity, TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, UINT64_C(0x2E5E8)) == 1);
 	CHECK(NativeArcadeLinkHost_Enter() == 1);

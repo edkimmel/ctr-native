@@ -382,7 +382,8 @@ struct NativeArcadeLinkHostDriveState
 	uint32_t heldPeriods;
 	/* host ticks of the finish linger left */
 	uint32_t lingerTicksLeft;
-	/* 1 from RaceBegin's drive begin until the drive is re-initialized */
+	/* 1 from RaceBegin's drive begin until the drive is re-initialized or
+	 * RaceEnd keeps a lingering drive (LR-56) */
 	uint8_t begun;
 	/* 1 once heldPeriods reaches the hold grace (the banner is due) */
 	uint8_t bannerDue;
@@ -402,7 +403,10 @@ struct NativeArcadeLinkHostDriveState
  * was already latched by the link; a finish end is the caller's to report
  * (raceFinished on the next Tick). Refused with END and nothing sent outside
  * LINK, before RaceBegin, and whenever the flow is not on RACING, where the
- * drive is re-initialized instead.
+ * drive is re-initialized instead; but a drive whose finish linger still
+ * runs is left to Tick untouched (END, nothing sent), so a stray call cannot
+ * cut the linger short. After END the caller must not call RaceStep or
+ * RaceHold again until the next RaceBegin (LR-54; LR-S10 pins the caller).
  */
 uint32_t NativeArcadeLinkHost_RaceStep(uint32_t raceTick, const struct NativeCanonicalStateV4 *state,
 	const struct NativeArcadeLinkHostPad *localSample, const struct NativeArcadeLinkHostRaceFacts *facts,
@@ -412,7 +416,9 @@ uint32_t NativeArcadeLinkHost_RaceStep(uint32_t raceTick, const struct NativeCan
  * LINK only: one iteration of the blocking hold after a HOLD; periods and
  * newPeriod are the hold loop's own arguments (the full tick periods held so
  * far, and nonzero on the first iteration of each new period). Returns and
- * refuses as RaceStep does.
+ * refuses as RaceStep does, and likewise leaves a running finish linger to
+ * Tick. After END the caller must not call RaceHold or RaceStep again until
+ * the next RaceBegin (LR-54; LR-S10 pins the caller).
  */
 uint32_t NativeArcadeLinkHost_RaceHold(uint32_t periods, int newPeriod, struct NativeArcadeLinkHostPad padsOut[4]);
 

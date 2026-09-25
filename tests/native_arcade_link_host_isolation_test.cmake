@@ -328,9 +328,13 @@ endforeach()
 #       LOCAL_FAILURE end, once per race, and is the only other caller of the
 #       adapter's ReportLocalRaceFailure besides the public
 #       ReportRaceFailure.
-#     - RaceStep and RaceHold first pass the glue's guard, which refuses
-#       outside a begun drive or off RACING and re-initializes the drive
-#       there; the drive's Step, Hold, Begin, and LingerTick are each called
+#     - RaceStep and RaceHold first pass the glue's guard (only struct or
+#       enum declarations without an initializer come before it), which
+#       refuses outside LINK, then leaves a drive whose finish linger still
+#       runs to Tick untouched (checked before the reset branch, LR-54), and
+#       otherwise refuses outside a begun drive or off RACING and
+#       re-initializes the drive there; the drive's Step, Hold, Begin, and
+#       LingerTick are each called
 #       once; the linger runs in Tick after the adapter's Tick; and the drive
 #       is re-initialized by Shutdown, AbortToTitle, RaceEnd, Tick, and the
 #       guard.
@@ -456,8 +460,7 @@ ctr_require_in("${host_source}" "${source_flat}"
     "static struct NativeArcadeRaceDriveKept g_driveKept;")
 ctr_body("${host_source}" "${source_code}" "static int NativeArcadeLinkHost_DriveMayRun(" guard_body)
 ctr_require_in("${host_source} (DriveMayRun)" "${guard_body}"
-    "if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) { return 0; }"
-    "if ((g_driveBegun == 0u) || (NativeArcadeLinkHost_LinkScreen() != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING)) { NativeArcadeLinkHost_ResetDrive(); return 0; }")
+    "{ if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) { return 0; } if (NativeArcadeRaceDrive_EndIsFinish(&g_drive) && (NativeArcadeRaceDrive_LingerTicksLeft(&g_drive) > 0u)) { return 0; } if ((g_driveBegun == 0u) || (NativeArcadeLinkHost_LinkScreen() != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING)) { NativeArcadeLinkHost_ResetDrive(); return 0; } return 1;")
 foreach(opener IN ITEMS "uint32_t NativeArcadeLinkHost_RaceStep(" "uint32_t NativeArcadeLinkHost_RaceHold(")
     ctr_body("${host_source}" "${source_code}" "${opener}" api_body)
     # (FIND, not a '^' REGEX REPLACE: CMake retries '^' after each match.)
@@ -465,7 +468,8 @@ foreach(opener IN ITEMS "uint32_t NativeArcadeLinkHost_RaceStep(" "uint32_t Nati
     math(EXPR api_open "${api_open} + 2")
     string(SUBSTRING "${api_body}" ${api_open} -1 api_statements)
     string(FIND "${api_statements}" "if (!NativeArcadeLinkHost_DriveMayRun()) { return NATIVE_ARCADE_LINK_HOST_RACE_END; }" guard_at)
-    string(REGEX MATCH "^(struct|enum)[^;]*;( (struct|enum)[^;]*;)* if \\(!NativeArcadeLinkHost_DriveMayRun\\(\\)\\)" guard_first "${api_statements}")
+    # Declarations only: no initializer ('='), so nothing runs before it.
+    string(REGEX MATCH "^(struct|enum)[^;=]*;( (struct|enum)[^;=]*;)* if \\(!NativeArcadeLinkHost_DriveMayRun\\(\\)\\)" guard_first "${api_statements}")
     if(guard_at EQUAL -1 OR guard_first STREQUAL "")
         message(FATAL_ERROR "arcade link host isolation: ${host_source} (${opener}) must pass NativeArcadeLinkHost_DriveMayRun() before anything else")
     endif()

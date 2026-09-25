@@ -188,7 +188,8 @@ static uint8_t g_racePacing;
 static struct NativeArcadeRaceDrive g_drive;
 static struct NativeArcadeRaceDriveKept g_driveKept;
 /* 1 from RaceBegin's drive begin (accepted or refused) until the drive is
- * re-initialized: RaceStep and RaceHold run only while it is set. */
+ * re-initialized or RaceEnd keeps a lingering drive (LR-56): RaceStep and
+ * RaceHold run only while it is set. */
 static uint8_t g_driveBegun;
 /* 1 once this race's local drive failure was reported to the adapter. */
 static uint8_t g_driveFailureReported;
@@ -360,13 +361,20 @@ static void NativeArcadeLinkHost_TickDrive(void)
 	}
 }
 
-/* The glue's own guard (LR-50, the LR-S9 part 2 note): the drive steps and
- * holds only in LINK mode, after RaceBegin began it, while the flow is on
- * RACING. Otherwise nothing is polled, sent, or taken: in LINK mode the
- * drive is re-initialized, and the caller gets END. */
+/* The glue's own guard (LR-50, the LR-S9 part 2 note, LR-54): the drive
+ * steps and holds only in LINK mode, after RaceBegin began it, while the
+ * flow is on RACING. Otherwise nothing is polled, sent, or taken, and the
+ * caller gets END. A drive with a finish-kind end and linger ticks left is
+ * kept as it is: its linger belongs to Tick (LR-13), so a stray step or hold
+ * must not cut it short. Any other refusal in LINK mode re-initializes the
+ * drive. */
 static int NativeArcadeLinkHost_DriveMayRun(void)
 {
 	if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK)
+	{
+		return 0;
+	}
+	if (NativeArcadeRaceDrive_EndIsFinish(&g_drive) && (NativeArcadeRaceDrive_LingerTicksLeft(&g_drive) > 0u))
 	{
 		return 0;
 	}
@@ -516,6 +524,11 @@ uint8_t NativeArcadeLinkHost_InternalLocalRaceFailure(void)
 uint32_t NativeArcadeLinkHost_InternalDriveFailureReports(void)
 {
 	return g_driveFailureReports;
+}
+
+uint32_t NativeArcadeLinkHost_InternalConsecutiveStalls(void)
+{
+	return (g_mode == NATIVE_ARCADE_LINK_HOST_MODE_LINK) ? g_netplay.outcome.consecutiveStallFrames : 0u;
 }
 
 int NativeArcadeLinkHost_RaceBegin(void)

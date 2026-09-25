@@ -24,4 +24,10 @@ uint8_t NativeArcadeLinkHost_InternalLocalRaceFailure(void);
  * Configure or Shutdown (at most one per race, LR-S9). */
 uint32_t NativeArcadeLinkHost_InternalDriveFailureReports(void);
 
+/* The link's in-race stall count as it stands: the stall reports the race's
+ * outcome tracker has counted in a row toward the stall timeout (UX-9; any
+ * other take result handed to it resets the count, and each race's start
+ * clears it); 0 unless the mode is LINK. */
+uint32_t NativeArcadeLinkHost_InternalConsecutiveStalls(void);
+
 #endif

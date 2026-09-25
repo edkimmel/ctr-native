@@ -2144,9 +2144,10 @@ state parameter. It adds:
   forward the core's.
 
 The test read-back header (native_arcade_link_host_internal.h) gains the
-adapter's localRaceFailure latch and the count of local drive failures
-the glue reported since Configure or Shutdown. No game source names
-either (rule 3b).
+adapter's localRaceFailure latch, the count of local drive failures the
+glue reported since Configure or Shutdown, and (the part 2 review) the
+adapter's outcome tracker's consecutive stall count, each 0 outside LINK
+where the adapter holds it. No game source names any of them (rule 3b).
 
 LR-52 RaceBegin begins the drive (LR-S9 part 2). RaceBegin keeps its
 pinned pacing literals and its return (1 in LINK mode), and after the
@@ -2182,9 +2183,15 @@ reports nothing (OnTakeResult latched it), and neither does a finish
 kind: the caller reports raceFinished through Tick (LR-S10).
 
 LR-54 The glue's guard (LR-S9 part 2, the part 2 note on LR-50). RaceStep
-and RaceHold first pass one guard. Outside LINK mode they return END and
-touch nothing. In LINK mode, when no drive was begun (RaceBegin has not
-run, or the drive was re-initialized since) or the flow is not on
+and RaceHold first pass one guard; before it they only declare locals,
+with no initializer. Outside LINK mode they return END and touch
+nothing. In LINK mode, while the drive has a finish-kind end with linger
+ticks left, they return END, poll, send, and take nothing, and keep the
+drive as it is: the linger belongs to Tick (LR-13), which it overlaps
+with the return load, so a stray call on RACING or RESULTS, before or
+after RaceEnd, cannot cut it short (the part 2 review). Otherwise, when
+no drive was begun (RaceBegin has not run, or the drive was
+re-initialized since) or the flow is not on
 RACING, they return END, poll, send, and take nothing, and re-initialize
 the drive. The note's "ends the drive" is realized as re-initialization,
 the safer option: a stale drive then cannot linger, and a drive that
@@ -2192,7 +2199,9 @@ never began is not reported as a local failure (the core would have
 ended it as NOT_BEGUN). Otherwise the arguments are converted (LR-51)
 and passed on; a NULL argument reaches the core, which ends the drive
 as a local failure (ARGUMENT), reported once. padsOut is written only on
-GO.
+GO. After END the caller must not call RaceStep or RaceHold again until
+the next RaceBegin; the guard makes a stray call harmless, and LR-S10
+pins the caller to it.
 
 LR-55 The re-initialization points (LR-S9 part 2). The drive is
 re-initialized (NativeArcadeRaceDrive_Init, the ring cleared, the begun
@@ -2209,7 +2218,8 @@ and reported flags cleared) by:
   on RESULTS (LR-56);
 - AbortToTitle (right after the adapter's shutdown), Shutdown (after its
   pinned pacing block), and so Configure, which shuts down first;
-- the guard's refusal (LR-54).
+- the guard's refusal (LR-54), except while a finish linger runs, which
+  the guard leaves to Tick.
 
 In between, an OUTCOME or LOCAL_FAILURE drive stays ended on RESULTS, so
 the caller can log it, until one of these points. The finish linger runs
@@ -2221,9 +2231,10 @@ LR-56 RaceEnd while lingering (LR-S9 part 2). RaceEnd runs on the Disarm
 frame, after the return load, and the linger overlaps that load (LR-13),
 so a clean finish can still be lingering then. RaceEnd keeps such a
 drive (finish-kind end, linger ticks left, flow on RESULTS) and only
-clears its begun flag, so no Step or Hold can use it; Tick ends it by
-its own stops, and REMATCH leaves RESULTS, whose Tick re-initializes the
-drive before any linger tick can reach the new session. Every other
+clears its begun flag, so no Step or Hold can use it (a stray one is END
+and leaves the linger to Tick, LR-54); Tick ends it by its own stops,
+and REMATCH leaves RESULTS, whose Tick re-initializes the drive before
+any linger tick can reach the new session. Every other
 RaceEnd re-initializes it, before and whatever the pacing: its pinned
 `if (g_racePacing == 0u)` logic is unchanged and follows the drive
 reset.
@@ -2242,7 +2253,10 @@ needs, and pinned:
   3g pins the prototypes, the pad and facts structs field for field, the
   callbacks (one verbatim send, two RaceService calls with 0 and 1, one
   OnTakeResult followed by the pendingLinkFailure read), the one report
-  path, the guard first in RaceStep and RaceHold, each drive call once,
+  path, the guard first in RaceStep and RaceHold (only struct or enum
+  declarations without an initializer before it), the guard's whole
+  body in order (the LINK check, then the kept-linger branch, then the
+  refusal that re-initializes), each drive call once,
   the linger after the adapter's Tick, the re-initialization points, and
   the scans: no game source or main.c names RaceStep or RaceHold yet
   (LR-S10 lifts this), and NativeArcadeNetplay_RaceService is named in
@@ -3784,7 +3798,8 @@ Result, part 2:
   path, linger, and re-initialization; the pad and facts conversions and
   their static asserts), include/platform/native_arcade_link_host.h,
   include/platform/native_arcade_link_host_internal.h (two test
-  read-backs), include/platform/native_arcade_race_drive.h (the sendBundle
+  read-backs; a third since the review follow-ups below),
+  include/platform/native_arcade_race_drive.h (the sendBundle
   contract now says 0 also covers a failed decode, a wrong sender slot,
   or a transport failure, LR-49), CMakeLists.txt (the host library links
   ctr_native_arcade_race_drive), tests/native_arcade_link_host_test.c,
@@ -3792,12 +3807,14 @@ Result, part 2:
   the bundle, the handshake, NativeMatchConfigV1, the session, the launch
   record, the adapter, or any canonical, checkpoint, or replay state; no
   lease call; no heap; game/ and main.c are unchanged, and default boot
-  never reaches the new code (the mode is OFF).
+  reaches only the drive's re-initialization of host-local statics
+  (Configure and Shutdown run it; the mode stays OFF).
 - The decisions: LR-51 (the API and its mirrors), LR-52 (RaceBegin's
   begin, only on RACING, and its refusal reported at once, the return
   unchanged), LR-53 (the callbacks, NULL context, and the once-per-race
-  report), LR-54 (the guard re-initializes instead of ending, and a drive
-  that never began is not a local failure), LR-55 (the re-initialization
+  report), LR-54 (the guard re-initializes instead of ending, a drive
+  that never began is not a local failure, and, since the review
+  follow-ups, a running finish linger is left to Tick), LR-55 (the re-initialization
   points; OUTCOME and LOCAL_FAILURE drives stay for the log on RESULTS),
   LR-56 (RaceEnd keeps a drive still lingering on RESULTS), and LR-57
   (the isolation changes, including the pacing isolation's pinned
@@ -3818,7 +3835,11 @@ Result, part 2:
     end-of-race record is race 1 FINISHED, and the host's linger resends
     exactly 2D + 1 bundles on each of 15 host ticks (a RaceEnd on the
     sixth turns the pacing off and keeps the linger), then nothing, and
-    the drive is re-initialized.
+    the drive is re-initialized; each counted hold period raises the
+    adapter's consecutive stall count by one, and the GO clears it; a
+    stray step and hold after the finish END (on RACING, and on RESULTS
+    before and after that RaceEnd) are END, send no datagram, and leave
+    the linger and its remaining ticks running.
   - TestDriveHoldLaunchLinger: part 1's 33c setup through the host
     singleton (the peer's link is polled directly and every host launch
     record discarded from its aux inbox before the peer's Tick), so the
@@ -3826,7 +3847,8 @@ Result, part 2:
     race tick 0 holds; each new hold period sends exactly one launch
     record (the other iterations none); the peer commits from them,
     starts, begins its drive, and the host's hold ends GO; eleven more ticks
-    in step; no stall reported (start grace).
+    in step; no stall reported (start grace): the adapter's consecutive
+    stall count is 0 after every held period.
   - TestDriveTakeClassification: (a) a desync from race tick 12, the peer
     leading: the host's step of 13 ends as OUTCOME, the next Tick shows
     RACE OUT OF SYNC, and the adapter's localRaceFailure stays 0 with no
@@ -3838,8 +3860,8 @@ Result, part 2:
     with a state differing from race tick 30; the host's Tick parks the
     peer's digest of 30; the host's step of 30 ends as OUTCOME on that
     tick (end tick 30); a hold and a step after it are END; the next Tick
-    shows RACE OUT OF SYNC; over 21 more host Ticks the peer's socket
-    receives no bundle from the host.
+    shows RACE OUT OF SYNC; from the step through 21 more host Ticks the
+    peer's socket receives nothing from the host, no datagram of any size.
   - TestDriveRefusalsAndResets: the pad mirror's size and offsets and the
     host values; OFF and PREVIEW inert; in LINK on the title and on
     RACING before RaceBegin, END with nothing sent or reported (RaceBegin
@@ -3848,9 +3870,15 @@ Result, part 2:
     (SESSION_STARTED), reported once, and shows LINK ERROR; that drive
     stays on RESULTS until the REMATCH Tick re-initializes it; the
     caller's own failure report moves the flow to RESULTS under a running
-    drive, where a step or hold is refused with nothing sent; AbortToTitle
-    and Shutdown re-initialize the drive, and a new Configure starts
-    clean.
+    drive, where a step or hold is refused with nothing sent; RaceEnd
+    after a finish END still on RACING re-initializes the drive, so the
+    finish Tick lingers nothing; RaceEnd on RESULTS re-initializes a
+    LOCAL_FAILURE drive and an OUTCOME drive, with no linger; the linger
+    stops on RESULTS when the session leaves RUNNING (the peer's digest of
+    the finish tick differs, the host's next Tick drains it into a
+    DIVERGED session, and that Tick's linger tick stops with 14 ticks
+    left); AbortToTitle and Shutdown re-initialize the drive, and a new
+    Configure starts clean.
   - The existing stub of Platform_SetFixedVBlankPacing stays;
     main_arcade_link_view_layout_unit, which also links the host
     library, builds and passes unchanged.
@@ -3889,6 +3917,51 @@ Result, part 2:
   races validated with equal digests on both cabinets and ended reason 1
   (FINISHED), so no Begin was refused; the autopilots report PASS after
   905 and 961 ticks.
+- Review follow-ups (part 2): a stray RaceStep or RaceHold no longer
+  throws away a running finish linger: the guard (LR-54) now returns END
+  with no I/O and without re-initializing while the drive has a
+  finish-kind end with linger ticks left, so Tick keeps the linger
+  (LR-13) on RESULTS after the finish and after RaceEnd kept it (LR-56);
+  the RaceStep and RaceHold header comments and LR-54 say that after END
+  the caller must not call either until the next RaceBegin (LR-S10 pins
+  it), and LR-55 and LR-56 note the kept linger. Isolation rule 3g pins
+  the guard's whole body in order (the LINK check, the kept-linger
+  branch, the re-initializing refusal, return 1), and its guard-first
+  regex now excludes '=' so only declarations without an initializer
+  may precede the guard. The test read-back header gains
+  NativeArcadeLinkHost_InternalConsecutiveStalls (the adapter's outcome
+  tracker's consecutive stall count, 0 outside LINK; rule 3b covers it).
+  The "begun" comments add "or RaceEnd keeps a lingering drive (LR-56)",
+  and the files bullet above now says default boot reaches only the
+  drive's re-initialization of host-local statics. Unit additions: a
+  stray step and hold on RACING after the finish END and on RESULTS
+  before and after the Disarm RaceEnd are END, send no datagram, and
+  leave the linger running to its fifteenth tick; the parked-digest case
+  counts every datagram the peer receives (any size) and asserts none;
+  the hold-launch case asserts the consecutive stall count stays 0 through
+  the start grace, and the step-hold-end case, as a positive control,
+  that it equals each counted period and clears on GO; the refusals case
+  adds RaceEnd after a finish END still on RACING (re-initializes, no
+  linger), RaceEnd on RESULTS with a LOCAL_FAILURE and with an OUTCOME
+  drive (re-initializes, no linger), and the linger stopping on RESULTS
+  when the session leaves RUNNING (the peer's differing digest of the
+  finish tick diverges the host's session on its next Tick; the drive is
+  re-initialized with the flow still on RESULTS). Probes, each reverted
+  (the final build uses the restored sources): the kept-linger branch
+  disabled: the unit failed (the stray step on RESULTS) and so did the
+  isolation test (the guard body); a declaration with a comma-expression
+  initializer that re-initializes the drive before the guard in RaceHold:
+  the new regex failed native_arcade_link_host_isolation, the old regex
+  passed it; a 64-byte aux datagram sent from onTakeResult on REJECTED:
+  the parked case's bundle count stayed 0 and its new all-datagram check
+  failed; the core's start grace disabled: the hold-launch case's stall
+  count check failed; race G without the peer's differing state: the
+  linger kept running and the unit failed (the drive not re-initialized);
+  RaceEnd keeping a finish linger off RESULTS: the unit failed (race C);
+  RaceEnd keeping any ended drive on RESULTS: the unit failed (race D,
+  the LOCAL_FAILURE drive). Fast suite (-LE live): 154 of 154 passed. No
+  live run: RaceBegin and RaceEnd are unchanged, and RaceStep and
+  RaceHold have no live caller.
 
 Plan: LR-1, LR-3, LR-9 host work.
 
