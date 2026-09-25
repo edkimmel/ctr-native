@@ -593,33 +593,28 @@ Task 7 (networked race launch) is complete and tracked in
   select.
 - The live ctest `arcade_link_launch` proves two races over loopback with
   two processes.
-- The suite is 152 tests. `ctest -LE live` skips the three live tests
+- The suite is 154 tests. `ctest -LE live` skips the three live tests
   (about 390 s of the ~450 s run).
 
-1. Task 8, in-race lockstep drive and failure handling, planned and reviewed
-   in `docs/LOCKSTEP_RACE_MILESTONE.md`. It has slices LR-S1..LR-S14
-   (LR-S1, the plan, is done) and defaults LR-1..LR-17. Race-launch risk 10
-   (the RETURN_TO_TITLE load race) is fixed.
-   - Owner decisions (apply to the plan in the next run):
-     - race end: the race ends when every human has finished, or 30 s
-       after the first human finishes. With 3-4 humans, the 30 s starts
-       when all but one have finished. This replaces the 10-minute-only
-       end for a player who never finishes; the 10-minute cap stays as a
-       backstop.
-     - input delay: 3 ticks, accepted pending a feel test on the
-       cabinets.
-     - the 2P split screen ships first; full-screen per cabinet is
-       stretch goal 13.
-   - LR-17 ruled (a): the live lockstep digest may read the bot nav-path
-     pointer `NavHeader.last` check-only, as the roster proof already does.
-     It is never written, and never used to acquire, activate, capture, or
-     publish the lease.
-   - Next: fold these decisions into `docs/LOCKSTEP_RACE_MILESTONE.md`, then
-     LR-S4 onward. LR-1..LR-16 stand as written unless changed above.
-   - LR-S2 (hold and autopilot-finish spikes) and LR-S3 (race VBlank pacing
-     and root-counter pin) are done. The suite is 152 tests. Deviation
-     for owner review: the hold banner is a host overlay in a 5x7 block
-     font, not the arcade-link font.
+1. Task 8, in-race lockstep drive and failure handling
+   (`docs/LOCKSTEP_RACE_MILESTONE.md`, slices LR-S1..LR-S14, defaults
+   LR-1..LR-36).
+   - Owner decisions are folded into the plan:
+     - race end (LR-18): the race ends when every human has finished,
+       or 900 ticks (about 30 s) after the first finish; the 10-minute
+       cap is a backstop;
+     - LR-17 ruled (a): the NavHeader.last read is check-only;
+     - input delay: 3 ticks, pending a feel test;
+     - the split screen ships.
+   - Done: LR-S1 through LR-S6 (plan; the hold and autopilot spikes;
+     race VBlank pacing and the counter pin; live V4 projection; parked
+     early peer digests; dropping records from another match). The
+     suite is 154 tests.
+   - Next: LR-S7 (local sample seam), LR-S8 (pure drive core), and LR-S9
+     (host drive glue). After them come LR-S10 (the caller),
+     LR-S11..LR-S12, the LR-S13 gate, and LR-S14.
+   - For owner review: the hold banner is a host overlay in a 5x7 block
+     font.
 2. Package and ship, as soon as possible (owner directive). Overnight the
    owner reprioritised: drive Task 8 autonomously to a real end-to-end
    linked race first, then package; cabinets and hardware follow.
