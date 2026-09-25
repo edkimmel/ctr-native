@@ -3044,7 +3044,17 @@ the two cabinets.
   race tick 300 domains 0x1 ..." in its race 2 with m equal to the number of
   its race 2 ended line (both are the adapter's match count, LR-70; neither
   is compared to launch numbers) and reason 3 there; both race 2 ended lines
-  have reason 3 or 2, and both race 2 drive ends are "outcome".
+  have reason 3 or 2. Each race 2 drive end is "outcome", but a cabinet may
+  have none: when its host Tick (the adapter's own poll, LR-70) finds the
+  divergence, the flow leaves RACING on that Tick and the launch core ends
+  the drive phase on hostRacing 0 with no drive result and no drive end
+  line (game/MAIN/MainArcadeRaceLaunchCore.c:312-320). The first measured
+  run did exactly that on cab2 (its race 2 per-tick lines end at race tick
+  300, and its ended and out-of-sync lines follow the injection line of that
+  same tick). So a race 2 without a drive end line passes only on a
+  detecting cabinet (its out-of-sync line and reason 3); races 1 and 3 on
+  cab1 and race 1 on cab2 must have one, since their drives end them (the
+  finish, the stall timeout).
 - Race 3. Both cabinets validated it; cab1's drive end is "outcome" and its
   third ended line reason 2; cab2 has no race 3 drive end. cab1's hold line
   at its race 3 end tick is the stall timeout: at least 90 periods (LR-44:

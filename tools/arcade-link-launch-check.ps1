@@ -83,8 +83,10 @@ param(
 #     (cab1 none); at least one cabinet logs "race <m> out of sync at race
 #     tick 300 domains 0x1 ..." (m the adapter's match count, the number of
 #     its race 2 ended line) and ends race 2 with reason 3 (DESYNC); the other
-#     ends it with reason 3 or 2 (PEER_TIMEOUT); both race 2 drive ends are
-#     "outcome"; no out-of-sync line outside race 2;
+#     ends it with reason 3 or 2 (PEER_TIMEOUT); each race 2 drive end is
+#     "outcome", and a cabinet with none (its host tick found the divergence
+#     and the flow left RACING there) must be a detecting one; no
+#     out-of-sync line outside race 2;
 #   - race 3: both cabinets validated it; cab1's drive end is "outcome", its
 #     race 3 ended line reason 2, and its hold line at that end tick shows
 #     the stall timeout: at least 90 tick periods (LR-44: the timeout is
@@ -781,16 +783,20 @@ try {
         }
         $driveEnds[$run.Name] = $ends.Values
     }
-    # Which races have a drive end: all three on cab1, races 1 and 2 on cab2
-    # (killed in race 3).
+    # Which races have a drive end: race 1 on both and race 3 on cab1 (their
+    # drives end them: the finish, the stall timeout); none in cab2's race 3
+    # (killed). Race 2 may have none: when a cabinet's host Tick (the
+    # adapter's own poll) finds the divergence, the flow leaves RACING there
+    # and the launch core ends the drive phase on hostRacing 0 without a drive
+    # result or line (game/MAIN/MainArcadeRaceLaunchCore.c, PHASE_DRIVE); the
+    # race 2 checks below then require that cabinet to be a detecting one.
     for ($k = 0; $k -lt $races; $k++) {
         foreach ($name in @('cab1', 'cab2')) {
-            $expected = ($name -eq 'cab1') -or ($k -lt ($races - 1))
             $has = $null -ne $driveEnds[$name][$k]
-            if ($expected -and -not $has) {
+            if ((($k -eq 0) -or (($k -eq 2) -and ($name -eq 'cab1'))) -and -not $has) {
                 [void]$failures.Add("run ${name}: race $($k + 1) (launch $($logs[$name].Validated[$k].Launch)) has no drive end line on stdout")
             }
-            elseif ((-not $expected) -and $has) {
+            elseif (($k -eq 2) -and ($name -eq 'cab2') -and $has) {
                 [void]$failures.Add("run ${name}: race $($k + 1) has a drive end ('$($driveEnds[$name][$k].Text)'), but it was killed in that race")
             }
         }
@@ -965,10 +971,23 @@ try {
     if ($detecting.Count -eq 0) {
         [void]$failures.Add("race 2: no cabinet logged 'out of sync at race tick $desyncTick domains 0x1' for its race 2 and ended it with reason 3 (DESYNC)")
     }
+    # Each race 2 end is the drive's "outcome" (a stall timeout, or a
+    # divergence its poll or record found), or, with no drive end line, a
+    # divergence the host Tick found: that cabinet must be a detecting one.
+    $race2Ends = @{}
     foreach ($name in @('cab1', 'cab2')) {
         $end = $driveEnds[$name][1]
-        if (($null -ne $end) -and ($end.Kind -ne 'outcome')) {
-            [void]$failures.Add("race 2: ${name}'s drive end is '$($end.Text)', expected 'outcome'")
+        if ($null -ne $end) {
+            if ($end.Kind -ne 'outcome') {
+                [void]$failures.Add("race 2: ${name}'s drive end is '$($end.Text)', expected 'outcome'")
+            }
+            $race2Ends[$name] = "drive end $($end.Text)"
+        }
+        elseif ($detecting -notcontains $name) {
+            [void]$failures.Add("race 2: ${name} has no drive end line and did not detect the divergence (an out-of-sync line and reason 3)")
+        }
+        else {
+            $race2Ends[$name] = "no drive end (its host tick found the divergence)"
         }
     }
     Write-Output ("race 2: cab2 flipped its CONTROL digest of race tick {0}; detected (out of sync, reason 3) by: {1}" -f $desyncTick, ($detecting -join ', '))
@@ -976,7 +995,7 @@ try {
         foreach ($line in $logs[$name].OutOfSync) {
             Write-Output "race 2: $name $($line.Line.Substring($line.Line.IndexOf('race ')))"
         }
-        Write-Output "race 2: $name drive end $($driveEnds[$name][1].Text); $($logs[$name].Ended[1].Line.Substring($logs[$name].Ended[1].Line.IndexOf('race ')))"
+        Write-Output "race 2: $name $($race2Ends[$name]); $($logs[$name].Ended[1].Line.Substring($logs[$name].Ended[1].Line.IndexOf('race ')))"
     }
 
     # Race 3: the kill and cab1's stall timeout.
