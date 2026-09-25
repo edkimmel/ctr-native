@@ -40,8 +40,10 @@ Out of scope:
   (LR-10, risk 17);
 - a single-view presentation. Each cabinet shows the retail two-player
   race it simulates (section 3, criterion 9; the setup plan's TWO_CAB
-  shape, game/MAIN/MainArcadeRaceSetupPlan.c:60); a view of one's own
-  player only is a follow-up (risk 18);
+  shape, game/MAIN/MainArcadeRaceSetupPlan.c:60). The owner ruled on
+  2026-09-25 that the retail split screen ships. A full-screen view of
+  one's own player on each cabinet is a later stretch milestone, out of
+  Task 8's scope (risk 18);
 - a ONE_CAB lobby (ROSTER risk 14);
 - more than two cabinets;
 - physical two-cabinet and G29 validation (HANDOFF steps 6-7).
@@ -369,7 +371,8 @@ order:
   - It takes the world and topology domains from the caller (:309-314). It
     touches no lease API. Its comments at MainCanonicalRuntime.h:137-140
     and MainCanonicalRuntime.c:309-311 say it never dereferences
-    NavHeader.last; the bot read above makes that false (LR-17).
+    NavHeader.last; the bot read above makes that false (LR-17, ruled
+    (a): the read may go live, check-only).
   - It builds a fresh bank from the config's masterSeed instead of the
     post-setup bank (:316-317).
   - Any failure poisons the workspace until Reset
@@ -397,8 +400,8 @@ order:
     MainArcadeRosterProof.c:579 calls
     MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta,
     which reaches BotNavIndex through ExtractMetaAndBot
-    (MainCanonicalDrivers.c:860, :834). That is a precedent, not a ruling
-    (LR-17);
+    (MainCanonicalDrivers.c:860, :834). That was a precedent, not a
+    ruling; the owner has since ruled (a) (LR-17);
   - the fact reader's one live consumer is the lease adapter, behind
     Acquire, ObservePostInit, and the residency checks
     (tests/main_canonical_topology_lease_adapter_isolation_test.cmake:43),
@@ -414,7 +417,8 @@ order:
   (docs/ROSTER_MILESTONE.md:589-591). The roster proof digests only V1
   control, RNG, and input, plus a drivers candidate without the
   MainCanonicalTopology context, whose Physics groups are zero. That
-  candidate still makes the bot nav-index read above (LR-17).
+  candidate still makes the bot nav-index read above (LR-17, ruled
+  (a)).
 
 ### 2.6 Race end, loads, presentation, and builds
 
@@ -424,8 +428,10 @@ order:
   include/namespace_Main.h:28). The linked race sets ARCADE_MODE (the
   plan's gameMode1 set mask, game/MAIN/MainArcadeRaceSetupPlan.h:365).
   PlayLevel_UpdateLapStats runs after the hook (section 2.1), so the hook
-  sees a tick's END_OF_RACE on the next pass. A human who never finishes
-  never ends the race.
+  sees a tick's END_OF_RACE on the next pass. Under the retail rule
+  alone, a human who never finishes never ends the race. In a linked
+  race that human no longer holds the race beyond the finish grace: the
+  drive ends it 900 ticks after the first human finish (LR-18).
 - No load runs during an arcade race. The end-of-race overlay is loaded
   with the level (game/LOAD/LOAD_TenStages.c:247). The only in-render
   overlay load is the adventure hub's (MainFrame_RenderFrame.c:656).
@@ -472,20 +478,23 @@ order:
    - protocol fault;
    - local failure;
    - the race-length bound.
-5. The race ends on the retail finish (END_OF_RACE) on the same race tick
-   on both cabinets, and RESULTS shows RACE COMPLETE.
+5. The race ends on the retail finish (END_OF_RACE) or at the finish
+   grace (LR-18), on the same race tick on both cabinets, and RESULTS
+   shows RACE COMPLETE.
 6. Pause cannot happen in a linked race, and no pad reads as unplugged.
 7. Default boot and replay are unchanged. Nothing new enters checkpoints,
-   replay, or canonical-state formats, and the topology lease is untouched
-   (subject to the owner's LR-17 ruling on the bot nav-index read).
-   A bundle from an earlier match never faults a rematch (LR-14).
+   replay, or canonical-state formats, and the topology lease is
+   untouched. The one read is the check-only NavHeader.last read of the
+   bot nav index, ruled (a) in LR-17. A bundle from an earlier match
+   never faults a rematch (LR-14).
 8. The full ctest suite passes. The extended live gate (LR-16) has a
    recorded, non-skipped PASS from a build made from a clean tree. A skip
    (77) does not count.
 9. Both cabinets show the race as the retail two-player split screen:
    cab1's player (retail player 0) in the top half and cab2's player
    (retail player 1) in the bottom half, the same picture on both
-   (section 2.6). Task 8 adds no presentation code for this.
+   (section 2.6). Task 8 adds no presentation code for this. The owner
+   ruled on 2026-09-25 that this split screen is what ships.
 
 How each will be proven:
 
@@ -505,7 +514,8 @@ How each will be proven:
 4. The live gate's injected freeze, the peer kill, and the drive core
    tests of every bound. The hold spike (LR-S2) shows no extra VBlank
    across a hold.
-5. The live gate's race 1.
+5. The live gate's race 1, and the drive core tests of the finish grace
+   (LR-S8).
 6. The drive core test of the START mask and of pad normalization, and an
    isolation pin that committed pads are installed only through the
    normalizing mapping.
@@ -518,11 +528,14 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-16, and the owner ruling LR-17)
+## 4. Decided design (defaults LR-1..LR-18; LR-17 is the owner's ruling)
 
-Each default below is a default pending owner review. The plan review
-changed several of them; "Review changes" at the end of this section
-lists what changed.
+The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
+written, except that LR-18, the finish grace, amends LR-12 and LR-13.
+LR-17 is ruled (a). LR-3's D is accepted pending a feel test on the
+cabinets. Before that, the plan review changed several defaults; "Review
+changes" at the end of this section lists what changed, and "Owner
+decisions (2026-09-25)" after it lists the owner's decisions.
 
 LR-1 Placement. The race driver lives under platform/, because game code
 may not name lockstep (tests/native_lockstep_isolation_test.cmake:128-157
@@ -543,16 +556,17 @@ pacing switch only at first), RaceStep once per race tick and RaceHold
 while held (LR-S9). The host header forward-declares the canonical state
 it receives, as it does NativeMatchConfigV1, so its include allow-list does
 not change. Platform code therefore cannot read gGT. Every game fact the
-drive needs (END_OF_RACE, and in CTR_INTERNAL builds the autopilot's
-steering facts, LR-16) is read by the game-side caller and passed in as
-pointer-free values.
+drive needs is read by the game-side caller and passed in as
+pointer-free values: END_OF_RACE; the finished-human count and the human
+count, for the finish grace (LR-18); and in CTR_INTERNAL builds the
+autopilot's steering facts (LR-16).
 
 Two new game modules have neutral names:
 
 - MainArcadeRaceDigest projects V4 (LR-10). It is read-only and lease-free
   (isolation test main_arcade_race_digest_isolation, LR-S4). The drivers
-  extraction it calls reads NavHeader.last for each bot, which is the
-  owner's ruling, LR-17.
+  extraction it calls reads NavHeader.last for each bot, check-only. The
+  owner ruled that read allowed (LR-17, ruled (a)).
 - MainArcadeRaceHold runs the hold loop and its banner (LR-9). It never
   calls VSync and never writes simulation state (isolation test
   main_arcade_race_hold_isolation, LR-S2).
@@ -593,6 +607,10 @@ LR-3 Input delay, sending, and resending. D is the adapter's default 2
 handshake already opens the session with it. Sample to simulation is D + 1
 = 3 ticks (100 ms at 30 Hz). docs/LOCKSTEP_MILESTONE.md:297 quotes "33 ms
 at 60 Hz" for D = 2, but at the real 30 Hz loop D = 2 buffers 67 ms.
+
+The owner accepted an input delay of "3 ticks" on 2026-09-25, pending a
+feel test on the cabinets. That is exactly the figure above: 3 ticks from
+sample to simulation, D + 1 with D = 2. D stays 2; it is not raised to 3.
 
 On race tick 0 the drive also composes frames 0 to D - 1. Those carry the
 zero pad and no digest. Each bundle is composed exactly once, and its
@@ -923,9 +941,9 @@ a level that can reuse addresses. The domains:
 - Drivers. The runtime's complete extraction, Physics included (RS-13).
   It uses the MainCanonicalTopology context (Capture and Validate) and no
   lease API. It does read NavHeader.last once per bot, in
-  MainCanonicalDrivers_BotNavIndex (section 2.5). Whether that read may
-  go live is the owner's ruling, LR-17; until it is made this domain
-  cannot go live.
+  MainCanonicalDrivers_BotNavIndex (section 2.5). The owner ruled that
+  read allowed on the live path, check-only (LR-17, ruled (a)), so this
+  domain goes live.
 - World. MainCanonicalWorldCounters_ExtractV1 and
   MainCanonicalWorldMineRegistry_ExtractV1, newly linked into ctr_native.
 - Topology. Not compared in Task 8. MainArcadeRaceDigest supplies the
@@ -935,8 +953,8 @@ a level that can reuse addresses. The domains:
   topology capture outside the lease (section 2.5), so MainArcadeRaceDigest
   itself names no topology fact reader, no NavHeader, and no lease API
   (the drivers extraction's bot read is inside MainCanonicalDrivers, and
-  LR-17 rules on it). Live TOPOLOGY is deferred to a future
-  lease-activation milestone that meets the AGENTS.md gate: a new
+  is the check-only read LR-17 ruled (a)). Live TOPOLOGY is deferred to a
+  future lease-activation milestone that meets the AGENTS.md gate: a new
   live-cabinet gate, deterministic capture evidence, and review. It is
   not a Task 8 slice.
 - Identity and frame. The build and content identity (the link requires a
@@ -1055,7 +1073,10 @@ return step, RL-8):
                                                               DISCONNECTED on the other
     protocol fault                the record that faults      LINK ERROR (LINK_ERROR)
     local drive failure           the tick it happens         LINK ERROR (RL-11 path)
-    race-length bound             18000 ticks (600 s)         RACE COMPLETE (FINISHED)
+    finish grace (LR-18)          900 ticks (30 s) after the  RACE COMPLETE (FINISHED)
+                                  first human finish (3-4
+                                  humans: after all but one)
+    race-length bound (backstop)  18000 ticks (600 s)         RACE COMPLETE (FINISHED)
 
 The rows in detail:
 
@@ -1078,9 +1099,11 @@ The rows in detail:
   the frame is recorded (LR-11). Either way it is before the detecting
   cabinet takes frame x + D + 1, because that take needs the bundle that
   carries frame x.
-- A divergence visible only in frames F - 1 or F. A cabinet that
-  finishes on F never sends its digests of F - 1 and F (LR-11, "The
-  finish"). The outcomes:
+- A divergence visible only in frames F - 1 or F. F is the drive's end
+  tick, whichever of END_OF_RACE, the finish grace, or the race-length
+  bound ended it (LR-18); the cases below name END_OF_RACE, and read the
+  same for any end on F. A cabinet that finishes on F never sends its
+  digests of F - 1 and F (LR-11, "The finish"). The outcomes:
   - Both cabinets see END_OF_RACE on F. Both show RACE COMPLETE. Nothing
     in band detects it; only the live gate's offline per-tick comparison
     does (LR-16).
@@ -1119,19 +1142,27 @@ The rows in detail:
 The race-length bound is deterministic: both cabinets reach it on the same
 tick, so both end FINISHED. The log names "race tick limit".
 
+The finish grace (LR-18) is deterministic in the same way: its end tick
+follows from simulation state, so both cabinets reach it on the same tick
+when the simulations agree, and both end FINISHED. The log names "finish
+grace". The race-length bound stays as the backstop for a race in which
+no human finishes.
+
 The only new player-visible text is the hold banner, WAITING FOR OPPONENT
 (the wording of MainArcadeLinkLayout.c:362).
 
-LR-13 Race finish and the finish linger. The drive's finish is the first
-race tick F whose hook sees END_OF_RACE. The game-side caller reads it and
-passes it to RaceStep (LR-1). END_OF_RACE is set by the lap stats of pass
-F - 1 (section 2.6), so F is the same tick on both cabinets when the
-simulations agree. On F the drive records the digest, composes and takes
-nothing, and ends. The caller reports the finish (the core's
-raceFinishedInput latch). It installs neutral pads from F until the clear,
-as today (answers RACE_LAUNCH risk 3). The retail end-of-race screens that
-run until the return load are host-local presentation and are not
-compared.
+LR-13 Race finish and the finish linger. The drive's natural finish is
+the first race tick F whose hook sees END_OF_RACE. The game-side caller
+reads it and passes it to RaceStep (LR-1). END_OF_RACE is set by the lap
+stats of pass F - 1 (section 2.6), so F is the same tick on both cabinets
+when the simulations agree. The finish grace's end (LR-18) is also an F:
+F is END_OF_RACE or the grace end, whichever comes first, and the drive
+handles both as this default describes. On F the drive records the
+digest, composes and takes nothing, and ends. The caller reports the
+finish (the core's raceFinishedInput latch). It installs neutral pads
+from F until the clear, as today (answers RACE_LAUNCH risk 3). The
+retail end-of-race screens that run until the return load are host-local
+presentation and are not compared.
 
 After the finish the drive keeps resending its kept bundles for
 finishLingerTicks = 15 ticks (0.5 s), so a peer that lost our last bundles
@@ -1144,9 +1175,12 @@ the return load, whose synchronous reads pause ticks, so 15 ticks is not a
 wall-time bound; LR-14 does not rely on it.
 
 The race-length bound (LR-12) is 18000 ticks: seven laps of the longest
-track fit. A kart parked for good cannot hold a cabinet forever. Because
-the race ends only when both humans have finished (section 2.6), a human
-who never finishes makes the race run to this bound (risk 16).
+track fit. A kart parked for good cannot hold a cabinet forever. The
+retail race ends only when both humans have finished (section 2.6), but a
+human who never finishes no longer runs the race to this bound: the
+finish grace ends it 900 ticks after the first finish (LR-18). The
+18000-tick bound remains the backstop for a race in which no human
+finishes.
 
 LR-14 Stale bundles after a rematch (GAME_LOOP_UI risks 2 and 10). A
 bundle of a finished match can reach the rematch link. Confirming REMATCH
@@ -1243,7 +1277,9 @@ canonical state, and none touches the topology lease: no acquire,
 activate, capture, or publish, no lease owner anywhere new, and no hook on
 LOAD_Hub_ReadFile. MainArcadeRaceDigest reads no topology facts: it
 supplies the unavailable summary (LR-10). The one lease question, the
-Drivers extraction's NavHeader.last read, is the owner's ruling (LR-17).
+Drivers extraction's NavHeader.last read, is ruled (a) by the owner
+(LR-17): a check-only read, never written, and never used to acquire,
+activate, capture, or publish the lease.
 The V4 state is projected and digested, never serialized or replayed.
 
 Default boot and replay are unchanged unless the host is in LINK mode with
@@ -1269,8 +1305,12 @@ each driven in lockstep:
   stall-then-resume on cab1. When cab2 resumes, it drains cab1's bundles,
   whose digests run up to D frames ahead of its own record; the session
   parks them (LR-11) and must report no divergence. cab1 then keeps a
-  lead of up to D + 1 ticks. Both must reach END_OF_RACE on the same race
-  tick and show RACE COMPLETE.
+  lead of up to D + 1 ticks. Both must end the race on the same race
+  tick, with the same end kind, and show RACE COMPLETE. END_OF_RACE is
+  expected: in the LR-S2 (b) seeds the two players' finishes were at most
+  107 ticks apart, far inside the 900-tick finish grace (LR-18). The
+  checker still accepts a finish-grace end on both cabinets, and records
+  which end happened.
 - Race 2, the desync, after REMATCH. At race tick 300, cab2 XORs bit 0
   into domainDigests[0], the CONTROL domain digest, of the copy of the V4
   state it passes to RecordLocalDigests. combinedDigest is left alone, and
@@ -1297,7 +1337,8 @@ race's config different from the one before):
   the domain digests;
 - for every tick both logged, the lines are equal across the two
   processes, the uncarried last two frames included;
-- the finish tick is equal;
+- race 1's end tick and end kind (END_OF_RACE or finish grace) are
+  equal;
 - the end reasons are as above.
 
 The finish problem. A kart that only holds accelerate does not finish a
@@ -1355,16 +1396,19 @@ estimates, to be recorded in LR-S13:
 That puts the gate near 245 s, so it adds about 165 s. The full suite
 goes from about 450 s to about 615 s. `ctest -LE live` does not change.
 A race 1 that runs to the 6000-tick limit puts the gate near 320 s,
-still inside TIMEOUT 900.
+still inside TIMEOUT 900. The finish grace does not change the budget: a
+grace end comes at most 900 ticks after the first finish, inside the
+6000-tick limit.
 
-LR-17 Lease ruling on the bot nav-index read (OWNER DECISION REQUIRED).
-This is not a default the plan can decide. AGENTS.md holds the topology
-lease retire-only and requires a new live-cabinet gate, deterministic
-capture evidence, and review before any acquire, activate, capture, or
-publish. Whether this read is one of those is therefore the owner's
-call, and it is recorded here as an open ruling with a recommended
-option. LR-S4, and every slice that consumes live Drivers digests
-(LR-S10, LR-S12, LR-S13), is BLOCKED until the owner rules.
+LR-17 Lease ruling on the bot nav-index read (ruled (a) by the owner,
+2026-09-25). This was not a default the plan could decide. AGENTS.md
+holds the topology lease retire-only and requires a new live-cabinet
+gate, deterministic capture evidence, and review before any acquire,
+activate, capture, or publish. Whether this read is one of those was
+therefore the owner's call. It was recorded here as an open ruling with
+a recommended option, and LR-S4 and every slice that consumes live
+Drivers digests (LR-S10, LR-S12, LR-S13) waited for it. The owner ruled
+(a) on 2026-09-25; the ruling's terms are below the options.
 
 The fact. The live Drivers extraction reads NavHeader.last outside the
 lease. MainCanonicalRuntime_PrepareV4 calls
@@ -1389,12 +1433,12 @@ unavailable TOPOLOGY summary (LR-10) is sound either way.
 
 The options:
 
-- (a) The owner rules that MainCanonicalDrivers_BotNavIndex's read is a
-  validation-only read of a driver's own nav pointer, not an acquire,
-  activate, capture, or publish of the topology lease. It checks that the
-  bot's botNavFrame lies inside its own path's frame array and turns it
-  into an index; it copies no topology fact out. The design is kept, and
-  LR-S4 also:
+- (a), taken. The owner rules that MainCanonicalDrivers_BotNavIndex's
+  read is a validation-only read of a driver's own nav pointer, not an
+  acquire, activate, capture, or publish of the topology lease. It checks
+  that the bot's botNavFrame lies inside its own path's frame array and
+  turns it into an index; it copies no topology fact out. The design is
+  kept, and LR-S4 also:
   - corrects the "sole API" comment
     (MainCanonicalTopologyLeaseAuthority.h:72-75) and the runtime's
     comments (MainCanonicalRuntime.h:137-140,
@@ -1412,29 +1456,94 @@ The options:
     settles the mechanics; one workable form checks every function body
     in those .c files that names struct NavHeader and allows ->last only
     in those two.
-- (b) Any NavHeader.last read is lease-only. Then the Drivers domain
-  cannot go live in Task 8 unless its projection leaves out the bot nav
-  index: a V4 path that never calls BotNavIndex, with the roster proof's
-  precedent read ruled on as well. That loses desync coverage. A
-  divergence in a bot's botNavFrame (its place on its nav path) is no
-  longer compared directly; it shows only later, through the bot's
-  position, velocity, and estimate fields in DRIVERS, so the report names
-  a later frame. The projector also stops proving that each bot's nav
-  pointer lies inside its path. Whether an omitted index fits the
+- (b), not taken. Any NavHeader.last read is lease-only. Then the
+  Drivers domain cannot go live in Task 8 unless its projection leaves
+  out the bot nav index: a V4 path that never calls BotNavIndex, with the
+  roster proof's precedent read ruled on as well. That loses desync
+  coverage. A divergence in a bot's botNavFrame (its place on its nav
+  path) is no longer compared directly; it shows only later, through the
+  bot's position, velocity, and estimate fields in DRIVERS, so the report
+  names a later frame. The projector also stops proving that each bot's
+  nav pointer lies inside its path. Whether an omitted index fits the
   unchanged V4 schema (section 5) is itself unproven. This is a design
   change: LR-10, LR-S4, and the roster proof's V4 lines would be
   re-planned, and the plan returns for review.
 
 Recommended: (a). It keeps the design and matches the roster proof's
-existing read. But it is the owner's call, not this plan's, and nothing
-in LR-S4 or later that needs live Drivers digests starts until the owner
-has ruled. LR-S5 and LR-S6 do not depend on it.
+existing read. It was the owner's call, not this plan's, and the owner
+ruled (a) on 2026-09-25. LR-S5 and LR-S6 never depended on it.
 
-Either way, main_arcade_race_digest_isolation (LR-S4) must not be able to
-pass while the ruling is broken. Under (a) it carries the reader pin
-above and requires the corrected comments, so it fails on today's tree
-(the "sole API" text). Under (b) it pins that ObservePostInit is the only
-such reader and that the V4 path reaches no BotNavIndex call.
+The ruling's terms. MainCanonicalDrivers_BotNavIndex may read
+NavHeader.last check-only on the live path, as the roster proof already
+does. The read is never written, and never used to acquire, activate,
+capture, or publish the lease. LR-S4 carries option (a)'s comment fixes
+and isolation pin. LR-S4, LR-S10, LR-S12, and LR-S13 are unblocked.
+
+main_arcade_race_digest_isolation (LR-S4) must not be able to pass while
+the ruling is broken. It carries (a)'s reader pin above and requires the
+corrected comments, so it fails on today's tree (the "sole API" text).
+Under (b), not taken, it would instead have pinned that ObservePostInit
+is the only such reader and that the V4 path reaches no BotNavIndex
+call.
+
+LR-18 Finish grace. The owner's race-end rule (2026-09-25): the race ends
+when every human has finished, or 30 s after the first human finishes,
+whichever comes first. With 3 or 4 humans the 30 s starts when all but
+one have finished. The 18000-tick race-length bound stays as a backstop.
+This default is the rule's mechanism. It amends LR-12 and LR-13.
+
+The facts. Retail marks a finished driver with ACTION_RACE_FINISHED
+(0x2000000, include/namespace_Vehicle.h:607), set by the lap stats at
+game/PlayLevel.c:180. The ARCADE_MODE end rule is game/PlayLevel.c:437,
+humanPlayerCount <= finishedHumanCount, where humanPlayerCount is
+gGT->numPlyrCurrGame (:422); it then calls MainGameEnd_Initialize
+(:476). Retail VS mode already ends at "all but one" (:433), the shape of
+the owner's rule. PlayLevel_UpdateLapStats runs after the hook
+(MainFrame_RenderFrame.c:243, :246; the hook is :90), so, as with
+END_OF_RACE, the hook sees a tick's finish bits on the next pass.
+
+The count. The game-side race caller counts the humans, drivers 0 to
+numPlyrCurrGame - 1, whose actionsFlagSet has ACTION_RACE_FINISHED. It
+passes that count and the human count to RaceStep as pointer-free values,
+as it passes END_OF_RACE (LR-1). Platform code still cannot read gGT.
+
+The grace. It starts on the first race tick G whose hook sees
+finished >= max(1, humans - 1). With 2 humans (TWO_CAB, all of Task 8)
+that is the first human finish. finishGraceTicks = 900 ticks (30 s at
+30 Hz).
+
+The end. The drive ends on the first of:
+
+- END_OF_RACE seen, on tick F (LR-13): the natural finish;
+- tick G + 900: the grace end;
+- the 18000-tick race-length bound (LR-12).
+
+If END_OF_RACE and the grace end fall on the same tick, it is the
+natural finish. All three end FINISHED, and RESULTS shows RACE COMPLETE.
+The log names "finish grace" for the grace end, as it names "race tick
+limit" for the bound.
+
+The grace end is deterministic. The finish bits come from the
+simulation, and they are in the DRIVERS domain through actionsFlagSet,
+which the drivers extraction projects with only bit 0x04000000 masked
+(game/MAIN/MainCanonicalDrivers.c:830). So G and G + 900 are the same
+tick on both cabinets when the simulations agree.
+
+The grace-end tick is handled like F in LR-13. The drive records that
+tick's digest, composes and takes nothing, ends, and lingers for
+finishLingerTicks = 15. The caller reports the finish and installs
+neutral pads from that tick until the clear. LR-11's "The finish" and
+LR-12's F - 1 / F analysis apply to the drive's end tick, whichever of
+the three ended it.
+
+The safer choice, recorded. The drive writes no retail state. It does
+not force END_OF_RACE or ACTION_RACE_FINISHED on the unfinished human,
+and it does not call MainGameEnd_Initialize. The retail simulation stays
+untouched (LR-1: the only retail-state change is the LR-8 pin). The
+consequence: at a grace end the unfinished player gets no retail
+end-of-race screen. The flow goes to RESULTS RACE COMPLETE over the
+still-running race level, then the return load, as for the race-length
+bound.
 
 Review changes. The plan review (on befa152a9) changed these defaults:
 
@@ -1463,14 +1572,34 @@ Review changes. The plan review (on befa152a9) changed these defaults:
 - Section 6 splits the drive glue, renumbers the slices, groups them
   explicitly, and adds the missing isolation tests.
 
-The re-review (on bbc6c55c7) added LR-17, the owner's still-open ruling
-on the Drivers extraction's NavHeader.last read, which blocks LR-S4 and
+The re-review (on bbc6c55c7) added LR-17, the owner's then-open ruling
+on the Drivers extraction's NavHeader.last read, which blocked LR-S4 and
 the live-digest slices, corrected the claims that the live V4 path never
 reads NavHeader.last, and tightened LR-11's window bound and LR-S5's
 tests, the same-tick surfacing of a divergence latched at record (LR-3,
 LR-9, LR-13, LR-S5, LR-S8, LR-S9), LR-14's drop tests and rematch timing,
 LR-16's restart-point read, LR-10's runtime lifecycle, LR-12's
 finish-frame desync row, and LR-S2's review marker.
+
+Owner decisions (2026-09-25). The owner reviewed the defaults and
+decided:
+
+1. Race end. The race ends when every human has finished, or 30 s after
+   the first human finishes, whichever comes first. With 3 or 4 humans
+   the 30 s starts when all but one have finished. The 10-minute
+   (18000-tick) race-length bound stays as a backstop. LR-18 is the
+   mechanism; it amends LR-12 and LR-13.
+2. LR-17 is ruled (a). The live digest may read the bot nav-path pointer
+   NavHeader.last check-only, as the roster proof already does. It is
+   never written, and never used to acquire, activate, capture, or
+   publish the lease. LR-S4, LR-S10, LR-S12, and LR-S13 are unblocked.
+3. Input delay: 3 ticks (LR-3), accepted pending a feel test on the
+   cabinets. That is LR-3's sample to simulation, D + 1 = 3 ticks
+   (100 ms at 30 Hz). D stays 2.
+4. Screen. The retail 2P split screen ships (criterion 9). A full-screen
+   per-cabinet view is a later stretch milestone, out of Task 8's scope
+   (risk 18).
+5. LR-1..LR-16 otherwise stand as written.
 
 ### 4.1 Per-tick simulation inputs
 
@@ -1547,8 +1676,9 @@ cabinet-local (docs/REPLAYS.md, render-scale sweep).
   drivers extraction's MainCanonicalDrivers_BotNavIndex dereferences
   header->last for every bot (game/MAIN/MainCanonicalDrivers.c:726,
   reached from MainCanonicalRuntime.c:296 through :953-954 and :834).
-  Whether that read is allowed is the owner's ruling, LR-17, and LR-S4
-  is blocked until it is made. The runtime's lease and replay bans
+  The owner ruled that read allowed on 2026-09-25 (LR-17, ruled (a)): it
+  is check-only, never written, and never used to acquire, activate,
+  capture, or publish the lease. The runtime's lease and replay bans
   (tests/main_canonical_runtime_isolation_test.cmake:18-47) stay.
 - No change to the canonical-state schema, the replay format, the bundle,
   the handshake, NativeMatchConfigV1, or the launch record. Three reviewed
@@ -1578,10 +1708,10 @@ cabinet-local (docs/REPLAYS.md, render-scale sweep).
   - a new tests/main_arcade_race_digest_isolation_test.cmake: the digest
     module is read-only (const game state only) and lease-free (no lease,
     topology fact reader, NavHeader, ptr_restart_points, replay, or
-    MainMain token), and it carries the LR-17 pin for the owner's ruling,
-    so it cannot pass while that rule is broken (under (a): the only
-    NavHeader last readers are ObservePostInit and BotNavIndex, and the
-    corrected comments say so) (LR-S4);
+    MainMain token), and it carries the LR-17 pin for the owner's ruling
+    (a), so it cannot pass while that rule is broken: the only NavHeader
+    last readers are ObservePostInit and BotNavIndex, and the corrected
+    comments say so (LR-S4);
   - updates to the pacing, runtime, hook, race setup, peer link, and
     sound-identity isolation tests.
 - No heap. Portable C17 with compiler extensions off.
@@ -1617,17 +1747,19 @@ or the proof changes, from a clean tree (RACE_LAUNCH risk 7):
   recorded PASS (LR-S13).
 - Run 6: LR-S14, docs only.
 
-LR-S4 is BLOCKED until the owner rules on LR-17, and so are LR-S10,
-LR-S12, and LR-S13, which consume its live digests. Run 2's LR-S5 and
-LR-S6 do not depend on the ruling.
+LR-S4 was blocked until the owner ruled on LR-17, and so were LR-S10,
+LR-S12, and LR-S13, which consume its live digests. The owner ruled (a)
+on 2026-09-25, so all four are unblocked. Run 2's LR-S5 and LR-S6 never
+depended on the ruling.
 
 ### LR-S1 -- this document
 
 Status: done. docs/LOCKSTEP_RACE_MILESTONE.md and the Task 8 pointer in
 docs/GAME_LOOP_UI_MILESTONE.md. The plan review is closed in the commit
 after befa152a9 (section 4, "Review changes"). The re-review of
-bbc6c55c7 is closed in the commit after it, except LR-17, which waits
-for the owner.
+bbc6c55c7 is closed in the commit after it, except LR-17, which waited
+for the owner. The owner's ruling (a) of 2026-09-25 closes that
+exception.
 
 ### LR-S2 -- spikes: the hold and the autopilot finish
 
@@ -2033,11 +2165,11 @@ Tests:
 
 ### LR-S4 -- live V4 projection
 
-Status: planned, BLOCKED on the owner's LR-17 ruling. Review required
-(canonical state, the runtime's authorization). This is the slice
-docs/GAME_LOOP_UI_MILESTONE.md Task 8 points to. Run 2.
+Status: planned. Review required (canonical state, the runtime's
+authorization). This is the slice docs/GAME_LOOP_UI_MILESTONE.md Task 8
+points to. Run 2.
 
-Plan: LR-10, and LR-17 as the owner rules it.
+Plan: LR-10, and LR-17's ruling (a).
 
 - game/MAIN/MainArcadeRaceDigest.{c,h}, in the unity chain.
 - The per-tick runtime lifecycle of LR-10: BeginFrame, PrepareV4,
@@ -2047,11 +2179,10 @@ Plan: LR-10, and LR-17 as the owner rules it.
 - The world extractors are linked into ctr_native.
 - The race-relative control base is captured, and the runtime reset, on
   race tick 0.
-- Under ruling (a): the corrected "sole API" comment
+- LR-17's ruling (a): the corrected "sole API" comment
   (MainCanonicalTopologyLeaseAuthority.h:72-75) and runtime comments
   (MainCanonicalRuntime.h:137-140, MainCanonicalRuntime.c:309-311), and
-  the NavHeader last reader pin. Under ruling (b): the re-planned Drivers
-  projection instead, after its own review.
+  the NavHeader last reader pin.
 
 The roster proof also projects V4 each proof tick, through
 MainArcadeRaceDigest, and logs its combined and domain digests (the
@@ -2066,8 +2197,8 @@ Tests:
   MainArcadeRaceDigest.c, still lease-, replay-, and MainMain-free. Its
   callers are the roster proof now and the race caller from LR-S10.
 - main_arcade_race_digest_isolation (section 5), including the LR-17 pin
-  and the ptr_restart_points ban (LR-16). Under (a) it must fail on the
-  tree before this slice, whose lease header still says "sole API".
+  and the ptr_restart_points ban (LR-16). It must fail on the tree
+  before this slice, whose lease header still says "sole API".
 - main_canonical_runtime_stack_budget_v4 still holds.
 - A new main_arcade_race_digest_unit: the race-relative control
   projection, the unavailable topology summary, and a clean race 2 after
@@ -2175,7 +2306,7 @@ Status: planned. Review required (the bytes that enter the simulation and
 the wire; section 5). Run 3.
 
 Plan: LR-2, LR-3, LR-5, LR-9 accounting and take classification, LR-12,
-LR-13, LR-14. platform/native_arcade_race_drive.{c,h}, library
+LR-13, LR-14, LR-18. platform/native_arcade_race_drive.{c,h}, library
 ctr_native_arcade_race_drive. It covers:
 
 - per-tick step order;
@@ -2187,8 +2318,9 @@ ctr_native_arcade_race_drive. It covers:
 - OnTakeResult first, and REJECTED as a local failure only while RUNNING;
 - a record that leaves the session non-RUNNING: OnTakeResult at once,
   then END with nothing sent or taken (LR-9);
-- finish detection, the linger, the race-length bound (with an internal
-  override that lowers it), and end mapping.
+- finish detection, the finish grace (LR-18), the linger, the
+  race-length bound (with an internal override that lowers it), and end
+  mapping.
 
 Tests: native_arcade_race_drive_unit, with two cores exchanging bundles
 through the real session library in memory. It covers:
@@ -2202,7 +2334,14 @@ through the real session library in memory. It covers:
   and nothing sent afterwards, neither a new bundle nor a resend nor the
   finish linger;
 - WINDOW_OVERRUN impossible at D = 2 and refused at D = 4;
-- no send after the linger or off RESULTS.
+- no send after the linger or off RESULTS;
+- the finish grace (LR-18): it starts on the first finish with 2
+  humans, and on all but one finished (not the first finish) with 3 and
+  4 humans; END_OF_RACE before the grace end is the natural finish;
+  END_OF_RACE on the grace-end tick is the natural finish; the grace
+  ends at exactly G + 900 as FINISHED with the "finish grace" reason; no
+  human finishing runs to the race-length bound; the grace end records,
+  composes and takes nothing, then lingers as F does.
 
 native_arcade_race_drive_isolation covers purity, the token ban, and C17.
 
@@ -2237,17 +2376,17 @@ Tests:
 
 ### LR-S10 -- the caller: the rehearsal's replacement
 
-Status: planned, BLOCKED on the owner's LR-17 ruling (it projects through
-LR-S4). Review required (simulation identity, the launch and race path).
-Run 4.
+Status: planned. Review required (simulation identity, the launch and
+race path). Run 4.
 
 Plan:
 
 - The caller:
   - it projects (LR-S4), samples (LR-S7), steps, and installs committed
     pads on race ticks;
-  - it passes END_OF_RACE and, in CTR_INTERNAL builds, the autopilot's
-    steering facts to RaceStep;
+  - it passes END_OF_RACE, the finished-human count and the human count
+    (LR-18), and, in CTR_INTERNAL builds, the autopilot's steering facts
+    to RaceStep;
   - it runs the blocking hold through MainArcadeRaceHold, without the
     banner;
   - it reports the finish from the drive.
@@ -2284,30 +2423,34 @@ and are never committed.
 
 ### LR-S12 -- failure wiring to RESULTS
 
-Status: planned, BLOCKED on the owner's LR-17 ruling (it needs live Drivers
-digests). Review required. Run 5.
+Status: planned. Review required. Run 5.
 
-Plan: LR-11 to LR-14 end to end:
+Plan: LR-11 to LR-14 and LR-18 end to end:
 
 - the start grace, with the launch linger kept alive through it;
 - stall timeout, fault, and desync through OnTakeResult;
 - local failure through ReportRaceFailure;
+- the finish grace (LR-18);
 - the race-length bound;
 - the finish linger;
 - the divergence log line;
 - neutral pads from the end frame.
 
-Tests: host and core cases for every row of the LR-12 table, including a
-start wait whose peer commits only from our lingering launch records.
+Tests: host and core cases for every row of the LR-12 table, the finish
+grace's row included, and a start wait whose peer commits only from our
+lingering launch records.
 
 ### LR-S13 -- one-machine race gate
 
-Status: planned, BLOCKED on the owner's LR-17 ruling (it compares live
-Drivers digests). Review required. Run 5.
+Status: planned. Review required. Run 5.
 
 Plan: LR-16.
 
 - The autopilot's steering sample.
+- Race 1's expectation: the same end tick and end kind on both cabinets,
+  and RACE COMPLETE. END_OF_RACE is expected; the check also accepts a
+  finish-grace end on both cabinets and records which end happened
+  (LR-16, LR-18).
 - The freeze and digest-XOR injections and the per-tick report lines.
 - RESULTS decisions for DESYNC and PEER_TIMEOUT: REMATCH after race 2,
   EXIT after race 3.
@@ -2342,7 +2485,9 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
    5 of 5 seeds, by race tick 3753 of 6000 (LR-S2, "(b) result"), so the
    gate keeps the natural finish and the race-tick cap fallback is not
    needed. The risk remains for the gate's own races, whose seeds come
-   from the select.
+   from the select. Since LR-18 a stuck autopilot is bounded: once the
+   other human has finished, the finish grace ends the race 900 ticks
+   later, as RACE COMPLETE on both cabinets.
 2. The hold mechanism and audio. A blocking hold in the hook is new, and
    so is drawing a banner onto the displayed frame. SDL or GL presentation
    behaviour during a long hold is host-local but visible. Audio can
@@ -2416,20 +2561,21 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
 15. D is fixed at 2 and at most 3, because of the window lead of LR-3.
     The ring capacity is frozen at 8 by tests/native_lockstep_isolation_test.cmake,
     and raising it is out of scope.
-16. Open for the owner:
-    - The lease ruling on the bot nav-index read, LR-17: (a) or (b). It
-      blocks LR-S4 and the slices after it that need live Drivers
-      digests (risk 19).
+16. Open for the owner. The owner answered all but one on 2026-09-25:
+    - The lease ruling on the bot nav-index read, LR-17: (a) or (b).
+      Answered: ruled (a) (LR-17). It no longer blocks LR-S4 or the
+      slices after it that need live Drivers digests (risk 19).
     - Should the race-length bound end as RACE COMPLETE (LR-12) or as
-      another reason? Another reason would change the flow.
+      another reason? Answered: LR-1..LR-16 stand, so it ends as RACE
+      COMPLETE.
     - Does RESULTS show standings, as the GAME_LOOP_UI Task 8 sketch said?
-      Not planned here.
-    - A human who never finishes keeps the race running, because an
-      ARCADE_MODE race ends only when every human has finished
-      (game/PlayLevel.c:435-437). The race then runs to the 18000-tick
-      bound, 10 minutes, and ends as RACE COMPLETE. Is that acceptable,
-      or should a shorter bound, or a bound counted from the first
-      finish, apply?
+      Still open. Not planned here.
+    - A human who never finishes keeps the retail race running, because
+      an ARCADE_MODE race ends only when every human has finished
+      (game/PlayLevel.c:435-437). Answered by the finish grace (LR-18):
+      the race ends 900 ticks (30 s) after the first human finish, and
+      the 18000-tick bound remains the backstop for a race in which no
+      human finishes.
 17. TOPOLOGY is not compared (LR-10). The unavailable summary is the same
     constant on both cabinets, so the TOPOLOGY domain detects nothing.
     Left undetected directly: a difference in the race level's quad
@@ -2439,22 +2585,27 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
     if it changes the simulation, later and in the DRIVERS or WORLD
     domain, so the report names the wrong domain and a later frame. Live
     TOPOLOGY needs the lease-activation milestone and its AGENTS.md gate.
-18. Single-view presentation (follow-up, not planned). Each cabinet shows
-    the two-player split screen (criterion 9). A later view of only the
-    cabinet's own player must not change numPlyrCurrGame or any camera
-    state the simulation can see (cameras read the gamepads, CAM.c:1053,
-    and the per-player render state is sized by numPlyrCurrGame,
-    MainInit.c:247). It would change the HUD's rand() draw count
-    (section 4.1), which is harmless only while nothing in the
-    simulation reads psxRandSeed; the follow-up re-checks that.
-19. The bot nav-index read and the lease rule (LR-17, OWNER DECISION
-    REQUIRED). The live Drivers extraction dereferences NavHeader.last for
-    every bot (MainCanonicalDrivers.c:726), against the lease authority's
-    "sole API" comment (MainCanonicalTopologyLeaseAuthority.h:72-75), and
-    the roster proof already does so live (MainArcadeRosterProof.c:579).
-    AGENTS.md makes the lease the owner's call. Until the owner rules,
-    LR-S4, LR-S10, LR-S12, and LR-S13 are blocked, and with them the live
-    gate and Task 8's done criteria 2, 3, and 8. Ruling (a), the
-    recommended one, costs a comment fix and an isolation pin. Ruling (b)
-    re-plans the Drivers projection without the bot nav index and loses
-    direct detection of a bot's nav-path divergence.
+18. Single-view presentation (a later stretch milestone, not planned).
+    The owner ruled on 2026-09-25 that the split screen ships; a
+    full-screen per-cabinet view is a later stretch milestone, out of
+    Task 8's scope. Each cabinet shows the two-player split screen
+    (criterion 9). A later view of only the cabinet's own player must
+    not change numPlyrCurrGame or any camera state the simulation can
+    see (cameras read the gamepads, CAM.c:1053, and the per-player
+    render state is sized by numPlyrCurrGame, MainInit.c:247). It would
+    change the HUD's rand() draw count (section 4.1), which is harmless
+    only while nothing in the simulation reads psxRandSeed; the stretch
+    milestone re-checks that.
+19. The bot nav-index read and the lease rule (LR-17, ruled (a) by the
+    owner on 2026-09-25). The live Drivers extraction dereferences
+    NavHeader.last for every bot (MainCanonicalDrivers.c:726), against the
+    lease authority's "sole API" comment
+    (MainCanonicalTopologyLeaseAuthority.h:72-75), and the roster proof
+    already does so live (MainArcadeRosterProof.c:579). AGENTS.md makes
+    the lease the owner's call. Until the owner ruled, LR-S4, LR-S10,
+    LR-S12, and LR-S13 were blocked, and with them the live gate and Task
+    8's done criteria 2, 3, and 8. The ruling is (a), so this is no longer
+    blocking. Ruling (a), the recommended one, costs a comment fix and an
+    isolation pin (LR-S4). Ruling (b), not taken, would have re-planned
+    the Drivers projection without the bot nav index and lost direct
+    detection of a bot's nav-path divergence.
