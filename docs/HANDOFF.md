@@ -593,7 +593,7 @@ Task 7 (networked race launch) is complete and tracked in
   select.
 - The live ctest `arcade_link_launch` proves two races over loopback with
   two processes.
-- The suite is 145 tests. `ctest -LE live` skips the three live tests
+- The suite is 152 tests. `ctest -LE live` skips the three live tests
   (about 390 s of the ~450 s run).
 
 1. Task 8, in-race lockstep drive and failure handling, planned and reviewed
@@ -616,7 +616,10 @@ Task 7 (networked race launch) is complete and tracked in
      publish the lease.
    - Next: fold these decisions into `docs/LOCKSTEP_RACE_MILESTONE.md`, then
      LR-S4 onward. LR-1..LR-16 stand as written unless changed above.
-   - LR-S2..LR-S3 are in progress.
+   - LR-S2 (hold and autopilot-finish spikes) and LR-S3 (race VBlank pacing
+     and root-counter pin) are done. The suite is 152 tests. Deviation
+     for owner review: the hold banner is a host overlay in a 5x7 block
+     font, not the arcade-link font.
 2. Package and ship, as soon as possible (owner directive). Overnight the
    owner reprioritised: drive Task 8 autonomously to a real end-to-end
    linked race first, then package; cabinets and hardware follow.
