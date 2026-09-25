@@ -160,6 +160,19 @@ static void NativeArcadeNetplay_ReadForeignDrops(struct NativeArcadeNetplay *net
 	netplay->linkForeignDropsSeen = count;
 }
 
+/* Tick's step 2, shared with NativeArcadeNetplay_RaceService so the two can
+ * never drift apart: services the lobby (which drains arriving bundles into
+ * the session), then reads the link's foreign-identity drops (LR-14): the
+ * poll is where the link drops them. */
+static void NativeArcadeNetplay_PollLobby(struct NativeArcadeNetplay *netplay)
+{
+	if (netplay->lobbyBegun != 0u)
+	{
+		NativeLobbyState_Poll(&netplay->lobby);
+	}
+	NativeArcadeNetplay_ReadForeignDrops(netplay);
+}
+
 /* Opens a lobby on the current proposal. A failed open leaves lobbyBegun 0,
  * which reads as WAITING, so the flow's retry pause tries again. */
 static void NativeArcadeNetplay_BeginLobby(struct NativeArcadeNetplay *netplay)
@@ -684,11 +697,7 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 
 	/* 2. Service the lobby, then read the link's foreign-identity drops
 	 * (LR-14): the poll is where the link drops them. */
-	if (netplay->lobbyBegun != 0u)
-	{
-		NativeLobbyState_Poll(&netplay->lobby);
-	}
-	NativeArcadeNetplay_ReadForeignDrops(netplay);
+	NativeArcadeNetplay_PollLobby(netplay);
 
 	/* 2a. The first READY of this lobby. A first or rematch lobby: its
 	 * proposal (the current config, which is what BeginLobby proposed) is
@@ -854,6 +863,29 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 
 	/* 9. START_RACE and RETURN_TO_TITLE are the caller's cue. */
 	return action;
+}
+
+/*
+ * The race drive's hold service (docs/LOCKSTEP_RACE_MILESTONE.md LR-9,
+ * LR-50): Tick's step 2 on every call, and, once per held tick period, Tick's
+ * launch intake (step 5b; on RACING the select branch never runs) and its
+ * launch send and linger tick (step 8b). Nothing else of Tick runs, so no
+ * flow, menu, select, outcome, or race-end state moves while held. Only on
+ * RACING, the one screen a race hold happens on.
+ */
+void NativeArcadeNetplay_RaceService(struct NativeArcadeNetplay *netplay, int launchPeriod)
+{
+	if ((netplay == NULL) || (netplay->initialized == 0u) ||
+		(NativeArcadeFlow_Screen(&netplay->flow) != NATIVE_ARCADE_FLOW_SCREEN_RACING))
+	{
+		return;
+	}
+	NativeArcadeNetplay_PollLobby(netplay);
+	if (launchPeriod != 0)
+	{
+		NativeArcadeNetplay_DriveLaunch(netplay);
+		NativeArcadeNetplay_SendLaunch(netplay);
+	}
 }
 
 int NativeArcadeNetplay_TakeRaceEnd(struct NativeArcadeNetplay *netplay, struct NativeArcadeNetplayRaceEnd *out)

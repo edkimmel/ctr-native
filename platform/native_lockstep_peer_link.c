@@ -378,6 +378,38 @@ int NativeLockstepPeerLink_ComposeAndSendBundle(struct NativeLockstepPeerLink *l
 	return 1;
 }
 
+int NativeLockstepPeerLink_SendBundleVerbatim(struct NativeLockstepPeerLink *link, const uint8_t *bytes, size_t size)
+{
+	struct NativeCodecReader reader;
+	struct NativeLockstepBundleV1 bundle;
+	uint32_t cause = NATIVE_LOCKSTEP_FAULT_NONE;
+
+	if ((link == NULL) || (bytes == NULL) || (size != NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES) ||
+	    (link->mode != NATIVE_LOCKSTEP_PEER_LINK_RUNNING))
+	{
+		return 0;
+	}
+	/* LR-3: link mode alone is not enough. The link copies the session mode
+	 * only in Poll and in the staged replay, so a divergence latched inside
+	 * RecordLocalDigests leaves link mode RUNNING until the next Poll. */
+	if (NativeLockstepSession_Mode(&link->session) != NATIVE_LOCKSTEP_RUNNING)
+	{
+		return 0;
+	}
+	/* Only this session's own bundle goes out: it must decode against the
+	 * session's match identity, protocol version, and input delay, and carry
+	 * the local slot as its sender, so a stale record of an earlier match or a
+	 * peer's record is never put on the wire. */
+	NativeCodecReader_Init(&reader, bytes, size);
+	if (!NativeLockstepBundleV1_Decode(&reader, link->session.matchIdentity, link->session.protocolVersion,
+		    link->session.inputDelay, &bundle, &cause) ||
+	    (bundle.senderSlot != link->session.localSlot))
+	{
+		return 0;
+	}
+	return NativeUdpTransport_Send(&link->transport, &link->peerAddress, bytes, size) ? 1 : 0;
+}
+
 enum NativeLockstepPeerLinkMode NativeLockstepPeerLink_Mode(const struct NativeLockstepPeerLink *link)
 {
 	return (link != NULL) ? link->mode : NATIVE_LOCKSTEP_PEER_LINK_IDLE;

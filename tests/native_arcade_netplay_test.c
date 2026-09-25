@@ -28,8 +28,8 @@
  * timeout: this test is not flaky by construction, and it is run at least
  * twice in a row as part of verification.
  *
- * Fixed loopback test ports, in the 48400-48499 band, distinct from every
- * other test file's own bands (tests/native_lobby_state_test.c uses
+ * Fixed loopback test ports, in the 48400-48499 band (and 48540-48541 for
+ * the race hold service), distinct from every other test file's own bands (tests/native_lobby_state_test.c uses
  * 48300-48399; see tests/native_lockstep_peer_link_test.c for the others).
  * Each socket test uses its own pair; a rematch deliberately reopens the
  * same local port, as a cabinet does.
@@ -172,6 +172,12 @@
 #define TEST_STALE_LINGER_B_PORT 48497u
 #define TEST_STALE_RESTART_A_PORT 48498u
 #define TEST_STALE_RESTART_B_PORT 48499u
+/* The race hold service (docs/LOCKSTEP_RACE_MILESTONE.md LR-S9): the
+ * 48400-48499 band is full, so these take 48540-48541, outside every other
+ * test file's band (the link host uses 48500-48519, the view layout
+ * 48520-48539). */
+#define TEST_RACE_SERVICE_A_PORT 48540u
+#define TEST_RACE_SERVICE_B_PORT 48541u
 
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
@@ -6107,6 +6113,321 @@ static int TestRematchLinkLostKeepsStaleDrop(void)
 	return 0;
 }
 
+/* ---- LR-S9 (docs/LOCKSTEP_RACE_MILESTONE.md LR-9, LR-50): the race hold
+ * service ---- */
+
+/* A width none of the peer link's routes uses. */
+#define RACE_SERVICE_MARKER_BYTES 7u
+
+static struct NativeArcadeNetplay g_before;
+static struct NativeLockstepSession g_scratchSession;
+
+/* Everything of Tick that RaceService must leave alone: the flow (screen,
+ * every flow, rematch, and results timer), the menu input, the select
+ * session, the outcome tracker and roster, the configs, the race-end record,
+ * and every flag and counter outside the lobby, the drop tally, and the
+ * launch agreement. */
+static int KeptTickState(const struct NativeArcadeNetplay *now, const struct NativeArcadeNetplay *before)
+{
+	CHECK(memcmp(&now->flow, &before->flow, sizeof(now->flow)) == 0);
+	CHECK(memcmp(&now->menuInput, &before->menuInput, sizeof(now->menuInput)) == 0);
+	CHECK(memcmp(&now->select, &before->select, sizeof(now->select)) == 0);
+	CHECK(memcmp(&now->outcome, &before->outcome, sizeof(now->outcome)) == 0);
+	CHECK(memcmp(&now->roster, &before->roster, sizeof(now->roster)) == 0);
+	CHECK(memcmp(&now->currentConfig, &before->currentConfig, sizeof(now->currentConfig)) == 0);
+	CHECK(memcmp(&now->lastReadyConfig, &before->lastReadyConfig, sizeof(now->lastReadyConfig)) == 0);
+	CHECK(memcmp(&now->lastOutcome, &before->lastOutcome, sizeof(now->lastOutcome)) == 0);
+	CHECK(memcmp(&now->raceEnd, &before->raceEnd, sizeof(now->raceEnd)) == 0);
+	CHECK(now->lastScreenSerial == before->lastScreenSerial);
+	CHECK(now->pendingLinkFailure == before->pendingLinkFailure);
+	CHECK(now->matchCount == before->matchCount);
+	CHECK(now->lobbyBegun == before->lobbyBegun);
+	CHECK(now->raceArmed == before->raceArmed);
+	CHECK(now->rematchBlocked == before->rematchBlocked);
+	CHECK(now->selectActive == before->selectActive);
+	CHECK(now->relinked == before->relinked);
+	CHECK(now->relinkBlocked == before->relinkBlocked);
+	CHECK(now->selectSerial == before->selectSerial);
+	CHECK(now->outcomeValid == before->outcomeValid);
+	CHECK(now->raceConfigValid == before->raceConfigValid);
+	CHECK(now->lobbyReadySeen == before->lobbyReadySeen);
+	CHECK(now->lastReadyValid == before->lastReadyValid);
+	CHECK(now->lastMenuEvent == before->lastMenuEvent);
+	CHECK(now->localRaceFailure == before->localRaceFailure);
+	CHECK(now->raceEndPending == before->raceEndPending);
+	return 0;
+}
+
+/* Sends a marker from sender's socket to receiverPort, then takes every
+ * datagram waiting on receiver's socket up to and including the marker.
+ * Returns the launch-width datagrams taken before it, or UINT32_MAX when the
+ * marker never arrives. Everything sent on this socket pair before the
+ * marker has arrived once it has. */
+static uint32_t CountLaunchRecordsBeforeMarker(struct NativeUdpTransport *receiver, struct NativeUdpTransport *sender,
+	uint32_t receiverPort)
+{
+	static const uint8_t marker[RACE_SERVICE_MARKER_BYTES] = {0x4Du, 0x41u, 0x52u, 0x4Bu, 0x45u, 0x52u, 0x21u};
+	uint8_t bytes[RECEIVE_BYTES];
+	size_t byteCount = 0u;
+	uint32_t records = 0u;
+	uint32_t spins;
+
+	if (!SendTo(sender, receiverPort, marker, sizeof(marker)))
+	{
+		return UINT32_MAX;
+	}
+	for (spins = 0u; spins < RECEIVE_SPIN_BUDGET; spins++)
+	{
+		if (NativeUdpTransport_Receive(receiver, bytes, sizeof(bytes), &byteCount, NULL) != NATIVE_UDP_TRANSPORT_RECEIVE_OK)
+		{
+			continue;
+		}
+		if ((byteCount == sizeof(marker)) && (memcmp(bytes, marker, sizeof(marker)) == 0))
+		{
+			return records;
+		}
+		records += (byteCount == LAUNCH_BYTES) ? 1u : 0u;
+	}
+	return UINT32_MAX;
+}
+
+/* A clean CAB2 frame-0 bundle of another match: the given config with its
+ * master seed changed, at the adapter's input delay. */
+static int ComposeOtherMatchBundle(const struct NativeMatchConfigV1 *config, uint8_t *bytes)
+{
+	struct NativeMatchConfigV1 other = *config;
+	uint8_t slot = 0u;
+	size_t size = 0u;
+
+	other.masterSeed ^= UINT64_C(0x5A5A5A5A5A5A5A5A);
+	CHECK(NativeMatchConfigV1_FindRoleSlot(&other, ROLE_CAB2, &slot));
+	NativeLockstepSession_Init(&g_scratchSession);
+	CHECK(NativeLockstepSession_Open(&g_scratchSession, &other, NATIVE_ARCADE_NETPLAY_DEFAULT_INPUT_DELAY, slot));
+	CHECK(NativeLockstepSession_ComposeBundle(&g_scratchSession, 0u, bytes, NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES, &size));
+	CHECK(size == NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES);
+	return 0;
+}
+
+/*
+ * 36. LR-S9 (LR-9, LR-50): the race hold service over a real pair. As in
+ * 33c, A commits and starts its race while every launch record it sends from
+ * Tick is dropped before B reads it, so B is still PENDING on SELECT_RESULT
+ * and A's linger still wants to send. From then on A only runs RaceService,
+ * as the drive's hold would, while B ticks normally.
+ * (a) RaceService(A, 0) drains B's frame-0 bundle into A's session and drops
+ *     and counts one record of another match, exactly as Tick's step 2 does,
+ *     and changes no flow, menu, select, outcome, or race-end state and not
+ *     the launch agreement: no launch record reaches B.
+ * (b) Each RaceService(A, 1) runs the launch intake, sends one launch record,
+ *     and counts one linger tick; RaceService(A, 0) between them counts none.
+ *     B commits and starts its race from the first such record, and A hears
+ *     B's HEARD record through RaceService; A's linger then stops sending
+ *     while still counting one tick per launch period. RaceService on B while
+ *     it is still on SELECT_RESULT is a no-op. A's first Tick afterwards
+ *     finishes the race, and its end-of-race record carries the one drop,
+ *     counted once.
+ */
+static int TestRaceServiceHold(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 resolved;
+	struct NativeLockstepPeerLink *linkA;
+	struct NativeLockstepPeerLink *linkB;
+	struct NativeLockstepSession *sessionA;
+	struct NativeLockstepSessionFrameInputs inputs;
+	struct NativeArcadeLaunchAgreement launchBefore;
+	enum NativeArcadeFlowAction actionA = ACT_NONE;
+	enum NativeArcadeFlowAction actionB = ACT_NONE;
+	uint8_t digest[LAUNCH_DIGEST_BYTES];
+	uint8_t fixtureDigest[LAUNCH_DIGEST_BYTES];
+	uint8_t foreign[NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES];
+	uint32_t lastSequenceA;
+	uint32_t dropsBefore;
+	uint32_t ticksBefore;
+	uint32_t launchPeriods = 0u;
+	uint32_t spins;
+	uint32_t tick;
+	uint8_t slotB = 0u;
+	int startedA = 0;
+	int startedB = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(IdleResolved(&fixture, 1u, &resolved));
+	CHECK(NativeMatchConfigV1_Digest(&resolved, digest) == 1);
+	CHECK(NativeMatchConfigV1_Digest(&fixture, fixtureDigest) == 1);
+	CHECK(NativeMatchConfigV1_FindRoleSlot(&resolved, ROLE_CAB2, &slotB));
+	CHECK(PairToSelectResult(&fixture, TEST_RACE_SERVICE_A_PORT, TEST_RACE_SERVICE_B_PORT));
+
+	/* 33c's setup: A commits and races; none of its Tick records reach B. */
+	CHECK(TickAloneToRelink(&g_a));
+	CHECK(TickAloneToRelink(&g_b));
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	CHECK(DropLaunchRecordsTo(&g_b, TEST_RACE_SERVICE_B_PORT, &g_a, 1u));
+	lastSequenceA = g_a.launch.sequence;
+	for (tick = 0; (tick < DRIVE_BUDGET) && !startedA; tick++)
+	{
+		actionB = NativeArcadeNetplay_Tick(&g_b, 0u, 0u);
+		CHECK(actionB == ACT_NONE);
+		CHECK(LobbyStatusOf(&g_b) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+		CHECK(NativeArcadeLaunch_Status(&g_b.launch) == LAUNCH_PENDING);
+		actionA = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK((actionA == ACT_NONE) || (actionA == ACT_START_RACE));
+		startedA = (actionA == ACT_START_RACE);
+		CHECK(DropLaunchRecordsTo(&g_b, TEST_RACE_SERVICE_B_PORT, &g_a, g_a.launch.sequence - lastSequenceA));
+		lastSequenceA = g_a.launch.sequence;
+	}
+	CHECK(startedA);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+	CHECK(NativeArcadeLaunch_Status(&g_a.launch) == LAUNCH_COMMITTED);
+	CHECK(NativeArcadeLaunch_ShouldSend(&g_a.launch) == 1);
+	CHECK(g_a.launch.peerHeard == 0u);
+	CHECK(g_b.launch.acceptedCount == 0u);
+	linkA = NativeArcadeNetplay_Link(&g_a);
+	linkB = NativeArcadeNetplay_Link(&g_b);
+	CHECK((linkA != NULL) && (linkB != NULL));
+	CHECK(NativeLockstepPeerLink_Mode(linkA) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	CHECK(NativeLockstepPeerLink_Mode(linkB) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING);
+	sessionA = NativeLockstepPeerLink_Session(linkA);
+
+	/* A non-RACING adapter is a no-op, even with a launch record waiting in
+	 * its aux inbox and launchPeriod set (the record carries another digest,
+	 * so B's next Tick counts it as MISMATCH and does not commit on it). */
+	CHECK(InjectLaunch(&g_b, ROLE_CAB1, fixtureDigest, 0u, 900u));
+	memcpy(&g_before, &g_b, sizeof(g_b));
+	NativeArcadeNetplay_RaceService(&g_b, 1);
+	NativeArcadeNetplay_RaceService(&g_b, 0);
+	CHECK(memcmp(&g_b, &g_before, sizeof(g_b)) == 0);
+
+	/* (a) B sends a record of another match, then its own frame 0. */
+	dropsBefore = g_a.foreignDropsSinceRaceEnd;
+	CHECK(dropsBefore == 0u);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(linkA) == 0u);
+	CHECK(ComposeOtherMatchBundle(&resolved, foreign) == 0);
+	CHECK(SendTo(&linkB->transport, TEST_RACE_SERVICE_A_PORT, foreign, sizeof(foreign)));
+	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(linkB, 0u) == 1);
+	memcpy(&g_before, &g_a, sizeof(g_a));
+	for (spins = 0u; (spins < RECEIVE_SPIN_BUDGET) && (sessionA->peers[slotB].occupancyMask == 0u); spins++)
+	{
+		NativeArcadeNetplay_RaceService(&g_a, 0);
+	}
+	CHECK(sessionA->peers[slotB].occupancyMask != 0u);
+	CHECK(NativeLockstepPeerLink_DroppedForeignBundleCount(linkA) == 1u);
+	CHECK(g_a.linkForeignDropsSeen == 1u);
+	CHECK(g_a.foreignDropsSinceRaceEnd == dropsBefore + 1u);
+	CHECK(NativeLockstepSession_TakeFrameInputs(sessionA, 0u, &inputs) == NATIVE_LOCKSTEP_SESSION_OK);
+	CHECK(NativeLockstepSession_FirstFault(sessionA) == NULL);
+	CHECK(KeptTickState(&g_a, &g_before) == 0);
+	CHECK(memcmp(&g_a.launch, &g_before.launch, sizeof(g_a.launch)) == 0);
+	CHECK(CountLaunchRecordsBeforeMarker(&linkB->transport, &linkA->transport, TEST_RACE_SERVICE_B_PORT) == 0u);
+
+	/* (b) One launch period: one record, one linger tick; B commits on it. */
+	memcpy(&launchBefore, &g_a.launch, sizeof(launchBefore));
+	NativeArcadeNetplay_RaceService(&g_a, 0);
+	NativeArcadeNetplay_RaceService(&g_a, 0);
+	CHECK(memcmp(&g_a.launch, &launchBefore, sizeof(launchBefore)) == 0);
+	ticksBefore = g_a.launch.ticksSinceCommit;
+	NativeArcadeNetplay_RaceService(&g_a, 1);
+	launchPeriods += 1u;
+	CHECK(g_a.launch.sequence == launchBefore.sequence + 1u);
+	CHECK(g_a.launch.ticksSinceCommit == ticksBefore + 1u);
+	CHECK(g_a.launch.heardSent == 1u);
+	for (spins = 0u; (spins < RECEIVE_SPIN_BUDGET) && (NativeLockstepPeerLink_AuxCount(linkB) < 2u); spins++)
+	{
+		NativeLockstepPeerLink_Poll(linkB);
+	}
+	/* The injected MISMATCH record, then A's record. */
+	CHECK(NativeLockstepPeerLink_AuxCount(linkB) == 2u);
+	CHECK(NativeArcadeNetplay_Tick(&g_b, 0u, 0u) == ACT_START_RACE);
+	startedB = 1;
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(NativeArcadeLaunch_Status(&g_b.launch) == LAUNCH_COMMITTED);
+	CHECK(g_b.launch.acceptedCount == 1u);
+	CHECK(g_b.launch.mismatchCount == 1u);
+	CHECK(g_b.launch.peerHeard == 1u);
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_b), &resolved, sizeof(resolved)) == 0);
+	CHECK(KeptTickState(&g_a, &g_before) == 0);
+
+	/* A hears B's HEARD through RaceService; every launch period counts one
+	 * linger tick and sends one record while the linger wants to. */
+	for (spins = 0u; (spins < RECEIVE_SPIN_BUDGET) && (g_a.launch.peerHeard == 0u); spins++)
+	{
+		NativeArcadeNetplay_RaceService(&g_a, 0);
+		if (NativeLockstepPeerLink_AuxCount(linkA) == 0u)
+		{
+			continue;
+		}
+		memcpy(&launchBefore, &g_a.launch, sizeof(launchBefore));
+		NativeArcadeNetplay_RaceService(&g_a, 1);
+		launchPeriods += 1u;
+		CHECK(g_a.launch.ticksSinceCommit == launchBefore.ticksSinceCommit + 1u);
+		CHECK(NativeLockstepPeerLink_AuxCount(linkA) == 0u);
+		/* The intake runs before the send: the call that takes B's HEARD record
+		 * already sends nothing (heardSent and peerHeard both set). */
+		CHECK(g_a.launch.heardSent == 1u);
+		CHECK(g_a.launch.sequence == launchBefore.sequence + ((g_a.launch.peerHeard == 0u) ? 1u : 0u));
+	}
+	CHECK(g_a.launch.peerHeard == 1u);
+	CHECK(NativeArcadeLaunch_ShouldSend(&g_a.launch) == 0);
+	CHECK(KeptTickState(&g_a, &g_before) == 0);
+
+	/* The linger has stopped sending, and still counts one tick per period. */
+	for (tick = 0; tick < 5u; tick++)
+	{
+		memcpy(&launchBefore, &g_a.launch, sizeof(launchBefore));
+		NativeArcadeNetplay_RaceService(&g_a, 1);
+		launchPeriods += 1u;
+		CHECK(g_a.launch.sequence == launchBefore.sequence);
+		CHECK(g_a.launch.ticksSinceCommit == launchBefore.ticksSinceCommit + 1u);
+	}
+	CHECK(g_a.launch.ticksSinceCommit == g_before.launch.ticksSinceCommit + launchPeriods);
+	CHECK(KeptTickState(&g_a, &g_before) == 0);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(g_a.foreignDropsSinceRaceEnd == dropsBefore + 1u);
+
+	/* The flow resumes on A's next Tick; the drop is counted exactly once. */
+	CHECK(startedB);
+	TickBoth(0u, 0u, 1u, &actionA, &actionB);
+	CHECK((actionA == ACT_NONE) && (actionB == ACT_NONE));
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(ExpectRaceEnd(&g_a, 1u, NATIVE_ARCADE_FLOW_END_FINISHED, dropsBefore + 1u) == 0);
+	CHECK(ExpectRaceEnd(&g_b, 1u, NATIVE_ARCADE_FLOW_END_FINISHED, 0u) == 0);
+
+	ShutdownBoth();
+	return 0;
+}
+
+/* 37. LR-S9 (LR-50): RaceService is a no-op for NULL, an uninitialized
+ * adapter, and an initialized one on screen OFF, whatever launchPeriod. */
+static int TestRaceServiceNoOps(void)
+{
+	struct NativeMatchConfigV1 fixture;
+	struct NativeArcadeNetplayConfig config;
+
+	NativeArcadeNetplay_RaceService(NULL, 0);
+	NativeArcadeNetplay_RaceService(NULL, 1);
+
+	memset(&g_probe, 0xA5, sizeof(g_probe));
+	g_probe.initialized = 0u;
+	memcpy(&g_sentinel, &g_probe, sizeof(g_probe));
+	NativeArcadeNetplay_RaceService(&g_probe, 0);
+	NativeArcadeNetplay_RaceService(&g_probe, 1);
+	CHECK(memcmp(&g_probe, &g_sentinel, sizeof(g_probe)) == 0);
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(MakeConfig(&config, &fixture, ROLE_CAB1, TEST_RACE_SERVICE_A_PORT, TEST_RACE_SERVICE_B_PORT));
+	CHECK(NativeArcadeNetplay_Init(&g_probe, &config) == 1);
+	CHECK(ScreenOf(&g_probe) == NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	memcpy(&g_sentinel, &g_probe, sizeof(g_probe));
+	NativeArcadeNetplay_RaceService(&g_probe, 0);
+	NativeArcadeNetplay_RaceService(&g_probe, 1);
+	CHECK(memcmp(&g_probe, &g_sentinel, sizeof(g_probe)) == 0);
+	NativeArcadeNetplay_Shutdown(&g_probe);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestPure() == 0);
@@ -6159,6 +6480,8 @@ int main(void)
 	CHECK(TestRematchAfterPreRaceFailureDropsStaleBundles() == 0);
 	CHECK(TestRematchDuringFinishLingerDropsStaleBundles() == 0);
 	CHECK(TestRematchLinkLostKeepsStaleDrop() == 0);
+	CHECK(TestRaceServiceHold() == 0);
+	CHECK(TestRaceServiceNoOps() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }

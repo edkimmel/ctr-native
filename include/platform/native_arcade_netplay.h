@@ -32,7 +32,13 @@
  * session result and a peer link). They are platform-side hooks for the
  * Task 8 race driver only, which lives under platform/. Game code must not
  * call them: naming their types there would fail
- * tests/native_lockstep_isolation_test.cmake. NativeArcadeNetplay_Select
+ * tests/native_lockstep_isolation_test.cmake. NativeArcadeNetplay_RaceService
+ * is the third such hook, for the drive's hold (LR-9): it carries no
+ * lockstep type, but it runs a slice of Tick behind the flow's back, so only
+ * the race driver's host glue may call it (no game source calls any
+ * NativeArcadeNetplay_* name today, and the arcade-link hook's files may not
+ * name one; tests/main_arcade_link_hook_isolation_test.cmake).
+ * NativeArcadeNetplay_Select
  * names no lockstep type, but it returns a select-session type, and game
  * code reads select state only through the host API. Every other name below
  * is safe for game code.
@@ -491,6 +497,24 @@ int NativeArcadeNetplay_ReportLocalRaceFailure(struct NativeArcadeNetplay *netpl
  * itself, so this hook is not the only path to DESYNC or LINK ERROR. */
 void NativeArcadeNetplay_OnTakeResult(struct NativeArcadeNetplay *netplay, enum NativeLockstepSessionResult result,
 	uint32_t frameIndex);
+
+/*
+ * Platform-side hook for the Task 8 race driver's hold only (the
+ * "Platform-only hooks" paragraph above; docs/LOCKSTEP_RACE_MILESTONE.md
+ * LR-9, LR-50). While the drive holds, the adapter's Tick does not run, yet
+ * the link must still be drained and the launch linger kept alive. On every
+ * call this polls the link through the lobby exactly as Tick's step 2 does
+ * (NativeLobbyState_Poll while a lobby is open, then the foreign-drop read of
+ * LR-35, so the drop tally stays exact). When launchPeriod is nonzero, which
+ * the caller passes once per held tick period, it then also runs Tick's
+ * launch intake and its launch send and linger tick, once each, so the
+ * launch linger counts one tick per held period. It does nothing else: no
+ * flow tick, menu input, lobby-status mapping, select drive, outcome latch,
+ * race-end record, or action. A no-op for NULL, an uninitialized adapter, and
+ * any screen other than RACING (OFF included), the only screen the drive
+ * holds on.
+ */
+void NativeArcadeNetplay_RaceService(struct NativeArcadeNetplay *netplay, int launchPeriod);
 
 /* The end-of-race record (docs/LOCKSTEP_RACE_MILESTONE.md LR-14, LR-S6),
  * once per race: on the Tick whose flow moves RACING -> RESULTS (the flow's

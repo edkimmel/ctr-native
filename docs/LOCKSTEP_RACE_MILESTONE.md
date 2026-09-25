@@ -531,7 +531,7 @@ How each will be proven:
    capture per cabinet in race 1, kept under build-msvc-x86 and never
    committed (retail imagery).
 
-## 4. Decided design (defaults LR-1..LR-48; LR-17 is the owner's ruling)
+## 4. Decided design (defaults LR-1..LR-50; LR-17 is the owner's ruling)
 
 The owner reviewed these defaults on 2026-09-25. LR-1..LR-16 stand as
 written, except that LR-18, the finish grace, amends LR-1, LR-12, LR-13,
@@ -541,8 +541,8 @@ the physical cabinets (LR-3). Before that, the plan review changed
 several defaults; "Review changes" at the end of this section lists what
 changed, and "Owner decisions (2026-09-25)" after it lists the owner's
 decisions. LR-19..LR-27 were added by LR-S4, LR-28..LR-32 by LR-S5,
-LR-33..LR-36 by LR-S6, LR-37..LR-40 by LR-S7, and LR-41..LR-48 by
-LR-S8; each records the mechanics its slice settled.
+LR-33..LR-36 by LR-S6, LR-37..LR-40 by LR-S7, LR-41..LR-48 by LR-S8,
+and LR-49..LR-50 by LR-S9; each records the mechanics its slice settled.
 
 LR-1 Placement. The race driver lives under platform/, because game code
 may not name lockstep (tests/native_lockstep_isolation_test.cmake:128-157
@@ -1998,6 +1998,73 @@ NATIVE_LOCKSTEP_RUNNING, recordedAny, recordedFrame, and
 drive->inputDelay. Macro values are checked with any spacing, so
 clang-format's macro alignment does not break the test.
 
+LR-49 The verbatim bundle send and its guards (LR-S9).
+NativeLockstepPeerLink_SendBundleVerbatim(link, bytes, size) sends the
+caller's bytes unchanged to the peer address over the link's transport,
+as ComposeAndSendBundle sends a composed bundle, and returns 1 once the
+transport took them. It returns 0 with nothing sent and no link or session
+state changed unless link and bytes are non-NULL, size is exactly 128
+(NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES), the link mode is RUNNING, and
+the session mode is RUNNING (LR-3). Beyond the plan, it also requires the
+bytes to decode (NativeLockstepBundleV1_Decode, the unchanged decoder)
+against the link's session: its match identity, protocol version, and
+input delay, with senderSlot equal to the session's localSlot. That is the
+safer option. The ring is caller-owned and a raw 128-byte buffer, the
+session behind a drive is re-initialized by REMATCH (the LR-S8 note), and a
+wrong buffer is one pointer away, so the link itself guarantees that only
+this session's own bundle goes out: a stale ring entry of an earlier match,
+a peer's record, a record with another D, or corrupt bytes are refused.
+The decode is the receiver's own check (LR-33), so any bundle the local
+session composed passes it. A failed transport send also returns 0 and,
+like UDP, is simply lossy. Two findings the tests pin:
+
+- The link mode check is not redundant with the session mode check. Open
+  does not re-initialize the session (only a completed handshake does), so
+  a link closed and reopened on the same struct is HANDSHAKING over its old,
+  still RUNNING session, and the old match's bytes would otherwise decode
+  and go out.
+- The link copies the session mode into the link mode only when it hands a
+  received bundle to the session (in Poll and in the staged replay). A
+  Poll that reads no bundle leaves the link RUNNING over a DIVERGED
+  session, so the session mode check cannot be replaced by "the next Poll"
+  either: LR-3's "until the next poll" means until the next poll that
+  reads a bundle.
+
+The send never touches the wire format, the session, or any canonical,
+checkpoint, or replay state. The drive's sendBundle callback is its
+intended caller, through the host glue (the second half of LR-S9).
+
+LR-50 The adapter's race hold service (LR-S9).
+NativeArcadeNetplay_RaceService(netplay, launchPeriod) is the one new
+adapter call the hold uses (LR-9). It is the third platform-only hook, next
+to OnTakeResult and Link: its signature names no lockstep type, but it runs
+a slice of Tick behind the flow's back, so only the host glue calls it (no
+game source calls any NativeArcadeNetplay_* name today, and
+main_arcade_link_hook_isolation bans them in the hook's files). On every
+call it runs Tick's
+step 2 through the same helper Tick uses (NativeArcadeNetplay_PollLobby:
+NativeLobbyState_Poll while a lobby is open, then the LR-35 drop read), so
+the drop tally stays exact and no drop is counted twice. When launchPeriod
+is nonzero (the caller passes it once per held tick period) it then runs
+Tick's launch intake (DriveLaunch; on RACING Tick's select branch never
+runs) and its launch send and linger tick (SendLaunch), once each, so the
+launch linger counts one tick per held period. It runs nothing else: no
+flow tick, menu input, lobby-status mapping, lastMenuEvent reset, READY or
+PEER_LOST handling, select drive, outcome latch, race-end record, or
+action. The safer option taken: it is a no-op for NULL, an uninitialized
+adapter, and every screen but RACING, OFF included. The drive only holds
+on RACING (the flow leaves RACING only inside Tick, which the hold does not
+run), and off RACING Tick already runs the same steps, so a call there
+could only double-count the launch linger or drain the link behind the
+flow. tests/native_arcade_netplay_isolation_test.cmake (section 8) pins
+the body: it must name the RACING gate, the launchPeriod test, PollLobby,
+DriveLaunch, and SendLaunch, and must not name the flow (other than
+NativeArcadeFlow_Screen), the menu input, the launch, lobby, outcome,
+roster, or select modules directly, Tick, OnTakeResult, the lobby actions,
+lastMenuEvent, pendingLinkFailure, localRaceFailure, or raceEnd; and the
+adapter has exactly one NativeLobbyState_Poll call, in PollLobby, which is
+called exactly twice (Tick and RaceService).
+
 Review changes. The plan review (on befa152a9) changed these defaults:
 
 - LR-11 no longer treats a lead as a desync. A peer digest for a frame
@@ -3371,7 +3438,109 @@ native_arcade_race_drive_isolation covers purity, the token ban, and C17.
 
 ### LR-S9 -- drive glue in the host
 
-Status: planned. Review required (the wire and the link host). Run 3.
+Status: in progress (part 1 of 2 done: the peer-link verbatim send and the
+adapter race service; the host glue follows). Review required (the wire
+and the link host). Run 3. New defaults LR-49..LR-50 (section 4).
+
+Result, part 1:
+
+- The API, two lower-layer calls the host glue will back the drive's
+  callbacks with:
+
+      int NativeLockstepPeerLink_SendBundleVerbatim(struct NativeLockstepPeerLink *link,
+          const uint8_t *bytes, size_t size);
+      void NativeArcadeNetplay_RaceService(struct NativeArcadeNetplay *netplay, int launchPeriod);
+
+  SendBundleVerbatim is meant to back sendBundle (the kept-bundle ring,
+  LR-3); RaceService with launchPeriod 0 the poll, and with 1 (once per
+  held period) servicePeriod's launch intake and linger (LR-9). Nothing calls
+  either yet: the host glue, the drive core, and game/ are unchanged.
+- The files: platform/native_lockstep_peer_link.c and its header (the send
+  and its doc comment); platform/native_arcade_netplay.c and its header
+  (RaceService; Tick's step 2 moved into the static helper
+  NativeArcadeNetplay_PollLobby, which both call, with no change to what
+  Tick does; the header's "Platform-only hooks" paragraph names it);
+  tests/native_lockstep_peer_link_test.c; tests/native_arcade_netplay_test.c;
+  tests/native_arcade_netplay_isolation_test.cmake (section 3's comment and
+  a new section 8). tests/native_lockstep_isolation_test.cmake lists no
+  peer-link API or send, so it is unchanged, and so is the adapter's
+  include allow-list. No change to the wire format, the bundle, the
+  handshake, NativeMatchConfigV1, the session, the launch record, or any
+  canonical, checkpoint, or replay state; no lease call; no heap.
+- The decisions: the decode guard, beyond the plan's two mode checks, and
+  the two findings about link mode (LR-49); RaceService's scope, its shared
+  poll helper, and its no-op outside RACING (LR-50).
+- native_lockstep_peer_link_unit (ports 48249-48256):
+  - TestVerbatimSendDelivers: a RUNNING pair; the peer receives exactly the
+    bytes, from A's address, and they equal what ComposeAndSendBundle sends
+    for the frame; B's session takes them (OK); a resend is a DUPLICATE,
+    both handed to the session and drained by B's own Poll, with no fault,
+    and B then takes the frame.
+  - TestVerbatimSendRefusals: a NULL and a never-opened link, NULL bytes,
+    sizes 0, 127, and 129, a record of another match for A's own role, B's
+    own bundle and a scratch CAB2 bundle (sender not the local slot), a
+    current-identity record with D + 1, and a corrupt copy of A's bundle
+    are all refused, and a marker datagram shows none reached B; the
+    positive control then does; a closed link refuses.
+  - TestVerbatimSendRefusedWhileHandshaking: B held HANDSHAKING refuses its
+    own frame-0 bytes (nothing reaches A) and sends them once RUNNING; B
+    closed and reopened on the same struct is HANDSHAKING over its old,
+    still RUNNING session and refuses them (LR-49).
+  - TestVerbatimSendRefusedWhenSessionDiverged, the plan's case: at D = 1,
+    B's frame-3 bundle parks its frame-1 digest at A; A's record of a
+    drifted frame 1 latches DIVERGED inside RecordLocalDigests while the
+    link mode stays RUNNING; the kept frame-0 and frame-1 bundles are
+    refused (sent fine just before), ComposeAndSendBundle refuses too, and
+    nothing reaches B. A Poll that reads nothing leaves the link RUNNING,
+    still refused; B's next bundle mirrors DIVERGED into the link.
+  - native_lockstep_peer_link_process_unit is unchanged and passes.
+- native_arcade_netplay_unit (ports 48540-48541; the 48400-48499 band is
+  full):
+  - 36, TestRaceServiceHold, over the loopback pair with 33c's setup (A
+    commits and races while every launch record it sends from Tick is
+    dropped, so B is PENDING on SELECT_RESULT and A's linger still sends);
+    from then on A only runs RaceService. (a) RaceService(A, 0) drains B's
+    frame-0 bundle into A's session (taken OK) and drops and counts one
+    record of another match (link count 1, the adapter's tally 1), changes
+    no flow, menu, select, outcome, roster, config, race-end, or flag state
+    and not the launch agreement, and a marker shows no launch record
+    reached B. (b) Two RaceService(A, 0) calls change nothing in the
+    agreement; each RaceService(A, 1) sends one record and counts one
+    linger tick; B commits and starts its race on the first one (its only
+    ACCEPTED record); A hears B's HEARD through RaceService, and the call
+    that takes it already sends nothing; five more launch periods send
+    nothing and count five ticks, so ticksSinceCommit grew by exactly the
+    number of launch periods. RaceService on B while B is still on
+    SELECT_RESULT, with a launch record waiting in its inbox, leaves B
+    byte-identical. A's next Tick finishes the race, and both end-of-race
+    records are right: A's carries the one drop, counted once.
+  - 37, TestRaceServiceNoOps: NULL, an uninitialized adapter (0xA5 fill,
+    initialized 0), and an initialized adapter on screen OFF, with
+    launchPeriod 0 and 1, are left byte-identical.
+- native_arcade_netplay_isolation: LR-50 (section 8).
+- Probes, each reverted:
+  - the session mode check removed: native_lockstep_peer_link_unit failed
+    (the DIVERGED case sent the kept bundle);
+  - the decode guard removed: it failed (the foreign record went out);
+  - only the senderSlot check removed: it failed (B's own bundle went out);
+  - the link mode check removed: it passed until the reopened-link case
+    was added, then failed (that case is why it was added);
+  - RaceService polling without reading the drops: native_arcade_netplay_unit
+    failed (linkForeignDropsSeen) and so did the isolation test;
+  - a flow tick inside RaceService, and the whole Tick inside it: the unit
+    failed (the flow changed) and so did the isolation test;
+  - launch intake and send without launchPeriod: the unit failed (the
+    agreement changed in (a));
+  - no RACING gate: the unit failed (B changed) and so did the isolation
+    test;
+  - the send without the intake: the unit failed (A never took B's
+    records) and so did the isolation test;
+  - a menu-input update inside RaceService: the unit passed (no buttons,
+    already armed) and the isolation test failed;
+  - Tick polling the lobby inline instead of through the helper: the unit
+    passed and the isolation test failed.
+- Fast suite (-LE live): 154 of 154 passed. No live test runs the new
+  calls: nothing on the live path calls them yet.
 
 Plan: LR-1, LR-3, LR-9 host work.
 

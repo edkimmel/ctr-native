@@ -10,8 +10,9 @@
 # sources (so engine code can call it), links exactly its nine composed
 # libraries and never the transport directly, static-asserts that a select
 # record and a launch record each fill exactly one peer-link aux datagram,
-# stays portable C17 with extensions off, and keeps its four defaults and
-# its launch linger cap frozen.
+# stays portable C17 with extensions off, keeps its four defaults and its
+# launch linger cap frozen, and keeps the race hold service to its slice of
+# Tick (docs/LOCKSTEP_RACE_MILESTONE.md LR-50).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -83,6 +84,10 @@ endforeach()
 #    are platform-side hooks for the Task 8 race driver only (which lives
 #    under platform/). Engine code must not call those two; naming their
 #    types there would fail tests/native_lockstep_isolation_test.cmake.
+#    NativeArcadeNetplay_RaceService (docs/LOCKSTEP_RACE_MILESTONE.md LR-9,
+#    LR-50) is the third platform-side hook: its signature carries no
+#    lockstep type, but it runs a slice of Tick behind the flow's back, so
+#    only the race driver's host glue calls it (section 8 pins its body).
 #    Every other NativeArcadeNetplay_* name is callable from engine code
 #    without tripping either rule.
 ctr_read_source("${netplay_header}" header)
@@ -205,3 +210,56 @@ ctr_require_regex("platform/native_arcade_netplay.c (adapter linger == RL-4 defa
     "_Static_assert\\(NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS == NATIVE_ARCADE_LAUNCH_DEFAULT_LINGER_TICKS,")
 ctr_require_regex("${netplay_header} (LAUNCH_LINGER_TICKS must stay 300u)" "${header}"
     "\n#define NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS 300u\r?\n")
+
+# 8. The race drive's hold service (docs/LOCKSTEP_RACE_MILESTONE.md LR-9,
+#    LR-50). NativeArcadeNetplay_RaceService runs only Tick's step 2 (the
+#    lobby poll and the foreign-drop read, through the one helper Tick itself
+#    calls, so the two cannot drift apart) and, on a launch period, the
+#    launch intake and the launch send and linger tick, only on RACING. Its
+#    body must name exactly those helpers and the RACING gate, and nothing
+#    that runs or feeds the flow, the menu input, the select session, the
+#    outcome tracker, the roster, the race-end record, a lobby action, or the
+#    launch agreement directly.
+string(FIND "${netplay_source}" "\nvoid NativeArcadeNetplay_RaceService(" race_service_at)
+if(race_service_at EQUAL -1)
+    message(FATAL_ERROR "arcade netplay isolation: platform/native_arcade_netplay.c must define NativeArcadeNetplay_RaceService")
+endif()
+string(SUBSTRING "${netplay_source}" "${race_service_at}" -1 race_service_tail)
+string(FIND "${race_service_tail}" "\n}" race_service_end)
+if(race_service_end EQUAL -1)
+    message(FATAL_ERROR "arcade netplay isolation: cannot find the end of NativeArcadeNetplay_RaceService")
+endif()
+string(SUBSTRING "${race_service_tail}" 0 "${race_service_end}" race_service_body)
+foreach(required IN ITEMS
+        "NativeArcadeNetplay_PollLobby(netplay);"
+        "NativeArcadeNetplay_DriveLaunch(netplay);"
+        "NativeArcadeNetplay_SendLaunch(netplay);"
+        "NativeArcadeFlow_Screen(&netplay->flow) != NATIVE_ARCADE_FLOW_SCREEN_RACING"
+        "launchPeriod != 0")
+    string(FIND "${race_service_body}" "${required}" found_at)
+    if(found_at EQUAL -1)
+        message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_RaceService must contain '${required}'")
+    endif()
+endforeach()
+string(REPLACE "NativeArcadeFlow_Screen(" "" race_service_scan "${race_service_body}")
+foreach(term IN ITEMS
+        NativeArcadeFlow_ NativeArcadeMenuInput_ NativeArcadeLaunch_ NativeLobbyState_
+        NativeLockstepMatchOutcome_ NativeLockstepMatchRoster_ NativeMatchSelect
+        NativeArcadeNetplay_Tick NativeArcadeNetplay_OnTakeResult DriveSelect SendSelect ApplyLatchedOutcome BeginLaunch BeginLobby CloseLobby RestartLobby
+        BeginRematch BeginSelect Relink ArmRace lastMenuEvent pendingLinkFailure localRaceFailure raceEnd)
+    string(FIND "${race_service_scan}" "${term}" found_at)
+    if(NOT found_at EQUAL -1)
+        message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_RaceService must not name '${term}'")
+    endif()
+endforeach()
+# Tick shares the same poll helper, and nothing else polls the lobby.
+string(REGEX MATCHALL "NativeLobbyState_Poll[(]" lobby_polls "${netplay_source}")
+list(LENGTH lobby_polls lobby_poll_count)
+if(NOT lobby_poll_count EQUAL 1)
+    message(FATAL_ERROR "arcade netplay isolation: expected exactly one NativeLobbyState_Poll call (in NativeArcadeNetplay_PollLobby), found ${lobby_poll_count}")
+endif()
+string(REGEX MATCHALL "NativeArcadeNetplay_PollLobby[(]netplay[)]" poll_lobby_calls "${netplay_source}")
+list(LENGTH poll_lobby_calls poll_lobby_call_count)
+if(NOT poll_lobby_call_count EQUAL 2)
+    message(FATAL_ERROR "arcade netplay isolation: expected NativeArcadeNetplay_PollLobby called exactly twice (Tick and RaceService), found ${poll_lobby_call_count}")
+endif()

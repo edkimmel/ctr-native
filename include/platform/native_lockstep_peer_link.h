@@ -312,6 +312,34 @@ void NativeLockstepPeerLink_Poll(struct NativeLockstepPeerLink *link);
  */
 int NativeLockstepPeerLink_ComposeAndSendBundle(struct NativeLockstepPeerLink *link, uint32_t frameIndex);
 
+/*
+ * The verbatim bundle send (docs/LOCKSTEP_RACE_MILESTONE.md LR-3, LR-S9):
+ * sends the caller's already encoded bundle bytes, unchanged, to the peer
+ * address over the transport, exactly as ComposeAndSendBundle sends a freshly
+ * composed one. A session cannot compose an old frame again, and a resent
+ * frame must be byte-identical, so the race drive keeps each bundle's bytes
+ * in its kept-bundle ring and resends them through this call; the race
+ * drive's host glue is its intended caller.
+ *
+ * Returns 1 once the bytes were handed to the transport, and 0 with nothing
+ * sent, and no link or session state changed, unless all of these hold:
+ *   - link and bytes are non-NULL, and size is exactly
+ *     NATIVE_LOCKSTEP_BUNDLE_V1_ENCODED_BYTES;
+ *   - link mode is RUNNING;
+ *   - the session mode (NativeLockstepSession_Mode) is RUNNING. Link mode
+ *     alone is not enough: the link copies the session mode only in Poll and
+ *     in the staged-record replay, so a divergence that
+ *     NativeLockstepSession_RecordLocalDigests latches leaves link mode
+ *     RUNNING until the next Poll (LR-3);
+ *   - the bytes decode (NativeLockstepBundleV1_Decode) against this link's
+ *     session: its match identity, protocol version, and input delay, with
+ *     senderSlot equal to the session's localSlot (LR-49). So a record of
+ *     another match (a stale ring entry from an earlier session), a peer's
+ *     record, or corrupt bytes can never go out on this link.
+ * A failed transport send also returns 0 and is simply lossy, like UDP.
+ */
+int NativeLockstepPeerLink_SendBundleVerbatim(struct NativeLockstepPeerLink *link, const uint8_t *bytes, size_t size);
+
 enum NativeLockstepPeerLinkMode NativeLockstepPeerLink_Mode(const struct NativeLockstepPeerLink *link);
 
 /*
