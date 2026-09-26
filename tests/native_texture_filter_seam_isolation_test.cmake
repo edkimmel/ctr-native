@@ -117,13 +117,17 @@ ctr_require("platform/native_platform.c" "${platform_source}" "NativeRenderer_Se
 ctr_read_source("main.c" main_source)
 ctr_require("main.c" "${main_source}" "NativeRenderer_SetTextureFilter(displayConfig.textureFilter);")
 
-# 8. The display-config header is consumed only at the launcher and by its own
-#    implementation and unit test; no game, renderer, GPU, replay or canonical
-#    code may include it.
+# 8. The display-config header is consumed only at the launcher, by its own
+#    implementation and unit test, and by the per-cabinet config header (whose
+#    render_scale and texture_filter keys reach it only through
+#    NativeDisplayConfig_ApplyArgs, pinned by
+#    tests/native_arcade_config_isolation_test.cmake); no game, renderer, GPU,
+#    replay or canonical code may include it.
 set(display_config_include_sites
     "main.c"
     "platform/native_display_config.c"
-    "tests/native_display_config_test.c")
+    "tests/native_display_config_test.c"
+    "include/platform/native_arcade_config.h")
 
 file(GLOB_RECURSE first_party_sources RELATIVE "${repo}" "${repo}/*.c" "${repo}/*.h")
 list(FILTER first_party_sources EXCLUDE REGEX "^(externals|build[^/]*|\\.git)/")
@@ -146,7 +150,7 @@ foreach(relative_path IN LISTS first_party_sources)
     list(FIND display_config_include_sites "${relative_path}" site_index)
     if(NOT offset EQUAL -1 AND site_index EQUAL -1)
         message(FATAL_ERROR
-            "texture filter seam: native_display_config.h may only be included by main.c, platform/native_display_config.c and tests/native_display_config_test.c; found in ${relative_path}")
+            "texture filter seam: native_display_config.h may only be included by main.c, platform/native_display_config.c, tests/native_display_config_test.c and include/platform/native_arcade_config.h; found in ${relative_path}")
     endif()
 endforeach()
 

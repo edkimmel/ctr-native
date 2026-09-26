@@ -19,9 +19,11 @@ package folder itself is never run); the copied files re-checked against the
 MANIFEST, and asserted to hold no memcards\ (a fresh cabinet, no memcard
 save); <output>\cab1.loopback.cfg and cab2.loopback.cfg derived from the
 package's cab1.cfg and cab2.cfg by changing ONLY the peer IP (to 127.0.0.1,
-ports kept), data_dir (to the folder holding -AssetsFile), and fullscreen
-(to 0); then tools/arcade-link-launch-check.ps1 on <output>\run\ctr_native.exe
-with -Cab1Config and -Cab2Config, output in <output>\gate.
+ports kept), data_dir (to the folder holding -AssetsFile), fullscreen (to 0),
+and render_scale (to 1: two cabinets at 8x on one test PC is needless load;
+texture_filter stays the template's bilinear); then
+tools/arcade-link-launch-check.ps1 on <output>\run\ctr_native.exe with
+-Cab1Config and -Cab2Config, output in <output>\gate.
 
 -OutputDirectory must resolve under <repo>\build-msvc-x86\. Exit codes: 0
 pass, 1 fail, 77 skipped (no disc image, or the gate skipped: no display, a
@@ -67,6 +69,12 @@ $cabs = @(
     @{ Name = 'cab2'; Seat = 'cab2'; Port = '7002'; PeerPort = '7001' })
 $loopbackIp = '127.0.0.1'
 $loopbackFullscreen = '0'
+$loopbackRenderScale = '1'
+# The template's texture filter, kept by the loopback configs and required on
+# each run's stdout.
+$templateTextureFilter = 'bilinear'
+# The keys each template must set exactly once.
+$configKeys = @('data_dir', 'seat', 'port', 'peer', 'fullscreen', 'render_scale', 'texture_filter')
 
 # Write-Host, not Write-Output: these also run inside functions whose output
 # is captured, and the reason must still reach the console.
@@ -202,12 +210,16 @@ function Get-LoopbackValue($Cab, [string]$Key) {
     if ($Key -ceq 'fullscreen') {
         return $loopbackFullscreen
     }
+    if ($Key -ceq 'render_scale') {
+        return $loopbackRenderScale
+    }
     return $null
 }
 
 # Writes $Destination from the package's $Source, changing only the peer IP,
-# data_dir, and fullscreen. seat, port, and the peer port must already be
-# the gate's; each of the five keys must appear exactly once.
+# data_dir, fullscreen, and render_scale. seat, port, and the peer port must
+# already be the gate's, and texture_filter the template's bilinear; each of
+# the seven keys must appear exactly once.
 function New-LoopbackConfig($Cab, [string]$Source, [string]$Destination) {
     $text = [System.IO.File]::ReadAllText($Source)
     $newline = "`n"
@@ -215,7 +227,10 @@ function New-LoopbackConfig($Cab, [string]$Source, [string]$Destination) {
         $newline = "`r`n"
     }
     $lines = Split-ConfigText $text
-    $counts = @{ 'data_dir' = 0; 'seat' = 0; 'port' = 0; 'peer' = 0; 'fullscreen' = 0 }
+    $counts = @{}
+    foreach ($key in $configKeys) {
+        $counts[$key] = 0
+    }
     $derivedLines = New-Object System.Collections.Generic.List[string]
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
@@ -248,6 +263,11 @@ function New-LoopbackConfig($Cab, [string]$Source, [string]$Destination) {
                 Exit-Failed "$Source line $($i + 1): the peer port is $($Matches[2]), the gate's $($Cab.Name) peer port is $($Cab.PeerPort)"
             }
         }
+        elseif ($entry.Key -ceq 'texture_filter') {
+            if ($entry.Value -cne $templateTextureFilter) {
+                Exit-Failed "$Source line $($i + 1): texture_filter is '$($entry.Value)', the template's is '$templateTextureFilter'"
+            }
+        }
         $loopbackValue = Get-LoopbackValue $Cab $entry.Key
         if ($null -eq $loopbackValue) {
             $derivedLines.Add($line)
@@ -256,7 +276,7 @@ function New-LoopbackConfig($Cab, [string]$Source, [string]$Destination) {
             $derivedLines.Add("$($entry.Key) = $loopbackValue")
         }
     }
-    foreach ($key in @('data_dir', 'seat', 'port', 'peer', 'fullscreen')) {
+    foreach ($key in $configKeys) {
         if ($counts[$key] -ne 1) {
             Exit-Failed "$Source has $($counts[$key]) '$key' line(s), expected exactly 1"
         }
@@ -265,8 +285,8 @@ function New-LoopbackConfig($Cab, [string]$Source, [string]$Destination) {
 }
 
 # Re-reads both files: the same line count, every comment and every other
-# non-comment line byte-equal, and peer, data_dir, and fullscreen holding
-# exactly their loopback values.
+# non-comment line byte-equal, and peer, data_dir, fullscreen, and
+# render_scale holding exactly their loopback values.
 function Assert-LoopbackConfig($Cab, [string]$Source, [string]$Derived) {
     $sourceLines = Split-ConfigText ([System.IO.File]::ReadAllText($Source))
     $derivedLines = Split-ConfigText ([System.IO.File]::ReadAllText($Derived))
@@ -294,8 +314,8 @@ function Assert-LoopbackConfig($Cab, [string]$Source, [string]$Derived) {
         }
         $changed++
     }
-    if ($changed -ne 3) {
-        Exit-Failed "$Derived changes $changed lines of $Source, expected 3 (peer, data_dir, fullscreen)"
+    if ($changed -ne 4) {
+        Exit-Failed "$Derived changes $changed lines of $Source, expected 4 (peer, data_dir, fullscreen, render_scale)"
     }
 }
 
@@ -418,8 +438,8 @@ foreach ($cab in $cabs) {
     New-LoopbackConfig $cab $source $derived
     Assert-LoopbackConfig $cab $source $derived
     $configs[$cab.Name] = $derived
-    Write-Output ("loopback config {0}: {1} (seat {2}, port {3}, peer {4}:{5}, data_dir {6}, fullscreen {7}; every other line as in the package's {0}.cfg)" -f
-        $cab.Name, $derived, $cab.Seat, $cab.Port, $loopbackIp, $cab.PeerPort, $dataDir, $loopbackFullscreen)
+    Write-Output ("loopback config {0}: {1} (seat {2}, port {3}, peer {4}:{5}, data_dir {6}, fullscreen {7}, render_scale {8}, texture_filter {9}; every other line as in the package's {0}.cfg)" -f
+        $cab.Name, $derived, $cab.Seat, $cab.Port, $loopbackIp, $cab.PeerPort, $dataDir, $loopbackFullscreen, $loopbackRenderScale, $templateTextureFilter)
 }
 
 # ---------------------------------------------------------------------------
@@ -445,19 +465,22 @@ if ($gateExit -ne 0) {
 }
 
 # ---------------------------------------------------------------------------
-# f. After the pass: every config group came from the file (the window mode
-# too), the exe that ran and the package are still the MANIFEST's.
+# f. After the pass: every config group came from the file (the window mode,
+# render scale, and texture filter too), the exe that ran and the package are
+# still the MANIFEST's.
 
 foreach ($cab in $cabs) {
     $stdoutPath = Join-Path $gateDir "$($cab.Name).stdout.log"
     $stdoutLines = @([System.IO.File]::ReadAllLines($stdoutPath))
-    foreach ($expected in @('[CTR Native] Config groups from the file: link fullscreen data_dir', '[CTR Native] Local window mode: windowed')) {
+    foreach ($expected in @('[CTR Native] Config groups from the file: link fullscreen render_scale texture_filter data_dir',
+            '[CTR Native] Local render scale: 1x', '[CTR Native] Local window mode: windowed',
+            "[CTR Native] Local texture filter: $templateTextureFilter")) {
         $hits = @($stdoutLines | Where-Object { $_ -ceq $expected })
         if ($hits.Count -ne 1) {
             Exit-Failed "$stdoutPath has $($hits.Count) '$expected' line(s), expected 1"
         }
     }
-    Write-Output "$($cab.Name): link, fullscreen (windowed), and data_dir from $($configs[$cab.Name])"
+    Write-Output "$($cab.Name): link, fullscreen (windowed), render_scale (1x), texture_filter ($templateTextureFilter), and data_dir from $($configs[$cab.Name])"
 }
 Assert-ManifestMatches $runDir $manifest 'after the run, run copy'
 Assert-ManifestMatches $packageDir $manifest 'after the run, package'

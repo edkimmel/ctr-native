@@ -26,16 +26,25 @@ file; a relative path resolves against the launch directory.
 
 **PK-3 Keys.** `data_dir`, `seat` (`cab1`|`cab2`), `port` (1-65535), `peer`
 (`a.b.c.d:port`, repeatable up to 8), `fullscreen`
-(`0`|`1`|`yes`|`no`|`true`|`false`). Keys and values are case-sensitive, as
-on the command line. The grammar and the error classes are listed below.
-The link group (`seat`, `port`, `peer`) is all-or-none, with exactly the
-command line's rules.
+(`0`|`1`|`yes`|`no`|`true`|`false`), `render_scale` (`1`|`2`|`3`|`4`|`6`|`8`,
+as `--render-scale`), `texture_filter` (`nearest`|`bilinear`, as
+`--texture-filter`). Keys and values are case-sensitive, as on the command
+line. The grammar and the error classes are listed below. The link group
+(`seat`, `port`, `peer`) is all-or-none, with exactly the command line's
+rules. `render_scale` and `texture_filter` are host-local presentation of
+one cabinet: the two cabinets may differ in them, and they never reach the
+match config, simulation identity, replay, checkpoints, the link, or
+canonical state.
 
 **PK-4 Command-line overrides, per group.**
 - Link: if argv names `--arcade-link`, `--arcade-link-port`,
   `--arcade-link-peer`, or `--arcade-link-preview`, the file's whole link
   group is ignored.
 - Window mode: `--fullscreen` or `--windowed` overrides `fullscreen`.
+- Display, per key: `--render-scale` overrides `render_scale`, and
+  `--texture-filter` overrides `texture_filter`. A bad value in the file is
+  fatal with its line, like any bad value; a bad display flag still falls
+  back to 1x windowed (see "Notes").
 - Data: `--data-dir <dir>` overrides `data_dir`.
 
 Startup prints the loaded file (or `none (<default path> not found)`), the
@@ -53,10 +62,20 @@ its own.
   the flags do. Every later check in `main.c` then applies unchanged: it is
   rejected with replay options and with `--arcade-roster-proof`, and it
   needs a known build and content identity (PK-6).
+- `render_scale` and `texture_filter` have no grammar of their own either.
+  Each value is checked, at its line, by `NativeDisplayConfig_ApplyArgs`
+  over a synthetic `--render-scale=<value>` or `--texture-filter=<value>`,
+  so the file accepts what the flag accepts (a value over 7 or 15
+  characters excepted: a bad value). They reach the display config only
+  through `NativeArcadeConfig_ApplyDisplay`, the same parser, right after
+  `NativeDisplayConfig_SetDefaults` and before the display flags.
 - The config never reaches the match config, simulation or canonical state,
   replay, checkpoints, identity, or the topology lease. It reaches only the
-  window mode, the link options, and the assets directory.
-  `tests/native_arcade_config_isolation_test.cmake` pins this.
+  display config (window mode, render scale, texture filter), the link
+  options, and the assets directory.
+  `tests/native_arcade_config_isolation_test.cmake` pins this, and that no
+  match config, replay, canonical, checkpoint, lockstep, netplay,
+  arcade-link, or arcade race source names the display keys.
 
 **PK-6 Data directory.** `data_dir` and `--data-dir` name the folder that
 holds the user's own `ctr-u.bin`, or the extracted `BIGFILE.BIG` tree. It
@@ -110,12 +129,13 @@ See "Running the package script" below.
   the two live gates never share a port.
 - The IPs are placeholders. A comment says to edit each to the other
   cabinet's fixed IP.
-- Both templates set `data_dir = C:\ctr-data` and `fullscreen = 1`.
+- Both templates set `data_dir = C:\ctr-data`, `fullscreen = 1`,
+  `render_scale = 8`, and `texture_filter = bilinear`.
 - `tools/package/README.txt` is the operator card: data, per-cabinet setup,
   the PK-9 firewall rule, starting, and the same-build and same-disc hash
   checks. It follows "Per-cabinet setup" below.
 - `native_arcade_config_unit` parses both templates with the real parser and
-  checks the resulting link options.
+  checks the resulting link options and display config.
 
 **PK-9 Firewall rule.** A default the owner may change. Each cabinet
 allows inbound UDP on its own link port only, only for the packaged
@@ -139,7 +159,8 @@ cabinet.
 ## Config grammar
 
 - One `key = value` per line. Keys are exactly `data_dir`, `seat`, `port`,
-  `peer`, `fullscreen` (lowercase).
+  `peer`, `fullscreen`, `render_scale`, `texture_filter` (lowercase). Only
+  `peer` may repeat.
 - Whitespace (space, tab) around the key and the value is trimmed.
 - The value is the rest of the line after the first `=`. It may contain
   spaces and `=`, and it takes no quotes. A trailing `# comment` is part of
@@ -172,8 +193,8 @@ file-size error, which has no line: `config file <path>: <reason>`.
 Code: `platform/native_arcade_config.c` and
 `include/platform/native_arcade_config.h`. This is the pure library
 `ctr_native_arcade_config`, which links only
-`ctr_native_arcade_link_options`. `main.c` reads the file and is the only
-caller.
+`ctr_native_arcade_link_options` and `ctr_native_display_config`. `main.c`
+reads the file and is the only caller.
 
 ## Before packaging
 
@@ -280,15 +301,18 @@ Steps:
    `memcards\` before the gate starts: it runs as a fresh cabinet with no
    memcard save, so no game options were ever loaded from one.
 3. Derives `<output>\cab1.loopback.cfg` and `cab2.loopback.cfg` from the
-   package's `cab1.cfg` and `cab2.cfg`. Only three values change: the peer
+   package's `cab1.cfg` and `cab2.cfg`. Only four values change: the peer
    IP (to `127.0.0.1`, ports kept), `data_dir` (to the folder holding the
-   disc image), and `fullscreen` (to `0`). Every other line must be
-   unchanged, and seat, port, and peer port must equal the gate's
-   (cab1 7001 peer :7002, cab2 7002 peer :7001).
+   disc image), `fullscreen` (to `0`), and `render_scale` (to `1`: two
+   cabinets at 8x on one test PC is needless load). Every other line must
+   be unchanged (`texture_filter` stays `bilinear`), and seat, port, and
+   peer port must equal the gate's (cab1 7001 peer :7002, cab2 7002 peer
+   :7001).
 4. Runs the gate in `<output>\gate\`. After a pass it also requires both
-   stdouts to show the groups `link fullscreen data_dir` from the file and a
-   windowed window mode, and re-checks the run copy and the package against
-   the MANIFEST.
+   stdouts to show the groups
+   `link fullscreen render_scale texture_filter data_dir` from the file, a
+   1x render scale, a windowed window mode, and a bilinear texture filter,
+   and re-checks the run copy and the package against the MANIFEST.
 5. Prints the exe SHA-256 and size and `package smoke: PASS`.
 
 Two modes:
@@ -429,10 +453,15 @@ cabinet.
      different seats, and each `peer` port must be the other cabinet's
      `port`.
    - `fullscreen`: keep `1` on a cabinet (`0` is windowed, for testing).
+   - `render_scale` (template `8`) and `texture_filter` (template
+     `bilinear`): this cabinet's picture only; the two cabinets may differ.
+     Lower `render_scale` (`1`, `2`, `3`, `4`, or `6`) if the cabinet's GPU
+     cannot keep up; `nearest` is the blocky PS1 look.
 
    There are no other keys (PK-3). A comment goes on its own line: a
    `# comment` after a value becomes part of the value. After `seat`,
-   `port`, `peer`, or `fullscreen` that is a bad value, and the game stops
+   `port`, `peer`, `fullscreen`, `render_scale`, or `texture_filter` that
+   is a bad value, and the game stops
    with the file and line. After `data_dir` it becomes part of the path, and
    the game stops with `data directory ... does not hold ctr-u.bin or
    BIGFILE.BIG.` Either way the cabinet does not start.
@@ -497,8 +526,10 @@ cabinet.
 
    ```text
    [CTR Native] Config file: C:\Arcade\games\ctr-native\arcade.cfg
-   [CTR Native] Config groups from the file: link fullscreen data_dir
+   [CTR Native] Config groups from the file: link fullscreen render_scale texture_filter data_dir
+   [CTR Native] Local render scale: 8x
    [CTR Native] Local window mode: fullscreen
+   [CTR Native] Local texture filter: bilinear
    ```
 
    These lines are printed before the log file opens, so they are on the
@@ -523,7 +554,9 @@ the packager's git settings.
 
 - A malformed display flag (for example a bad `--render-scale`) still falls
   back to 1x windowed, as before. The fallback also drops the file's
-  `fullscreen`.
+  `fullscreen`, `render_scale`, and `texture_filter`. A bad `render_scale`
+  or `texture_filter` in the file is not a flag: it stops the game with the
+  file and line, like any bad value.
 - A cabinet whose `arcade.cfg` sets the link group is a link cabinet. Replay
   options and `--arcade-roster-proof` are then rejected, exactly as with
   `--arcade-link`, and the rejection message adds
@@ -535,6 +568,10 @@ the packager's git settings.
   unknown key (with its line), a file over 16 KiB, a UTF-16 file, a config
   link group with `--replay` and with `--arcade-roster-proof`, `--data-dir`
   naming an empty folder, a drive-relative data directory (from the flag
-  and from the file), and `--config` twice.
-  Every case stops before the assets and `Platform_Init`, so it needs no
-  game data and no display.
+  and from the file), `--config` twice, and a bad `render_scale` and a bad
+  `texture_filter` (with their lines). One more case, a file with
+  `render_scale = 2`, `texture_filter = bilinear`, and an empty `data_dir`
+  folder run with `--render-scale 4`, checks the startup lines: 4x,
+  bilinear, `render_scale` overridden, and `texture_filter data_dir` from
+  the file. Every case stops before the assets and `Platform_Init`, so it
+  needs no game data and no display.

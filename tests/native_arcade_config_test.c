@@ -60,6 +60,7 @@ static int TestDefaults(void)
 	Sentinel(&config);
 	NativeArcadeConfig_SetDefaults(&config);
 	CHECK((config.hasDataDir == 0) && (config.hasSeat == 0) && (config.hasPort == 0) && (config.hasFullscreen == 0));
+	CHECK((config.hasRenderScale == 0) && (config.hasTextureFilter == 0) && (config.renderScaleText[0] == '\0') && (config.textureFilterText[0] == '\0'));
 	CHECK((config.peerCount == 0) && (config.fullscreen == 0) && (config.dataDir[0] == '\0'));
 	CHECK(!NativeArcadeConfig_HasLink(&config));
 	CHECK(!NativeArcadeConfig_HasLink(NULL));
@@ -72,6 +73,7 @@ static int TestDefaults(void)
 	Sentinel(&config);
 	CHECK(ParseText("# comment\n\n   ; other\n\t\n", &config, NULL));
 	CHECK((config.hasDataDir == 0) && (config.hasSeat == 0) && (config.hasPort == 0) && (config.peerCount == 0) && (config.hasFullscreen == 0));
+	CHECK((config.hasRenderScale == 0) && (config.hasTextureFilter == 0));
 
 	/* NULL arguments. */
 	CHECK(!NativeArcadeConfig_Parse("seat = cab1", 11, NULL, &status));
@@ -92,6 +94,8 @@ static int TestGrammar(void)
 	                           "\tport =7002\r\n"
 	                           "peer= 10.0.0.1:7001 \r\n"
 	                           "peer = 127.0.0.1:7003\r\n"
+	                           "render_scale\t=  6 \t\r\n"
+	                           "texture_filter=nearest\r\n"
 	                           "fullscreen = yes";
 	struct NativeArcadeConfig config;
 	struct NativeArcadeConfigStatus status;
@@ -107,6 +111,8 @@ static int TestGrammar(void)
 	CHECK(strcmp(config.peers[0], "10.0.0.1:7001") == 0);
 	CHECK(strcmp(config.peers[1], "127.0.0.1:7003") == 0);
 	CHECK((config.hasFullscreen == 1) && (config.fullscreen == 1));
+	CHECK((config.hasRenderScale == 1) && (strcmp(config.renderScaleText, "6") == 0));
+	CHECK((config.hasTextureFilter == 1) && (strcmp(config.textureFilterText, "nearest") == 0));
 	CHECK(NativeArcadeConfig_HasLink(&config));
 
 	/* LF only, a trailing newline, and a lone data_dir: no link group. */
@@ -114,6 +120,7 @@ static int TestGrammar(void)
 	CHECK(ParseText("data_dir = ..\\ctr data\n", &config, NULL));
 	CHECK((config.hasDataDir == 1) && (strcmp(config.dataDir, "..\\ctr data") == 0));
 	CHECK((config.hasSeat == 0) && (config.hasPort == 0) && (config.peerCount == 0) && (config.hasFullscreen == 0));
+	CHECK((config.hasRenderScale == 0) && (config.hasTextureFilter == 0));
 	CHECK(!NativeArcadeConfig_HasLink(&config));
 
 	/* A BOM alone, and a BOM before a comment. */
@@ -221,7 +228,12 @@ static int TestErrors(void)
 	/* Unknown keys: exact and lowercase only. */
 	CHECK(RejectsTextAt("fullscreen = 1\nSeat = cab1\n", NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY, 2));
 	CHECK(RejectsTextAt("data dir = x\n", NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY, 1));
-	CHECK(RejectsTextAt("\n\n\nrender_scale = 2\n", NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY, 4));
+	CHECK(RejectsTextAt("\n\n\nrenderscale = 2\n", NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY, 4));
+	CHECK(RejectsTextAt("Render_scale = 2\n", NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY, 1));
+	CHECK(RejectsTextAt("texture-filter = bilinear\n", NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY, 1));
+	CHECK(RejectsTextAt("# c\nwindow_mode = fullscreen\n", NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY, 2));
+	CHECK(strstr(NativeArcadeConfig_ErrorText(NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY), "render_scale, or texture_filter") != NULL);
+	CHECK(strstr(NativeArcadeConfig_ErrorText(NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE), "render_scale: 1, 2, 3, 4, 6, or 8; texture_filter: nearest or bilinear") != NULL);
 	CHECK(RejectsTextAt("peers = 1.2.3.4:5\n", NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY, 1));
 
 	/* Duplicate non-repeatable keys. */
@@ -344,6 +356,236 @@ static int TestApplyLink(void)
 	return 0;
 }
 
+/*
+ * What the command line's display parser says about option + value, from the
+ * defaults: the '=' form is the result, *twoToken the two-token form's.
+ */
+static int FlagAccepts(const char *option, const char *value, int *twoToken)
+{
+	char program[] = "ctr_native";
+	char joined[64];
+	char optionCopy[32];
+	char valueCopy[32];
+	char *equalsArgv[] = { program, joined };
+	char *twoTokenArgv[] = { program, optionCopy, valueCopy };
+	struct NativeDisplayConfig display;
+	int equals;
+
+	snprintf(joined, sizeof(joined), "%s=%s", option, value);
+	snprintf(optionCopy, sizeof(optionCopy), "%s", option);
+	snprintf(valueCopy, sizeof(valueCopy), "%s", value);
+	NativeDisplayConfig_SetDefaults(&display);
+	equals = NativeDisplayConfig_ApplyArgs(ARGC(equalsArgv), equalsArgv, &display);
+	NativeDisplayConfig_SetDefaults(&display);
+	*twoToken = NativeDisplayConfig_ApplyArgs(ARGC(twoTokenArgv), twoTokenArgv, &display);
+	return equals;
+}
+
+/*
+ * key = value on line 3 is accepted exactly when the flag accepts the value in
+ * both forms; *accepted receives the verdict. A rejected value is BAD_VALUE
+ * at its line with the config untouched; an accepted one is stored as written.
+ */
+static int FileAgreesWithFlag(const char *key, const char *option, const char *value, int *accepted)
+{
+	char text[128];
+	struct NativeArcadeConfig config;
+	int twoToken = -1;
+	const int equals = FlagAccepts(option, value, &twoToken);
+
+	CHECK(equals == twoToken);
+	snprintf(text, sizeof(text), "# c\nfullscreen = 0\n%s = %s\n", key, value);
+	if (equals)
+	{
+		const int isScale = (strcmp(key, "render_scale") == 0);
+
+		Sentinel(&config);
+		CHECK(ParseText(text, &config, NULL));
+		CHECK((config.hasFullscreen == 1) && (config.fullscreen == 0));
+		if (isScale)
+		{
+			CHECK((config.hasRenderScale == 1) && (config.hasTextureFilter == 0) && (strcmp(config.renderScaleText, value) == 0));
+		}
+		else
+		{
+			CHECK((config.hasTextureFilter == 1) && (config.hasRenderScale == 0) && (strcmp(config.textureFilterText, value) == 0));
+		}
+	}
+	else
+	{
+		CHECK(RejectsTextAt(text, NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 3));
+	}
+	*accepted = equals;
+	return 0;
+}
+
+static int TestDisplayKeys(void)
+{
+	static const char *const goodScales[] = { "1", "2", "3", "4", "6", "8" };
+	static const char *const badScales[] = { "0", "5", "7", "16", "-1", "-8", "8x", "x8", "2.0", "0x8", "1e1", "8 8", "999999999999999999999" };
+	/* strtol, behind the flag, takes a leading '+' or zeros: the file agrees. */
+	static const char *const flagQuirkScales[] = { "08", "+8", "0000008" };
+	static const char *const goodFilters[] = { "nearest", "bilinear" };
+	static const char *const badFilters[] = { "Bilinear", "BILINEAR", "linear", "Nearest", "trilinear", "none", "bilinear2", "-bilinear", "near est" };
+	struct NativeArcadeConfig config;
+	struct NativeDisplayConfig display;
+	int accepted = -1;
+
+	for (size_t i = 0; i < sizeof(goodScales) / sizeof(goodScales[0]); i++)
+	{
+		CHECK(FileAgreesWithFlag("render_scale", "--render-scale", goodScales[i], &accepted) == 0);
+		CHECK(accepted == 1);
+	}
+	for (size_t i = 0; i < sizeof(badScales) / sizeof(badScales[0]); i++)
+	{
+		CHECK(FileAgreesWithFlag("render_scale", "--render-scale", badScales[i], &accepted) == 0);
+		CHECK(accepted == 0);
+	}
+	for (size_t i = 0; i < sizeof(flagQuirkScales) / sizeof(flagQuirkScales[0]); i++)
+	{
+		CHECK(FileAgreesWithFlag("render_scale", "--render-scale", flagQuirkScales[i], &accepted) == 0);
+		CHECK(accepted == 1);
+		snprintf(s_big, sizeof(s_big), "render_scale = %s\n", flagQuirkScales[i]);
+		CHECK(ParseText(s_big, &config, NULL));
+		NativeDisplayConfig_SetDefaults(&display);
+		CHECK(NativeArcadeConfig_ApplyDisplay(&config, &display));
+		CHECK(display.renderScale == 8);
+	}
+	for (size_t i = 0; i < sizeof(goodFilters) / sizeof(goodFilters[0]); i++)
+	{
+		CHECK(FileAgreesWithFlag("texture_filter", "--texture-filter", goodFilters[i], &accepted) == 0);
+		CHECK(accepted == 1);
+	}
+	for (size_t i = 0; i < sizeof(badFilters) / sizeof(badFilters[0]); i++)
+	{
+		CHECK(FileAgreesWithFlag("texture_filter", "--texture-filter", badFilters[i], &accepted) == 0);
+		CHECK(accepted == 0);
+	}
+
+	/* The one exception: a value that does not fit its buffer (7 and 15
+	 * characters) is a bad value, even where the flag takes it. */
+	{
+		int twoToken = 0;
+
+		CHECK(FlagAccepts("--render-scale", "00000008", &twoToken) && twoToken);
+		CHECK(RejectsTextAt("render_scale = 00000008\n", NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 1));
+		CHECK(RejectsTextAt("texture_filter = bilinearbilinear\n", NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 1));
+	}
+
+	/* Blanks around the value are trimmed; the value is stored as written. */
+	Sentinel(&config);
+	CHECK(ParseText("render_scale = \t 4 \t\r\ntexture_filter\t=\tbilinear  \r\n", &config, NULL));
+	CHECK((config.hasRenderScale == 1) && (strcmp(config.renderScaleText, "4") == 0));
+	CHECK((config.hasTextureFilter == 1) && (strcmp(config.textureFilterText, "bilinear") == 0));
+	CHECK((config.hasFullscreen == 0) && (config.hasDataDir == 0) && !NativeArcadeConfig_HasLink(&config));
+
+	/* Not repeatable, not empty, and a trailing comment is part of the value. */
+	CHECK(RejectsTextAt("render_scale = 2\nrender_scale = 2\n", NATIVE_ARCADE_CONFIG_ERROR_DUPLICATE_KEY, 2));
+	CHECK(RejectsTextAt("texture_filter = nearest\n# c\ntexture_filter = bilinear\n", NATIVE_ARCADE_CONFIG_ERROR_DUPLICATE_KEY, 3));
+	CHECK(RejectsTextAt("render_scale = 2\nrender_scale =\n", NATIVE_ARCADE_CONFIG_ERROR_DUPLICATE_KEY, 2));
+	CHECK(RejectsTextAt("render_scale =\n", NATIVE_ARCADE_CONFIG_ERROR_EMPTY_VALUE, 1));
+	CHECK(RejectsTextAt("# c\ntexture_filter = \t \r\n", NATIVE_ARCADE_CONFIG_ERROR_EMPTY_VALUE, 2));
+	CHECK(RejectsTextAt("render_scale = 8 # c\n", NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 1));
+	CHECK(RejectsTextAt("texture_filter = bilinear # smooth\n", NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 1));
+
+	/* The line of a bad value, after good lines of every other key; the first error wins. */
+	CHECK(RejectsTextAt("data_dir = x\nseat = cab1\nport = 7001\npeer = 1.2.3.4:5\nfullscreen = 1\ntexture_filter = bilinear\nrender_scale = 5\n",
+	                    NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 7));
+	CHECK(RejectsTextAt("render_scale = 8\n\ntexture_filter = linear\nrender_scale = 8\n", NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 3));
+	/* A good display key does not complete a link group. */
+	CHECK(RejectsTextAt("render_scale = 8\nseat = cab1\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 2));
+	return 0;
+}
+
+static int TestApplyDisplay(void)
+{
+	struct NativeArcadeConfig config;
+	struct NativeDisplayConfig display;
+	struct NativeDisplayConfig fromArgs;
+	struct NativeDisplayConfig snapshot;
+
+	/* NULL arguments: 0, untouched. */
+	CHECK(ParseText("render_scale = 8\n", &config, NULL));
+	NativeDisplayConfig_SetDefaults(&display);
+	snapshot = display;
+	CHECK(!NativeArcadeConfig_ApplyDisplay(NULL, &display));
+	CHECK(!NativeArcadeConfig_ApplyDisplay(&config, NULL));
+	CHECK(memcmp(&display, &snapshot, sizeof(display)) == 0);
+
+	/* Neither key: a successful no-op, even on a display the flag parser would refuse. */
+	CHECK(ParseText("fullscreen = 0\ndata_dir = x\n", &config, NULL));
+	display.renderScale = 3;
+	display.fullscreen = 1;
+	display.textureFilter = NATIVE_TEXTURE_FILTER_BILINEAR;
+	snapshot = display;
+	CHECK(NativeArcadeConfig_ApplyDisplay(&config, &display));
+	CHECK(memcmp(&display, &snapshot, sizeof(display)) == 0);
+	display.renderScale = 5;
+	snapshot = display;
+	CHECK(NativeArcadeConfig_ApplyDisplay(&config, &display));
+	CHECK(memcmp(&display, &snapshot, sizeof(display)) == 0);
+
+	/* One key: only that field changes; the file's fullscreen is never applied here. */
+	CHECK(ParseText("fullscreen = 0\nrender_scale = 6\n", &config, NULL));
+	display.renderScale = 2;
+	display.fullscreen = 1;
+	display.textureFilter = NATIVE_TEXTURE_FILTER_BILINEAR;
+	CHECK(NativeArcadeConfig_ApplyDisplay(&config, &display));
+	CHECK((display.renderScale == 6) && (display.fullscreen == 1) && (display.textureFilter == NATIVE_TEXTURE_FILTER_BILINEAR));
+	CHECK(ParseText("fullscreen = 1\ntexture_filter = nearest\n", &config, NULL));
+	display.fullscreen = 0;
+	CHECK(NativeArcadeConfig_ApplyDisplay(&config, &display));
+	CHECK((display.renderScale == 6) && (display.fullscreen == 0) && (display.textureFilter == NATIVE_TEXTURE_FILTER_NEAREST));
+
+	/* Both keys: exactly the equivalent command line, from the same start. */
+	{
+		char *argv[] = { "ctr_native", "--render-scale", "8", "--texture-filter", "bilinear" };
+
+		CHECK(ParseText("texture_filter = bilinear\nrender_scale = 8\n", &config, NULL));
+		NativeDisplayConfig_SetDefaults(&display);
+		display.fullscreen = 1;
+		fromArgs = display;
+		CHECK(NativeArcadeConfig_ApplyDisplay(&config, &display));
+		CHECK(NativeDisplayConfig_ApplyArgs(ARGC(argv), argv, &fromArgs));
+		CHECK(memcmp(&display, &fromArgs, sizeof(display)) == 0);
+		CHECK((display.renderScale == 8) && (display.textureFilter == NATIVE_TEXTURE_FILTER_BILINEAR) && (display.fullscreen == 1));
+	}
+
+	/* The flags then override per key, as in main.c. */
+	{
+		char *argv[] = { "ctr_native", "--render-scale", "4" };
+
+		CHECK(NativeDisplayConfig_ApplyArgs(ARGC(argv), argv, &display));
+		CHECK((display.renderScale == 4) && (display.textureFilter == NATIVE_TEXTURE_FILTER_BILINEAR) && (display.fullscreen == 1));
+	}
+
+	/* A display the flag parser refuses: 0, untouched. */
+	display.fullscreen = 2;
+	snapshot = display;
+	CHECK(!NativeArcadeConfig_ApplyDisplay(&config, &display));
+	CHECK(memcmp(&display, &snapshot, sizeof(display)) == 0);
+
+	/* A hand-built config with a bad or unterminated value: 0, untouched. */
+	NativeDisplayConfig_SetDefaults(&display);
+	snapshot = display;
+	NativeArcadeConfig_SetDefaults(&config);
+	config.hasRenderScale = 1;
+	memcpy(config.renderScaleText, "5", 2);
+	CHECK(!NativeArcadeConfig_ApplyDisplay(&config, &display));
+	CHECK(memcmp(&display, &snapshot, sizeof(display)) == 0);
+	memset(config.renderScaleText, '8', sizeof(config.renderScaleText));
+	CHECK(!NativeArcadeConfig_ApplyDisplay(&config, &display));
+	NativeArcadeConfig_SetDefaults(&config);
+	config.hasTextureFilter = 1;
+	memset(config.textureFilterText, 'x', sizeof(config.textureFilterText));
+	CHECK(!NativeArcadeConfig_ApplyDisplay(&config, &display));
+	/* A set flag with an empty value is refused by the flag parser too. */
+	config.textureFilterText[0] = '\0';
+	CHECK(!NativeArcadeConfig_ApplyDisplay(&config, &display));
+	CHECK(memcmp(&display, &snapshot, sizeof(display)) == 0);
+	return 0;
+}
+
 static int TestParseArgs(void)
 {
 	struct NativeArcadeConfigArgs args;
@@ -355,6 +597,7 @@ static int TestParseArgs(void)
 		memset(&args, 0xA5, sizeof(args));
 		CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
 		CHECK((args.configPath == NULL) && (args.dataDir == NULL) && (args.namesLinkOption == 0) && (args.namesWindowMode == 0));
+		CHECK((args.namesRenderScale == 0) && (args.namesTextureFilter == 0));
 		CHECK(NativeArcadeConfig_ParseArgs(0, NULL, &args));
 	}
 	{
@@ -363,7 +606,39 @@ static int TestParseArgs(void)
 		CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
 		CHECK(args.configPath == argv[4]);
 		CHECK(args.dataDir == argv[6]);
-		CHECK((args.namesLinkOption == 0) && (args.namesWindowMode == 1));
+		CHECK((args.namesLinkOption == 0) && (args.namesWindowMode == 1) && (args.namesRenderScale == 1) && (args.namesTextureFilter == 0));
+	}
+	{
+		/* Each display flag in both forms, and near misses that name neither. */
+		static const struct
+		{
+			const char *arg;
+			uint8_t scale;
+			uint8_t filter;
+		} names[] = {
+			{ "--render-scale", 1, 0 },    { "--render-scale=4", 1, 0 },       { "--render-scale=", 1, 0 },
+			{ "--texture-filter", 0, 1 },  { "--texture-filter=bilinear", 0, 1 }, { "--texture-filter=", 0, 1 },
+			{ "--render-scaled", 0, 0 },   { "-render-scale", 0, 0 },          { "--texture-filters", 0, 0 },
+			{ "--Render-scale", 0, 0 },    { "render_scale", 0, 0 },           { "--texture_filter=bilinear", 0, 0 },
+		};
+
+		for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+		{
+			char name[32];
+			char *argv[] = { "ctr_native", name };
+
+			snprintf(name, sizeof(name), "%s", names[i].arg);
+			memset(&args, 0xA5, sizeof(args));
+			CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
+			CHECK((args.namesRenderScale == names[i].scale) && (args.namesTextureFilter == names[i].filter));
+			CHECK((args.namesLinkOption == 0) && (args.namesWindowMode == 0) && (args.configPath == NULL) && (args.dataDir == NULL));
+		}
+	}
+	{
+		char *argv[] = { "ctr_native", "--texture-filter", "bilinear", "--render-scale=8" };
+
+		CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
+		CHECK((args.namesRenderScale == 1) && (args.namesTextureFilter == 1) && (args.namesWindowMode == 0));
 	}
 	{
 		static const char *const linkNames[] = { "--arcade-link", "--arcade-link-port", "--arcade-link-peer", "--arcade-link-preview" };
@@ -382,7 +657,7 @@ static int TestParseArgs(void)
 		char *argv[] = { "ctr_native", "--fullscreen", "--arcade-link-autopilot", "x" };
 
 		CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
-		CHECK((args.namesLinkOption == 0) && (args.namesWindowMode == 1));
+		CHECK((args.namesLinkOption == 0) && (args.namesWindowMode == 1) && (args.namesRenderScale == 0) && (args.namesTextureFilter == 0));
 	}
 
 	/* Errors leave *args untouched. */
@@ -431,6 +706,7 @@ static int TestTemplate(const char *path, const char *seat, uint8_t role, uint16
 	struct NativeArcadeConfig config;
 	struct NativeArcadeConfigStatus status;
 	struct NativeArcadeLinkOptions options;
+	struct NativeDisplayConfig display;
 	size_t size = 0;
 	char peerText[32];
 
@@ -449,6 +725,14 @@ static int TestTemplate(const char *path, const char *seat, uint8_t role, uint16
 	CHECK((options.enabled == 1) && (options.localRole == role) && (options.localPort == port));
 	CHECK((options.peerCount == 1) && (options.peers[0].ipv4 == peerIPv4) && (options.peers[0].port == peerPort));
 	CHECK(options.preview == NATIVE_ARCADE_LINK_PREVIEW_NONE);
+
+	/* Presentation defaults: 8x, bilinear (fullscreen 1 is checked above). */
+	CHECK((config.hasRenderScale == 1) && (strcmp(config.renderScaleText, "8") == 0));
+	CHECK((config.hasTextureFilter == 1) && (strcmp(config.textureFilterText, "bilinear") == 0));
+	NativeDisplayConfig_SetDefaults(&display);
+	CHECK(NativeArcadeConfig_ApplyDisplay(&config, &display));
+	CHECK((display.renderScale == 8) && (display.textureFilter == NATIVE_TEXTURE_FILTER_BILINEAR));
+	CHECK(display.fullscreen == NATIVE_DISPLAY_CONFIG_DEFAULT_FULLSCREEN);
 	return 0;
 }
 
@@ -459,6 +743,8 @@ int main(int argc, char *argv[])
 	CHECK(TestFullscreen() == 0);
 	CHECK(TestErrors() == 0);
 	CHECK(TestApplyLink() == 0);
+	CHECK(TestDisplayKeys() == 0);
+	CHECK(TestApplyDisplay() == 0);
 	CHECK(TestParseArgs() == 0);
 	/* tools/package/cab1.cfg and cab2.cfg, passed by ctest. */
 	CHECK(argc == 3);

@@ -17,7 +17,10 @@ file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}/empty_data")
 file(WRITE "${WORK_DIR}/stdin.txt" "")
 file(WRITE "${WORK_DIR}/empty.cfg" "")
-file(WRITE "${WORK_DIR}/unknown_key.cfg" "# cabinet\nfullscreen = 1\nrender_scale = 2\n")
+file(WRITE "${WORK_DIR}/unknown_key.cfg" "# cabinet\nfullscreen = 1\nvolume = 2\n")
+file(WRITE "${WORK_DIR}/bad_render_scale.cfg" "# cabinet\nfullscreen = 1\ntexture_filter = bilinear\nrender_scale = 5\n")
+file(WRITE "${WORK_DIR}/bad_texture_filter.cfg" "render_scale = 8\ntexture_filter = Bilinear\n")
+file(WRITE "${WORK_DIR}/display_override.cfg" "render_scale = 2\ntexture_filter = bilinear\ndata_dir = ${WORK_DIR}/empty_data\n")
 string(REPEAT "#\n" 8193 too_large)
 file(WRITE "${WORK_DIR}/too_large.cfg" "${too_large}")
 file(WRITE "${WORK_DIR}/link.cfg" "seat = cab1\nport = 7001\npeer = 127.0.0.1:7002\n")
@@ -42,9 +45,12 @@ if(NOT utf16_result EQUAL 0 OR utf16_size LESS 4)
 endif()
 
 set(case_count 0)
+# expect_startup_failure(<name> <expected text> <exe args>... [ALSO_EXPECT <text>...])
+# Every ALSO_EXPECT text (none may hold ';') must appear in the output too.
 function(expect_startup_failure name expected_text)
+    cmake_parse_arguments(PARSE_ARGV 2 case "" "" "ALSO_EXPECT")
     execute_process(
-        COMMAND "${CTR_EXE}" ${ARGN}
+        COMMAND "${CTR_EXE}" ${case_UNPARSED_ARGUMENTS}
         WORKING_DIRECTORY "${WORK_DIR}"
         INPUT_FILE "${WORK_DIR}/stdin.txt"
         RESULT_VARIABLE result
@@ -52,6 +58,7 @@ function(expect_startup_failure name expected_text)
         ERROR_VARIABLE error_output
         TIMEOUT 60)
     set(all_output "${output}${error_output}")
+    string(REPLACE "\r" "" all_output "${all_output}")
     message(STATUS "config startup [${name}] exit ${result}:\n${all_output}")
     if(NOT "${result}" STREQUAL "1")
         message(FATAL_ERROR "config startup: case '${name}' exited '${result}', expected 1")
@@ -60,9 +67,20 @@ function(expect_startup_failure name expected_text)
     if(text_at EQUAL -1)
         message(FATAL_ERROR "config startup: case '${name}' output lacks '${expected_text}'")
     endif()
+    foreach(text IN LISTS case_ALSO_EXPECT)
+        string(FIND "${all_output}" "${text}" text_at)
+        if(text_at EQUAL -1)
+            message(FATAL_ERROR "config startup: case '${name}' output lacks '${text}'")
+        endif()
+    endforeach()
     string(FIND "${all_output}" "[CTR Native] Starting..." started_at)
     if(NOT started_at EQUAL -1 AND NOT name MATCHES "^data_dir_")
         message(FATAL_ERROR "config startup: case '${name}' got past the option checks")
+    endif()
+    # No case may reach Platform_Init (the renderer prints on its init).
+    string(FIND "${all_output}" "[CTR Renderer]" renderer_at)
+    if(NOT renderer_at EQUAL -1)
+        message(FATAL_ERROR "config startup: case '${name}' reached Platform_Init")
     endif()
     math(EXPR next_count "${case_count} + 1")
     set(case_count ${next_count} PARENT_SCOPE)
@@ -91,11 +109,34 @@ expect_startup_failure(data_dir_drive_relative "data directory C:ctr-data (from 
 expect_startup_failure(data_dir_drive_relative_config
     "data directory D:ctr-data (from config file ${WORK_DIR}/drive_relative.cfg) is drive-relative"
     --config "${WORK_DIR}/drive_relative.cfg")
+# A bad render_scale or texture_filter in the file is fatal like any other
+# bad value (a bad display FLAG still falls back to 1x windowed).
+expect_startup_failure(bad_render_scale
+    "config file ${WORK_DIR}/bad_render_scale.cfg line 4: invalid value ("
+    --config "${WORK_DIR}/bad_render_scale.cfg"
+    ALSO_EXPECT "render_scale: 1, 2, 3, 4, 6, or 8")
+expect_startup_failure(bad_texture_filter
+    "config file ${WORK_DIR}/bad_texture_filter.cfg line 2: invalid value ("
+    --config "${WORK_DIR}/bad_texture_filter.cfg"
+    ALSO_EXPECT "texture_filter: nearest or bilinear")
+# The file's render_scale and texture_filter reach the display config, and
+# a flag overrides its own key only: the display lines are printed after
+# "Starting..." and before the data directory check fails (no Platform_Init).
+expect_startup_failure(data_dir_display_override
+    "data directory ${WORK_DIR}/empty_data (resolved: ${WORK_DIR}/empty_data, from config file ${WORK_DIR}/display_override.cfg) does not hold ctr-u.bin or BIGFILE.BIG"
+    --config "${WORK_DIR}/display_override.cfg" --render-scale 4
+    ALSO_EXPECT
+        "[CTR Native] Config groups from the file: texture_filter data_dir\n"
+        "[CTR Native] Config groups overridden by the command line: render_scale\n"
+        "[CTR Native] Local render scale: 4x\n"
+        "[CTR Native] Local window mode: windowed\n"
+        "[CTR Native] Local texture filter: bilinear\n")
 
 # Nothing but the fixtures was created (no replay report, roster log, or log file).
 file(GLOB created RELATIVE "${WORK_DIR}" "${WORK_DIR}/*")
 list(SORT created)
-set(expected_created drive_relative.cfg empty.cfg empty_data link.cfg stdin.txt too_large.cfg unknown_key.cfg utf16.cfg)
+set(expected_created bad_render_scale.cfg bad_texture_filter.cfg display_override.cfg drive_relative.cfg empty.cfg empty_data link.cfg stdin.txt
+    too_large.cfg unknown_key.cfg utf16.cfg)
 if(NOT "${created}" STREQUAL "${expected_created}")
     message(FATAL_ERROR "config startup: the work folder holds '${created}', expected '${expected_created}'")
 endif()

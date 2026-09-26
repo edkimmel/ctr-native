@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "platform/native_arcade_link_options.h"
+#include "platform/native_display_config.h"
 
 /*
  * Per-cabinet config file (docs/PACKAGING.md PK-2..PK-6).
@@ -19,6 +20,8 @@
  *   peer       = a.b.c.d:port   as --arcade-link-peer; repeatable, up to
  *                               NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS
  *   fullscreen = 0|1|yes|no|true|false
+ *   render_scale   = 1|2|3|4|6|8       as --render-scale
+ *   texture_filter = nearest|bilinear  as --texture-filter
  *
  * One key = value per line. Keys are lowercase and exact. Whitespace (space,
  * tab) around the key and the value is trimmed; the value is the rest of the
@@ -44,6 +47,16 @@
  * NativeArcadeConfig_ApplyLink, which writes struct NativeArcadeLinkOptions
  * exactly as the flags do.
  *
+ * render_scale and texture_filter have no display grammar here either: each
+ * value is checked, at its line, by NativeDisplayConfig_ApplyArgs itself over
+ * a synthetic argv (--render-scale=<value> or --texture-filter=<value>), so
+ * the file accepts exactly what the flag accepts, except that a value longer
+ * than its buffer is a bad value. Both non-repeatable. They reach the display
+ * config only through NativeArcadeConfig_ApplyDisplay, the same parser again.
+ * They are host-local presentation preferences of one cabinet only: never
+ * part of the match config, simulation identity, replay, checkpoints, the
+ * link, or canonical state, and two linked cabinets may differ in them.
+ *
  * Host-local launch configuration only. Pure: caller-owned state, no heap,
  * no I/O (the caller reads the file), no hidden state. Parse is
  * transactional: on any error *config is left untouched.
@@ -55,6 +68,8 @@
 #define NATIVE_ARCADE_CONFIG_SEAT_BYTES     8u
 #define NATIVE_ARCADE_CONFIG_PORT_BYTES     8u
 #define NATIVE_ARCADE_CONFIG_PEER_BYTES     24u
+#define NATIVE_ARCADE_CONFIG_RENDER_SCALE_BYTES   8u
+#define NATIVE_ARCADE_CONFIG_TEXTURE_FILTER_BYTES 16u
 #define NATIVE_ARCADE_CONFIG_DEFAULT_NAME   "arcade.cfg"
 
 enum NativeArcadeConfigError
@@ -86,12 +101,17 @@ struct NativeArcadeConfig
 	uint8_t hasSeat;
 	uint8_t hasPort;
 	uint8_t hasFullscreen;
+	uint8_t hasRenderScale;
+	uint8_t hasTextureFilter;
+	uint8_t reserved[2];
 	int fullscreen; /* 0 or 1 when hasFullscreen */
 	uint32_t peerCount;
 	char dataDir[NATIVE_ARCADE_CONFIG_DATA_DIR_BYTES];
 	char seat[NATIVE_ARCADE_CONFIG_SEAT_BYTES];
 	char port[NATIVE_ARCADE_CONFIG_PORT_BYTES];
 	char peers[NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS][NATIVE_ARCADE_CONFIG_PEER_BYTES];
+	char renderScaleText[NATIVE_ARCADE_CONFIG_RENDER_SCALE_BYTES];     /* as written, when hasRenderScale */
+	char textureFilterText[NATIVE_ARCADE_CONFIG_TEXTURE_FILTER_BYTES]; /* as written, when hasTextureFilter */
 };
 
 /* NULL is a no-op. Otherwise zeroes the config: every key unset. */
@@ -115,6 +135,15 @@ int NativeArcadeConfig_HasLink(const struct NativeArcadeConfig *config);
  */
 int NativeArcadeConfig_ApplyLink(const struct NativeArcadeConfig *config, struct NativeArcadeLinkOptions *options);
 
+/*
+ * Feeds the file's render_scale and texture_filter (whichever are set) to
+ * NativeDisplayConfig_ApplyArgs as one synthetic argv and returns its result
+ * (*display untouched on failure). With neither key set it is a successful
+ * no-op: 1, *display untouched. 0 for NULL arguments. It never changes
+ * display->fullscreen: the file's fullscreen keeps its own path in main.c.
+ */
+int NativeArcadeConfig_ApplyDisplay(const struct NativeArcadeConfig *config, struct NativeDisplayConfig *display);
+
 /* A short English description of an enum NativeArcadeConfigError value. */
 const char *NativeArcadeConfig_ErrorText(uint32_t error);
 
@@ -124,15 +153,17 @@ struct NativeArcadeConfigArgs
 	const char *configPath;  /* --config <path>, else NULL; points into argv */
 	const char *dataDir;     /* --data-dir <dir>, else NULL; points into argv */
 	uint8_t namesLinkOption; /* any --arcade-link, --arcade-link-port, --arcade-link-peer, or --arcade-link-preview */
-	uint8_t namesWindowMode; /* any --fullscreen or --windowed */
-	uint16_t reserved;
+	uint8_t namesWindowMode;    /* any --fullscreen or --windowed */
+	uint8_t namesRenderScale;   /* any --render-scale or --render-scale=... */
+	uint8_t namesTextureFilter; /* any --texture-filter or --texture-filter=... */
 };
 
 /*
  * Scans argv for --config <path> and --data-dir <dir> (each at most once;
  * the value must be present, non-empty, and not start with '-') and records
- * whether argv names a link or window-mode option (by name, like the replay
- * rejection). Other arguments are ignored. Returns 1 and writes *args on
+ * whether argv names a link, window-mode, render-scale, or texture-filter
+ * option (by name, like the replay rejection; the last two only feed the
+ * startup log, since the display flags apply per key on their own). Other arguments are ignored. Returns 1 and writes *args on
  * success; 0 with *args untouched otherwise.
  */
 int NativeArcadeConfig_ParseArgs(int argc, char *argv[], struct NativeArcadeConfigArgs *args);

@@ -9,6 +9,11 @@
 /* Synthetic argv: program, link, seat, port option, port, and one option-value pair per peer. */
 #define NATIVE_ARCADE_CONFIG_LINK_ARGV_MAX (5u + (2u * NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS))
 
+/* Synthetic display argv: program, --render-scale=<value>, --texture-filter=<value>. */
+#define NATIVE_ARCADE_CONFIG_DISPLAY_ARGV_MAX 3u
+#define NATIVE_ARCADE_CONFIG_RENDER_SCALE_OPTION   "--render-scale="
+#define NATIVE_ARCADE_CONFIG_TEXTURE_FILTER_OPTION "--texture-filter="
+
 enum NativeArcadeConfigKey
 {
 	NATIVE_ARCADE_CONFIG_KEY_NONE = 0,
@@ -16,7 +21,9 @@ enum NativeArcadeConfigKey
 	NATIVE_ARCADE_CONFIG_KEY_SEAT,
 	NATIVE_ARCADE_CONFIG_KEY_PORT,
 	NATIVE_ARCADE_CONFIG_KEY_PEER,
-	NATIVE_ARCADE_CONFIG_KEY_FULLSCREEN
+	NATIVE_ARCADE_CONFIG_KEY_FULLSCREEN,
+	NATIVE_ARCADE_CONFIG_KEY_RENDER_SCALE,
+	NATIVE_ARCADE_CONFIG_KEY_TEXTURE_FILTER
 };
 
 /* A CR only ever ends a line (Parse removes it, or rejects a bare one), so it is not blank. */
@@ -102,6 +109,79 @@ static int NativeArcadeConfig_LinkValueAccepted(enum NativeArcadeConfigKey key, 
 	                                        (key == NATIVE_ARCADE_CONFIG_KEY_PORT) ? value : samplePort, &peer, 1u, &probe);
 }
 
+/*
+ * Writes option followed by value into dst (dstSize bytes). The value must
+ * end with a NUL within its first valueCapacity bytes, so that it fits the
+ * config's buffer; returns 0 when it does not.
+ */
+static int NativeArcadeConfig_JoinOption(char *dst, size_t dstSize, const char *option, const char *value, size_t valueCapacity)
+{
+	const size_t optionLength = strlen(option);
+	const char *end = memchr(value, '\0', valueCapacity);
+	size_t valueLength;
+
+	if (end == NULL)
+	{
+		return 0;
+	}
+	valueLength = (size_t)(end - value);
+	if ((optionLength + valueLength) >= dstSize)
+	{
+		return 0;
+	}
+	memcpy(dst, option, optionLength);
+	memcpy(dst + optionLength, value, valueLength + 1u);
+	return 1;
+}
+
+/*
+ * Runs the command line's own display parser over
+ *   <program> [--render-scale=<renderScale>] [--texture-filter=<textureFilter>]
+ * with the entries that are not NULL. Returns its result; *display is only
+ * written on success. The '=' form takes a value that starts with '-' too,
+ * which the two-token form refuses, but no such value is a valid scale or
+ * filter in either form, so the file accepts exactly what the flag accepts.
+ */
+static int NativeArcadeConfig_RunDisplayParser(const char *renderScale, const char *textureFilter, struct NativeDisplayConfig *display)
+{
+	char program[] = NATIVE_ARCADE_CONFIG_DEFAULT_NAME;
+	char scaleArg[sizeof(NATIVE_ARCADE_CONFIG_RENDER_SCALE_OPTION) + NATIVE_ARCADE_CONFIG_RENDER_SCALE_BYTES];
+	char filterArg[sizeof(NATIVE_ARCADE_CONFIG_TEXTURE_FILTER_OPTION) + NATIVE_ARCADE_CONFIG_TEXTURE_FILTER_BYTES];
+	char *argv[NATIVE_ARCADE_CONFIG_DISPLAY_ARGV_MAX];
+	int argc = 0;
+
+	argv[argc++] = program;
+	if (renderScale != NULL)
+	{
+		if (!NativeArcadeConfig_JoinOption(scaleArg, sizeof(scaleArg), NATIVE_ARCADE_CONFIG_RENDER_SCALE_OPTION, renderScale,
+		                                   NATIVE_ARCADE_CONFIG_RENDER_SCALE_BYTES))
+		{
+			return 0;
+		}
+		argv[argc++] = scaleArg;
+	}
+	if (textureFilter != NULL)
+	{
+		if (!NativeArcadeConfig_JoinOption(filterArg, sizeof(filterArg), NATIVE_ARCADE_CONFIG_TEXTURE_FILTER_OPTION, textureFilter,
+		                                   NATIVE_ARCADE_CONFIG_TEXTURE_FILTER_BYTES))
+		{
+			return 0;
+		}
+		argv[argc++] = filterArg;
+	}
+	return NativeDisplayConfig_ApplyArgs(argc, argv, display);
+}
+
+/* Checks one display value in isolation with the command line's parser, on a default probe. */
+static int NativeArcadeConfig_DisplayValueAccepted(enum NativeArcadeConfigKey key, const char *value)
+{
+	struct NativeDisplayConfig probe;
+
+	NativeDisplayConfig_SetDefaults(&probe);
+	return NativeArcadeConfig_RunDisplayParser((key == NATIVE_ARCADE_CONFIG_KEY_RENDER_SCALE) ? value : NULL,
+	                                           (key == NATIVE_ARCADE_CONFIG_KEY_TEXTURE_FILTER) ? value : NULL, &probe);
+}
+
 static int NativeArcadeConfig_ParseFullscreen(const char *value, int *fullscreen)
 {
 	if ((strcmp(value, "1") == 0) || (strcmp(value, "yes") == 0) || (strcmp(value, "true") == 0))
@@ -138,6 +218,14 @@ static enum NativeArcadeConfigKey NativeArcadeConfig_LookupKey(const char *key)
 	if (strcmp(key, "fullscreen") == 0)
 	{
 		return NATIVE_ARCADE_CONFIG_KEY_FULLSCREEN;
+	}
+	if (strcmp(key, "render_scale") == 0)
+	{
+		return NATIVE_ARCADE_CONFIG_KEY_RENDER_SCALE;
+	}
+	if (strcmp(key, "texture_filter") == 0)
+	{
+		return NATIVE_ARCADE_CONFIG_KEY_TEXTURE_FILTER;
 	}
 	return NATIVE_ARCADE_CONFIG_KEY_NONE;
 }
@@ -193,7 +281,9 @@ static uint32_t NativeArcadeConfig_ParseLine(char *line, struct NativeArcadeConf
 		return NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY;
 	}
 	if (((keyID == NATIVE_ARCADE_CONFIG_KEY_DATA_DIR) && config->hasDataDir) || ((keyID == NATIVE_ARCADE_CONFIG_KEY_SEAT) && config->hasSeat) ||
-	    ((keyID == NATIVE_ARCADE_CONFIG_KEY_PORT) && config->hasPort) || ((keyID == NATIVE_ARCADE_CONFIG_KEY_FULLSCREEN) && config->hasFullscreen))
+	    ((keyID == NATIVE_ARCADE_CONFIG_KEY_PORT) && config->hasPort) || ((keyID == NATIVE_ARCADE_CONFIG_KEY_FULLSCREEN) && config->hasFullscreen) ||
+	    ((keyID == NATIVE_ARCADE_CONFIG_KEY_RENDER_SCALE) && config->hasRenderScale) ||
+	    ((keyID == NATIVE_ARCADE_CONFIG_KEY_TEXTURE_FILTER) && config->hasTextureFilter))
 	{
 		return NATIVE_ARCADE_CONFIG_ERROR_DUPLICATE_KEY;
 	}
@@ -220,6 +310,28 @@ static uint32_t NativeArcadeConfig_ParseLine(char *line, struct NativeArcadeConf
 			return NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE;
 		}
 		config->hasFullscreen = 1;
+		return NATIVE_ARCADE_CONFIG_OK;
+	}
+	case NATIVE_ARCADE_CONFIG_KEY_RENDER_SCALE:
+	case NATIVE_ARCADE_CONFIG_KEY_TEXTURE_FILTER:
+	{
+		const int isScale = (keyID == NATIVE_ARCADE_CONFIG_KEY_RENDER_SCALE);
+		char *text = isScale ? config->renderScaleText : config->textureFilterText;
+		const size_t textSize = isScale ? sizeof(config->renderScaleText) : sizeof(config->textureFilterText);
+
+		/* A value that does not fit is refused before the parser sees it. */
+		if ((length >= textSize) || !NativeArcadeConfig_DisplayValueAccepted(keyID, value) || !NativeArcadeConfig_CopyValue(text, textSize, value))
+		{
+			return NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE;
+		}
+		if (isScale)
+		{
+			config->hasRenderScale = 1;
+		}
+		else
+		{
+			config->hasTextureFilter = 1;
+		}
 		return NATIVE_ARCADE_CONFIG_OK;
 	}
 	case NATIVE_ARCADE_CONFIG_KEY_SEAT:
@@ -394,6 +506,20 @@ int NativeArcadeConfig_ApplyLink(const struct NativeArcadeConfig *config, struct
 	return NativeArcadeConfig_RunLinkParser((copy.hasSeat != 0) ? copy.seat : NULL, (copy.hasPort != 0) ? copy.port : NULL, peers, copy.peerCount, options);
 }
 
+int NativeArcadeConfig_ApplyDisplay(const struct NativeArcadeConfig *config, struct NativeDisplayConfig *display)
+{
+	if ((config == NULL) || (display == NULL))
+	{
+		return 0;
+	}
+	if ((config->hasRenderScale == 0) && (config->hasTextureFilter == 0))
+	{
+		return 1;
+	}
+	return NativeArcadeConfig_RunDisplayParser((config->hasRenderScale != 0) ? config->renderScaleText : NULL,
+	                                           (config->hasTextureFilter != 0) ? config->textureFilterText : NULL, display);
+}
+
 const char *NativeArcadeConfig_ErrorText(uint32_t error)
 {
 	switch (error)
@@ -424,7 +550,7 @@ const char *NativeArcadeConfig_ErrorText(uint32_t error)
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY:
 	{
-		return "unknown key (expected data_dir, seat, port, peer, or fullscreen)";
+		return "unknown key (expected data_dir, seat, port, peer, fullscreen, render_scale, or texture_filter)";
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_DUPLICATE_KEY:
 	{
@@ -436,7 +562,7 @@ const char *NativeArcadeConfig_ErrorText(uint32_t error)
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE:
 	{
-		return "invalid value (seat: cab1 or cab2; port: 1-65535; peer: a.b.c.d:port; fullscreen: 0, 1, yes, no, true, or false)";
+		return "invalid value (seat: cab1 or cab2; port: 1-65535; peer: a.b.c.d:port; fullscreen: 0, 1, yes, no, true, or false; render_scale: 1, 2, 3, 4, 6, or 8; texture_filter: nearest or bilinear)";
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_TOO_MANY_PEERS:
 	{
@@ -481,6 +607,16 @@ int NativeArcadeConfig_ParseArgs(int argc, char *argv[], struct NativeArcadeConf
 		if ((strcmp(arg, "--fullscreen") == 0) || (strcmp(arg, "--windowed") == 0))
 		{
 			candidate.namesWindowMode = 1;
+			continue;
+		}
+		if ((strcmp(arg, "--render-scale") == 0) || (strncmp(arg, "--render-scale=", strlen("--render-scale=")) == 0))
+		{
+			candidate.namesRenderScale = 1;
+			continue;
+		}
+		if ((strcmp(arg, "--texture-filter") == 0) || (strncmp(arg, "--texture-filter=", strlen("--texture-filter=")) == 0))
+		{
+			candidate.namesTextureFilter = 1;
 			continue;
 		}
 		if (strcmp(arg, "--config") == 0)

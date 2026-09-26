@@ -282,6 +282,15 @@ int main(int argc, char *argv[])
 	}
 
 	NativeDisplayConfig_SetDefaults(&displayConfig);
+	/* The file's render_scale and texture_filter go through the display
+	 * flag parser itself; the flags below then override them per key. Host
+	 * presentation only, never match identity. A parsed config cannot fail
+	 * here. */
+	if (!NativeArcadeConfig_ApplyDisplay(&arcadeConfig, &displayConfig))
+	{
+		fprintf(stderr, "[CTR Native] invalid display value in config file %s.\n", configPath);
+		return NativeConsole_Return(1);
+	}
 	if ((arcadeConfig.hasFullscreen != 0u) && (configArgs.namesWindowMode == 0u))
 	{
 		displayConfig.fullscreen = arcadeConfig.fullscreen;
@@ -323,18 +332,25 @@ int main(int argc, char *argv[])
 	if (configLoaded != 0)
 	{
 		const int fullscreenFromConfig = (arcadeConfig.hasFullscreen != 0u) && (configArgs.namesWindowMode == 0u);
+		const int renderScaleFromConfig = (arcadeConfig.hasRenderScale != 0u) && (configArgs.namesRenderScale == 0u);
+		const int textureFilterFromConfig = (arcadeConfig.hasTextureFilter != 0u) && (configArgs.namesTextureFilter == 0u);
 		const int dataDirFromConfig = (arcadeConfig.hasDataDir != 0u) && (configArgs.dataDir == NULL);
 		const int linkOverridden = NativeArcadeConfig_HasLink(&arcadeConfig) && (linkFromConfig == 0);
 		const int fullscreenOverridden = (arcadeConfig.hasFullscreen != 0u) && (fullscreenFromConfig == 0);
+		const int renderScaleOverridden = (arcadeConfig.hasRenderScale != 0u) && (renderScaleFromConfig == 0);
+		const int textureFilterOverridden = (arcadeConfig.hasTextureFilter != 0u) && (textureFilterFromConfig == 0);
 		const int dataDirOverridden = (arcadeConfig.hasDataDir != 0u) && (dataDirFromConfig == 0);
+		const int anyFromConfig = linkFromConfig || fullscreenFromConfig || renderScaleFromConfig || textureFilterFromConfig || dataDirFromConfig;
 
 		printf("[CTR Native] Config file: %s\n", configPath);
-		printf("[CTR Native] Config groups from the file:%s%s%s%s\n", linkFromConfig ? " link" : "", fullscreenFromConfig ? " fullscreen" : "",
-		       dataDirFromConfig ? " data_dir" : "", (linkFromConfig || fullscreenFromConfig || dataDirFromConfig) ? "" : " none");
-		if (linkOverridden || fullscreenOverridden || dataDirOverridden)
+		printf("[CTR Native] Config groups from the file:%s%s%s%s%s%s\n", linkFromConfig ? " link" : "", fullscreenFromConfig ? " fullscreen" : "",
+		       renderScaleFromConfig ? " render_scale" : "", textureFilterFromConfig ? " texture_filter" : "", dataDirFromConfig ? " data_dir" : "",
+		       anyFromConfig ? "" : " none");
+		if (linkOverridden || fullscreenOverridden || renderScaleOverridden || textureFilterOverridden || dataDirOverridden)
 		{
-			printf("[CTR Native] Config groups overridden by the command line:%s%s%s\n", linkOverridden ? " link" : "",
-			       fullscreenOverridden ? " fullscreen" : "", dataDirOverridden ? " data_dir" : "");
+			printf("[CTR Native] Config groups overridden by the command line:%s%s%s%s%s\n", linkOverridden ? " link" : "",
+			       fullscreenOverridden ? " fullscreen" : "", renderScaleOverridden ? " render_scale" : "",
+			       textureFilterOverridden ? " texture_filter" : "", dataDirOverridden ? " data_dir" : "");
 		}
 	}
 	else

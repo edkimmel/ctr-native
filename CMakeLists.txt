@@ -411,7 +411,8 @@ target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_con
 # Per-cabinet config file (docs/PACKAGING.md PK-2..PK-6): pure key = value
 # parsing of a caller-read buffer and of --config / --data-dir. The link group
 # is checked by, and reaches the link only through, the arcade-link options
-# parser. Reaches ctr_native through main.c only.
+# parser; render_scale and texture_filter likewise through the display-config
+# parser (presentation only). Reaches ctr_native through main.c only.
 add_library(ctr_native_arcade_config STATIC platform/native_arcade_config.c)
 set_target_properties(ctr_native_arcade_config PROPERTIES
     C_STANDARD 17
@@ -419,7 +420,7 @@ set_target_properties(ctr_native_arcade_config PROPERTIES
     C_EXTENSIONS OFF
 )
 target_include_directories(ctr_native_arcade_config PUBLIC ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(ctr_native_arcade_config PUBLIC ctr_native_arcade_link_options)
+target_link_libraries(ctr_native_arcade_config PUBLIC ctr_native_arcade_link_options ctr_native_display_config)
 
 # Match-select resolution rules (docs/MATCH_SELECT_MILESTONE.md section 2.1,
 # MS-2): pure tables mirrored from retail, seed derivation, tie draws, vote,
@@ -1545,8 +1546,9 @@ if(BUILD_TESTING)
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_link_options_isolation_test.cmake")
 
     # Per-cabinet config file (docs/PACKAGING.md PK-2..PK-6): the grammar,
-    # every error class, the link group through the real link parser, and the
-    # committed package templates.
+    # every error class, the link group through the real link parser, the
+    # display keys through the real display parser, and the committed
+    # package templates.
     add_executable(native_arcade_config_test tests/native_arcade_config_test.c)
     set_target_properties(native_arcade_config_test PROPERTIES
         C_STANDARD 17
@@ -2147,9 +2149,9 @@ if(BUILD_TESTING)
         # -StageExecutable), runs the retail-data guard and checks every
         # MANIFEST size and SHA-256, copies the package to a fresh run folder,
         # derives loopback copies of the package's cab1.cfg and cab2.cfg
-        # (only the peer IP, data_dir, and fullscreen change), and runs the
-        # arcade_link_launch gate on the copied exe with --config in place of
-        # the link options. It keeps the package's ports 7001 and 7002;
+        # (only the peer IP, data_dir, fullscreen, and render_scale change),
+        # and runs the arcade_link_launch gate on the copied exe with --config
+        # in place of the link options. It keeps the package's ports 7001 and 7002;
         # arcade_link_launch uses 7101 and 7102, so the two may overlap.
         # Skips (77) like arcade_link_launch. Everything is written under the
         # build tree.
@@ -2567,8 +2569,9 @@ if(BUILD_TESTING)
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Native ")
 
     # Per-cabinet config file startup (docs/PACKAGING.md PK-2..PK-6): the real
-    # exe exits 1 with the right message for each fatal config case, all
-    # before the assets or Platform_Init (no game data, no display).
+    # exe exits 1 with the right message for each fatal config case, and a
+    # display flag overrides the file's render_scale only, all before the
+    # assets or Platform_Init (no game data, no display).
     add_test(NAME ctr_native_config_startup
         COMMAND "${CMAKE_COMMAND}"
             -DCTR_EXE=$<TARGET_FILE:ctr_native>

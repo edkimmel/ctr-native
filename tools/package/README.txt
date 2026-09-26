@@ -43,6 +43,9 @@ included, with that cabinet's fixed IP address.
    cabinet 2: <cabinet 1 IP>:7001). Change data_dir only if ctr-u.bin is
    not in C:\ctr-data (a full path, or one relative to this folder;
    C:ctr-data and \ctr-data are refused). Keep seat, port and fullscreen.
+   render_scale (1, 2, 3, 4, 6, or 8; template 8) and texture_filter
+   (nearest or bilinear; template bilinear) set this cabinet's picture
+   only; the cabinets may differ. Lower render_scale if the game stutters.
    A comment goes on its own line: after a value it becomes part of it.
 4. Firewall. In an elevated PowerShell (Run as administrator), after
    Set-Location to this folder, allow the link port for this exe from the
@@ -73,7 +76,7 @@ Start
 Double-click ctr_native.exe, or run it with no arguments. It reads
 arcade.cfg next to it. Among its first console lines it must show
   [CTR Native] Config file: <this folder>\arcade.cfg
-  [CTR Native] Config groups from the file: link fullscreen data_dir
+  [CTR Native] Config groups from the file: link fullscreen render_scale texture_filter data_dir
 These lines are on the console only, not in the log; the fullscreen window
 may hide the console (Alt+Tab to it). "Config file: none" means there is no
 arcade.cfg next to the exe (check for a hidden .txt extension), and the
