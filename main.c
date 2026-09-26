@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #define SDL_MAIN_HANDLED
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,7 @@
 #define EnterCriticalSection(x)
 #define ExitCriticalSection()
 
+#include "platform/native_arcade_config.h"
 #include "platform/native_arcade_link_autopilot.h"
 #include "platform/native_arcade_link_host.h"
 #include "platform/native_arcade_link_options.h"
@@ -168,6 +170,79 @@ static int NativeArg_NamesReplayOption(int argc, char *argv[])
 	return 0;
 }
 
+#define NATIVE_CONFIG_FILE_PATH_MAX 1024
+
+/* Per-cabinet config file (docs/PACKAGING.md PK-2): reads the --config file
+ * (a relative path resolves against the launch directory) or else the
+ * default arcade.cfg in the exe directory, into *config. Returns 1 with
+ * *loaded = 1 after a successful parse, 1 with *loaded = 0 when there is no
+ * --config and no default file, and 0 after printing the error otherwise: a
+ * missing --config file, an unreadable file, or a malformed one. */
+static int NativeConfigFile_Load(const char *explicitPath, const char *basePath, struct NativeArcadeConfig *config, char *path, size_t pathSize,
+                                 int *loaded)
+{
+	static char text[NATIVE_ARCADE_CONFIG_MAX_FILE_BYTES + 1u];
+	struct NativeArcadeConfigStatus status;
+	FILE *file;
+	size_t size;
+	int written;
+
+	*loaded = 0;
+	if (explicitPath != NULL)
+	{
+		written = snprintf(path, pathSize, "%s", explicitPath);
+	}
+	else
+	{
+		const char *base = (basePath != NULL) ? basePath : "";
+		const size_t baseLength = strlen(base);
+		const int needsSeparator = (baseLength != 0) && (base[baseLength - 1u] != '/') && (base[baseLength - 1u] != '\\');
+
+		written = snprintf(path, pathSize, "%s%s%s", base, needsSeparator ? "/" : "", NATIVE_ARCADE_CONFIG_DEFAULT_NAME);
+	}
+	if ((written < 0) || ((size_t)written >= pathSize))
+	{
+		fprintf(stderr, "[CTR Native] config file path is too long.\n");
+		return 0;
+	}
+
+	errno = 0;
+	file = fopen(path, "rb");
+	if (file == NULL)
+	{
+		const int openError = errno;
+
+		if ((explicitPath == NULL) && (openError == ENOENT))
+		{
+			return 1;
+		}
+		fprintf(stderr, "[CTR Native] cannot open config file %s%s.\n", path, (openError == ENOENT) ? " (file not found)" : "");
+		return 0;
+	}
+	size = fread(text, 1, sizeof(text), file);
+	if (ferror(file))
+	{
+		fclose(file);
+		fprintf(stderr, "[CTR Native] cannot read config file %s.\n", path);
+		return 0;
+	}
+	fclose(file);
+
+	if (!NativeArcadeConfig_Parse(text, size, config, &status))
+	{
+		if (status.line != 0u)
+		{
+			fprintf(stderr, "[CTR Native] config file %s line %u: %s.\n", path, (unsigned)status.line, NativeArcadeConfig_ErrorText(status.error));
+		}
+		else
+		{
+			fprintf(stderr, "[CTR Native] config file %s: %s.\n", path, NativeArcadeConfig_ErrorText(status.error));
+		}
+		return 0;
+	}
+	*loaded = 1;
+	return 1;
+}
 
 int main(int argc, char *argv[])
 {
@@ -182,7 +257,35 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	/* Per-cabinet config file (docs/PACKAGING.md PK-2..PK-6): host-local
+	 * launch configuration, never match identity. With no --config and no
+	 * default arcade.cfg next to the exe nothing changes. A missing --config
+	 * file or a malformed file is fatal: a cabinet must not come up silently
+	 * unlinked. Command-line options override the file per group (PK-4). */
+	struct NativeArcadeConfigArgs configArgs;
+	struct NativeArcadeConfig arcadeConfig;
+	char configPath[NATIVE_CONFIG_FILE_PATH_MAX];
+	int configLoaded = 0;
+	int linkFromConfig = 0;
+
+	if (!NativeArcadeConfig_ParseArgs(argc, argv, &configArgs))
+	{
+		fprintf(stderr, "[CTR Native] invalid config option; expected --config <path> and --data-dir <dir>, each at most once.\n");
+		return NativeConsole_Return(1);
+	}
+	const char *sdlBasePath = SDL_GetBasePath();
+
+	NativeArcadeConfig_SetDefaults(&arcadeConfig);
+	if (!NativeConfigFile_Load(configArgs.configPath, sdlBasePath, &arcadeConfig, configPath, sizeof(configPath), &configLoaded))
+	{
+		return NativeConsole_Return(1);
+	}
+
 	NativeDisplayConfig_SetDefaults(&displayConfig);
+	if ((arcadeConfig.hasFullscreen != 0u) && (configArgs.namesWindowMode == 0u))
+	{
+		displayConfig.fullscreen = arcadeConfig.fullscreen;
+	}
 	if (!NativeDisplayConfig_ApplyArgs(argc, argv, &displayConfig))
 	{
 		/* A malformed cabinet-local preference must never prevent the recovery
@@ -204,6 +307,41 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "[CTR Native] invalid arcade-link option; expected --arcade-link cab1|cab2 --arcade-link-port <1-65535> --arcade-link-peer <a.b.c.d:port> (repeatable), or --arcade-link-preview <screen> alone.\n");
 		return NativeConsole_Return(1);
 	}
+	/* The config's link group reaches the link only through these options,
+	 * exactly as the flags do (PK-5), and only when argv names no link or
+	 * preview option (PK-4). Every check below then applies to it too. */
+	if ((configArgs.namesLinkOption == 0u) && NativeArcadeConfig_HasLink(&arcadeConfig))
+	{
+		if (!NativeArcadeConfig_ApplyLink(&arcadeConfig, &arcadeLinkOptions))
+		{
+			fprintf(stderr, "[CTR Native] invalid arcade link group in config file %s.\n", configPath);
+			return NativeConsole_Return(1);
+		}
+		linkFromConfig = 1;
+	}
+
+	if (configLoaded != 0)
+	{
+		const int fullscreenFromConfig = (arcadeConfig.hasFullscreen != 0u) && (configArgs.namesWindowMode == 0u);
+		const int dataDirFromConfig = (arcadeConfig.hasDataDir != 0u) && (configArgs.dataDir == NULL);
+		const int linkOverridden = NativeArcadeConfig_HasLink(&arcadeConfig) && (linkFromConfig == 0);
+		const int fullscreenOverridden = (arcadeConfig.hasFullscreen != 0u) && (fullscreenFromConfig == 0);
+		const int dataDirOverridden = (arcadeConfig.hasDataDir != 0u) && (dataDirFromConfig == 0);
+
+		printf("[CTR Native] Config file: %s\n", configPath);
+		printf("[CTR Native] Config groups from the file:%s%s%s%s\n", linkFromConfig ? " link" : "", fullscreenFromConfig ? " fullscreen" : "",
+		       dataDirFromConfig ? " data_dir" : "", (linkFromConfig || fullscreenFromConfig || dataDirFromConfig) ? "" : " none");
+		if (linkOverridden || fullscreenOverridden || dataDirOverridden)
+		{
+			printf("[CTR Native] Config groups overridden by the command line:%s%s%s\n", linkOverridden ? " link" : "",
+			       fullscreenOverridden ? " fullscreen" : "", dataDirOverridden ? " data_dir" : "");
+		}
+	}
+	else
+	{
+		printf("[CTR Native] Config file: none (%s not found)\n", configPath);
+	}
+	fflush(stdout);
 #if !defined(CTR_INTERNAL)
 	if (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE)
 	{
@@ -292,11 +430,28 @@ int main(int argc, char *argv[])
 	printf("[CTR Native] Local texture filter: %s\n", NativeDisplayConfig_TextureFilterName(displayConfig.textureFilter));
 	fflush(stdout);
 
-	const char *sdlBasePath = SDL_GetBasePath();
 	printf("[CTR Native] SDL base path: %s\n", sdlBasePath ? sdlBasePath : "(null)");
 	fflush(stdout);
 
-	if (!NativeAssets_Init(sdlBasePath))
+	/* data_dir (PK-6): --data-dir overrides the config file's data_dir. When
+	 * set it is the assets folder, the base directory stays the exe
+	 * directory, and a folder without the disc image or BIGFILE.BIG is fatal.
+	 * When unset, the exe/parent/grandparent assets search is unchanged. */
+	const char *dataDir = (configArgs.dataDir != NULL) ? configArgs.dataDir : ((arcadeConfig.hasDataDir != 0u) ? arcadeConfig.dataDir : NULL);
+
+	if (dataDir != NULL)
+	{
+		char resolvedDataDir[NATIVE_CONFIG_FILE_PATH_MAX];
+
+		if (!NativeAssets_InitWithAssetDir(sdlBasePath, dataDir, resolvedDataDir, sizeof(resolvedDataDir)))
+		{
+			fprintf(stderr, "[CTR Native] data directory %s (resolved: %s, from %s%s) does not hold ctr-u.bin or BIGFILE.BIG.\n", dataDir,
+			        (resolvedDataDir[0] != '\0') ? resolvedDataDir : "(path too long)", (configArgs.dataDir != NULL) ? "--data-dir" : "config file ",
+			        (configArgs.dataDir != NULL) ? "" : configPath);
+			return NativeConsole_Return(1);
+		}
+	}
+	else if (!NativeAssets_Init(sdlBasePath))
 	{
 		fprintf(stderr, "[CTR Native] Failed to initialize asset paths.\n");
 		return NativeConsole_Return(1);

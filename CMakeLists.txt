@@ -408,6 +408,19 @@ set_target_properties(ctr_native_arcade_link_options PROPERTIES
 target_include_directories(ctr_native_arcade_link_options PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_config ctr_native_arcade_bot_rules)
 
+# Per-cabinet config file (docs/PACKAGING.md PK-2..PK-6): pure key = value
+# parsing of a caller-read buffer and of --config / --data-dir. The link group
+# is checked by, and reaches the link only through, the arcade-link options
+# parser. Reaches ctr_native through main.c only.
+add_library(ctr_native_arcade_config STATIC platform/native_arcade_config.c)
+set_target_properties(ctr_native_arcade_config PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_config PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_arcade_config PUBLIC ctr_native_arcade_link_options)
+
 # Match-select resolution rules (docs/MATCH_SELECT_MILESTONE.md section 2.1,
 # MS-2): pure tables mirrored from retail, seed derivation, tie draws, vote,
 # character, and bot resolution, the outcome digest, and the resolved config
@@ -1098,7 +1111,7 @@ else()
         ctr_native_add_label_warning_if_supported(ctr_native -Wc23-extensions CTR_HAS_WC23_EXTENSIONS)
     endif()
 endif()
-target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_race_setup_core ctr_native_arcade_race_launch_core ctr_native_arcade_roster_proof ctr_native_arcade_link_autopilot ctr_native_vblank_pacing ctr_native_arcade_race_hold_core ctr_native_hold_banner)
+target_link_libraries(ctr_native SDL3::SDL3 ctr_native_sdl_assert ctr_native_g29_input ctr_native_canonical_projector ctr_native_canonical_runtime ctr_native_replay_scheduler_seam ctr_native_replay_v2_file ctr_native_replay_v3_file ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_topology ctr_native_match_config ctr_native_topology_residency main_canonical_topology_lifecycle_events ctr_native_arcade_link_host ctr_native_arcade_race_setup_plan ctr_native_arcade_race_setup_facts ctr_native_arcade_race_setup_core ctr_native_arcade_race_launch_core ctr_native_arcade_roster_proof ctr_native_arcade_link_autopilot ctr_native_vblank_pacing ctr_native_arcade_race_hold_core ctr_native_hold_banner ctr_native_arcade_config)
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_link_options(ctr_native PRIVATE -static-libgcc)
 endif()
@@ -1530,6 +1543,55 @@ if(BUILD_TESTING)
 
     add_test(NAME native_arcade_link_options_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_link_options_isolation_test.cmake")
+
+    # Per-cabinet config file (docs/PACKAGING.md PK-2..PK-6): the grammar,
+    # every error class, the link group through the real link parser, and the
+    # committed package templates.
+    add_executable(native_arcade_config_test tests/native_arcade_config_test.c)
+    set_target_properties(native_arcade_config_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_config_test PRIVATE ctr_native_arcade_config)
+    add_test(NAME native_arcade_config_unit
+        COMMAND $<TARGET_FILE:native_arcade_config_test>
+            "${CMAKE_SOURCE_DIR}/tools/package/cab1.cfg"
+            "${CMAKE_SOURCE_DIR}/tools/package/cab2.cfg")
+
+    add_test(NAME native_arcade_config_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_config_isolation_test.cmake")
+
+    # The explicit data directory (PK-6): NativeAssets_InitWithAssetDir over
+    # fabricated folders with tiny dummy files under the build tree.
+    add_executable(native_assets_data_dir_test
+        tests/native_assets_data_dir_test.c
+        platform/native_sha256.c
+        platform/native_disc_image.c
+    )
+    set_target_properties(native_assets_data_dir_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_include_directories(native_assets_data_dir_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_definitions(native_assets_data_dir_test PRIVATE CTR_NATIVE)
+    add_test(NAME native_assets_data_dir_unit
+        COMMAND "${CMAKE_COMMAND}"
+            -DTEST_EXE=$<TARGET_FILE:native_assets_data_dir_test>
+            -DWORK_DIR=${CMAKE_BINARY_DIR}/native_assets_data_dir_test/$<CONFIG>
+            -P "${CMAKE_SOURCE_DIR}/tests/native_assets_data_dir_test.cmake")
+
+    # The package retail-data guard (docs/PACKAGING.md PK-7): the exact file
+    # allowlist passes; retail or BIOS names, unknown files, subdirectories,
+    # and oversize files fail. Fabricated tiny dummies under the build tree.
+    if(WIN32)
+        add_test(NAME package_arcade_content_guard
+            COMMAND "${CMAKE_COMMAND}"
+                -DREPO_DIR=${CMAKE_SOURCE_DIR}
+                -DWORK_DIR=${CMAKE_BINARY_DIR}/package_guard_test/$<CONFIG>
+                -P "${CMAKE_SOURCE_DIR}/tests/package_arcade_content_guard_test.cmake")
+    endif()
 
     # Internal two-process gate autopilot (docs/RACE_LAUNCH_MILESTONE.md
     # RL-15, RL-S10): the option parser, the pure menu decision and progress

@@ -447,15 +447,10 @@ internal void NativeAssets_BuildIndex(void)
 	NativeAssets_IndexScanDir(s_nativeAssetsDir, (NativeStr8){0}, 0);
 }
 
-internal int NativeAssets_BaseHasRequiredFile(NativeStr8 baseDir)
+/* 1 when assetsDir holds BIGFILE.BIG or ctr-u.bin (either case). */
+internal int NativeAssets_DirHasRequiredFile(const char *assetsDir)
 {
-	char assetsDir[NATIVE_ASSETS_PATH_MAX];
 	char path[NATIVE_ASSETS_PATH_MAX];
-
-	if (!NativeAssets_FindAssetsDir(baseDir, assetsDir, sizeof(assetsDir)))
-	{
-		return 0;
-	}
 
 	if (NativeAssets_FindHostChildCaseInsensitive(NativeStr8_FromCString(assetsDir), NATIVE_STR8_LIT(NATIVE_ASSETS_BIGFILE_PATH), path, sizeof(path)))
 	{
@@ -483,6 +478,18 @@ internal int NativeAssets_BaseHasRequiredFile(NativeStr8 baseDir)
 	}
 
 	return NativeAssets_FileExistsHost(path);
+}
+
+internal int NativeAssets_BaseHasRequiredFile(NativeStr8 baseDir)
+{
+	char assetsDir[NATIVE_ASSETS_PATH_MAX];
+
+	if (!NativeAssets_FindAssetsDir(baseDir, assetsDir, sizeof(assetsDir)))
+	{
+		return 0;
+	}
+
+	return NativeAssets_DirHasRequiredFile(assetsDir);
 }
 
 internal int NativeAssets_SetBaseDir(NativeStr8 baseDir)
@@ -552,6 +559,81 @@ int NativeAssets_Init(const char *executableBasePath)
 	}
 
 	return NativeAssets_SetBaseDir(exeDir);
+}
+
+/* A leading separator or a drive letter ("C:") marks a path that is not joined to the exe directory. */
+internal int NativeAssets_IsAbsolutePath(NativeStr8 path)
+{
+	if ((path.len >= 1u) && NativePath_IsSeparator(path.ptr[0]))
+	{
+		return 1;
+	}
+
+	return (path.len >= 2u) && (path.ptr[1] == ':') && (((path.ptr[0] >= 'A') && (path.ptr[0] <= 'Z')) || ((path.ptr[0] >= 'a') && (path.ptr[0] <= 'z')));
+}
+
+int NativeAssets_InitWithAssetDir(const char *executableBasePath, const char *assetDir, char *resolvedAssetDir, size_t resolvedAssetDirSize)
+{
+	char joined[NATIVE_ASSETS_PATH_MAX];
+	char assetPath[NATIVE_ASSETS_PATH_MAX];
+
+	if ((resolvedAssetDir != NULL) && (resolvedAssetDirSize != 0))
+	{
+		resolvedAssetDir[0] = '\0';
+	}
+
+	if ((assetDir == NULL) || (assetDir[0] == '\0'))
+	{
+		return 0;
+	}
+
+	if ((executableBasePath == NULL) || (executableBasePath[0] == '\0'))
+	{
+		executableBasePath = ".";
+	}
+
+	NativeStr8 exeDir = NativePath_TrimTrailingSeparators(NativeStr8_FromCString(executableBasePath));
+	NativeStr8 asset = NativeStr8_FromCString(assetDir);
+
+	if (NativeAssets_IsAbsolutePath(asset))
+	{
+		if (!NativePath_NormalizeSlashes(joined, sizeof(joined), asset))
+		{
+			return 0;
+		}
+	}
+	else if (!NativePath_Join(joined, sizeof(joined), exeDir, asset))
+	{
+		return 0;
+	}
+
+	if (!NativePath_NormalizeSlashes(assetPath, sizeof(assetPath), NativePath_TrimTrailingSeparators(NativeStr8_FromCString(joined))))
+	{
+		return 0;
+	}
+
+	if ((resolvedAssetDir != NULL) && (resolvedAssetDirSize != 0) &&
+	    !NativeStr8_CopyToCString(resolvedAssetDir, resolvedAssetDirSize, NativeStr8_FromCString(assetPath)))
+	{
+		resolvedAssetDir[0] = '\0';
+	}
+
+	if (!NativeAssets_DirHasRequiredFile(assetPath))
+	{
+		return 0;
+	}
+
+	/* The base directory (cwd, log, memcards) stays the exe directory. */
+	if (!NativePath_NormalizeSlashes(s_nativeAssetsBaseDir, sizeof(s_nativeAssetsBaseDir), exeDir) ||
+	    !NativePath_NormalizeSlashes(s_nativeAssetsDir, sizeof(s_nativeAssetsDir), NativeStr8_FromCString(assetPath)))
+	{
+		return 0;
+	}
+
+	NativeDiscImage_Init(s_nativeAssetsDir);
+	NativeAssets_ClearIndex();
+	s_nativeAssetsInitialized = 1;
+	return 1;
 }
 
 const char *NativeAssets_GetBaseDir(void)
