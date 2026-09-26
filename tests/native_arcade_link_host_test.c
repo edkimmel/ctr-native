@@ -5,6 +5,7 @@
 #include "platform/native_arcade_netplay.h"
 #include "platform/native_arcade_race_drive.h"
 #include "platform/native_canonical_state_v4.h"
+#include "platform/native_lockstep_handshake.h"
 #include "platform/native_match_select_rules.h"
 
 #include "native_arcade_link_loopback_test_fixture.h"
@@ -4581,12 +4582,13 @@ static int HostPress(uint32_t held)
 }
 
 /*
- * SOLO-11: the dark gate. The solo previews leave it shut. Production never
- * calls the internal setter, so the host configures solo off: the LOBBY
- * never offers solo, CROSS there begins nothing, and the solo query stays
- * empty.
+ * SOLO-11: the gate shut by the internal setter (the default is on since
+ * SOLO-S4). The solo previews never touch it. With the gate off the host
+ * configures solo off: the LOBBY never offers solo, CROSS there begins
+ * nothing, and the solo query stays empty. The wrapper below shuts the gate
+ * and restores the production default whatever the body returns.
  */
-static int TestSoloDarkByDefault(void)
+static int RunSoloGateOff(void)
 {
 	struct NativeArcadeLinkOptions options;
 	struct NativeIdentityV1 identity;
@@ -4641,6 +4643,22 @@ static int TestSoloDarkByDefault(void)
 	CHECK(CheckInert() == 0);
 	CHECK(CheckNoSoloConfig() == 0);
 	return 0;
+}
+
+static int TestSoloGateOff(void)
+{
+	int failed;
+
+	NativeArcadeLinkHost_InternalSetSoloEnabled(0u);
+	failed = RunSoloGateOff();
+	/* Unconditional: a failed CHECK must not leave the gate off for later
+	 * tests; on is the production default (SOLO-S4). */
+	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
+	if (failed != 0)
+	{
+		NativeArcadeLinkHost_Shutdown();
+	}
+	return failed;
 }
 
 /*
@@ -4773,8 +4791,9 @@ static int TestSoloConfigEveryCharacter(void)
 
 	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
 	failed = RunSoloConfigEveryCharacter();
-	/* Unconditional: a failed CHECK must not leave the gate on for later tests. */
-	NativeArcadeLinkHost_InternalSetSoloEnabled(0u);
+	/* Unconditional: later tests run on the production default, on since
+	 * SOLO-S4 (the gate was set explicitly for the body above). */
+	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
 	return failed;
 }
 
@@ -4877,6 +4896,9 @@ static int TestSoloConfigFailsClosed(void)
 
 /* The solo race ends on END_OF_RACE on this race tick. */
 #define SOLO_RACE_FINISH_TICK 40u
+/* The other cabinet's HELLO reaches the solo race before this race tick's
+ * host pass (SOLO-4). */
+#define SOLO_RACE_HELLO_TICK 12u
 
 /* Takes every datagram waiting on probe and discards it; returns how many. */
 static uint32_t DrainSoloProbe(struct NativeUdpTransport *probe)
@@ -4949,8 +4971,12 @@ static int SoloDriveRefused(void)
  * is latched. END_OF_RACE ends it as a finish with no linger; the next Tick
  * with raceFinished moves the flow to solo RESULTS (FINISHED) and resets the
  * drive; RaceEnd turns the pacing off, and off RACING the drive is refused
- * again. Then, back at the title, a linked race against a real peer begins
- * the linked drive (not the local mode) and commits the peer's pads.
+ * again. The other cabinet wakes during the race (SOLO-4, SOLO-8): a HELLO
+ * from the configured peer address latches the view's peerHeard, which solo
+ * RESULTS still shows, and moves no screen. Then solo RESULTS row LOBBY
+ * (RETURN_TO_LOBBY) begins the lobby on the fixture, where the real peer
+ * links: a linked race begins the linked drive (not the local mode) and
+ * commits the peer's pads.
  */
 static int RunSoloRace(void)
 {
@@ -4965,6 +4991,11 @@ static int RunSoloRace(void)
 	struct NativeCanonicalInputPadV1 raw;
 	struct NativeCanonicalInputPadV1 expected;
 	struct NativeUdpTransport probe;
+	struct NativeUdpTransportAddress hostAddress;
+	struct NativeMatchConfigV1 fixture;
+	struct NativeLockstepHandshake handshake;
+	uint8_t hello[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
+	size_t helloSize = 0u;
 	uint32_t action = ACT_NONE;
 	uint32_t status;
 	uint32_t tick;
@@ -4980,6 +5011,13 @@ static int RunSoloRace(void)
 	CHECK(NativeUdpTransport_GlobalInit());
 	memset(&probe, 0, sizeof(probe));
 	CHECK(NativeUdpTransport_Open(&probe, (uint16_t)TEST_SOLO_RACE_PEER_PORT));
+	/* The other cabinet's handshake HELLO, as its LOBBY sends it, for the
+	 * probe to send from the configured peer address during the race. */
+	CHECK(NativeArcadeLinkFixture_Build(&identity, &fixture));
+	NativeLockstepHandshake_Init(&handshake);
+	CHECK(NativeLockstepHandshake_Begin(&handshake, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN));
+	CHECK(NativeLockstepHandshake_ComposeMessage(&handshake, hello, sizeof(hello), &helloSize));
+	CHECK(NativeUdpTransport_MakeAddress(&hostAddress, "127.0.0.1", (uint16_t)TEST_SOLO_RACE_HOST_PORT));
 	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
 	/* The solo base built: no notice. */
 	CHECK(g_logCalls == 0u);
@@ -5014,6 +5052,7 @@ static int RunSoloRace(void)
 	CHECK(action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE);
 	view = HostView();
 	CHECK((view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) && (view.solo == 1u));
+	CHECK(view.peerHeard == 0u);
 	CHECK(NativeArcadeLinkHost_Racing() == 1u);
 	CHECK(DrainSoloProbe(&probe) == 0u);
 
@@ -5032,7 +5071,17 @@ static int RunSoloRace(void)
 	 * race tick itself with the local pads, never HOLD, nothing sent. */
 	for (k = 0u; k <= SOLO_RACE_FINISH_TICK; k++)
 	{
+		/* The other cabinet wakes: its HELLO from the configured peer
+		 * address is heard on the next Tick, answered by nothing, and moves
+		 * no screen. */
+		if (k == SOLO_RACE_HELLO_TICK)
+		{
+			CHECK(NativeUdpTransport_Send(&probe, &hostAddress, hello, helloSize));
+		}
 		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+		view = HostView();
+		CHECK((view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) && (view.solo == 1u));
+		CHECK(view.peerHeard == ((k >= SOLO_RACE_HELLO_TICK) ? 1u : 0u));
 		HostSample(k, &sample);
 		facts.endOfRace = (k == SOLO_RACE_FINISH_TICK) ? 1u : 0u;
 		facts.finishedHumans = 0u;
@@ -5074,6 +5123,8 @@ static int RunSoloRace(void)
 	view = HostView();
 	CHECK((view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (view.solo == 1u));
 	CHECK(view.endReason == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+	/* SOLO-8: the woken cabinet is still shown on solo RESULTS. */
+	CHECK(view.peerHeard == 1u);
 	CHECK(CheckDriveReset() == 0);
 	CHECK(NativeArcadeLinkHost_TakeRaceEnd(&raceEnd) == 1);
 	CHECK((raceEnd.raceNumber == 1u) && (raceEnd.endReason == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED));
@@ -5095,14 +5146,30 @@ static int RunSoloRace(void)
 	CHECK(DrainSoloProbe(&probe) == 0u);
 	CHECK(g_logCalls == 0u);
 
-	/* Back at the title, the probe gives the peer port to a real peer: a
-	 * linked race begins the linked drive, not the local mode, and commits
-	 * the peer's pads through the lockstep exchange. */
-	NativeArcadeLinkHost_AbortToTitle();
+	/* Solo RESULTS row LOBBY (SOLO-8), after the dwell: DOWN from RACE
+	 * AGAIN, then CROSS; RETURN_TO_LOBBY begins the lobby on the fixture. */
+	for (tick = 0u; (tick < PAIR_BUDGET) && (HostView().rowsEnabled == 0u); tick++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	}
+	view = HostView();
+	CHECK((view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (view.rowsEnabled == 1u) && (view.peerHeard == 1u));
+	CHECK(view.selectedRow == NATIVE_ARCADE_FLOW_ROW_RACE_AGAIN);
+	CHECK(HostPress(NATIVE_ARCADE_MENU_BUTTON_DOWN) == 0);
+	CHECK(HostView().selectedRow == NATIVE_ARCADE_FLOW_ROW_LOBBY);
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY);
+	view = HostView();
+	CHECK((view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_LOBBY) && (view.solo == 0u) && (view.peerHeard == 0u));
+	CHECK(view.soloOffered == 0u);
+	CHECK(CheckNoSoloConfig() == 0);
+
+	/* Back in the LOBBY, the probe gives the peer port to the real peer,
+	 * which links as today: a linked race begins the linked drive, not the
+	 * local mode, and commits the peer's pads through the lockstep
+	 * exchange. */
 	NativeUdpTransport_Close(&probe);
 	CHECK(NativeArcadeLinkLoopback_PeerInit(&g_peer, &identity, TEST_SOLO_RACE_HOST_PORT, TEST_SOLO_RACE_PEER_PORT,
 		UINT64_C(0x5010) ^ UINT64_C(0x5A5A)) == 1);
-	CHECK(NativeArcadeLinkHost_Enter() == 1);
 	CHECK(NativeArcadeNetplay_Enter(&g_peer) == NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY);
 	CHECK(DrivePairToRace() == 0);
 	CHECK(HostView().solo == 0u);
@@ -5123,8 +5190,9 @@ static int TestSoloRace(void)
 
 	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
 	failed = RunSoloRace();
-	/* Unconditional: a failed CHECK must not leave the gate on for later tests. */
-	NativeArcadeLinkHost_InternalSetSoloEnabled(0u);
+	/* Unconditional: later tests run on the production default, on since
+	 * SOLO-S4 (the gate was set explicitly for the body above). */
+	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
 	if (failed != 0)
 	{
 		NativeArcadeNetplay_Shutdown(&g_peer);
@@ -5165,7 +5233,7 @@ int main(void)
 	CHECK(TestDrivePeerLeadsFinishDivergence() == 0);
 	CHECK(TestDriveHostOnlyFinishesOnF() == 0);
 	CHECK(TestDriveCappedHoldPastStartWait() == 0);
-	CHECK(TestSoloDarkByDefault() == 0);
+	CHECK(TestSoloGateOff() == 0);
 	CHECK(TestSoloConfigEveryCharacter() == 0);
 	CHECK(TestSoloConfigFailsClosed() == 0);
 	CHECK(TestSoloRace() == 0);

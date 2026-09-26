@@ -493,8 +493,9 @@ static int TestSoloLiveBuilds(void)
 
 	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
 	failed = RunSoloLiveBuilds();
-	/* Unconditional: a failed CHECK must not leave the gate on for later tests. */
-	NativeArcadeLinkHost_InternalSetSoloEnabled(0u);
+	/* Unconditional: later tests run on the production default, on since
+	 * SOLO-S4 (the gate was set explicitly for the body above). */
+	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
 	return failed;
 }
 

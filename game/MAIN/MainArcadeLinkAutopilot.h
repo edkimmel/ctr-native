@@ -19,7 +19,10 @@
  * values the hook passes to NativeArcadeLinkHost_Enter and
  * NativeArcadeLinkHost_Tick; after every host tick of the hook it observes the
  * tick. When the run is done it writes the report and requests the process
- * exit with the run's result code.
+ * exit with the run's result code. With --arcade-link-autopilot-solo
+ * (docs/SOLO_CAB_MILESTONE.md SOLO-S4) the run is one solo race instead:
+ * the glue records START_SOLO_RACE as the race start and passes once the
+ * LOBBY is back after the solo RESULTS.
  */
 
 struct MainArcadeLinkPolicyInput;

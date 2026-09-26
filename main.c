@@ -424,7 +424,7 @@ int main(int argc, char *argv[])
 	NativeArcadeLinkAutopilotOptions_SetDefaults(&arcadeLinkAutopilotOptions);
 	if (!NativeArcadeLinkAutopilotOptions_ApplyArgs(argc, argv, &arcadeLinkAutopilotOptions))
 	{
-		fprintf(stderr, "[CTR Native] invalid arcade link autopilot option; expected --arcade-link-autopilot <report path> (once) [--arcade-link-autopilot-race-ticks <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-freeze <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-desync <1-18000> (once, needs --arcade-link-autopilot)].\n");
+		fprintf(stderr, "[CTR Native] invalid arcade link autopilot option; expected --arcade-link-autopilot <report path> (once) [--arcade-link-autopilot-race-ticks <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-freeze <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-desync <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-solo (once, needs --arcade-link-autopilot, not with -freeze or -desync)].\n");
 		return NativeConsole_Return(1);
 	}
 #if !defined(CTR_INTERNAL)
@@ -647,6 +647,11 @@ int main(int argc, char *argv[])
 		if (arcadeLinkAutopilotOptions.raceTickLimit != 0u)
 		{
 			printf("[CTR Native] arcade link autopilot: race tick limit %u\n", (unsigned)arcadeLinkAutopilotOptions.raceTickLimit);
+		}
+		/* The solo mode (docs/SOLO_CAB_MILESTONE.md SOLO-S4). */
+		if (arcadeLinkAutopilotOptions.solo != 0u)
+		{
+			printf("[CTR Native] arcade link autopilot: solo mode\n");
 		}
 		fflush(stdout);
 	}

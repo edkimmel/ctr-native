@@ -538,8 +538,10 @@ target_link_libraries(ctr_native_arcade_link_host PUBLIC ctr_native_arcade_netpl
 # options --arcade-link-autopilot-freeze and --arcade-link-autopilot-desync,
 # decides the race 1 freeze and race 2 digest-XOR injections
 # (NativeArcadeLinkAutopilot_FaultAt), which the race caller carries out
-# next to its per-tick digest line. Uses only the host view and flow
-# headers, so it links nothing. Linked into ctr_native, whose main.c parses it and whose
+# next to its per-tick digest line. Since SOLO-S4 (docs/SOLO_CAB_MILESTONE.md)
+# it also parses --arcade-link-autopilot-solo and drives the solo mode (one
+# solo race, then LOBBY) for the arcade_solo_race gate. Uses only the host
+# view and flow headers, so it links nothing. Linked into ctr_native, whose main.c parses it and whose
 # unity-included game glue (game/MAIN/MainArcadeLinkAutopilot.c) runs it in
 # internal builds.
 add_library(ctr_native_arcade_link_autopilot STATIC platform/native_arcade_link_autopilot.c)
@@ -2054,11 +2056,11 @@ if(BUILD_TESTING)
     # includes them) and one area label: live-render, live-roster, live-link,
     # or live-package (`ctest -L live-roster` runs just that area).  They may
     # run in parallel (`ctest -j`): each writes its reports, captures, and logs
-    # only under its own directory of the build tree; the two link gates use
-    # distinct loopback port pairs (arcade_link_launch 7101/7102,
-    # package_arcade_smoke the package's 7001/7002; the fast suite's socket
-    # tests use 48000-48600); each capture reads the game's own window
-    # framebuffer, not the desktop.  What they still share is read-only or
+    # only under its own directory of the build tree; the link gates use
+    # distinct loopback ports (arcade_link_launch 7101/7102,
+    # package_arcade_smoke the package's 7001/7002, arcade_solo_race
+    # 7201-7204; the fast suite's socket tests use 48000-48600); each
+    # capture reads the game's own window framebuffer, not the desktop.  What they still share is read-only or
     # diagnostic: every run from the build tree reads the developer's
     # memcards\ in the repository root, and writes the repository root's
     # gitignored `Crash Team Racing.log` (opened share-deny-none; no check
@@ -2144,6 +2146,33 @@ if(BUILD_TESTING)
         set_tests_properties(arcade_link_launch PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 900
+            LABELS "live;live-link")
+
+        # The solo live race gate (docs/SOLO_CAB_MILESTONE.md SOLO-S4): two
+        # independent one-cabinet internal ctr_native processes at once, each
+        # with a silent peer (cab1 on 127.0.0.1 port 7201 pointing at 7202,
+        # cab2 on 7203 pointing at 7204; nothing listens on 7202 or 7204),
+        # each driven by --arcade-link-autopilot --arcade-link-autopilot-solo
+        # with a 900-tick race cap: START, the solo offer after the SOLO-2
+        # delay, CONFIRM, the one-human solo select, one solo race through the
+        # one race caller on the race drive's local mode (the autopilot's
+        # steering pad as the local sample), solo RESULTS, LOBBY, and PASS on
+        # the LOBBY. The check requires, per process, exit 0, the solo
+        # report, the race caller's solo launch line, one RL-12 validated
+        # line, the drive end (the cap at race tick 900, or a natural finish
+        # or finish grace), contiguous per-tick lines, no agreed match, and
+        # the return to the LOBBY. Needs an internal build and a known build
+        # identity (the link's own requirement) too. Reports and logs are
+        # written only under the build tree.
+        add_test(NAME arcade_solo_race
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/arcade-solo-race-check.ps1"
+                -Executable "$<TARGET_FILE:ctr_native>"
+                -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_solo_race/$<CONFIG>"
+                -TimeoutSeconds 300)
+        set_tests_properties(arcade_solo_race PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 420
             LABELS "live;live-link")
 
         # The package smoke gate (docs/PACKAGING.md "Package smoke gate"):

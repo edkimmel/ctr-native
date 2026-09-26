@@ -52,8 +52,8 @@ struct NativeMatchConfigV1;
 
 /* Solo (docs/SOLO_CAB_MILESTONE.md SOLO-11): the unit tests' switch for the
  * solo gate, read by the next LINK Configure (and kept by AbortToTitle).
- * Production never calls it, so solo stays off there until SOLO-S4 changes
- * the host's own default. Any nonzero value means 1. Kept across Shutdown. */
+ * Production never calls it, so production runs on the host's own default,
+ * on since SOLO-S4. Any nonzero value means 1. Kept across Shutdown. */
 void NativeArcadeLinkHost_InternalSetSoloEnabled(uint8_t enabled);
 
 /* The solo query's fail-closed check (SOLO-6), on any candidate: copies

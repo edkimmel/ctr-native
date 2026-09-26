@@ -52,6 +52,9 @@
 # divergence is latched in solo (rule 3i), and Configure logs through
 # Platform_Log, declared in the .c, when the gate is on but the solo base
 # does not build (rules 3f and 3l). The gate stays dark (rule 3j unchanged).
+# Since SOLO-S4 part 3 the gate is on: its default is literally 1u (rule
+# 3j), with the live proof (ctest arcade_solo_race); the previews still never
+# touch it (rule 3k).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -811,16 +814,17 @@ endif()
 #     in Configure, and the solo query returns the link's solo race config
 #     only through one check that fails closed: an ARCADE_ONE_CAB config that
 #     passes NativeArcadeBotRules_ValidateConfigV1 (SOLO-6); the adapter's
-#     solo config is named nowhere else. The solo gate is dark (SOLO-11): its
-#     default is literally 0u, its only other write is the unit tests'
-#     internal setter (which rule 3b keeps out of game/ and main.c), and
-#     Configure turns solo on only through it. SOLO-S4 flips the default.
+#     solo config is named nowhere else. The solo gate (SOLO-11) was dark
+#     until SOLO-S4, which flipped its default: it is literally 1u (solo is
+#     live), its only other write is the unit tests' internal setter (which
+#     rule 3b keeps out of game/ and main.c), and Configure turns solo on
+#     only through it.
 ctr_require_in("${host_header}" "${header_flat}"
     "struct NativeArcadeLinkHostSelectView select; uint8_t solo; uint8_t soloOffered; uint8_t peerHeard; uint8_t reserved; };"
     "int NativeArcadeLinkHost_GetSoloConfig(struct NativeMatchConfigV1 *out);")
-string(REGEX MATCH "\n#define NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT 0u\r?\n" solo_default "${source}")
+string(REGEX MATCH "\n#define NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT 1u\r?\n" solo_default "${source}")
 if(solo_default STREQUAL "")
-    message(FATAL_ERROR "arcade link host isolation: ${host_source} must define NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT as 0u on a line of its own (SOLO-11: solo stays dark until SOLO-S4)")
+    message(FATAL_ERROR "arcade link host isolation: ${host_source} must define NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT as 1u on a line of its own (SOLO-11: solo is live since SOLO-S4)")
 endif()
 ctr_require_count("${host_source}" "${source_flat}" "NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT" 2)
 ctr_require_in("${host_source}" "${source_flat}"
@@ -850,8 +854,9 @@ ctr_require_in("${host_source} (BuildSoloBase)" "${solo_base_body}"
 #     fields directly in the two preview synthesizers, and nothing else sets
 #     them outside the LINK copy in GetView. Neither synthesizer names the
 #     solo gate, the host config, the adapter, or the lobby, so a solo
-#     preview cannot open the gate for a later LINK Configure (rule 3j's
-#     write counts still hold: the gate's default stays 0u).
+#     preview cannot change the gate for a later LINK Configure (rule 3j's
+#     write counts still hold: only the default, 1u since SOLO-S4, and the
+#     unit tests' setter write it).
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_PreviewView(" preview_body)
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_PreviewSelectView(" preview_select_body)
 foreach(body_name preview_body preview_select_body)

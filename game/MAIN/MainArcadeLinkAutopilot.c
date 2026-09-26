@@ -5,7 +5,10 @@
  * the LR-16 scenario of the linked-race plan, LR-75) for the
  * two-process live gate (tools/arcade-link-launch-check.ps1, ctest
  * arcade_link_launch), then writes the report and exits with the result
- * code.
+ * code. In the solo mode (--arcade-link-autopilot-solo,
+ * docs/SOLO_CAB_MILESTONE.md SOLO-S4) it drives START, the solo offer, the
+ * solo select, one solo race, and LOBBY instead, for the solo live gate
+ * (tools/arcade-solo-race-check.ps1, ctest arcade_solo_race).
  *
  * Every decision is the pure platform/native_arcade_link_autopilot.c's; this
  * file reads the host view, the hook's enter window (the arcade-link
@@ -72,6 +75,8 @@ void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOpt
 	 * (LR-75). */
 	state->autopilot.freezeTick = options->freezeTick;
 	state->autopilot.desyncTick = options->desyncTick;
+	/* The solo mode (SOLO-S4): one solo race instead of the linked run. */
+	state->autopilot.solo = options->solo;
 	memcpy(state->reportPath, options->reportPath, sizeof(state->reportPath));
 	state->reportPath[sizeof(state->reportPath) - 1u] = '\0';
 	state->active = 1u;
@@ -208,6 +213,14 @@ void MainArcadeLinkAutopilot_AfterTick(uint32_t action)
 			(void)NativeArcadeLinkAutopilot_RecordMatch(&state->autopilot, NULL);
 		}
 	}
+	/* A solo race (SOLO-7) starts without an agreed match. */
+	else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE)
+	{
+		if (NativeArcadeLinkAutopilot_RecordSoloStart(&state->autopilot))
+		{
+			Platform_Log(MAIN_ARCADE_LINK_AUTOPILOT_LOG "race %u started (solo)\n", (unsigned)state->autopilot.racesStarted);
+		}
+	}
 
 	/* The race caller's RL-12 evidence (read only). */
 	validatedRaces = MainArcadeRaceLaunch_ValidatedRaces();
@@ -229,6 +242,10 @@ void MainArcadeLinkAutopilot_AfterTick(uint32_t action)
 	else
 	{
 		(void)NativeArcadeLinkAutopilot_Observe(&state->autopilot, NULL, action);
+	}
+	if ((action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY) && (state->autopilot.lobbyReturned != 0u))
+	{
+		Platform_Log(MAIN_ARCADE_LINK_AUTOPILOT_LOG "solo RESULTS: LOBBY confirmed, back in the LOBBY\n");
 	}
 	if (state->autopilot.done != 0u)
 	{

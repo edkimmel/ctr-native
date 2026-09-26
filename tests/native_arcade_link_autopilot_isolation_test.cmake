@@ -704,3 +704,112 @@ foreach(option IN ITEMS "'--arcade-link-autopilot-freeze'" "'--arcade-link-autop
 endforeach()
 ctr_forbid("tools/arcade-link-launch-check.ps1" "${checker}" "--exit-after-frame")
 ctr_require_order("CMakeLists.txt (arcade_link_launch)" "${live_block}" "-TimeoutSeconds 780)" "TIMEOUT 900")
+
+# Since SOLO-S4 part 3 (docs/SOLO_CAB_MILESTONE.md): the solo mode.
+#  1d. the module parses --arcade-link-autopilot-solo as a flag that needs
+#      the autopilot and takes neither fault option; the solo run is one race
+#      (SOLO_RACES 1u), started by RecordSoloStart; Observe fails the linked
+#      session first (UNEXPECTED_RACE), passes on the LOBBY only after its own
+#      RETURN_TO_LOBBY, keeps the RESULTS-entry rules (the solo race is race
+#      1: FINISHED is still decided on only in EndAccepted, 1c), and checks
+#      the RETURN_TO_LOBBY before the RETURN_TO_TITLE rule; Decide confirms
+#      the solo offer on the LOBBY and wants the LOBBY row on solo RESULTS;
+#      the report's one extra line, "mode solo", is written only in the solo
+#      mode, between the cab and result lines;
+#  2c. the glue's Configure copies the solo flag right after the fault ticks
+#      and before activating, and records START_SOLO_RACE with RecordSoloStart
+#      exactly once, in its own branch before the RL-12 evidence;
+#  4c. main.c's invalid-option message names the solo option, and main.c
+#      prints the solo notice;
+#  6c. the race caller steers slot 0's kart in a solo race (SOLO-6), the
+#      cabinet's own slot otherwise;
+#  7c. the solo live gate is registered: arcade_solo_race runs its checker on
+#      Windows with SKIP_RETURN_CODE 77 and the labels live and live-link;
+#      the checker runs cab1 on 7201 (peer 7202) and cab2 on 7203 (peer
+#      7204) with the solo option and the 900-tick cap, reads the solo
+#      report, and never passes a fault option or a frame capture.
+foreach(literal IN ITEMS "static const char k_soloOption[] = \"--arcade-link-autopilot-solo\";"
+        "if (seenSolo && (!seen || seenFreeze || seenDesync))" "candidate.solo = 1u;"
+        "int NativeArcadeLinkAutopilot_RecordSoloStart(struct NativeArcadeLinkAutopilot *autopilot)")
+    ctr_require_literal("${module_source}" "${module_code}" "${literal}")
+endforeach()
+ctr_count("${header_code}" "#define NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_RACES 1u\n" solo_races_hits)
+if(NOT solo_races_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${module_header} must define NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_RACES as 1u (the solo run's one race)")
+endif()
+ctr_require_literal("${module_header}" "${header_code}" "int NativeArcadeLinkAutopilot_RecordSoloStart(struct NativeArcadeLinkAutopilot *autopilot);")
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Observe, solo)" "${observe_block}"
+    "if (autopilot->solo != 0u)" "if (NativeArcadeLinkAutopilot_SoloLinked(view, action))"
+    "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);"
+    "if ((autopilot->lobbyReturned != 0u) && (view->screen == NATIVE_ARCADE_FLOW_SCREEN_LOBBY))"
+    "autopilot->result = NATIVE_ARCADE_LINK_AUTOPILOT_PASS;"
+    "if ((view->screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (previous != NATIVE_ARCADE_FLOW_SCREEN_RESULTS))"
+    "if ((autopilot->solo != 0u) && (autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_RACES))"
+    "if (!NativeArcadeLinkAutopilot_EndAccepted(autopilot->racesEnded + 1u, view->endReason))"
+    "if ((autopilot->solo != 0u) && (action == NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY))"
+    "(confirmedRow != (uint8_t)(NATIVE_ARCADE_FLOW_ROW_LOBBY + 1u))"
+    "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);"
+    "autopilot->lobbyReturned = 1u;"
+    "if (action == NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)")
+foreach(term IN ITEMS "lobbyReturned = 1u" "\"mode solo\\n\"" "wantedRow = NATIVE_ARCADE_FLOW_ROW_LOBBY;")
+    string(FIND "${module_code}" "${term}" first_at)
+    string(FIND "${module_code}" "${term}" last_at REVERSE)
+    if(first_at EQUAL -1 OR NOT first_at EQUAL last_at)
+        message(FATAL_ERROR "${prefix}: ${module_source} must name '${term}' exactly once")
+    endif()
+endforeach()
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Decide, solo)" "${decide_block}"
+    "case NATIVE_ARCADE_FLOW_SCREEN_LOBBY:" "(autopilot->solo != 0u) && (autopilot->racesStarted == 0u) && (view->soloOffered != 0u)"
+    "case NATIVE_ARCADE_FLOW_SCREEN_RESULTS:" "if (autopilot->solo != 0u)" "wantedRow = NATIVE_ARCADE_FLOW_ROW_LOBBY;")
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_FormatReport, solo)" "${report_block}"
+    "\"cab %u\\n\"" "if (autopilot->solo != 0u)" "\"mode solo\\n\"" "\"result %s (%u)\\n\"")
+
+ctr_require_order("${glue_source} (MainArcadeLinkAutopilot_Configure, solo)" "${configure_block}"
+    "state->autopilot.desyncTick = options->desyncTick;" "state->autopilot.solo = options->solo;" "state->active = 1u;")
+ctr_count("${glue_code}" "options->solo" glue_solo_hits)
+ctr_count("${glue_code}" "NativeArcadeLinkAutopilot_RecordSoloStart\\(" glue_solo_start_hits)
+if(NOT glue_solo_hits EQUAL 1 OR NOT glue_solo_start_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${glue_source} must copy options->solo once, in Configure, and call NativeArcadeLinkAutopilot_RecordSoloStart once (found ${glue_solo_hits} and ${glue_solo_start_hits})")
+endif()
+ctr_require_order("${glue_source} (MainArcadeLinkAutopilot_AfterTick, solo)" "${after_block}"
+    "else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE)"
+    "NativeArcadeLinkAutopilot_RecordSoloStart(&state->autopilot)"
+    "MainArcadeRaceLaunch_ValidatedRaces()")
+
+ctr_require_order("main.c (autopilot invalid option, solo)" "${invalid_block}"
+    "[--arcade-link-autopilot-solo (once, needs --arcade-link-autopilot, not with -freeze or -desync)]" "return NativeConsole_Return(1);")
+ctr_require_literal("main.c" "${main_code}" "printf(\"[CTR Native] arcade link autopilot: solo mode\\n\");")
+
+ctr_require_literal("${caller_source} (MainArcadeRaceLaunch_AutopilotSample)" "${sample_block}"
+    "driver = gGT->drivers[(view.solo != 0u) ? 0u : (view.localCab - 1u)];")
+
+string(FIND "${cmake}" "add_test(NAME arcade_solo_race" solo_live_at)
+if(solo_live_at EQUAL -1)
+    message(FATAL_ERROR "${prefix}: CMakeLists.txt must register the arcade_solo_race live test")
+endif()
+string(SUBSTRING "${cmake}" 0 ${solo_live_at} before_solo_live)
+string(FIND "${before_solo_live}" "if(WIN32)" solo_win32_at REVERSE)
+string(FIND "${before_solo_live}" "endif()" solo_endif_at REVERSE)
+if(solo_win32_at EQUAL -1 OR (NOT solo_endif_at EQUAL -1 AND solo_endif_at GREATER solo_win32_at))
+    message(FATAL_ERROR "${prefix}: arcade_solo_race must be registered inside if(WIN32)")
+endif()
+string(SUBSTRING "${cmake}" ${solo_live_at} 700 solo_live_block)
+ctr_require_order("CMakeLists.txt (arcade_solo_race)" "${solo_live_block}"
+    "COMMAND powershell -NoProfile -ExecutionPolicy Bypass"
+    "tools/arcade-solo-race-check.ps1"
+    "-Executable \"$<TARGET_FILE:ctr_native>\""
+    "-TimeoutSeconds 300)"
+    "set_tests_properties(arcade_solo_race PROPERTIES"
+    "SKIP_RETURN_CODE 77" "TIMEOUT 420" "LABELS \"live;live-link\")")
+ctr_read_source("tools/arcade-solo-race-check.ps1" solo_checker)
+foreach(literal IN ITEMS "'--arcade-link-autopilot', \$Run.ReportPath, '--arcade-link-autopilot-solo', '--arcade-link-autopilot-race-ticks', \$raceTickCap"
+        "\$raceTickCap = 900\n" "Port = '7201'; Peer = '127.0.0.1:7202'" "Port = '7203'; Peer = '127.0.0.1:7204'"
+        "'arcade link autopilot v3', \"cab \$(\$Run.CabNumber)\", 'mode solo', 'result PASS (0)'"
+        "'race 1 end reason FINISHED'" "'end races 1'" "Start-Process" "exit \$skipExitCode"
+        "--arcade-link-autopilot is available in internal builds only." "arcade link requires a known build and content identity."
+        "No displays available")
+    ctr_require_literal("tools/arcade-solo-race-check.ps1" "${solo_checker}" "${literal}")
+endforeach()
+foreach(term IN ITEMS "--arcade-link-autopilot-freeze" "--arcade-link-autopilot-desync" "--capture-frame" "--exit-after-frame")
+    ctr_forbid("tools/arcade-solo-race-check.ps1" "${solo_checker}" "${term}")
+endforeach()

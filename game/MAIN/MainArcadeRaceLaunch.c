@@ -591,7 +591,9 @@ static int MainArcadeRaceLaunch_AutopilotSample(const struct GameTracker *gGT, u
 	}
 	if (NativeArcadeLinkHost_GetView(&view) && ((view.localCab == 1u) || (view.localCab == 2u)))
 	{
-		driver = gGT->drivers[view.localCab - 1u];
+		/* The local human's kart: its cabinet's slot in a linked race, slot
+		 * 0 on either seat in a solo race (SOLO-6: CAB1_HUMAN in slot 0). */
+		driver = gGT->drivers[(view.solo != 0u) ? 0u : (view.localCab - 1u)];
 	}
 	if ((level != NULL) && (level->ptr_restart_points != NULL) && (level->cnt_restart_points > 0) &&
 	    (level->cnt_restart_points < MAIN_ARCADE_RACE_LAUNCH_STEER_MAX_POINTS))

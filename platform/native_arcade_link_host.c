@@ -219,12 +219,14 @@ static uint32_t g_raceTickLimit;
 static struct NativeArcadeLinkHostRaceDivergence g_raceDivergence;
 static uint8_t g_raceDivergencePending;
 static uint32_t g_raceDivergenceRace;
-/* The solo gate (docs/SOLO_CAB_MILESTONE.md SOLO-11): solo stays dark until
- * the solo race launch slice (SOLO-S4) and its live proof land, so a
- * cabinet is never left on a solo screen that cannot race. Only the unit
- * tests' NativeArcadeLinkHost_InternalSetSoloEnabled changes it; every LINK
+/* The solo gate (docs/SOLO_CAB_MILESTONE.md SOLO-11): solo stayed dark until
+ * the solo race launch slice (SOLO-S4) and its live proof (ctest
+ * arcade_solo_race) landed, so a cabinet was never left on a solo screen
+ * that could not race. Since SOLO-S4 it is on: a LINK cabinet whose peer is
+ * not heard is offered solo. Only the unit tests'
+ * NativeArcadeLinkHost_InternalSetSoloEnabled changes it; every LINK
  * Configure reads it. Host-local. */
-#define NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT 0u
+#define NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT 1u
 static uint8_t g_soloEnabled = NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT;
 
 uint64_t NativeArcadeLinkHost_MixSelectEntropy(uint64_t entropy, uint64_t epoch)

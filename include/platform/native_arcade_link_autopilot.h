@@ -8,7 +8,8 @@
 
 /*
  * Internal arcade-link autopilot for the two-process live gate
- * (docs/RACE_LAUNCH_MILESTONE.md section 4 RL-15, slice RL-S10): the option
+ * (docs/RACE_LAUNCH_MILESTONE.md section 4 RL-15, slice RL-S10; since SOLO-S4
+ * also the solo mode of the solo live gate, docs/SOLO_CAB_MILESTONE.md): the option
  * parser, the pure menu decision, the progress bookkeeping, and the report;
  * and the race autopilot's pure steering decision (Steering, below).
  * Internal builds only: main.c rejects the option in any other build.
@@ -29,6 +30,13 @@
  *                                           this cabinet's recorded digest of
  *                                           race tick t (decimal 1..18000;
  *                                           LR-73); needs --arcade-link-autopilot
+ *   --arcade-link-autopilot-solo            the solo mode (below; SOLO-S4):
+ *                                           one solo race instead of the
+ *                                           linked run; a flag (no value),
+ *                                           once; needs --arcade-link-autopilot
+ *                                           and is rejected together with
+ *                                           --arcade-link-autopilot-freeze or
+ *                                           --arcade-link-autopilot-desync
  *
  * The report path is opened as given when the report is written: a relative
  * path resolves against the base directory (main.c changes into it before
@@ -38,8 +46,9 @@
  * argv, a NULL entry, or a next argument starting with '-'), an empty or
  * over-long path, or a repeated option is an error; so is a race tick count,
  * freeze tick, or desync tick that is not 1 to 5 decimal digits with a value
- * of 1..RACE_TICKS_MAX, and any of the three without
- * --arcade-link-autopilot. main.c hands the count to the link host's race
+ * of 1..RACE_TICKS_MAX, any of the four other options without
+ * --arcade-link-autopilot, and the solo flag together with the freeze or
+ * desync option. main.c hands the count to the link host's race
  * tick limit setter after its Configure; 0 (absent) keeps the default bound.
  * The freeze and desync ticks reach the run through the game glue's
  * Configure (0: absent, no injection); the report records them (LR-75). main.c
@@ -98,6 +107,34 @@
  * - NATIVE_ARCADE_LINK_AUTOPILOT_DEADLINE_TICKS observed ticks fail TIMEOUT.
  * Once done (pass or fail) every call is inert.
  *
+ * The solo mode (docs/SOLO_CAB_MILESTONE.md SOLO-2, SOLO-3, SOLO-8, slice
+ * SOLO-S4; autopilot.solo, copied from the options by the glue's Configure):
+ * START on the attract screen, the solo offer, CONFIRM, the solo select, one
+ * solo race, LOBBY, then exit with the result code. The peer is never heard
+ * (the live gate points it at a silent port). Differences from the run above:
+ * - Decide: on LOBBY, CROSS (the press period applies) while the view's
+ *   soloOffered stands and no race has started (none before the offer); on
+ *   SELECT, CROSS on every item (no peer: no DOWN rule); on RESULTS the
+ *   wanted row is LOBBY (NATIVE_ARCADE_FLOW_ROW_LOBBY, the index of EXIT on
+ *   the linked screen), after an end EndAccepted accepts for race 1.
+ * - The caller records START_SOLO_RACE with RecordSoloStart (no agreed
+ *   match is recorded or required); the race must still be validated
+ *   (RecordValidated, the race caller's RL-12 line) before its RESULTS entry.
+ * - Observe, first on every observation with a view, fails UNEXPECTED_RACE on
+ *   the linked session: a START_RACE action, MATCH_FOUND or REMATCH_WAIT, or
+ *   a SELECT, SELECT_RESULT, RACING, or RESULTS screen whose view is not solo
+ *   (RecordMatch in the solo mode fails UNEXPECTED_RACE too). The one race
+ *   is race 1 of the rules above, so its RESULTS end must be FINISHED
+ *   (EndAccepted(1, reason): the natural finish, the finish grace, or the
+ *   race tick cap), else RACE_FAILED, with the evidence rule unchanged
+ *   (EVIDENCE_MISSING without the validation); a second RESULTS entry is
+ *   UNEXPECTED_RACE. A RETURN_TO_LOBBY is this autopilot's LOBBY only on the
+ *   tick RESULTS -> LOBBY whose decision confirmed the LOBBY row after the
+ *   one race started, validated, and ended; any other is SESSION_LOST. The
+ *   run passes on the first later observation of the LOBBY screen.
+ *   RETURN_TO_TITLE (the RESULTS idle timeout's EXIT) is SESSION_LOST, and
+ *   the deadline TIMEOUT, as above.
+ *
  * The accepted ends (EndAccepted, the LR-16 scenario the live gate's fault
  * options produce): race 1 FINISHED (the natural finish, the finish grace, or
  * the race tick cap); race 2 DESYNC or PEER_TIMEOUT (the digest injection:
@@ -110,6 +147,7 @@
  *
  *   arcade link autopilot v3
  *   cab <1|2>
+ *   mode solo                      (the solo mode only)
  *   result <NAME> (<code>)
  *   last screen <NAME> end reason <NAME>
  *   ticks <observed ticks>
@@ -130,22 +168,31 @@
  * freeze tick, and desync tick lines are the values the game-side glue copies
  * from the options at Configure; the live gate requires the same nonzero cap
  * on both cabinets (docs/LOCKSTEP_RACE_MILESTONE.md LR-S10 part 2, LR-75).
+ * The linked run's report is exactly the text above without the "mode solo"
+ * line (the linked checker parses it). The solo mode's report adds that line
+ * after the cab line and has no agreed match line; a passed solo run reads
+ * "race 1 validated ...", "race 1 end reason FINISHED", "end races 1"
+ * (tools/arcade-solo-race-check.ps1 parses it).
  *
  * Process exit codes while the autopilot runs (enum
  * NativeArcadeLinkAutopilotResult, also the report's result). Exit code 0
  * alone does not prove a pass: a window close or SDL quit while the
  * autopilot runs can also exit 0, without a report
  * (platform/native_platform.c; only the roster proof guards those paths). The proof is the report's
- * "result PASS (0)" line with all three races (the checker requires them).
+ * "result PASS (0)" line with all three races (the checker requires them;
+ * in the solo mode, its one race).
  *    0  PASS                 the run above, completed (report written)
  *    1  (startup failure)    main.c's generic failure; never a result
  *   40  TIMEOUT              not done within DEADLINE_TICKS observed ticks
  *   41  RACE_FAILED          a RESULTS screen with an end reason the run does
  *                            not accept for that race (EndAccepted)
  *   42  SESSION_LOST         the opponent left, or the session returned to
- *                            the title before the run completed
+ *                            the title before the run completed; solo: a
+ *                            RETURN_TO_LOBBY that was not this autopilot's
  *   43  UNEXPECTED_RACE      more START_RACEs, validations, or RESULTS
- *                            entries than races
+ *                            entries than races; solo: the linked session
+ *                            (a START_RACE, MATCH_FOUND, REMATCH_WAIT, or a
+ *                            non-solo select, race, or results screen)
  *   44  EVIDENCE_MISSING     a START_RACE without an agreed match, or an
  *                            accepted end of a race that was not validated
  *   45  REPORT_WRITE_FAILED  done, but the report could not be written
@@ -199,6 +246,8 @@
 /* Races in one run (LR-16, LR-75): race 1, REMATCH, race 2, REMATCH, race 3,
  * EXIT. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_RACES 3u
+/* Races in one solo-mode run (SOLO-S4): the one solo race, then LOBBY. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_RACES 1u
 /* A button is held on one decision in this many. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD 8u
 /* Observed host ticks before TIMEOUT: 450 s at 30 Hz. Holds and loads pass
@@ -249,7 +298,8 @@ enum NativeArcadeLinkAutopilotResult
 struct NativeArcadeLinkAutopilotOptions
 {
 	uint8_t enabled; /* --arcade-link-autopilot given */
-	uint8_t reserved[3];
+	uint8_t solo;    /* --arcade-link-autopilot-solo given (SOLO-S4) */
+	uint8_t reserved[2];
 	char reportPath[NATIVE_ARCADE_LINK_AUTOPILOT_PATH_BYTES];
 	/* --arcade-link-autopilot-race-ticks, 1..RACE_TICKS_MAX; 0 when absent */
 	uint32_t raceTickLimit;
@@ -290,7 +340,12 @@ struct NativeArcadeLinkAutopilot
 	uint8_t localCab;
 	/* the RESULTS row the last decision confirmed + 1, or 0 */
 	uint8_t confirmedRow;
-	uint8_t reserved[3];
+	/* 1: the solo mode (SOLO-S4), set once before the run by the glue's
+	 * Configure from the options */
+	uint8_t solo;
+	/* solo: 1 once this autopilot's RETURN_TO_LOBBY was observed */
+	uint8_t lobbyReturned;
+	uint8_t reserved[1];
 	/* enum NativeArcadeLinkAutopilotResult once done */
 	uint32_t result;
 	uint32_t ticks;
@@ -365,10 +420,19 @@ int NativeArcadeLinkAutopilot_Decide(struct NativeArcadeLinkAutopilot *autopilot
 
 /*
  * Records the agreed match of a START_RACE (match NULL: the host had none,
- * EVIDENCE_MISSING). A START_RACE beyond RACES fails UNEXPECTED_RACE.
+ * EVIDENCE_MISSING). A START_RACE beyond RACES, or any in the solo mode,
+ * fails UNEXPECTED_RACE.
  * Returns 1 when recorded; 0 otherwise (NULL autopilot, done, or failed).
  */
 int NativeArcadeLinkAutopilot_RecordMatch(struct NativeArcadeLinkAutopilot *autopilot, const struct NativeArcadeLinkHostMatch *match);
+
+/*
+ * Records the start of the solo race (a START_SOLO_RACE; SOLO-S4): no agreed
+ * match. Outside the solo mode, or beyond SOLO_RACES, it fails
+ * UNEXPECTED_RACE. Returns 1 when recorded; 0 otherwise (NULL autopilot,
+ * done, or failed).
+ */
+int NativeArcadeLinkAutopilot_RecordSoloStart(struct NativeArcadeLinkAutopilot *autopilot);
 
 /*
  * The race caller's validation evidence: validatedTotal races validated so

@@ -314,6 +314,71 @@ static int TestFaultOptions(void)
 	return 0;
 }
 
+/* SOLO-S4: --arcade-link-autopilot-solo, a flag once, with the autopilot,
+ * without the fault options. */
+static int TestSoloOption(void)
+{
+	struct NativeArcadeLinkAutopilotOptions options;
+
+	memset(&options, 0xA5, sizeof(options));
+	NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+	CHECK(options.solo == 0u);
+	/* Absent: the linked run. */
+	{
+		char *argv[] = { "ctr_native", "--arcade-link", "cab1", "--arcade-link-autopilot", "r.txt" };
+
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(argv), argv, &options) == 1);
+		CHECK((options.enabled == 1u) && (options.solo == 0u));
+	}
+	/* After or before the autopilot option, with the race tick cap; it takes
+	 * no value, so the next argument is parsed on its own. */
+	{
+		char *after[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-solo",
+			"--arcade-link-autopilot-race-ticks", "900" };
+		char *before[] = { "ctr_native", "--arcade-link-autopilot-solo", "--arcade-link", "cab2", "--arcade-link-autopilot", "r.txt" };
+
+		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(after), after, &options) == 1);
+		CHECK((options.enabled == 1u) && (options.solo == 1u) && (options.raceTickLimit == 900u));
+		CHECK((options.freezeTick == 0u) && (options.desyncTick == 0u) && (strcmp(options.reportPath, "r.txt") == 0));
+		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(before), before, &options) == 1);
+		CHECK((options.enabled == 1u) && (options.solo == 1u) && (options.raceTickLimit == 0u));
+	}
+	/* Errors leave the options untouched: without the autopilot, repeated,
+	 * with either fault option, or as the autopilot's missing value. */
+	{
+		char *alone[] = { "ctr_native", "--arcade-link", "cab1", "--arcade-link-autopilot-solo" };
+		char *aloneTicks[] = { "ctr_native", "--arcade-link-autopilot-solo", "--arcade-link-autopilot-race-ticks", "900" };
+		char *twice[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-solo", "--arcade-link-autopilot-solo" };
+		char *freeze[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-solo", "--arcade-link-autopilot-freeze",
+			"600" };
+		char *desync[] = { "ctr_native", "--arcade-link-autopilot-desync", "300", "--arcade-link-autopilot", "r.txt",
+			"--arcade-link-autopilot-solo" };
+		char *asValue[] = { "ctr_native", "--arcade-link-autopilot", "--arcade-link-autopilot-solo" };
+		char *asTicks[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-race-ticks",
+			"--arcade-link-autopilot-solo" };
+
+		CHECK(RejectsUntouched(ARGC(alone), alone));
+		CHECK(RejectsUntouched(ARGC(aloneTicks), aloneTicks));
+		CHECK(RejectsUntouched(ARGC(twice), twice));
+		CHECK(RejectsUntouched(ARGC(freeze), freeze));
+		CHECK(RejectsUntouched(ARGC(desync), desync));
+		CHECK(RejectsUntouched(ARGC(asValue), asValue));
+		CHECK(RejectsUntouched(ARGC(asTicks), asTicks));
+	}
+	/* The name is matched exactly: near names are other parsers' (ignored). */
+	{
+		char *argv[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-solo=1",
+			"--arcade-link-autopilot-solos", "--arcade-link-solo" };
+
+		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(argv), argv, &options) == 1);
+		CHECK((options.enabled == 1u) && (options.solo == 0u));
+	}
+	return 0;
+}
+
 static void Match(struct NativeArcadeLinkHostMatch *match, uint32_t trackID, uint64_t seed);
 
 /* LR-73: the pure fault decision. */
@@ -1150,6 +1215,431 @@ static int TestFailures(void)
 	return 0;
 }
 
+/* A solo screen's view (SOLO-S4): the view's solo bit set. */
+static void SoloView(struct NativeArcadeLinkHostView *view, uint32_t screen)
+{
+	View(view, screen);
+	view->solo = 1u;
+}
+
+/* The solo select's view: one human, no peer. */
+static void SoloSelectView(struct NativeArcadeLinkHostView *view, uint8_t status, uint8_t currentItem)
+{
+	SelectView(view, status, currentItem);
+	view->solo = 1u;
+	view->select.humanCount = 1u;
+	memset(&view->select.humans[1], 0, sizeof(view->select.humans[1]));
+}
+
+/* Decides on view until the first pressing decision (within one press
+ * period), observing view after each released one. Returns the held
+ * buttons, or 0xFFFFFFFF when nothing was pressed. */
+static uint32_t PressOn(struct NativeArcadeLinkAutopilot *autopilot, const struct NativeArcadeLinkHostView *view)
+{
+	for (uint32_t i = 0; i < NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD; i++)
+	{
+		const uint32_t held = Held(autopilot, view);
+
+		if (held != 0u)
+		{
+			return held;
+		}
+		if (NativeArcadeLinkAutopilot_Observe(autopilot, view, NATIVE_ARCADE_FLOW_ACTION_NONE) != 0)
+		{
+			return 0xFFFFFFFFu;
+		}
+	}
+	return 0xFFFFFFFFu;
+}
+
+/* A fresh solo-mode run, entered from the attract screen onto the LOBBY. */
+static int SoloEnter(struct NativeArcadeLinkAutopilot *autopilot)
+{
+	struct NativeArcadeLinkHostView view;
+	struct NativeArcadeLinkAutopilotOutput output;
+
+	NativeArcadeLinkAutopilot_Init(autopilot);
+	autopilot->solo = 1u;
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	CHECK(NativeArcadeLinkAutopilot_Decide(autopilot, &view, 1u, &output) == 1);
+	CHECK((output.enter == 1u) && (output.heldButtons == 0u));
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	CHECK(NativeArcadeLinkAutopilot_Observe(autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY) == 0);
+	return 0;
+}
+
+/*
+ * The solo run from the attract screen to solo RACING: nothing on the LOBBY
+ * before the offer, CROSS on the offer (BEGIN_SOLO_SELECT), CROSS on every
+ * select item, SELECT_RESULT, and START_SOLO_RACE (recorded without a
+ * match).
+ */
+static int SoloToRacing(struct NativeArcadeLinkAutopilot *autopilot)
+{
+	struct NativeArcadeLinkHostView view;
+	struct NativeArcadeLinkHostView next;
+
+	CHECK(SoloEnter(autopilot) == 0);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	for (uint32_t i = 0; i < 3u * NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD; i++)
+	{
+		CHECK(Frame(autopilot, &view, &view, NATIVE_ARCADE_FLOW_ACTION_NONE, NULL) == 0);
+		CHECK(autopilot->confirmedRow == 0u);
+	}
+	view.soloOffered = 1u;
+	CHECK(PressOn(autopilot, &view) == NATIVE_ARCADE_MENU_BUTTON_CROSS);
+	SoloSelectView(&next, NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_PICKING, NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER);
+	CHECK(NativeArcadeLinkAutopilot_Observe(autopilot, &next, NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT) == 0);
+	for (uint8_t item = NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER; item < NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE; item++)
+	{
+		SoloSelectView(&view, NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_PICKING, item);
+		CHECK(PressOn(autopilot, &view) == NATIVE_ARCADE_MENU_BUTTON_CROSS);
+		CHECK(NativeArcadeLinkAutopilot_Observe(autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+	}
+	SoloSelectView(&view, NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_RESOLVED, NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE);
+	view.screen = NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT;
+	CHECK(Frame(autopilot, &view, &view, NATIVE_ARCADE_FLOW_ACTION_NONE, NULL) == 0);
+	CHECK(NativeArcadeLinkAutopilot_RecordSoloStart(autopilot) == 1);
+	CHECK((autopilot->racesStarted == 1u) && (autopilot->races[0].matchRecorded == 0u));
+	SoloView(&next, NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(Frame(autopilot, &view, &next, NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE, NULL) == 0);
+	CHECK(autopilot->done == 0u);
+	return 0;
+}
+
+/* From solo RACING: the validation (unless validate is 0), race frames
+ * (Observe only), and the solo RESULTS entry with endReason. Returns the
+ * entry's Observe value, or -1 on a failed step. */
+static int SoloRaceEnding(struct NativeArcadeLinkAutopilot *autopilot, uint32_t endReason, int validate)
+{
+	struct NativeArcadeLinkHostView view;
+	uint8_t digests[DIGEST_TOTAL];
+
+	Digests(digests, 0x40u);
+	if (validate && (NativeArcadeLinkAutopilot_RecordValidated(autopilot, 1u, 7u, digests) != 1))
+	{
+		return -1;
+	}
+	SoloView(&view, NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	for (uint32_t i = 0; i < 20u; i++)
+	{
+		if (NativeArcadeLinkAutopilot_Observe(autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) != 0)
+		{
+			return -1;
+		}
+	}
+	SoloView(&view, NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	view.endReason = endReason;
+	return NativeArcadeLinkAutopilot_Observe(autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE);
+}
+
+/* On solo RESULTS after an accepted end: DOWN to LOBBY, then CROSS, then
+ * the RETURN_TO_LOBBY tick onto the LOBBY (not done yet). */
+static int SoloConfirmLobby(struct NativeArcadeLinkAutopilot *autopilot)
+{
+	struct NativeArcadeLinkHostView view;
+	struct NativeArcadeLinkHostView lobby;
+
+	SoloView(&view, NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	view.endReason = NATIVE_ARCADE_FLOW_END_FINISHED;
+	view.selectedRow = NATIVE_ARCADE_FLOW_ROW_RACE_AGAIN;
+	/* Dwell: rows not enabled yet, nothing. */
+	CHECK(Frame(autopilot, &view, &view, NATIVE_ARCADE_FLOW_ACTION_NONE, NULL) == 0);
+	view.rowsEnabled = 1u;
+	CHECK(PressOn(autopilot, &view) == NATIVE_ARCADE_MENU_BUTTON_DOWN);
+	CHECK(autopilot->confirmedRow == 0u);
+	view.selectedRow = NATIVE_ARCADE_FLOW_ROW_LOBBY;
+	CHECK(NativeArcadeLinkAutopilot_Observe(autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+	CHECK(PressOn(autopilot, &view) == NATIVE_ARCADE_MENU_BUTTON_CROSS);
+	CHECK(autopilot->confirmedRow == NATIVE_ARCADE_FLOW_ROW_LOBBY + 1u);
+	View(&lobby, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	CHECK(NativeArcadeLinkAutopilot_Observe(autopilot, &lobby, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY) == 0);
+	CHECK((autopilot->lobbyReturned == 1u) && (autopilot->done == 0u));
+	return 0;
+}
+
+/* SOLO-S4: the solo mode's decisions. */
+static int TestSoloDecide(void)
+{
+	struct NativeArcadeLinkAutopilot autopilot;
+	struct NativeArcadeLinkHostView view;
+
+	/* LOBBY: no CONFIRM before the offer; CROSS on the offer, on the press
+	 * period; never in the linked run, and never once the race started. */
+	CHECK(SoloEnter(&autopilot) == 0);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	for (uint32_t i = 0; i < 2u * NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD; i++)
+	{
+		CHECK(Held(&autopilot, &view) == 0u);
+	}
+	view.soloOffered = 1u;
+	for (uint32_t i = 0; i < 2u * NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD; i++)
+	{
+		/* The press period counts every decision, the enter's included. */
+		const uint32_t expected =
+			((autopilot.decisions % NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD) == 0u) ? NATIVE_ARCADE_MENU_BUTTON_CROSS : 0u;
+
+		CHECK(Held(&autopilot, &view) == expected);
+	}
+	CHECK(autopilot.decisions == 1u + 4u * NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD);
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	for (uint32_t i = 0; i < 2u * NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD; i++)
+	{
+		CHECK(Held(&autopilot, &view) == 0u);
+	}
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	autopilot.solo = 1u;
+	autopilot.racesStarted = 1u;
+	CHECK(Held(&autopilot, &view) == 0u);
+
+	/* SELECT: CROSS on every item; no peer, so no DOWN rule even for a
+	 * character a (stale) mask would block. */
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	autopilot.solo = 1u;
+	SoloSelectView(&view, NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_PICKING, NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER);
+	view.select.peerLockedCharacterMask = (uint16_t)(1u << 0);
+	CHECK(Held(&autopilot, &view) == NATIVE_ARCADE_MENU_BUTTON_CROSS);
+	for (uint8_t item = NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER; item < NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_DONE; item++)
+	{
+		NativeArcadeLinkAutopilot_Init(&autopilot);
+		autopilot.solo = 1u;
+		SoloSelectView(&view, NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_PICKING, item);
+		CHECK(Held(&autopilot, &view) == NATIVE_ARCADE_MENU_BUTTON_CROSS);
+	}
+
+	/* RESULTS after the accepted solo end: DOWN from RACE AGAIN, CROSS on
+	 * LOBBY; nothing for any other end. */
+	for (uint32_t reason = 0u; reason <= (uint32_t)NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT + 1u; reason++)
+	{
+		const int accepted = reason == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED;
+
+		NativeArcadeLinkAutopilot_Init(&autopilot);
+		autopilot.solo = 1u;
+		autopilot.racesEnded = 1u;
+		SoloView(&view, NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+		view.endReason = reason;
+		view.rowsEnabled = 1u;
+		view.selectedRow = NATIVE_ARCADE_FLOW_ROW_RACE_AGAIN;
+		CHECK(Held(&autopilot, &view) == (accepted ? NATIVE_ARCADE_MENU_BUTTON_DOWN : 0u));
+		CHECK(autopilot.confirmedRow == 0u);
+		NativeArcadeLinkAutopilot_Init(&autopilot);
+		autopilot.solo = 1u;
+		autopilot.racesEnded = 1u;
+		view.selectedRow = NATIVE_ARCADE_FLOW_ROW_LOBBY;
+		CHECK(Held(&autopilot, &view) == (accepted ? NATIVE_ARCADE_MENU_BUTTON_CROSS : 0u));
+		CHECK(autopilot.confirmedRow == (accepted ? NATIVE_ARCADE_FLOW_ROW_LOBBY + 1u : 0u));
+	}
+	/* The solo rows sit at the linked rows' indices (the view reports the
+	 * index only). */
+	CHECK((NATIVE_ARCADE_FLOW_ROW_RACE_AGAIN == NATIVE_ARCADE_FLOW_ROW_REMATCH) && (NATIVE_ARCADE_FLOW_ROW_LOBBY == NATIVE_ARCADE_FLOW_ROW_EXIT));
+	return 0;
+}
+
+/* SOLO-S4: the solo run passes on the LOBBY after its own RETURN_TO_LOBBY. */
+static int TestSoloRun(void)
+{
+	struct NativeArcadeLinkAutopilot autopilot;
+	struct NativeArcadeLinkAutopilotOutput output;
+	struct NativeArcadeLinkHostView lobby;
+	uint32_t ticks;
+
+	CHECK(SoloToRacing(&autopilot) == 0);
+	CHECK(SoloRaceEnding(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED, 1) == 0);
+	CHECK((autopilot.racesStarted == 1u) && (autopilot.racesValidated == 1u) && (autopilot.racesEnded == 1u));
+	CHECK((autopilot.races[0].ended == 1u) && (autopilot.races[0].endReason == NATIVE_ARCADE_FLOW_END_FINISHED));
+	CHECK(autopilot.races[0].launchNumber == 7u);
+	CHECK(SoloConfirmLobby(&autopilot) == 0);
+	ticks = autopilot.ticks;
+	/* The first LOBBY observed after it: PASS (a peer heard or not). */
+	View(&lobby, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	CHECK(Frame(&autopilot, &lobby, &lobby, NATIVE_ARCADE_FLOW_ACTION_NONE, &output) == 1);
+	CHECK(output.heldButtons == 0u);
+	CHECK((autopilot.done == 1u) && (autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_PASS));
+	CHECK(autopilot.ticks == ticks + 1u);
+	CHECK((autopilot.lastScreen == NATIVE_ARCADE_FLOW_SCREEN_LOBBY) && (autopilot.rematches == 0u) && (autopilot.exitConfirmed == 0u));
+	/* Done: inert. */
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &lobby, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+	CHECK(NativeArcadeLinkAutopilot_RecordSoloStart(&autopilot) == 0);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_PASS);
+	CHECK(NativeArcadeLinkAutopilot_RecordSoloStart(NULL) == 0);
+	/* The solo race gets no fault injection (the options exclude them). */
+	CHECK(NativeArcadeLinkAutopilot_FaultAt(&autopilot, 300u) == NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE);
+	return 0;
+}
+
+/* SOLO-S4: each way the solo run fails. */
+static int TestSoloFailures(void)
+{
+	struct NativeArcadeLinkAutopilot autopilot;
+	struct NativeArcadeLinkHostView view;
+	struct NativeArcadeLinkHostMatch match;
+
+	Match(&match, 3u, 1u);
+
+	/* The linked session in the solo mode is UNEXPECTED_RACE: a START_RACE
+	 * (recorded or observed), MATCH_FOUND, REMATCH_WAIT, and a select,
+	 * race, or results screen that is not solo. */
+	CHECK(SoloEnter(&autopilot) == 0);
+	CHECK(NativeArcadeLinkAutopilot_RecordMatch(&autopilot, &match) == 0);
+	CHECK((autopilot.done == 1u) && (autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE));
+	CHECK(SoloEnter(&autopilot) == 0);
+	SoloView(&view, NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_START_RACE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);
+	{
+		static const uint32_t linked[] = { NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND, NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT,
+			NATIVE_ARCADE_FLOW_SCREEN_SELECT, NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT, NATIVE_ARCADE_FLOW_SCREEN_RACING,
+			NATIVE_ARCADE_FLOW_SCREEN_RESULTS };
+
+		for (uint32_t i = 0; i < (uint32_t)(sizeof(linked) / sizeof(linked[0])); i++)
+		{
+			CHECK(SoloEnter(&autopilot) == 0);
+			View(&view, linked[i]);
+			CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
+			CHECK((autopilot.done == 1u) && (autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE));
+			/* The same screens are fine in the linked run. */
+			NativeArcadeLinkAutopilot_Init(&autopilot);
+			CHECK((NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0) ||
+				  (linked[i] == NATIVE_ARCADE_FLOW_SCREEN_RESULTS));
+		}
+	}
+	/* A solo start outside the solo mode, or a second one, is UNEXPECTED_RACE. */
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	CHECK(NativeArcadeLinkAutopilot_RecordSoloStart(&autopilot) == 0);
+	CHECK((autopilot.done == 1u) && (autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE));
+	CHECK(SoloEnter(&autopilot) == 0);
+	CHECK(NativeArcadeLinkAutopilot_RecordSoloStart(&autopilot) == 1);
+	CHECK(NativeArcadeLinkAutopilot_RecordSoloStart(&autopilot) == 0);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);
+
+	/* Any end but FINISHED is RACE_FAILED (the reason is still recorded). */
+	for (uint32_t reason = 0u; reason <= (uint32_t)NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT + 1u; reason++)
+	{
+		if (reason == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED)
+		{
+			continue;
+		}
+		CHECK(SoloToRacing(&autopilot) == 0);
+		CHECK(SoloRaceEnding(&autopilot, reason, 1) == 1);
+		CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_RACE_FAILED);
+		CHECK((autopilot.races[0].ended == 1u) && (autopilot.races[0].endReason == reason) && (autopilot.racesEnded == 0u));
+	}
+	/* A solo select failure (LINK_ERROR on RESULTS, no race) is RACE_FAILED too. */
+	CHECK(SoloEnter(&autopilot) == 0);
+	SoloView(&view, NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	view.endReason = NATIVE_ARCADE_FLOW_END_LINK_ERROR;
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_RACE_FAILED);
+
+	/* The finish without the race caller's validation: EVIDENCE_MISSING. */
+	CHECK(SoloToRacing(&autopilot) == 0);
+	CHECK(SoloRaceEnding(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED, 0) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_EVIDENCE_MISSING);
+	/* So is a finish on solo RESULTS of a race that never started. */
+	CHECK(SoloEnter(&autopilot) == 0);
+	SoloView(&view, NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	view.endReason = NATIVE_ARCADE_FLOW_END_FINISHED;
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_EVIDENCE_MISSING);
+
+	/* A second solo RESULTS entry (RACE AGAIN taken elsewhere, then a solo
+	 * select failure) is UNEXPECTED_RACE. */
+	CHECK(SoloToRacing(&autopilot) == 0);
+	CHECK(SoloRaceEnding(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED, 1) == 0);
+	SoloSelectView(&view, NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_PICKING, NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT) == 0);
+	SoloView(&view, NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	view.endReason = NATIVE_ARCADE_FLOW_END_LINK_ERROR;
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);
+
+	/* The RESULTS idle timeout: EXIT, then RETURN_TO_TITLE, SESSION_LOST. */
+	CHECK(SoloToRacing(&autopilot) == 0);
+	CHECK(SoloRaceEnding(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED, 1) == 0);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_EXIT);
+	view.endReason = NATIVE_ARCADE_FLOW_END_FINISHED;
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK) == 0);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);
+	/* So is the title straight from the LOBBY (BACK). */
+	CHECK(SoloEnter(&autopilot) == 0);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);
+
+	/* A RETURN_TO_LOBBY that is not this autopilot's LOBBY row (no
+	 * confirmation on that tick, or before the race was validated and
+	 * ended) is SESSION_LOST. */
+	CHECK(SoloToRacing(&autopilot) == 0);
+	CHECK(SoloRaceEnding(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED, 1) == 0);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY) == 1);
+	CHECK((autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST) && (autopilot.lobbyReturned == 0u));
+	CHECK(SoloEnter(&autopilot) == 0);
+	autopilot.lastScreen = NATIVE_ARCADE_FLOW_SCREEN_RESULTS;
+	autopilot.confirmedRow = (uint8_t)(NATIVE_ARCADE_FLOW_ROW_LOBBY + 1u);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);
+	/* The linked run ignores RETURN_TO_LOBBY (it never takes solo). */
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY) == 0);
+	CHECK((autopilot.done == 0u) && (autopilot.lobbyReturned == 0u));
+
+	/* The deadline: TIMEOUT, as in the linked run (the LOBBY waits forever
+	 * without an offer). */
+	CHECK(SoloEnter(&autopilot) == 0);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	while (autopilot.ticks + 1u < NATIVE_ARCADE_LINK_AUTOPILOT_DEADLINE_TICKS)
+	{
+		CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+	}
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_TIMEOUT);
+	return 0;
+}
+
+/* SOLO-S4: the solo report adds "mode solo" and has no agreed match line. */
+static int TestSoloReport(void)
+{
+	struct NativeArcadeLinkAutopilot autopilot;
+	struct NativeArcadeLinkHostView lobby;
+	char text[NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_BYTES];
+	char expected[NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_BYTES];
+	char hex[4][2u * NATIVE_ARCADE_LINK_AUTOPILOT_DIGEST_BYTES + 1u];
+	size_t length = 0u;
+
+	CHECK(SoloToRacing(&autopilot) == 0);
+	CHECK(SoloRaceEnding(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED, 1) == 0);
+	CHECK(SoloConfirmLobby(&autopilot) == 0);
+	View(&lobby, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	lobby.localCab = 2u;
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &lobby, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_PASS);
+	autopilot.raceTickLimit = 900u;
+	for (uint32_t d = 0; d < 4u; d++)
+	{
+		for (uint32_t i = 0; i < NATIVE_ARCADE_LINK_AUTOPILOT_DIGEST_BYTES; i++)
+		{
+			(void)snprintf(&hex[d][2u * i], 3u, "%02x", (unsigned)(uint8_t)(0x40u + d * NATIVE_ARCADE_LINK_AUTOPILOT_DIGEST_BYTES + i));
+		}
+	}
+	(void)snprintf(expected, sizeof(expected),
+		"arcade link autopilot v3\ncab 2\nmode solo\nresult PASS (0)\nlast screen LOBBY end reason NONE\nticks %u\nrace ticks 900\n"
+		"freeze tick 0\ndesync tick 0\nrace 1 validated launch 7 config %s plan %s bots %s bank %s\nrace 1 end reason FINISHED\n"
+		"end races 1\n",
+		(unsigned)autopilot.ticks, hex[0], hex[1], hex[2], hex[3]);
+	CHECK(NativeArcadeLinkAutopilot_FormatReport(&autopilot, text, sizeof(text), &length) == 1);
+	CHECK(strcmp(text, expected) == 0);
+	CHECK(length == strlen(expected));
+	/* The linked run's report of the same state has no mode line. */
+	autopilot.solo = 0u;
+	CHECK(NativeArcadeLinkAutopilot_FormatReport(&autopilot, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, "mode") == NULL);
+	CHECK(strncmp(text, "arcade link autopilot v3\ncab 2\nresult PASS (0)\n", strlen("arcade link autopilot v3\ncab 2\nresult PASS (0)\n")) == 0);
+	return 0;
+}
+
 static int TestNames(void)
 {
 	CHECK(strcmp(NativeArcadeLinkAutopilot_ResultName(NATIVE_ARCADE_LINK_AUTOPILOT_PASS), "PASS") == 0);
@@ -1488,6 +1978,8 @@ static int TestReport(void)
 		CHECK(strcmp(NativeArcadeLinkAutopilot_EndReasonName(longestReason), "OPPONENT_LEFT") == 0);
 		NativeArcadeLinkAutopilot_Init(&wide);
 		wide.localCab = UINT8_MAX;
+		/* The solo mode's extra line counts too (SOLO-S4). */
+		wide.solo = 1u;
 		/* REPORT_WRITE_FAILED is the longest result name (a code outside the
 		 * enum prints "unknown (4294967295)", shorter). */
 		wide.result = NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_WRITE_FAILED;
@@ -1515,8 +2007,10 @@ static int TestReport(void)
 			memset(race->digests, 0xFF, sizeof(race->digests));
 		}
 		CHECK(NativeArcadeLinkAutopilot_FormatReport(&wide, widest, sizeof(widest), &widestLength) == 1);
-		/* 201 header bytes, 475 per race (126 + 317 + 32), and 21 for the end line. */
-		CHECK(widestLength == 1647u);
+		/* 211 header bytes (10 of them the solo mode line), 475 per race
+		 * (126 + 317 + 32), and 21 for the end line. */
+		CHECK(widestLength == 1657u);
+		CHECK(strstr(widest, "\nmode solo\nresult ") != NULL);
 		CHECK(widestLength < sizeof(widest));
 		CHECK(strstr(widest, "\nresult REPORT_WRITE_FAILED (45)\nlast screen SELECT_RESULT end reason OPPONENT_LEFT\n") != NULL);
 		CHECK(strstr(widest, "\nfreeze tick 4294967295\ndesync tick 4294967295\n") != NULL);
@@ -1551,6 +2045,7 @@ int main(void)
 	CHECK(TestOptions() == 0);
 	CHECK(TestRaceTicksOption() == 0);
 	CHECK(TestFaultOptions() == 0);
+	CHECK(TestSoloOption() == 0);
 	CHECK(TestFaultAt() == 0);
 	CHECK(TestEndAccepted() == 0);
 	CHECK(TestDesyncTarget() == 0);
@@ -1560,6 +2055,10 @@ int main(void)
 	CHECK(TestConfirmations() == 0);
 	CHECK(TestFullRun() == 0);
 	CHECK(TestFailures() == 0);
+	CHECK(TestSoloDecide() == 0);
+	CHECK(TestSoloRun() == 0);
+	CHECK(TestSoloFailures() == 0);
+	CHECK(TestSoloReport() == 0);
 	CHECK(TestNames() == 0);
 	CHECK(TestReport() == 0);
 	CHECK(TestSteerAngle() == 0);
