@@ -57,7 +57,12 @@
 # part A (LR-73, LR-74) the race caller's internal part logs one digest line
 # per projected race tick and carries out the autopilot's freeze and desync
 # injections, called once per drive tick between the projection and the
-# sample (16j, 16m).
+# sample (16j, 16m). Since SOLO-S4 part 2 (docs/SOLO_CAB_MILESTONE.md SOLO-7,
+# SOLO-8) START_SOLO_RACE shares the START_RACE hand-off (11, 12),
+# RETURN_TO_LOBBY is an explicit no-op branch (11, 12c), the caller falls back
+# from the agreed config to the solo config before its one Arm and Launch
+# (16c), and its neutral pads follow the armed config's profile through the
+# core's MainArcadeRaceLaunchCore_PadProfile (16e).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -606,7 +611,17 @@ endforeach()
 #     restore pin is dropped with it. The branch hands the launch over
 #     exactly once, through MainArcadeRaceLaunch_StartRace, which the hook
 #     calls nowhere else; and the host tick's raceFinished input is the
-#     caller's finish report.
+#     caller's finish report. Since SOLO-S4 part 2
+#     (docs/SOLO_CAB_MILESTONE.md SOLO-7) the one branch that hands the
+#     launch over tests both START_RACE and START_SOLO_RACE, so the solo race
+#     goes through the same single StartRace call (no abort and no sound
+#     reset either), and no other branch of the hook names
+#     START_SOLO_RACE. RETURN_TO_LOBBY (solo RESULTS row LOBBY, SOLO-8) is an
+#     explicit branch after RETURN_TO_TITLE with no code at all: the adapter
+#     already reopened the lobby and the race caller's own return step
+#     already brought the game back to the main-menu level, so it neither
+#     resets the sound snapshot, asks for a return step, nor hands anything
+#     to the race caller.
 ctr_strip_comments("${hook_source}" hook_code)
 set(caller_source_path "game/MAIN/MainArcadeRaceLaunch.c")
 set(caller_header_path "game/MAIN/MainArcadeRaceLaunch.h")
@@ -620,15 +635,37 @@ foreach(pair "${hook_source_path}|hook_code" "${caller_source_path}|caller_code"
     ctr_forbid("${relative_path}" "${${variable}}" "NativeArcadeLinkHost_AbortToTitle")
 endforeach()
 ctr_forbid("${hook_source_path}" "${hook_source}" "networked race launch is not wired yet")
-ctr_find_block("${hook_source_path}" "${hook_code}"
-    "if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)" start_begin start_end)
+set(start_check "if ((action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE) || (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE))")
+ctr_find_block("${hook_source_path}" "${hook_code}" "${start_check}" start_begin start_end)
 math(EXPR start_length "${start_end} - ${start_begin} + 1")
 string(SUBSTRING "${hook_code}" ${start_begin} ${start_length} start_block)
 ctr_require_literal("${hook_source_path} (START_RACE branch)" "${start_block}" "MainArcadeRaceLaunch_StartRace();")
 string(REGEX MATCHALL "MainArcadeRaceLaunch_StartRace\\(" handoff_calls "${hook_code}")
 list(LENGTH handoff_calls handoff_call_count)
 if(NOT handoff_call_count EQUAL 1)
-    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call MainArcadeRaceLaunch_StartRace exactly once, in its START_RACE branch (found ${handoff_call_count})")
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call MainArcadeRaceLaunch_StartRace exactly once, in its START_RACE / START_SOLO_RACE branch (found ${handoff_call_count})")
+endif()
+string(REGEX MATCHALL "NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE" solo_start_names "${hook_code}")
+list(LENGTH solo_start_names solo_start_name_count)
+if(NOT solo_start_name_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must name NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE exactly once, in the condition of the branch that hands the launch to the race caller (found ${solo_start_name_count})")
+endif()
+foreach(term IN ITEMS "MainArcadeLinkSound_Reset" "MainArcadeLink_ReturnStep")
+    ctr_forbid("${hook_source_path} (START_RACE / START_SOLO_RACE branch)" "${start_block}" "${term}")
+endforeach()
+# RETURN_TO_LOBBY: an explicit, empty branch right after RETURN_TO_TITLE, and
+# the only place the hook names the action.
+set(lobby_check "else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY)")
+string(REGEX MATCHALL "NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY" lobby_names "${hook_code}")
+list(LENGTH lobby_names lobby_name_count)
+if(NOT lobby_name_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must name NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY exactly once, in its own branch (found ${lobby_name_count})")
+endif()
+ctr_find_block("${hook_source_path}" "${hook_code}" "${lobby_check}" lobby_begin lobby_end)
+math(EXPR lobby_length "${lobby_end} - ${lobby_begin} + 1")
+string(SUBSTRING "${hook_code}" ${lobby_begin} ${lobby_length} lobby_block)
+if(NOT lobby_block MATCHES "^\\{[ \t\r\n]*\\}$")
+    message(FATAL_ERROR "arcade link hook isolation: the RETURN_TO_LOBBY branch of ${hook_source_path} must be a documented no-op (no sound reset, no return step, no race caller hand-off; found '${lobby_block}')")
 endif()
 ctr_require_literal("${hook_source_path}" "${hook_code}"
     "action = NativeArcadeLinkHost_Tick(output->heldButtons, MainArcadeRaceLaunch_RaceFinished());")
@@ -643,15 +680,26 @@ endif()
 #     docs/MATCH_SELECT_MILESTONE.md section 2.7) before it hands the launch
 #     to the race caller, while the link still holds the agreed config: the
 #     only GetAgreedMatch call is inside that branch, before the hand-off, and
-#     its success block logs through the hook's Platform_Log helper.
+#     its success block logs through the hook's Platform_Log helper. Since
+#     SOLO-S4 part 2 the branch serves START_SOLO_RACE too, so the log sits
+#     in an inner block taken only for START_RACE (solo has no agreed match),
+#     and the hand-off follows that inner block, for both actions.
 string(REGEX MATCHALL "NativeArcadeLinkHost_GetAgreedMatch\\(" agreed_calls "${hook_code}")
 list(LENGTH agreed_calls agreed_call_count)
 if(NOT agreed_call_count EQUAL 1)
     message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call NativeArcadeLinkHost_GetAgreedMatch exactly once (found ${agreed_call_count})")
 endif()
 set(agreed_check "if (NativeArcadeLinkHost_GetAgreedMatch(&match))")
+set(linked_only_check "if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)")
 ctr_require_order("${hook_source_path} (START_RACE branch)" "${start_block}"
-    "${agreed_check}" "MainArcadeLink_LogAgreedMatch(&match);" "MainArcadeRaceLaunch_StartRace();")
+    "${linked_only_check}" "${agreed_check}" "MainArcadeLink_LogAgreedMatch(&match);" "MainArcadeRaceLaunch_StartRace();")
+ctr_find_block("${hook_source_path} (START_RACE branch)" "${start_block}" "${linked_only_check}" linked_only_begin linked_only_end)
+math(EXPR linked_only_length "${linked_only_end} - ${linked_only_begin} + 1")
+string(SUBSTRING "${start_block}" ${linked_only_begin} ${linked_only_length} linked_only_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " linked_only_flat "${linked_only_block}")
+if(NOT linked_only_flat STREQUAL "{ if (NativeArcadeLinkHost_GetAgreedMatch(&match)) { MainArcadeLink_LogAgreedMatch(&match); } }")
+    message(FATAL_ERROR "arcade link hook isolation: the START_RACE-only block of ${hook_source_path} must only log the agreed match (found '${linked_only_flat}')")
+endif()
 ctr_find_block("${hook_source_path} (START_RACE branch)" "${start_block}" "${agreed_check}" agreed_begin agreed_end)
 math(EXPR agreed_length "${agreed_end} - ${agreed_begin} + 1")
 string(SUBSTRING "${start_block}" ${agreed_begin} ${agreed_length} agreed_block)
@@ -707,7 +755,7 @@ ctr_require_order("${hook_source_path} (MainArcadeLink_LinkTick)" "${link_tick_b
     "action = NativeArcadeLinkHost_Tick(" "MainArcadeLinkAutopilot_AfterTick(action);"
     "if (NativeArcadeLinkHost_TakeRaceEnd(&raceEnd))" "MainArcadeLink_LogRaceEnd(&raceEnd);"
     "if (NativeArcadeLinkHost_TakeRaceDivergence(&divergence))" "MainArcadeLink_LogRaceDivergence(&divergence);"
-    "if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)")
+    "${start_check}" "else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)" "${lobby_check}")
 ctr_find_block("${hook_source_path} (MainArcadeLink_LinkTick)" "${link_tick_block}"
     "if (NativeArcadeLinkHost_TakeRaceDivergence(&divergence))" divergence_take_begin divergence_take_end)
 math(EXPR divergence_take_length "${divergence_take_end} - ${divergence_take_begin} + 1")
@@ -884,13 +932,43 @@ if(NOT finished_block MATCHES "^\\{[ \t\r\n]*return s_mainArcadeRaceLaunch\\.rac
 endif()
 
 # 16c. Launch: the agreed config, then Arm, then Launch, then the result fed
-#      back to the core on the same frame with the same output.
+#      back to the core on the same frame with the same output. Since SOLO-S4
+#      part 2 (docs/SOLO_CAB_MILESTONE.md SOLO-7) a missing agreed config
+#      falls back to the host's solo config, into the same state->config,
+#      before the one Arm and the one Launch (the setup allow-list,
+#      main_arcade_race_setup_isolation_test.cmake, is unchanged); each
+#      config query is named exactly once in the caller, and the solo query
+#      runs only when the agreed one returned none. configArmed, the pad
+#      profile's haveConfig, is 1 only once Arm accepted the config: it is
+#      cleared before the queries, set in the LAUNCH_FAILED and LAUNCHED
+#      branches, and cleared again in the Disarm block.
 ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_ArmAndLaunch(" arm_begin arm_end)
 math(EXPR arm_length "${arm_end} - ${arm_begin} + 1")
 string(SUBSTRING "${caller_code}" ${arm_begin} ${arm_length} arm_block)
 ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_ArmAndLaunch)" "${arm_block}"
-    "NativeArcadeLinkHost_GetAgreedConfig(&state->config)" "MainArcadeRaceSetup_Arm(" "MainArcadeRaceSetup_Launch()"
+    "state->configArmed = 0u;"
+    "haveConfig = NativeArcadeLinkHost_GetAgreedConfig(&state->config);"
+    "if (!haveConfig)" "haveConfig = NativeArcadeLinkHost_GetSoloConfig(&state->config);"
+    "MainArcadeRaceSetup_Arm(haveConfig ? &state->config : NULL)" "MainArcadeRaceSetup_Launch()"
     "MainArcadeRaceLaunchCore_LaunchResult(&state->core, result, output)")
+ctr_find_block("${caller_source_path} (MainArcadeRaceLaunch_ArmAndLaunch)" "${arm_block}" "if (!haveConfig)" solo_query_begin solo_query_end)
+math(EXPR solo_query_length "${solo_query_end} - ${solo_query_begin} + 1")
+string(SUBSTRING "${arm_block}" ${solo_query_begin} ${solo_query_length} solo_query_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " solo_query_flat "${solo_query_block}")
+if(NOT solo_query_flat STREQUAL "{ haveConfig = NativeArcadeLinkHost_GetSoloConfig(&state->config); solo = haveConfig; }")
+    message(FATAL_ERROR "arcade link hook isolation: MainArcadeRaceLaunch_ArmAndLaunch must query the solo config only when there is no agreed config (found '${solo_query_flat}')")
+endif()
+foreach(query IN ITEMS NativeArcadeLinkHost_GetAgreedConfig NativeArcadeLinkHost_GetSoloConfig)
+    string(REGEX MATCHALL "${query}\\(" query_hits "${caller_code}")
+    list(LENGTH query_hits query_hit_count)
+    if(NOT query_hit_count EQUAL 1)
+        message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must call ${query} exactly once, in MainArcadeRaceLaunch_ArmAndLaunch (found ${query_hit_count})")
+    endif()
+endforeach()
+string(REGEX MATCHALL "configArmed[ \t]*=[^=][^;]*;" config_armed_writes "${caller_code}")
+if(NOT "${config_armed_writes}" STREQUAL "configArmed = 0u;;configArmed = 1u;;configArmed = 1u;;configArmed = 0u;")
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must write configArmed only as 0 before the config queries, 1 in the LAUNCH_FAILED and LAUNCHED branches, and 0 in the Disarm block (found '${config_armed_writes}')")
+endif()
 
 # 16d. The core's decisions are applied in its order, each only when the core
 #      sets it: leave the title, report the failure (a DRIVE_FAILED only
@@ -994,9 +1072,29 @@ endforeach()
 ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_InstallPads(uint32_t raceNumber)" pads_begin pads_end)
 math(EXPR pads_length "${pads_end} - ${pads_begin} + 1")
 string(SUBSTRING "${caller_code}" ${pads_begin} ${pads_length} pads_block)
-ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_InstallPads)" "${pads_block}"
-    "NativeArcadeRosterProof_ScriptedPads(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, pads);"
+# Since SOLO-S4 part 2 the neutral pads' scripted-pad profile follows the
+# armed config (ONE_CAB for a solo race; TWO_CAB for a linked race or with no
+# armed config), chosen by the pure core helper
+# MainArcadeRaceLaunchCore_PadProfile (unit-tested in
+# tests/main_arcade_race_launch_core_test.c), whose profile mirrors the caller
+# static-asserts; InstallPads names no profile literal of its own.
+string(REGEX REPLACE "[ \t\r\n]+" " " pads_flat "${pads_block}")
+ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_InstallPads)" "${pads_flat}"
+    "NativeArcadeRosterProof_ScriptedPads(MainArcadeRaceLaunchCore_PadProfile(state->config.profile, state->configArmed), NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, pads);"
     "if ((Platform_InputInstallPadSnapshots(snapshots, PLATFORM_INPUT_PAD_COUNT) != PLATFORM_INPUT_PAD_COUNT) && (state->padFailureRace != raceNumber))")
+ctr_forbid("${caller_source_path} (MainArcadeRaceLaunch_InstallPads)" "${pads_block}" "_PROFILE_")
+string(REGEX MATCHALL "MainArcadeRaceLaunchCore_PadProfile\\(" pad_profile_calls "${caller_code}")
+list(LENGTH pad_profile_calls pad_profile_call_count)
+if(NOT pad_profile_call_count EQUAL 1)
+    message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must call MainArcadeRaceLaunchCore_PadProfile exactly once, in MainArcadeRaceLaunch_InstallPads (found ${pad_profile_call_count})")
+endif()
+foreach(mirror IN ITEMS
+        "_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB == (uint32_t)NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB,"
+        "_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB == (uint32_t)NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB,"
+        "_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB == (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB,"
+        "_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB == (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB,")
+    ctr_require_literal("${caller_source_path}" "${caller_code}" "${mirror}")
+endforeach()
 
 # 16f. The duplicated LeaveTitle (RL-8): the caller's copy and the roster
 #      proof's MainArcadeRosterProof_LeaveTitle have the same body, so they
@@ -1154,7 +1252,7 @@ ctr_find_block("${caller_source_path} (MainArcadeRaceLaunch_Apply)" "${apply_blo
 math(EXPR disarm_length "${disarm_end} - ${disarm_begin} + 1")
 string(SUBSTRING "${apply_block}" ${disarm_begin} ${disarm_length} disarm_block)
 ctr_require_order("${caller_source_path} (disarm block)" "${disarm_block}"
-    "MainArcadeRaceSetup_Disarm();" "state->planLevel = 0;" "state->planLevelValid = 0u;")
+    "MainArcadeRaceSetup_Disarm();" "state->planLevel = 0;" "state->planLevelValid = 0u;" "state->configArmed = 0u;")
 
 # 16i. The race pacing switch (docs/LOCKSTEP_RACE_MILESTONE.md LR-7, LR-S3):
 #      the caller turns fixed VBlank pacing on through the host's RaceBegin

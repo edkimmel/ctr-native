@@ -10,8 +10,9 @@
  * and, for the menu sounds (section 3.1), MAIN/MainArcadeLinkSound.c; this
  * file gathers their inputs from the game, applies their outputs, ticks the
  * host, draws, and plays the chosen retail menu sound. The host's START_RACE
- * is handed to the race caller (MAIN/MainArcadeRaceLaunch.h,
- * docs/RACE_LAUNCH_MILESTONE.md RL-S8b), whose finish report feeds the tick.
+ * (and, docs/SOLO_CAB_MILESTONE.md SOLO-7, START_SOLO_RACE) is handed to the
+ * race caller (MAIN/MainArcadeRaceLaunch.h, docs/RACE_LAUNCH_MILESTONE.md
+ * RL-S8b), whose finish report feeds the tick.
  * The internal two-process gate's autopilot (MAIN/MainArcadeLinkAutopilot.h,
  * RL-15) may replace the enter decision and held menu buttons of a LINK
  * frame and observes every tick; it is inert unless configured.
@@ -378,17 +379,22 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 		MainArcadeLink_LogRaceDivergence(&divergence);
 	}
 
-	if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)
+	if ((action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE) || (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE))
 	{
-		/* The resolved match first, while the link still holds it. */
-		if (NativeArcadeLinkHost_GetAgreedMatch(&match))
+		/* A linked race: the resolved match first, while the link still
+		 * holds it. A solo race (SOLO-7) has no agreed match: the adapter
+		 * has already built the solo config, which the race caller arms. */
+		if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_RACE)
 		{
-			MainArcadeLink_LogAgreedMatch(&match);
+			if (NativeArcadeLinkHost_GetAgreedMatch(&match))
+			{
+				MainArcadeLink_LogAgreedMatch(&match);
+			}
 		}
 		/* RL-8: the race caller (MAIN/MainArcadeRaceLaunch.c) takes the
 		 * launch from here, on this frame's step right after this hook. No
 		 * abort to the title and no sound snapshot reset: the flow is on
-		 * RACING now and the snapshot keeps tracking it. */
+		 * RACING (linked or solo) now and the snapshot keeps tracking it. */
 		MainArcadeRaceLaunch_StartRace();
 	}
 	else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)
@@ -399,6 +405,16 @@ static void MainArcadeLink_LinkTick(struct GameTracker *gGT, const struct MainAr
 		/* Back to the title off the main-menu level, gated on the load
 		 * stage (race-launch risk 10). */
 		MainArcadeLink_ReturnStep(gGT, 1u);
+	}
+	else if (action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY)
+	{
+		/* Solo RESULTS row LOBBY (SOLO-8): nothing for the game to do. The
+		 * adapter has already closed the listen-only link and begun the
+		 * lobby on the fixture, and the race caller's own return step
+		 * already brought the game back to the main-menu level after the
+		 * race (as after a linked REMATCH; RETURN_TO_LOBBY is only ever
+		 * taken on solo RESULTS). No sound snapshot reset: the snapshot keeps
+		 * tracking the flow from RESULTS to LOBBY. */
 	}
 }
 

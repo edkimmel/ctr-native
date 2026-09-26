@@ -683,6 +683,47 @@ static int TestFinishedHumans(void)
 	return 0;
 }
 
+/* SOLO-S4: the neutral pads' scripted-pad profile follows the armed config's
+ * profile: ONE_CAB only for an armed ONE_CAB config, TWO_CAB otherwise. */
+static int TestPadProfile(void)
+{
+	const uint32_t twoCab = MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB;
+	const uint32_t oneCab = MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB;
+	uint32_t profile;
+
+	/* The mirrors of the match config's ARCADE_TWO_CAB (1) and
+	 * ARCADE_ONE_CAB (2). */
+	CHECK(twoCab == 1u);
+	CHECK(oneCab == 2u);
+	/* An armed ONE_CAB config (a solo race): ONE_CAB. */
+	CHECK(MainArcadeRaceLaunchCore_PadProfile(oneCab, 1u) == oneCab);
+	/* An armed TWO_CAB config (a linked race): TWO_CAB. */
+	CHECK(MainArcadeRaceLaunchCore_PadProfile(twoCab, 1u) == twoCab);
+	/* No armed config (an Arm failure): TWO_CAB, whatever the profile field
+	 * holds. */
+	CHECK(MainArcadeRaceLaunchCore_PadProfile(oneCab, 0u) == twoCab);
+	CHECK(MainArcadeRaceLaunchCore_PadProfile(twoCab, 0u) == twoCab);
+	CHECK(MainArcadeRaceLaunchCore_PadProfile(0u, 0u) == twoCab);
+	/* Any haveConfig other than 0 counts as a config. */
+	CHECK(MainArcadeRaceLaunchCore_PadProfile(oneCab, 0xFFu) == oneCab);
+	/* An unknown profile value: TWO_CAB. */
+	CHECK(MainArcadeRaceLaunchCore_PadProfile(0u, 1u) == twoCab);
+	CHECK(MainArcadeRaceLaunchCore_PadProfile(3u, 1u) == twoCab);
+	CHECK(MainArcadeRaceLaunchCore_PadProfile(0xFFFFFFFFu, 1u) == twoCab);
+	CHECK(MainArcadeRaceLaunchCore_PadProfile(oneCab | 0x100u, 1u) == twoCab);
+	/* Only 2 gives ONE_CAB, over a sweep of small values and every bit. */
+	for (profile = 0u; profile < 256u; profile++)
+	{
+		CHECK(MainArcadeRaceLaunchCore_PadProfile(profile, 1u) == ((profile == oneCab) ? oneCab : twoCab));
+		CHECK(MainArcadeRaceLaunchCore_PadProfile(profile, 0u) == twoCab);
+	}
+	for (profile = 0u; profile < 32u; profile++)
+	{
+		CHECK(MainArcadeRaceLaunchCore_PadProfile(1u << profile, 1u) == (((1u << profile) == oneCab) ? oneCab : twoCab));
+	}
+	return 0;
+}
+
 /* NULLs, out-of-range inputs, and the launch result protocol. */
 static int TestArguments(void)
 {
@@ -2153,6 +2194,8 @@ int main(void)
 	if (TestFailureNames() != 0)
 		return 1;
 	if (TestFinishedHumans() != 0)
+		return 1;
+	if (TestPadProfile() != 0)
 		return 1;
 	if (TestArguments() != 0)
 		return 1;

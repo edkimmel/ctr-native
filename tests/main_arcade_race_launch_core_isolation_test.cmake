@@ -29,7 +29,10 @@
 #     MainArcadeRaceSetupStatus. Since LR-S10 part 1 (LR-59) the driver slot
 #     count 8 and the finished bit mirror 0x2000000 are pinned the same way,
 #     the retail ACTION_RACE_FINISHED still has that value, and the race
-#     caller static-asserts the mirror;
+#     caller static-asserts the mirror. Since SOLO-S4 part 2 the pad-profile
+#     mirrors of the match config profiles (TWO_CAB 1, ONE_CAB 2) are pinned
+#     the same way, and the race caller static-asserts them against both the
+#     config and the roster proof profiles;
 #  7. since LR-S10 part 2 (the drive replaced the RL-10 rehearsal) the core
 #     keeps no race length of its own: the rehearsal's count
 #     (LAUNCH_REHEARSAL_TICKS) and phase name are gone, the drive phase keeps
@@ -271,7 +274,9 @@ foreach(define IN ITEMS
         "MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_VALIDATED 4u"
         "MAIN_ARCADE_RACE_LAUNCH_CORE_SETUP_FAILED 5u"
         "MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS 8u"
-        "MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED 0x2000000u")
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED 0x2000000u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB 1u"
+        "MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB 2u")
     string(REPLACE " " ";" define_items "${define}")
     list(GET define_items 0 define_name)
     list(GET define_items 1 define_value)
@@ -317,3 +322,11 @@ ctr_read_source("game/MAIN/MainArcadeRaceLaunch.c" caller_source)
 string(REPLACE "\r\n" "\n" caller_source "${caller_source}")
 ctr_require("game/MAIN/MainArcadeRaceLaunch.c" "${caller_source}"
     "_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED == (uint32_t)ACTION_RACE_FINISHED,")
+# The pad-profile mirrors (SOLO-S4 part 2): the caller's static asserts.
+foreach(mirror IN ITEMS
+        "_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB == (uint32_t)NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB,"
+        "_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB == (uint32_t)NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB,"
+        "_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB == (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB,"
+        "_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB == (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB,")
+    ctr_require("game/MAIN/MainArcadeRaceLaunch.c" "${caller_source}" "${mirror}")
+endforeach()

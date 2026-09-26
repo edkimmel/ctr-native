@@ -32,8 +32,8 @@
  * starts a race only from the idle core. The core then waits for the title
  * window, checking it from the START_RACE frame on. On the frame the window
  * is open, Step sets armAndLaunch and nothing else. The caller then calls
- * MainArcadeRaceSetup_Arm with the agreed config and, if that succeeds,
- * MainArcadeRaceSetup_Launch, and passes the outcome to
+ * MainArcadeRaceSetup_Arm with the agreed (or solo) config and, if that
+ * succeeds, MainArcadeRaceSetup_Launch, and passes the outcome to
  * MainArcadeRaceLaunchCore_LaunchResult on the same frame with the same
  * output struct, which adds that frame's remaining decisions:
  * - LAUNCHED: leaveTitle and installPads (the caller leaves the title, then
@@ -210,6 +210,14 @@
  * (include/namespace_Vehicle.h); the race caller static-asserts the mirror. */
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS                  8u
 #define MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED          0x2000000u
+
+/* Mirrors of the match config's ARCADE_TWO_CAB and ARCADE_ONE_CAB profiles,
+ * which are also the roster proof's scripted-pad profiles
+ * (include/platform/native_match_config.h,
+ * include/platform/native_arcade_roster_proof.h); the race caller
+ * static-asserts the mirrors. */
+#define MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB               1u
+#define MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB               2u
 
 /* The loading stage, classified by the caller: IDLE is retail LOAD_IDLE,
  * REQUESTED is LOAD_REQUESTED, OTHER is any other stage (a load running). */
@@ -395,5 +403,17 @@ const char *MainArcadeRaceLaunchCore_FailureName(uint32_t failure);
  */
 uint32_t MainArcadeRaceLaunchCore_FinishedHumans(const uint32_t actionsFlagSet[MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS],
                                                  uint32_t numPlyrCurrGame);
+
+/*
+ * The scripted-pad profile of the RL-10 neutral pads (docs/SOLO_CAB_MILESTONE.md
+ * section 4, SOLO-S4): the profile of the config the race setup was armed
+ * with. haveConfig is 1 when the setup was armed with a config and
+ * configProfile is that config's profile. Returns
+ * MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB for an armed ONE_CAB config
+ * (a solo race), and MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB otherwise:
+ * a TWO_CAB config, no armed config (an Arm failure), or any other profile
+ * value.
+ */
+uint32_t MainArcadeRaceLaunchCore_PadProfile(uint32_t configProfile, uint8_t haveConfig);
 
 #endif

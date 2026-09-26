@@ -470,3 +470,12 @@ uint32_t MainArcadeRaceLaunchCore_FinishedHumans(const uint32_t actionsFlagSet[M
 	}
 	return finished;
 }
+
+uint32_t MainArcadeRaceLaunchCore_PadProfile(uint32_t configProfile, uint8_t haveConfig)
+{
+	if ((haveConfig != 0u) && (configProfile == MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB))
+	{
+		return MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB;
+	}
+	return MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB;
+}

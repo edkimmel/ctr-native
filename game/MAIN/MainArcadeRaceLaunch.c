@@ -1,12 +1,12 @@
 /*
  * Live race caller (docs/RACE_LAUNCH_MILESTONE.md section 4 RL-8..RL-12,
  * slice RL-S8b; the race drive of the Task 8 race plan, slice LR-S10): the
- * thin game glue between the arcade-link host's START_RACE and the race
- * setup adapter (MAIN/MainArcadeRaceSetup.h), and from race tick 0 on
- * between each race tick and the host's race drive. Native only, and dormant
- * unless the arcade-link host is in LINK mode: otherwise, with no race in
- * progress, MainArcadeRaceLaunch_Frame returns as its first statement and
- * touches nothing.
+ * thin game glue between the arcade-link host's START_RACE (or, SOLO-7,
+ * START_SOLO_RACE) and the race setup adapter (MAIN/MainArcadeRaceSetup.h),
+ * and from race tick 0 on between each race tick and the host's race drive.
+ * Native only, and dormant unless the arcade-link host is in LINK mode:
+ * otherwise, with no race in progress, MainArcadeRaceLaunch_Frame returns as
+ * its first statement and touches nothing.
  *
  * Every decision lives in the pure, unit-tested MAIN/MainArcadeRaceLaunchCore.c
  * (library ctr_native_arcade_race_launch_core, never unity-included); this
@@ -105,6 +105,12 @@ _Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ACTION_RACE_FINISHED == (u
 /* ... over every driver slot. */
 _Static_assert(sizeof(((struct GameTracker *)0)->drivers) / sizeof(((struct GameTracker *)0)->drivers[0]) == MAIN_ARCADE_RACE_LAUNCH_CORE_DRIVER_SLOTS, "the finished-human count covers every driver slot");
 _Static_assert(NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT == PLATFORM_INPUT_PAD_COUNT, "the neutral pads cover every host pad");
+/* The core's pad profile (MainArcadeRaceLaunchCore_PadProfile) mirrors the
+ * config profiles, which are the roster proof's scripted-pad profiles. */
+_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB == (uint32_t)NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB, "MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB must match NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB");
+_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB == (uint32_t)NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB, "MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB must match NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB");
+_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB == (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB, "MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_TWO_CAB must match NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB");
+_Static_assert((uint32_t)MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB == (uint32_t)NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB, "MAIN_ARCADE_RACE_LAUNCH_CORE_ARCADE_ONE_CAB must match NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB");
 _Static_assert(MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES == 32u, "the RL-12 line prints 32-byte digests");
 _Static_assert(MAIN_ARCADE_RACE_LAUNCH_DIGEST_BYTES == MAIN_ARCADE_RACE_SETUP_DIGEST_BYTES, "the RL-12 evidence copies the setup digests");
 /* The host's pad mirrors the platform input layer's pad snapshot field for
@@ -123,8 +129,9 @@ struct MainArcadeRaceLaunchState
 {
 	/* The decision core's state (MAIN/MainArcadeRaceLaunchCore.h). */
 	struct MainArcadeRaceLaunchCore core;
-	/* The agreed config of the last armAndLaunch frame: the exact bytes the
-	 * race setup was armed with (and the digest's config for the race). */
+	/* The race config of the last armAndLaunch frame, the link's agreed
+	 * config or else the solo config (SOLO-7): the exact bytes the race
+	 * setup was armed with (and the digest's config for the race). */
 	struct NativeMatchConfigV1 config;
 	/* The committed pads of the last GO, installed by that frame's Apply. */
 	struct NativeArcadeLinkHostPad committed[NATIVE_ARCADE_LINK_HOST_RACE_PADS];
@@ -138,7 +145,11 @@ struct MainArcadeRaceLaunchState
 	uint32_t padFailureRace;
 	/* 1 once planLevel holds a launched race's level, until the Disarm. */
 	uint8_t planLevelValid;
-	/* 1 when the arcade-link hook handed START_RACE over this frame. */
+	/* 1 once the race setup accepted config (Arm succeeded), until the
+	 * Disarm: the neutral pads then follow its profile. */
+	uint8_t configArmed;
+	/* 1 when the arcade-link hook handed START_RACE (or START_SOLO_RACE)
+	 * over this frame. */
 	uint8_t startRace;
 	/* The host's raceFinished input: the core's raceFinishedInput of its
 	 * last accepted Step (the core owns the finish latch). */
@@ -249,19 +260,23 @@ static void MainArcadeRaceLaunch_LeaveTitle(void)
 	}
 }
 
-/* The RL-10 neutral pads, the proof's: pads 0 and 1 connected neutral
- * digital pads, pads 2 and 3 disconnected. Install writes the pad bus at
- * once, and the host input keeps them until the clear, so no local input
- * reaches the race and no pad reads as unplugged. From the Launch frame to
- * race tick 0 and from the drive's end frame to the clear. A failed install
- * is logged once per race. */
+/* The RL-10 neutral pads, the proof's scripted pads of the armed config's
+ * profile (the core's MainArcadeRaceLaunchCore_PadProfile: ONE_CAB for a
+ * solo race, TWO_CAB for a linked race or with no armed config). With no
+ * tick both profiles give pads 0 and 1 connected neutral digital pads, pads
+ * 2 and 3 disconnected. Install writes the pad bus at once, and the host
+ * input keeps them until the clear, so no local input reaches the race and
+ * no pad reads as unplugged. From the Launch frame to race tick 0 and from
+ * the drive's end frame to the clear. A failed install is logged once per
+ * race. */
 static void MainArcadeRaceLaunch_InstallPads(uint32_t raceNumber)
 {
 	struct MainArcadeRaceLaunchState *state = &s_mainArcadeRaceLaunch;
 	struct NativeArcadeRosterProofPad pads[NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT];
 	struct PlatformInputPadSnapshot snapshots[PLATFORM_INPUT_PAD_COUNT];
 
-	NativeArcadeRosterProof_ScriptedPads(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB, NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, pads);
+	NativeArcadeRosterProof_ScriptedPads(MainArcadeRaceLaunchCore_PadProfile(state->config.profile, state->configArmed),
+		NATIVE_ARCADE_ROSTER_PROOF_TICK_NONE, pads);
 	memset(snapshots, 0, sizeof(snapshots));
 	for (uint32_t pad = 0; pad < NATIVE_ARCADE_ROSTER_PROOF_PAD_COUNT; pad++)
 	{
@@ -354,21 +369,32 @@ static void MainArcadeRaceLaunch_LogDigests(uint32_t raceNumber)
 }
 
 /*
- * The armAndLaunch frame: Arm with the agreed config and, if that succeeds,
+ * The armAndLaunch frame: Arm with the race config and, if that succeeds,
  * Launch, then the outcome back to the core on this frame with this frame's
- * output. With no agreed config Arm is given none and refuses (ARM).
+ * output. The race config is the link's agreed config or, with none, the
+ * solo config (SOLO-7: solo has no agreement, and the host returns its solo
+ * config only on solo RACING and RESULTS, after the bot rules' check); both
+ * go through the one Arm and the one Launch below. With neither Arm is given
+ * none and refuses (ARM).
  */
 static void MainArcadeRaceLaunch_ArmAndLaunch(struct MainArcadeRaceLaunchCoreOutput *output)
 {
 	struct MainArcadeRaceLaunchState *state = &s_mainArcadeRaceLaunch;
 	uint32_t result;
 	int haveConfig;
+	int solo = 0;
 
 	memset(&state->config, 0, sizeof(state->config));
+	state->configArmed = 0u;
 	haveConfig = NativeArcadeLinkHost_GetAgreedConfig(&state->config);
 	if (!haveConfig)
 	{
-		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u has no agreed config\n", (unsigned)output->raceNumber);
+		haveConfig = NativeArcadeLinkHost_GetSoloConfig(&state->config);
+		solo = haveConfig;
+	}
+	if (!haveConfig)
+	{
+		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u has no agreed or solo config\n", (unsigned)output->raceNumber);
 	}
 	if (!MainArcadeRaceSetup_Arm(haveConfig ? &state->config : NULL))
 	{
@@ -376,10 +402,12 @@ static void MainArcadeRaceLaunch_ArmAndLaunch(struct MainArcadeRaceLaunchCoreOut
 	}
 	else if (!MainArcadeRaceSetup_Launch())
 	{
+		state->configArmed = 1u;
 		result = MAIN_ARCADE_RACE_LAUNCH_CORE_RESULT_LAUNCH_FAILED;
 	}
 	else
 	{
+		state->configArmed = 1u;
 		result = MAIN_ARCADE_RACE_LAUNCH_CORE_RESULT_LAUNCHED;
 		/* A copy of the race setup plan's level rule,
 		 * `candidate.levelID = (int32_t)config->trackID;` in the setup's plan
@@ -389,8 +417,8 @@ static void MainArcadeRaceLaunch_ArmAndLaunch(struct MainArcadeRaceLaunchCoreOut
 		 * (16h) requires both lines. */
 		state->planLevel = (int32_t)state->config.trackID;
 		state->planLevelValid = 1u;
-		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u launched (track %u laps %u)\n", (unsigned)output->raceNumber,
-			(unsigned)state->config.trackID, (unsigned)state->config.lapCount);
+		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u launched (track %u laps %u%s)\n", (unsigned)output->raceNumber,
+			(unsigned)state->config.trackID, (unsigned)state->config.lapCount, solo ? ", solo" : "");
 		/* LR-7: fixed VBlank pacing from the Launch frame, before the
 		 * race-track load (and so before the setup's race-init pins), to the
 		 * Disarm frame. Only a launched race turns it on. */
@@ -1006,6 +1034,7 @@ static void MainArcadeRaceLaunch_Apply(struct GameTracker *gGT, const struct Mai
 		NativeArcadeLinkHost_RaceEnd();
 		state->planLevel = 0;
 		state->planLevelValid = 0u;
+		state->configArmed = 0u;
 	}
 }
 
