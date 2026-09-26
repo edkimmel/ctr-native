@@ -94,7 +94,8 @@ an answer it shows WAITING FOR OTHER CABINET and PRESS START TO RACE
 SOLO. START or CROSS (on a G29 also the throttle pedal) then starts a
 one-player race against 7 bots: pick a character, a track and the laps,
 then race. RESULTS offers RACE AGAIN and LOBBY; left alone for 30 s it
-returns to the attract title. OTHER CABINET IS READY on RESULTS means the
-other cabinet's player is in its LOBBY: choose LOBBY, and from the LOBBY
-the two cabinets link as before. Solo needs no setting: arcade.cfg has no
-key for it.
+returns to the attract title. OTHER CABINET IS READY on RESULTS means a
+player started the other cabinet (pressed START) during this solo
+session. Choose LOBBY: if that player is still in their LOBBY, the two
+cabinets link as before. Solo needs no setting: arcade.cfg has no key for
+it.

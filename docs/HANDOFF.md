@@ -509,7 +509,8 @@ the arcade-link screens and host adapter exist and are tested on top of it
   START or CROSS begins solo. The lobby link closes and the peer link
   opens listen-only on the link port: it sends nothing and latches
   `peerHeard` on a handshake HELLO from the configured peer, so a woken
-  peer stays in its own LOBBY. A one-human match select on a ONE_CAB base
+  peer stays in its own LOBBY unless its player takes its own solo offer.
+  A one-human match select on a ONE_CAB base
   (localHuman 0 on either seat) builds the ONE_CAB race config, which the
   host returns only through the bot rules' fail-closed check. The race
   caller arms the agreed config or else the solo config through the one
@@ -559,7 +560,9 @@ cmake --build build-msvc-x86 --config Debug
 # Inner loop, while iterating on a change: the fast suite (163 tests).
 ctest --test-dir build-msvc-x86 -C Debug -LE live -j 8 --output-on-failure
 # Task scope: also each live area the change reaches.
-ctest --test-dir build-msvc-x86 -C Debug -L live-link --output-on-failure
+# live-link runs two tests (arcade_link_launch about 242 s, arcade_solo_race
+# about 87 s); -j 2 runs them together (their ports are distinct).
+ctest --test-dir build-msvc-x86 -C Debug -L live-link -j 2 --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-roster -j 8 --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-render --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-package --output-on-failure
@@ -578,7 +581,8 @@ filters select nothing (`-L`) or everything (`-LE`). LF-to-CRLF warnings
 are benign.
 
 Six tests carry the ctest label `live` plus one area label:
-`arcade_link_preview_render` (`live-render`, about 47 s),
+`arcade_link_preview_render` (`live-render`, about 47 s measured with the
+17 previews before the solo ones),
 `arcade_roster_determinism_two_cab` and `arcade_roster_determinism_one_cab`
 (`live-roster`, about 273 s each), `arcade_link_launch` (`live-link`, about
 242 s), `arcade_solo_race` (`live-link`, about 87 s), and

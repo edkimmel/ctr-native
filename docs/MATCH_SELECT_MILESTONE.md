@@ -440,8 +440,9 @@ The adapter owns one select session.
   only after START_RACE armed a race on it. A RESULTS screen reached
   without a race reads NULL.
 - Solo select (docs/SOLO_CAB_MILESTONE.md SOLO-5, SOLO-6, SOLO-14; since
-  SOLO-S2, live since SOLO-S4). BEGIN_SOLO_SELECT closes the lobby, opens
-  the listen-only link, and starts a one-human session (humanCount 1,
+  SOLO-S2, live since SOLO-S4). From LOBBY, BEGIN_SOLO_SELECT closes the
+  lobby and opens the listen-only link (RACE AGAIN keeps it open). Either
+  way it then starts a one-human session (humanCount 1,
   localHuman 0 on either seat) on the ONE_CAB solo base the link host
   builds. The cursors start on the base's CAB1_HUMAN character, track, and
   laps, except that on the cab2 seat the character cursor starts on the

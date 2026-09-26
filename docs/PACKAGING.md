@@ -554,10 +554,11 @@ its attract title, the player's START shows `CONNECTING`, and after about
 CROSS is also the throttle pedal) then starts a one-player race against 7
 bots, after the player picks a character, a track, and the laps. RESULTS
 offers `RACE AGAIN` and `LOBBY`; left alone for 30 s it returns to the
-attract title. `OTHER CABINET IS READY` on RESULTS means the other
-cabinet's player is in its LOBBY; from the LOBBY the two cabinets link as
-before. During solo the cabinet only listens on its link port and sends
-nothing, so the PK-9 firewall rule is unchanged. No `arcade.cfg` key is
+attract title. `OTHER CABINET IS READY` on RESULTS means a player
+started the other cabinet (pressed START) during this solo session.
+Choose `LOBBY`: if that player is still in their LOBBY, the two cabinets
+link as before. During solo the cabinet only listens on its link port and
+sends nothing, so the PK-9 firewall rule is unchanged. No `arcade.cfg` key is
 needed for solo, and none exists (PK-3).
 
 ## Template line ends

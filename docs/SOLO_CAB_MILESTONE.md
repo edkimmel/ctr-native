@@ -129,8 +129,9 @@ Owner direction:
     :294.
 - Race launch: game/MAIN/MainArcadeRaceLaunch.c (as planned; S4 changed
   the config choice and InstallPads, SOLO-15 and SOLO-16).
-  - The race config comes from NativeArcadeLinkHost_GetAgreedConfig (:368),
-    followed by Arm and Launch (:373-377).
+  - The race config comes from NativeArcadeLinkHost_GetAgreedConfig
+    (:368, 6e2c59abe lines), followed by Arm and Launch (:373-377,
+    6e2c59abe lines).
   - Each tick goes through NativeArcadeLinkHost_RaceStep (:893); RaceHold
     (:699) runs only while RaceStep returns HOLD.
   - End kinds are handled at :817-842. Disarm is RL-9 (:999-1008).
@@ -345,8 +346,8 @@ open. Their citations are to the code at 1e399ba1e.
     either seat (SOLO-6), whatever character it picks. RACE AGAIN keeps
     the previous picks on both seats (OD-3, SOLO-8). Covered by
     TestSoloCab2RaceAgain (tests/native_arcade_netplay_test.c:6927-7008).
-15. SOLO-15 (default, S4 part 1): The local drive's pads. A solo race runs
-    the race drive's local mode, NativeArcadeRaceDrive_BeginLocal
+15. SOLO-15 (default, S4 parts 1 and 2): The local drive's pads. A solo
+    race runs the race drive's local mode, NativeArcadeRaceDrive_BeginLocal
     (include/platform/native_arcade_race_drive.h:234-245,
     platform/native_arcade_race_drive.c:404-441). It has no session, kept
     ring, or callbacks, so it records, submits, composes, sends, resends,
@@ -375,9 +376,9 @@ open. Their citations are to the code at 1e399ba1e.
     FAILURE_LOCAL_CONFIG = 20 (include/platform/native_arcade_race_drive.h:116).
     Every such refusal is reported as a local race failure, which ends the
     solo race on solo RESULTS as RACE ERROR (SOLO-7, S3).
-17. SOLO-17 (default, S4 part 1): A solo race still needs the per-tick V4
-    projection. The race caller projects the live V4 state on every race
-    tick of a solo race as for a linked one
+17. SOLO-17 (default, S4 parts 1 and 2): A solo race still needs the
+    per-tick V4 projection. The race caller projects the live V4 state on
+    every race tick of a solo race as for a linked one
     (game/MAIN/MainArcadeRaceLaunch.c:912-918), and the local drive checks
     the state's frame number against the race tick
     (platform/native_arcade_race_drive.c:495-498). A projection failure is
