@@ -864,7 +864,7 @@ Tasks 7 and 8 and v1 packaging are complete.
   clean tree (`docs/PACKAGING.md`, defaults PK-1..PK-10, and the Packaging
   section above). Its smoke test, `package_arcade_smoke`, races three times
   from the package folder, with no memcard save present.
-- The suite is 168 tests: the full run with `-j 8` takes about 280 s, and
+- The suite is 169 tests: the full run with `-j 8` takes about 280 s, and
   `-LE live -j 8` about 35 s. Live tests carry area labels (`live-link`,
   `live-roster`, `live-render`, `live-package`). Per-change checks use the
   fast suite plus the affected area; the full suite runs once per
@@ -885,12 +885,14 @@ black bars and keeps the split screen.
 Owner priorities: finish the last stretch goals, so the port could ship as
 open source.
 
-1. Single-player race (the solo / ONE_CAB flow; `docs/SOLO_CAB_MILESTONE.md`,
-   SOLO defaults). When the peer is silent, the lobby offers a solo race
-   (1 human + 7 bots). The link poll keeps running, and a peer that wakes
-   is linked at the next lobby. Done so far: the `arcade.cfg` keys
-   `render_scale` and `texture_filter`, the plan, and SOLO-S1; later slices
-   are in progress.
+1. Single-player race: done (`docs/SOLO_CAB_MILESTONE.md`, SOLO-1..18).
+   When the peer is silent, the lobby offers a solo race (1 human + 7
+   bots) through the local race drive. The link keeps listening, and a
+   peer that wakes is linked at the next lobby. The live test
+   `arcade_solo_race` proves one solo race each on cab1 and cab2. Not yet
+   deployed: the package is `ctr-arcade-086114299b71`. Open: no
+   two-cabinet live test of "peer wakes during solo, then links"; unit
+   tests only.
 2. Automatic discovery (stretch goal 8). Cabinets find each other on the
    subnet with no configured IPs, so a new install needs no per-cabinet
    network config. A continuous background poll finds peers that wake
