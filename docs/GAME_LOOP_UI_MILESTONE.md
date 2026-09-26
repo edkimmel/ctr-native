@@ -1106,10 +1106,11 @@ game font after 10 periods (a 5x7 block font is the fallback). The finish
 (END_OF_RACE, or the finish grace 900 ticks after the first human finish)
 ends as RACE COMPLETE; a stall timeout or peer drop as OPPONENT
 DISCONNECTED; a desync as RACE OUT OF SYNC, logged at most once per race;
-a protocol fault or local failure as LINK ERROR. RESULTS shows no standings (docs/LOCKSTEP_RACE_MILESTONE.md risk
-16). The live gate arcade_link_launch runs three linked races (the
-finish with a freeze, a forced desync, and a peer kill) and has a
-recorded, non-skipped PASS (LR-S13, LR-S14).
+a protocol fault or local failure as LINK ERROR. RESULTS shows no
+standings (docs/LOCKSTEP_RACE_MILESTONE.md risk 16). The live gate
+arcade_link_launch runs three linked races (the finish with a freeze, a
+forced desync, and a peer kill) and has a recorded, non-skipped PASS
+(LR-S13, LR-S14).
 
 ### Task 9 -- docs close-out
 
@@ -1121,9 +1122,11 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
    docs/LOCKSTEP_RACE_MILESTONE.md): the live hook reaches LOBBY,
    MATCH_FOUND, the match-select screens, a launched and VALIDATED linked
    race driven in lockstep, RESULTS, and a rematch, with in-race stall,
-   desync, fault, and peer-drop handling. It is proven on one machine
-   over loopback (arcade_link_launch); a real two-cabinet run is the
-   step 6/7 requirement (risk 9).
+   desync, fault, and peer-drop handling. The gate (arcade_link_launch)
+   proves the finish, the hold, the desync, and the peer drop live on one
+   machine over loopback; protocol faults and local failures are
+   unit-tested (docs/LOCKSTEP_RACE_MILESTONE.md LR-71). A real
+   two-cabinet run is the step 6/7 requirement (risk 9).
 2. Resolved by Task 8 (docs/LOCKSTEP_RACE_MILESTONE.md LR-14, LR-S6).
    A just-finished match's bundles can reach a rematch link on the same
    port: the two cabinets can end a race differently, and a held one
@@ -1135,7 +1138,8 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
    rematch after a desync, after a pre-race failure, and during the
    finish linger). The gate's two rematches pass live with no fault; in
    the run LR-S14 records no stale record reached a rematch link (every
-   race logged "foreign bundles dropped 0"), so the drop path itself is
+   ended line, five, since cab2 was killed in race 3, logged "foreign
+   bundles dropped 0"), so the drop path itself is
    proven by the unit tests.
 3. All tick counts assume the retail 30 Hz loop, which the race setup
    enforces (a 30/1 tick rate, docs/ROSTER_MILESTONE.md RS-14), and the

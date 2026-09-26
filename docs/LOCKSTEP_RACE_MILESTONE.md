@@ -5977,6 +5977,9 @@ Result:
     (0..300) are equal.
   - race 3: cab2 was killed after its race tick 311 was seen; cab1 held
     90 tick periods (3010751 us) at race tick 325 and ended (reason 2).
+    The kill triggers once a race 3 per-tick line at race tick >= 300 is
+    seen (LR-76); cab2's buffered stdout first showed 311, and its log
+    ends mid-line there.
   - both race-1 captures were written (cab1.race1.bmp, cab2.race1.bmp,
     under build-msvc-x86, never committed).
 - This document: the status at the top, section 3's evidence list (now in
@@ -6008,7 +6011,7 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
    of 6000 (LR-S2, "(b) result"), so the gate keeps the natural finish and
    the race-tick cap fallback is not needed. The gate's own race 1 reached
    END_OF_RACE live, on the same race tick on both cabinets, in each run
-   LR-S13 and LR-S14 record: 3685 and 3710 in LR-S13, 3701 in the
+   LR-S13 and LR-S14 record: 3685, 3710, and 3791 in LR-S13, 3701 in the
    full-suite run of LR-S14. Its seeds come from the select, so a later
    run can still meet a stuck autopilot. The finish grace (LR-18) remains
    the bound: once the other human has finished, it ends the race 900
@@ -6030,8 +6033,11 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
    shows the block font instead, never a broken glyph. The race hold and
    its game-font banner have run live in the gate (LR-S13): in race 1
    cab1 held 43 tick periods at race tick 602 and presented 34 banners,
-   every one logged "in the game font" and none in the block font, and the
-   checker requires exactly that (LR-76). That check reads the log only.
+   every one logged "in the game font" and none in the block font. Those
+   are the run's values, not requirements: the checker (LR-76) requires a
+   cab1 hold of at least 10 periods at a race tick in 600..602, at least
+   one game-font banner line in race 1, and no block-font line. That
+   check reads the log only.
    No image of the banner itself is captured automatically: the gate's
    one capture per cabinet lies in race 1 after the hold and must not be a
    banner frame, so the banner's pixels were last checked by eye (LR-S11,

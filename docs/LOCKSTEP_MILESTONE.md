@@ -298,8 +298,11 @@ Default 2, the arcade-link adapter's
 (`NATIVE_ARCADE_NETPLAY_DEFAULT_INPUT_DELAY`). A frame is one retail game
 tick at 30 Hz: a linked race requires a 30/1 tick rate
 (`docs/ROSTER_MILESTONE.md` RS-14). So `D = 2` buffers about 67 ms of
-input, and sample to simulation is `D + 1` = 3 ticks, 100 ms, comfortably
-above wired-LAN round trip on a two-cabinet switch. The linked-race drive
+input. In a linked race, sample to simulation is `D + 1` = 3 ticks,
+100 ms: the committed pads of frame `k` are installed after GameLogic `k`
+and read by GameLogic `k + 1` (`docs/LOCKSTEP_RACE_MILESTONE.md` LR-3,
+LR-5). That is comfortably above wired-LAN round trip on a two-cabinet
+switch. The linked-race drive
 accepts only `D` up to 3, because of the window lead
 (`docs/LOCKSTEP_RACE_MILESTONE.md` LR-3).
 
@@ -425,10 +428,14 @@ the input frame the bundle carries, and `D + 1` frames behind the frame being
 simulated when it is consumed. It cannot be the same frame: a frame's digest
 does not exist until that frame has been simulated, and the bundle must arrive
 before that frame can be simulated at all, because it carries the input that
-frame needs. A divergence at frame `F` is therefore detectable no earlier than
-frame `F + D + 1` (3 ticks, 100 ms, at `D = 2` and the 30 Hz tick). For the
-first `D + 1` frames of a session `verifiedPresent` is 0 and the digest
-fields are zero.
+frame needs. The digest of frame `F` travels in the bundle for frame
+`F + D + 1`, which the sender sends on its tick `F + 1`
+(`docs/LOCKSTEP_RACE_MILESTONE.md` LR-2). The receiver compares it on
+arrival, or parks it and compares it when it records `F` (section 2.4).
+Either way a divergence at `F` is detected before the detecting cabinet takes
+frame `F + D + 1`, that is within `D + 1` = 3 ticks (100 ms at `D = 2` and
+the 30 Hz tick; LR-12). For the first `D + 1` frames of a session
+`verifiedPresent` is 0 and the digest fields are zero.
 
 Maximum encoded size versus the transport: 128 bytes. There is no maximum
 payload constant in `native_virtual_datagram` (section 1.4) - `payloadCapacity`

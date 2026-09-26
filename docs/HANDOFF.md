@@ -53,10 +53,11 @@ Integration order:
    `docs/LOCKSTEP_RACE_MILESTONE.md`) are done: both cabinets agree on a
    launch commit, arm and launch the step-3 race setup seam with the
    agreed config, and drive the race in lockstep to its end, exchanging
-   and comparing live V4 digests every race tick; a rematch launches the next race in the
-   same process. The two-process gate (`arcade_link_launch`) proves three
-   linked races live on one machine over loopback. Physical two-cabinet
-   validation remains open before steps 6-7.
+   and comparing live V4 digests every race tick; a rematch launches the
+   next race in the same process. The two-process gate
+   (`arcade_link_launch`) proves three linked races live on one machine
+   over loopback. Physical two-cabinet validation remains open before
+   steps 6-7.
 5. Failure handling, results, and rematch — stall-timeout policy, peer-drop
    roster, and rematch config builder complete and fault-tested against
    `native_virtual_datagram`; wired to the results/rematch screens through
@@ -162,10 +163,12 @@ Integration order:
 - **Live race setup.** `game/MAIN/MainArcadeRaceSetup` is the race setup
   seam (`_Arm`, `_Launch`, `_Status`, `_Digests`, `_Bank`, `_Disarm`)
   through which the live race caller and the roster proof launch races;
-  `MainArcadeRaceDigest` reads `_Bank`. It turns a validated TWO_CAB
-  config into a retail 2P arcade race and a validated ONE_CAB config into a retail 1P arcade race (one human, seven
-  bots, eight drivers) through the pure plan (encoding v2, the same for
-  both profiles), facts, and decision-core libraries, with two hooks in
+  the race caller and the roster proof read `MainArcadeRaceSetup_Bank()`
+  and hand it to `MainArcadeRaceDigest`. It turns a validated TWO_CAB
+  config into a retail 2P arcade race and a validated ONE_CAB config into
+  a retail 1P arcade race (one human, seven bots, eight drivers) through
+  the pure plan (encoding v2, the same for both profiles), facts, and
+  decision-core libraries, with two hooks in
   `MainInit_FinalizeInit` (at its very start, and right after
   `MainInit_Drivers`) that verify the loaded fields, re-apply the mode
   words, seed the RNGs, and validate the live roster and bot setup facts,
@@ -189,8 +192,9 @@ Integration order:
   one live caller of the V4 runtime (`MainCanonicalRuntime`). On every
   race tick of a linked race it projects race-relative control, the
   retail RNGs, the post-setup bank, the four pads the tick read, the
-  complete drivers (Physics included), and WORLD (the world-counter and mine-registry extractors, compiled into
-  `ctr_native` through the unity chain). The roster proof projects every
+  complete drivers (Physics included), and WORLD (the world-counter and
+  mine-registry extractors, compiled into `ctr_native` through the unity
+  chain). The roster proof projects every
   logged race tick through it too. TOPOLOGY carries the unavailable
   summary, the same constant on both cabinets, so it is not compared;
   live topology waits for a lease-activation milestone. The drivers
@@ -433,8 +437,9 @@ the arcade-link screens and host adapter exist and are tested on top of it
   race caller reaches them only through `NativeArcadeLinkHost_RaceBegin`,
   `_RaceStep`, `_RaceHold`, and `_RaceEnd`, and game code names no
   lockstep token. On each race tick, right after the arcade-link hook, the
-  caller projects the live V4 state, and the drive records its digests, submits the cabinet's
-  own sample (host controller slot 0: wheel, pad, or keyboard, read by
+  caller projects the live V4 state, and the drive records its digests,
+  submits the cabinet's own sample (host controller slot 0: wheel, pad,
+  or keyboard, read by
   `Platform_InputSampleLocalPad` without touching the installed pads),
   sends the new bundle and resends the kept ones verbatim, polls, and
   takes the frame. Both cabinets then install the same committed pads:
@@ -618,9 +623,10 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `include/platform/native_arcade_race_drive.h` (pure drive core, library
   `ctr_native_arcade_race_drive`); the drive glue and `RaceBegin`,
   `RaceStep`, `RaceHold`, `RaceEnd` in `platform/native_arcade_link_host.c`;
-  `NativeArcadeNetplay_OnTakeResult` and the race hold service in
-  `platform/native_arcade_netplay.c`; `Platform_InputSampleLocalPad` in
-  `platform/native_input.c` (local sample seam);
+  `NativeArcadeNetplay_OnTakeResult` and the race hold service
+  `NativeArcadeNetplay_RaceService` in `platform/native_arcade_netplay.c`;
+  `Platform_InputSampleLocalPad` in `platform/native_input.c` (local
+  sample seam);
   `game/MAIN/MainArcadeRaceDigest.{c,h}` (live V4 projection);
   `game/MAIN/MainArcadeRaceHold.{c,h}` (stall hold loop and banner) and
   `game/MAIN/MainArcadeRaceHoldCore.{c,h}` (its pure period core, library
