@@ -1074,7 +1074,9 @@ if(CTR_NATIVE_MSVC_FRONTEND)
     # one address (e.g.
     # VehPhysProc_SpinStop_{Update,PhysLinear,PhysAngular} into their SlamWall
     # twins), which breaks C17 6.5.9p6 function-pointer distinctness and makes
-    # the Release live roster facts fail to extract.  /OPT:REF stays on.
+    # the Release live roster facts fail to extract.  /OPT:REF is left at the
+    # linker default: on for Release and MinSizeRel, off for Debug and
+    # RelWithDebInfo (their /DEBUG link turns it off).
     # Enforced by tests/native_function_identity_link_isolation_test.cmake.
     target_link_options(ctr_native PRIVATE /Brepro /OPT:NOICF)
 else()
@@ -2098,12 +2100,27 @@ if(BUILD_TESTING)
     target_include_directories(main_canonical_drivers_binding_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
     target_compile_definitions(main_canonical_drivers_binding_test PRIVATE CTR_NATIVE CTR_INTERNAL)
     target_link_libraries(main_canonical_drivers_binding_test PRIVATE ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_state_v3 ctr_native_canonical_state_v4 ctr_native_match_config ctr_native_replay_scheduler_seam)
+    if(CTR_NATIVE_MSVC_FRONTEND)
+        # Compiles MainCanonicalDrivers.c: keep its stubbed callbacks at
+        # distinct addresses, as for ctr_native (no identical code folding).
+        target_link_options(main_canonical_drivers_binding_test PRIVATE /OPT:NOICF)
+    endif()
     add_test(NAME main_canonical_drivers_binding_unit COMMAND $<TARGET_FILE:main_canonical_drivers_binding_test>)
     # The binding above stubs the game callbacks; the shipped ctr_native link
     # must also keep every callback at a distinct address (no identical code
     # folding).
     add_test(NAME native_function_identity_link_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_function_identity_link_isolation_test.cmake")
+    if(CMAKE_GENERATOR MATCHES "Visual Studio")
+        # The generated ctr_native project must carry that into every
+        # configuration's link settings (COMDAT folding false, never true).
+        string(REPLACE ";" "," ctr_native_link_output_configs "${CMAKE_CONFIGURATION_TYPES}")
+        add_test(NAME native_function_identity_link_output
+            COMMAND "${CMAKE_COMMAND}"
+                "-DCTR_VCXPROJ=${CMAKE_BINARY_DIR}/ctr_native.vcxproj"
+                "-DCTR_CONFIGS=${ctr_native_link_output_configs}"
+                -P "${CMAKE_SOURCE_DIR}/tests/native_function_identity_link_output_test.cmake")
+    endif()
 
     # The live V4 race digest (game/MAIN/MainArcadeRaceDigest.c, Task 8 race
     # plan LR-10, slice LR-S4) over the real runtime, drivers extraction,
@@ -2114,6 +2131,11 @@ if(BUILD_TESTING)
     target_include_directories(main_arcade_race_digest_test PRIVATE ${CMAKE_SOURCE_DIR}/game)
     target_compile_definitions(main_arcade_race_digest_test PRIVATE CTR_NATIVE CTR_INTERNAL)
     target_link_libraries(main_arcade_race_digest_test PRIVATE ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_state_v3 ctr_native_canonical_state_v4 ctr_native_match_config ctr_native_replay_scheduler_seam)
+    if(CTR_NATIVE_MSVC_FRONTEND)
+        # Compiles MainCanonicalDrivers.c: keep its stubbed callbacks at
+        # distinct addresses, as for ctr_native (no identical code folding).
+        target_link_options(main_arcade_race_digest_test PRIVATE /OPT:NOICF)
+    endif()
     add_test(NAME main_arcade_race_digest_unit COMMAND $<TARGET_FILE:main_arcade_race_digest_test>)
     add_test(NAME main_arcade_race_digest_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_race_digest_isolation_test.cmake")
