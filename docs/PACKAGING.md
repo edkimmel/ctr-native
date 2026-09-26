@@ -395,7 +395,10 @@ Two modes:
   checks. Its MANIFEST names the package `ctr-arcade-staged` and says it is
   a staged test package that must never be deployed. The stage destination
   must resolve under `build-msvc-x86\`, and an existing destination must
-  hold only package files.
+  hold only package files, or files its own `MANIFEST.txt` lists when that
+  MANIFEST marks it `ctr-arcade-staged` (a stage written with an older
+  package file set, such as the per-cabinet templates before DISC-S5), and
+  no subdirectory.
 
 `-OutputDirectory` must resolve under `build-msvc-x86\`. `-AssetsFile`
 defaults to `assets\ctr-u.bin`. The smoke skips (exit 77) like the other

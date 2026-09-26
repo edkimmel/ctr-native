@@ -21,7 +21,8 @@ compatible.
       through the same staging code and guard as the real package, but
       without the clean-tree, build, and --version checks. <dir> must
       resolve under build-msvc-x86\; an existing <dir> must look like a
-      package folder (only allowlisted files, no subdirectory). Used by
+      package folder (only allowlisted files, or files its own staged
+      MANIFEST.txt lists, and no subdirectory). Used by
       tools/package-arcade-smoke.ps1. Never deploy a staged package.
 
 The guard fails a folder whose files are not exactly ctr_native.exe,
@@ -51,6 +52,9 @@ $retailExtensions = @('.bin', '.cue', '.iso', '.img', '.chd', '.ecm', '.pbp', '.
 $retailNameParts = @('bios', 'scph')
 $maxSmallFileBytes = 64KB
 $maxExeBytes = 32MB
+# The MANIFEST.txt line before its file list (written by Write-PackageFolder,
+# read back by Get-StagedManifestFiles).
+$manifestFilesHeader = 'files (name, size in bytes, SHA-256):'
 
 # Write-Host, not Write-Output: this also runs inside functions whose output
 # is captured, and the reason must still reach the console.
@@ -205,7 +209,7 @@ function Write-PackageFolder([string]$SourceExe, [string]$Destination, [string[]
     $manifest.Add('')
     $manifest.Add('Both cabinets must show the same ctr_native.exe SHA-256 (Get-FileHash ctr_native.exe -Algorithm SHA256); the link handshake rejects different builds.')
     $manifest.Add('')
-    $manifest.Add('files (name, size in bytes, SHA-256):')
+    $manifest.Add($manifestFilesHeader)
     foreach ($file in @('ctr_native.exe', 'arcade.cfg', 'README.txt')) {
         $path = Join-Path $Destination $file
         $size = (Get-Item -LiteralPath $path).Length
@@ -220,6 +224,31 @@ function Write-PackageFolder([string]$SourceExe, [string]$Destination, [string[]
         Remove-Item -LiteralPath $Destination -Recurse -Force
         Exit-Failed "the package failed the retail-data guard and was deleted"
     }
+}
+
+# The file names a staged test package's MANIFEST.txt in $Folder lists, or an
+# empty list when $Folder holds no MANIFEST.txt file whose second line is
+# exactly 'package: ctr-arcade-staged' (Write-PackageFolder's stage header).
+function Get-StagedManifestFiles([string]$Folder) {
+    $listed = New-Object System.Collections.Generic.List[string]
+    $manifestPath = Join-Path $Folder 'MANIFEST.txt'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        return , $listed
+    }
+    $lines = @([System.IO.File]::ReadAllLines($manifestPath))
+    if (($lines.Count -lt 2) -or ($lines[1] -cne 'package: ctr-arcade-staged')) {
+        return , $listed
+    }
+    $header = [array]::IndexOf($lines, $manifestFilesHeader)
+    if ($header -lt 0) {
+        return , $listed
+    }
+    for ($i = $header + 1; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -cmatch '^(\S+)  [0-9]+  [0-9A-F]{64}$') {
+            $listed.Add($Matches[1])
+        }
+    }
+    return , $listed
 }
 
 function Write-PackageSummary([string]$Destination, [string]$VersionText) {
@@ -272,13 +301,17 @@ if ($stageRequested) {
     $guardedPaths.Add($buildDir)
     Assert-NoReparsePoint $guardedPaths.ToArray()
     # Only a package folder is ever recreated: a mistyped destination (a build
-    # output folder, say) is refused, not deleted.
+    # output folder, say) is refused, not deleted. A file outside the
+    # allowlist is accepted only when the folder's own MANIFEST.txt marks it a
+    # staged test package and lists that file: a stage this script wrote with
+    # an older package file set (before DISC-S5 the templates differed).
     if (Test-Path -LiteralPath $stageDestination) {
         if (-not (Test-Path -LiteralPath $stageDestination -PathType Container)) {
             Exit-Failed "refusing stage destination that is not a folder: $stageDestination"
         }
+        $stagedListedFiles = Get-StagedManifestFiles $stageDestination
         foreach ($entry in @(Get-ChildItem -LiteralPath $stageDestination -Force)) {
-            if ($entry.PSIsContainer -or ($allowedFiles -cnotcontains $entry.Name)) {
+            if ($entry.PSIsContainer -or (($allowedFiles -cnotcontains $entry.Name) -and ($stagedListedFiles -cnotcontains $entry.Name))) {
                 Exit-Failed "refusing to recreate ${stageDestination}: it holds $($entry.Name), which is not a package file"
             }
         }

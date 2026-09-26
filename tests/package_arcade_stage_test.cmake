@@ -4,7 +4,8 @@
 #     package file set from a fabricated dummy exe (never game data) with a
 #     MANIFEST marked as a staged test package, and refuses a destination
 #     outside build-msvc-x86\, the build folder itself, a folder holding a
-#     non-package file or a subdirectory, an exe inside the destination, and
+#     non-package file (unless its own staged MANIFEST lists it: an older
+#     stage) or a subdirectory, an exe inside the destination, and
 #     half a parameter pair;
 #   - the stage and the real package share one staging function;
 #   - tools/package-arcade-smoke.ps1, tools/arcade-link-launch-check.ps1, and
@@ -139,6 +140,40 @@ expect_script(subdirectory "${package_script}" 1 "it holds memcards, which is no
     -StageExecutable "${dummy_exe}" -StageDirectory "${work_dir}/subdirectory")
 if(NOT IS_DIRECTORY "${work_dir}/subdirectory/memcards")
     message(FATAL_ERROR "package stage: the refused folder lost memcards")
+endif()
+
+# 3b. A stage written with an older package file set (its own MANIFEST.txt
+# marks it a staged test package and lists the file) is recreated with the
+# current set; a file its MANIFEST does not list, or a MANIFEST that is not a
+# staged package's, is still refused and the folder left as it was.
+set(fake_hash "0000000000000000000000000000000000000000000000000000000000000000")
+function(write_older_stage folder package_line)
+    file(REMOVE_RECURSE "${folder}")
+    file(MAKE_DIRECTORY "${folder}")
+    file(WRITE "${folder}/former.cfg" "old\n")
+    file(WRITE "${folder}/README.txt" "old\n")
+    file(WRITE "${folder}/MANIFEST.txt"
+        "CTR Native arcade package\n${package_line}\n\nfiles (name, size in bytes, SHA-256):\n"
+        "former.cfg  4  ${fake_hash}\nREADME.txt  4  ${fake_hash}\n")
+endfunction()
+write_older_stage("${work_dir}/older_stage" "package: ctr-arcade-staged")
+expect_script(older_stage "${package_script}" 0 "PASS: retail-data guard"
+    -StageExecutable "${dummy_exe}" -StageDirectory "${work_dir}/older_stage")
+file(GLOB older_entries RELATIVE "${work_dir}/older_stage" "${work_dir}/older_stage/*")
+list(SORT older_entries)
+if(NOT "${older_entries}" STREQUAL "${expected_entries}")
+    message(FATAL_ERROR "package stage: the recreated older stage holds '${older_entries}', expected '${expected_entries}'")
+endif()
+write_older_stage("${work_dir}/older_unlisted" "package: ctr-arcade-staged")
+file(WRITE "${work_dir}/older_unlisted/notes.txt" "keep me\n")
+expect_script(older_unlisted "${package_script}" 1 "it holds notes.txt, which is not a package file"
+    -StageExecutable "${dummy_exe}" -StageDirectory "${work_dir}/older_unlisted")
+write_older_stage("${work_dir}/older_real" "package: ctr-arcade-0123456789ab")
+expect_script(older_real "${package_script}" 1 "it holds former.cfg, which is not a package file"
+    -StageExecutable "${dummy_exe}" -StageDirectory "${work_dir}/older_real")
+if(NOT EXISTS "${work_dir}/older_unlisted/notes.txt" OR NOT EXISTS "${work_dir}/older_unlisted/former.cfg" OR
+        NOT EXISTS "${work_dir}/older_real/former.cfg")
+    message(FATAL_ERROR "package stage: a refused older folder lost a file")
 endif()
 
 # 4. Destinations outside build-msvc-x86\, and the build folder itself.
