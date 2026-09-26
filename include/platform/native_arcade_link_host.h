@@ -267,12 +267,25 @@ int NativeArcadeLinkHost_Enter(void);
  * PREVIEW return NONE. In LINK mode in discovery mode it first ticks the
  * discovery service, logs its pairing events, and hands its current pairing
  * (or none) to the link, which takes it at its next lobby Begin on LOBBY
- * (DISC-12). In LINK mode, after the adapter's tick, it runs one
+ * (DISC-12); the service's interface refresh is held while a race runs
+ * (linked or solo, from RACING to the Disarm frame's RaceEnd and any finish
+ * linger) and done on the first tick after it (docs/DISCOVERY_MILESTONE.md
+ * risk 10). In LINK mode, after the adapter's tick, it runs one
  * tick of the drive's finish linger while the drive has a finish end, and
  * re-initializes the drive once the linger is done or stopped, and on every
  * tick whose flow is neither on RACING nor on RESULTS; then it latches the
  * race's divergence record if the link found one (TakeRaceDivergence). */
 uint32_t NativeArcadeLinkHost_Tick(uint32_t heldMenuButtons, uint8_t raceFinished);
+
+/* The discovery part of Tick alone (docs/DISCOVERY_MILESTONE.md risk 6), for
+ * every game-loop frame on which the caller does not call Tick (the boot
+ * intro, the attract demo race, a level load outside a race): in LINK mode in
+ * discovery mode, one discovery tick (drain, beacon, the held refresh rule
+ * above), its log lines, and the current pairing to the link's pending slot.
+ * Nothing else: no flow or adapter tick, no attract counter, no drive. A
+ * no-op in OFF, PREVIEW, and static LINK mode. Call Tick or IdleTick at most
+ * once per frame, never both. */
+void NativeArcadeLinkHost_IdleTick(void);
 
 /* Fills *view and returns 1; returns 0 on NULL or in mode OFF. */
 int NativeArcadeLinkHost_GetView(struct NativeArcadeLinkHostView *view);

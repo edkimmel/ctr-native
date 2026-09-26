@@ -15,8 +15,11 @@
  * the fast suite's port band 48610-48629 (CMakeLists.txt):
  *   A binds 48610 and advertises link port 48613;
  *   B binds 48611 and advertises link port 48614;
- *   48612 is the enumeration (no override) case, which never ticks, so this
- *   test never sends a broadcast.
+ *   48612 is the enumeration (no override) case. Only the held-refresh case
+ *   (TestRefreshHeld, docs/DISCOVERY_MILESTONE.md risk 10) ticks it: 901
+ *   ticks, so 31 beacon rounds go to the broadcast targets at port 48612,
+ *   where nothing listens but the service itself (which drops its own
+ *   nonce). Every other case sends to loopback only.
  * The link ports are only advertised, never bound.
  */
 #define PORT_A         48610u
@@ -47,8 +50,8 @@ static const uint8_t k_identity[NATIVE_ARCADE_DISCOVERY_IDENTITY_BYTES] = {1, 2,
 
 static void Step(struct NativeArcadeDiscoveryService *a, struct NativeArcadeDiscoveryService *b, uint32_t *step)
 {
-	NativeArcadeDiscoveryService_Tick(a);
-	NativeArcadeDiscoveryService_Tick(b);
+	NativeArcadeDiscoveryService_Tick(a, 1);
+	NativeArcadeDiscoveryService_Tick(b, 1);
 	(*step)++;
 	Sleep(1);
 }
@@ -91,8 +94,8 @@ static int TestClosedAndArguments(void)
 	NativeArcadeDiscoveryService_Close(&s_zero);
 	NativeArcadeDiscoveryService_Close(&s_zero);
 	NativeArcadeDiscoveryService_Close(NULL);
-	NativeArcadeDiscoveryService_Tick(&s_zero);
-	NativeArcadeDiscoveryService_Tick(NULL);
+	NativeArcadeDiscoveryService_Tick(&s_zero, 1);
+	NativeArcadeDiscoveryService_Tick(NULL, 1);
 	CHECK(!NativeArcadeDiscoveryService_Pairing(&s_zero, &pairing));
 	CHECK(!NativeArcadeDiscoveryService_Pairing(NULL, &pairing));
 	CHECK(!NativeArcadeDiscoveryService_TakeEvent(&s_zero, &event));
@@ -146,6 +149,70 @@ static int TestEnumeratedTargets(void)
 	return 0;
 }
 
+/* The beacon rounds after the ticks 0..lastTick: one every interval from tick 0. */
+static uint32_t BeaconRoundsThrough(uint32_t lastTick)
+{
+	return (lastTick / NATIVE_ARCADE_DISCOVERY_BEACON_INTERVAL_TICKS) + 1u;
+}
+
+/*
+ * Risk 10: the caller may hold the interface refresh (mayRefresh 0). A
+ * refresh that falls due while held is pending, and runs once on the first
+ * tick that allows it, however many fell due meanwhile; the schedule does
+ * not move, and the beacon cadence never changes.
+ */
+static int TestRefreshHeld(void)
+{
+	struct NativeArcadeDiscoveryServiceStatus status;
+	uint32_t tick;
+
+	CHECK(NativeArcadeDiscoveryService_Open(&s_enumerate, PORT_ENUMERATE, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, NULL, 0u));
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_enumerate, &status));
+	CHECK((status.overridden == 0) && (status.refreshCount == 1u) && (status.refreshPending == 0) && (status.beaconCount == 0u));
+
+	/* Ticks 0..299, allowed: no refresh due yet. */
+	for (tick = 0; tick < NATIVE_ARCADE_DISCOVERY_SERVICE_REFRESH_TICKS; tick++)
+	{
+		NativeArcadeDiscoveryService_Tick(&s_enumerate, 1);
+	}
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_enumerate, &status));
+	CHECK((status.tickCount == 300u) && (status.refreshCount == 1u) && (status.refreshPending == 0));
+	CHECK(status.beaconCount == BeaconRoundsThrough(299u));
+
+	/* Ticks 300..600 held: the refresh due at 300 waits, the one due at 600
+	 * joins it, and a beacon still goes out every 30 ticks. */
+	for (tick = 300u; tick <= 600u; tick++)
+	{
+		NativeArcadeDiscoveryService_Tick(&s_enumerate, 0);
+		CHECK(NativeArcadeDiscoveryService_GetStatus(&s_enumerate, &status));
+		CHECK((status.tickCount == tick + 1u) && (status.refreshCount == 1u) && (status.refreshPending == 1));
+		CHECK(status.beaconCount == BeaconRoundsThrough(tick));
+	}
+
+	/* Tick 601, allowed: the pending refresh runs, once. */
+	NativeArcadeDiscoveryService_Tick(&s_enumerate, 1);
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_enumerate, &status));
+	CHECK((status.refreshCount == 2u) && (status.refreshPending == 0) && (status.beaconCount == BeaconRoundsThrough(601u)));
+	CHECK((status.targetCount >= 1u) && (status.targetCount <= NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_TARGETS));
+
+	/* Allowed from here: nothing until the schedule's next due tick, 900,
+	 * which refreshes at once. */
+	for (tick = 602u; tick < 900u; tick++)
+	{
+		NativeArcadeDiscoveryService_Tick(&s_enumerate, 1);
+	}
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_enumerate, &status));
+	CHECK((status.tickCount == 900u) && (status.refreshCount == 2u) && (status.refreshPending == 0));
+	NativeArcadeDiscoveryService_Tick(&s_enumerate, 1);
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_enumerate, &status));
+	CHECK((status.refreshCount == 3u) && (status.refreshPending == 0) && (status.beaconCount == BeaconRoundsThrough(900u)));
+
+	NativeArcadeDiscoveryService_Close(&s_enumerate);
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_enumerate, &status));
+	CHECK((status.open == 0) && (status.refreshCount == 0u) && (status.beaconCount == 0u));
+	return 0;
+}
+
 static int TestPairOnLoopback(void)
 {
 	const struct NativeUdpTransportAddress toB = {LOOPBACK, PORT_B};
@@ -162,6 +229,8 @@ static int TestPairOnLoopback(void)
 	CHECK(NativeArcadeDiscoveryService_Open(&s_b, PORT_B, NONCE_B, 1u, k_identity, LINK_PORT_B, NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &toA, 1u));
 	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_a, &status));
 	CHECK((status.open == 1) && (status.overridden == 1) && (status.enumerationFailed == 0) && (status.targetCount == 1u));
+	/* Explicit targets: no interface list is ever read. */
+	CHECK((status.refreshCount == 0u) && (status.refreshPending == 0));
 	CHECK(NativeArcadeDiscoveryService_Target(&s_a, 0, &address));
 	CHECK((address.ipv4 == LOOPBACK) && (address.port == PORT_B));
 	CHECK(!NativeArcadeDiscoveryService_Target(&s_a, 1u, &address));
@@ -170,7 +239,7 @@ static int TestPairOnLoopback(void)
 	CHECK(!NativeArcadeDiscoveryService_Open(&s_conflict, PORT_A, UINT64_C(0x3333), 1u, k_identity, LINK_PORT_A, 0u, &toB, 1u));
 	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_conflict, &status));
 	CHECK(status.open == 0);
-	NativeArcadeDiscoveryService_Tick(&s_conflict);
+	NativeArcadeDiscoveryService_Tick(&s_conflict, 1);
 	NativeArcadeDiscoveryService_Close(&s_conflict);
 
 	/* Step 0: A beacons with no echo, so nothing can pair yet: A has read
@@ -212,9 +281,10 @@ static int TestPairOnLoopback(void)
 	 * k + 299 (DISC-4: an entry heard at tick T expires on the Tick reaching
 	 * T + 300): never before tick 300. B's first interval of ticks is paced
 	 * for the beacon to land in, so k <= 31 bounds the loss above too. */
-	NativeArcadeDiscoveryService_Tick(&s_a);
+	NativeArcadeDiscoveryService_Tick(&s_a, 1);
 	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_a, &status));
 	CHECK(status.tickCount == step + 1u);
+	CHECK((status.refreshCount == 0u) && (status.refreshPending == 0) && (status.beaconCount == BeaconRoundsThrough(step)));
 	NativeArcadeDiscoveryService_Close(&s_a);
 	CHECK(!Paired(&s_a));
 	{
@@ -222,7 +292,7 @@ static int TestPairOnLoopback(void)
 
 		for (;; after++)
 		{
-			NativeArcadeDiscoveryService_Tick(&s_b);
+			NativeArcadeDiscoveryService_Tick(&s_b, 1);
 			if (!Paired(&s_b))
 			{
 				break;
@@ -258,6 +328,7 @@ int main(void)
 {
 	CHECK(TestClosedAndArguments() == 0);
 	CHECK(TestEnumeratedTargets() == 0);
+	CHECK(TestRefreshHeld() == 0);
 	CHECK(TestPairOnLoopback() == 0);
 	puts("native_arcade_discovery_service_test: ok");
 	return 0;

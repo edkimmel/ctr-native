@@ -15,6 +15,8 @@
 #    this test are registered, without a live label.
 # 5. No other game/, platform/, include/, or main.c file names the service
 #    but the link host's .c, its one consumer since DISC-S4.
+# Since the discovery risk 10, rule 2 also pins that the interface list is
+# read only at Open and on a Tick that allows a pending refresh.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade discovery service isolation")
@@ -101,6 +103,18 @@ foreach(term IN ITEMS "NativeUdpTransport_Open(" "NativeUdpTransport_EnableBroad
         "NativeNetInterfaces_List(" "NativeNetInterfaces_BuildTargets(")
     ctr_require("${service_source}" "${source_code}" "${term}")
 endforeach()
+# Risk 10 (docs/DISCOVERY_MILESTONE.md section 5): the interface list is
+# read at Open and in Tick only when a refresh is pending and the caller
+# allows it (the refresh the caller holds during a race is deferred, never
+# dropped): RefreshTargets is defined once and called twice.
+string(REGEX MATCHALL "NativeArcadeDiscoveryService_RefreshTargets\\(" refresh_names "${source_code}")
+list(LENGTH refresh_names refresh_name_count)
+if(NOT refresh_name_count EQUAL 3)
+    message(FATAL_ERROR "${prefix}: NativeArcadeDiscoveryService_RefreshTargets must be named exactly three times (its definition, Open, and Tick's allowed refresh), found ${refresh_name_count}")
+endif()
+string(REGEX REPLACE "[ \t\r\n]+" " " source_flat "${source_code}")
+ctr_require("${service_source}" "${source_flat}"
+    "if ((service->refreshPending != 0) && (mayRefresh != 0)) { service->refreshPending = 0; NativeArcadeDiscoveryService_RefreshTargets(service); }")
 
 # 3. The public API, pinned.
 ctr_read_source("${service_header}" header)

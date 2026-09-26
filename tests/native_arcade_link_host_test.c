@@ -87,6 +87,11 @@
 #define TEST_DISC_PEER_PORT 48575u
 #define TEST_DISC_BLOCKED_LINK_PORT 48576u
 #define TEST_DISC_BLOCKED_PORT 48577u
+/* The held-refresh case (risk 10) needs the interface list, so it has no
+ * explicit target: its beacons (about 20 rounds) go to the broadcast
+ * targets at its own discovery port, where nothing but itself listens. */
+#define TEST_DISC_ENUM_LINK_PORT        48578u
+#define TEST_DISC_ENUM_PORT             48579u
 #define TEST_DISC_HOST_NONCE UINT64_C(0x5EED00000000C0DE)
 #define TEST_DISC_PEER_NONCE UINT64_C(0x5EED00000000BEEF)
 /* Beacons go out every 30 ticks; both sides must hear each other's echo. */
@@ -236,6 +241,18 @@ static int CheckInert(void)
 	CHECK(CheckNoAgreedMatch() == 0);
 	CHECK(CheckNotRacing() == 0);
 	CHECK(NativeArcadeLinkHost_InternalSelectEntropy() == 0u);
+	/* Risks 6 and 10: IdleTick does nothing, no race runs, no discovery. */
+	NativeArcadeLinkHost_IdleTick();
+	CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 0u);
+	{
+		uint32_t ticks = 0xA5u;
+		uint32_t refreshes = 0xA5u;
+		uint8_t pending = 0xA5u;
+
+		CHECK(NativeArcadeLinkHost_InternalDiscoveryStatus(&ticks, &refreshes, &pending) == 0);
+		CHECK((ticks == 0xA5u) && (refreshes == 0xA5u) && (pending == 0xA5u));
+	}
+	CHECK(NativeArcadeLinkHost_InternalPairingsHanded() == 0u);
 	memset(&view, 0xA5, sizeof(view));
 	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF);
 	CHECK(NativeArcadeLinkHost_ScreenActive() == 0);
@@ -2375,6 +2392,8 @@ static int TestDriveStepHoldEnd(void)
 	enum NativeArcadeRaceDriveStatus peer;
 
 	CHECK(StartDriveRace(TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, UINT64_C(0xD21FE00000000001)) == 0);
+	/* Risk 10: a linked race runs (the discovery refresh would be held). */
+	CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 1u);
 	CHECK(RoundsBoth(pauseAt) == 0);
 	CHECK(GetDriveState(&state) == 0);
 	CHECK(state.raceTick == pauseAt - 1u);
@@ -2488,6 +2507,10 @@ static int TestDriveStepHoldEnd(void)
 			CHECK(state.begun == 0u);
 			CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_OF_RACE);
 			CHECK(state.lingerTicksLeft == NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS - 5u);
+			/* Risk 10: on RESULTS, pacing off, drive not begun: the linger
+			 * alone keeps the race running. */
+			CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+			CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 1u);
 		}
 		if ((tick == 3u) || (tick == 9u))
 		{
@@ -2500,8 +2523,10 @@ static int TestDriveStepHoldEnd(void)
 		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
 		CHECK(DrainPeerBundles(DRIVE_LINGER_WINDOW) == DRIVE_LINGER_WINDOW);
 	}
-	/* Done: the drive is re-initialized, and nothing more is sent. */
+	/* Done: the drive is re-initialized, and nothing more is sent. The race
+	 * is over (risk 10). */
 	CHECK(CheckDriveReset() == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 0u);
 	for (tick = 0u; tick < 5u; tick++)
 	{
 		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
@@ -5050,8 +5075,9 @@ static int RunSoloRace(void)
 	CHECK(g_logCalls == 0u);
 	CHECK(CheckPacingUntouched(0, 0u) == 0);
 
-	/* At the title (flow OFF): no drive. */
+	/* At the title (flow OFF): no drive, no race running (risk 10). */
 	CHECK(SoloDriveRefused() == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 0u);
 
 	/* LOBBY (the probe hears HELLOs and never answers), the offer, CROSS. */
 	CHECK(NativeArcadeLinkHost_Enter() == 1);
@@ -5081,6 +5107,9 @@ static int RunSoloRace(void)
 	CHECK((view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) && (view.solo == 1u));
 	CHECK(view.peerHeard == 0u);
 	CHECK(NativeArcadeLinkHost_Racing() == 1u);
+	/* Risk 10: from RACING on, before the Launch frame's RaceBegin, the solo
+	 * race runs. */
+	CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 1u);
 	CHECK(DrainSoloProbe(&probe) == 0u);
 
 	/* The Launch frame: the linked race's pacing, and the local drive. */
@@ -5160,11 +5189,15 @@ static int RunSoloRace(void)
 	{
 		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
 		CHECK(DrainSoloProbe(&probe) == 0u);
+		/* Solo RESULTS before the Disarm frame: the pacing keeps the race
+		 * running (risk 10: the return load). */
+		CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 1u);
 	}
 
-	/* The Disarm frame: the pacing goes off. */
+	/* The Disarm frame: the pacing goes off, and the race is over. */
 	NativeArcadeLinkHost_RaceEnd();
 	CHECK(CheckPacingUntouched(0, 6u) == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 0u);
 	NativeArcadeLinkHost_RaceEnd();
 	CHECK(CheckPacingUntouched(0, 6u) == 0);
 
@@ -5395,7 +5428,7 @@ static int TestDiscoveryPairsAndLocalCab(void)
 	{
 		logsBefore = g_logCalls;
 		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
-		NativeArcadeDiscoveryService_Tick(&g_fakePeer);
+		NativeArcadeDiscoveryService_Tick(&g_fakePeer, 1);
 		ticks++;
 		CHECK(NativeArcadeLinkHost_InternalPairingsHanded() == ticks);
 		if (g_logCalls != logsBefore)
@@ -5417,7 +5450,7 @@ static int TestDiscoveryPairsAndLocalCab(void)
 	for (i = 0u; i < LOBBY_TICKS; i++)
 	{
 		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
-		NativeArcadeDiscoveryService_Tick(&g_fakePeer);
+		NativeArcadeDiscoveryService_Tick(&g_fakePeer, 1);
 		CHECK(LocalCab() == 2u);
 	}
 	CHECK(g_logCalls == 2u);
@@ -5498,6 +5531,216 @@ static int TestDiscoveryBindFailureNotFatal(void)
 	return 0;
 }
 
+/* The host's discovery service ticks since Configure; UINT32_MAX when closed. */
+static uint32_t DiscoveryTicks(void)
+{
+	uint32_t ticks = 0u;
+	uint32_t refreshes = 0u;
+	uint8_t pending = 0u;
+
+	if (NativeArcadeLinkHost_InternalDiscoveryStatus(&ticks, &refreshes, &pending) != 1)
+	{
+		return UINT32_MAX;
+	}
+	return ticks;
+}
+
+/* The discovery refresh state is refreshes and pending. */
+static int CheckDiscoveryRefresh(uint32_t refreshes, uint8_t pending)
+{
+	uint32_t ticks = 0u;
+	uint32_t gotRefreshes = 0u;
+	uint8_t gotPending = 0xA5u;
+
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryStatus(&ticks, &gotRefreshes, &gotPending) == 1);
+	CHECK(gotRefreshes == refreshes);
+	CHECK(gotPending == pending);
+	return 0;
+}
+
+/*
+ * Risk 6: IdleTick is the discovery part of Tick alone. In PREVIEW and
+ * static LINK mode it changes nothing (the view is byte-identical, no
+ * pairing is handed, nothing is logged). In discovery mode each call is one
+ * service tick (as one Tick is), it beacons and drains so the fake peer
+ * pairs with the host through IdleTick alone, logs the pairing, and hands it
+ * to the adapter's pending slot; the flow, the attract counter, and the
+ * view do not move. The pending pairing takes effect only at the next lobby
+ * Begin (Enter), as DISC-12 requires.
+ */
+static int TestDiscoveryIdleTick(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	struct NativeArcadeLinkHostView before;
+	struct NativeArcadeLinkHostView after;
+	uint32_t ipv4 = 0u;
+	uint16_t port = 0u;
+	uint8_t role = 0u;
+	uint32_t ticks = 0u;
+	uint32_t pairedLines = 0u;
+	uint32_t logsBefore;
+	uint32_t i;
+
+	NativeArcadeLinkHost_Shutdown();
+	g_logCalls = 0u;
+	NativeArcadeLinkLoopback_Identity(&identity);
+
+	/* PREVIEW: its scripted clock does not move (41 IdleTicks would step the
+	 * opponent's cursor once and the countdown by 41). */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	options.preview = NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER;
+	CHECK(NativeArcadeLinkHost_Configure(&options, NULL) == 1);
+	before = HostView();
+	for (i = 0u; i <= PREVIEW_STEP_TICKS + 10u; i++)
+	{
+		NativeArcadeLinkHost_IdleTick();
+	}
+	after = HostView();
+	CHECK(memcmp(&before, &after, sizeof(before)) == 0);
+	CHECK(DiscoveryTicks() == UINT32_MAX);
+
+	/* Static LINK: no discovery, and the attract counter does not move. */
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_DISC_STATIC_LOCAL_PORT, TEST_DISC_STATIC_PEER_PORT);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	before = HostView();
+	CHECK(before.ticksInScreen == 1u);
+	for (i = 0u; i < 5u; i++)
+	{
+		NativeArcadeLinkHost_IdleTick();
+	}
+	after = HostView();
+	CHECK(memcmp(&before, &after, sizeof(before)) == 0);
+	CHECK(DiscoveryTicks() == UINT32_MAX);
+	CHECK(NativeArcadeLinkHost_InternalPairingsHanded() == 0u);
+	CHECK(g_logCalls == 0u);
+
+	/* Discovery mode: one service tick per IdleTick, and per Tick. */
+	memset(&g_fakePeer, 0, sizeof(g_fakePeer));
+	DiscoveryOptions(&options, (uint8_t)NATIVE_ARCADE_LINK_SEAT_AUTO, TEST_DISC_HOST_LINK_PORT, TEST_DISC_HOST_PORT, TEST_DISC_PEER_PORT);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(g_logCalls == 1u);
+	CHECK(DiscoveryTicks() == 0u);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(DiscoveryTicks() == 1u);
+	before = HostView();
+	CHECK((before.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF) && (before.ticksInScreen == 1u) && (before.localCab == 1u));
+
+	/* The fake peer wakes; the host only IdleTicks until it is paired. */
+	CHECK(OpenFakePeer(&identity) == 0);
+	while ((ticks < TEST_DISC_PAIR_BUDGET) && (NativeArcadeLinkHost_InternalPendingPairing(&ipv4, &port, &role) == 0))
+	{
+		logsBefore = g_logCalls;
+		NativeArcadeLinkHost_IdleTick();
+		NativeArcadeDiscoveryService_Tick(&g_fakePeer, 1);
+		ticks++;
+		CHECK(DiscoveryTicks() == 1u + ticks);
+		CHECK(NativeArcadeLinkHost_InternalPairingsHanded() == 1u + ticks);
+		if (g_logCalls != logsBefore)
+		{
+			CHECK(g_logCalls == logsBefore + 1u);
+			CHECK(strcmp(g_lastLog, "[CTR Native] arcade discovery: paired with 127.0.0.1:48572 as cab2\n") == 0);
+			pairedLines++;
+		}
+	}
+	CHECK(PendingIsFakePeer() == 0);
+	CHECK(pairedLines == 1u);
+	/* The flow did not move: still the title, same attract count, the
+	 * unpaired seat (the pairing is pending only). */
+	after = HostView();
+	CHECK(memcmp(&before, &after, sizeof(before)) == 0);
+	CHECK(NativeArcadeLinkHost_ScreenActive() == 0);
+
+	/* Enter, a lobby Begin, applies the pairing handed by IdleTick. */
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(LocalCab() == 2u);
+	/* On LOBBY too, IdleTick moves nothing but discovery. */
+	before = HostView();
+	ticks = DiscoveryTicks();
+	for (i = 0u; i < 3u; i++)
+	{
+		NativeArcadeLinkHost_IdleTick();
+	}
+	after = HostView();
+	CHECK(memcmp(&before, &after, sizeof(before)) == 0);
+	CHECK(DiscoveryTicks() == ticks + 3u);
+	CHECK(g_logCalls == 2u);
+
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	NativeArcadeDiscoveryService_Close(&g_fakePeer);
+	return 0;
+}
+
+/*
+ * Risk 10: with no explicit discovery target the service reads the
+ * interface list at Configure and every 300 service ticks after it. While a
+ * race runs (here the race pacing, RaceBegin at the title to RaceEnd) a due
+ * refresh is held, through IdleTick and Tick alike, and it runs on the
+ * first tick after RaceEnd, once.
+ */
+static int TestDiscoveryRefreshHeldInRace(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	const uint32_t calls = g_pacingCalls;
+	uint32_t i;
+
+	NativeArcadeLinkHost_Shutdown();
+	g_logCalls = 0u;
+	NativeArcadeLinkLoopback_Identity(&identity);
+	DiscoveryOptions(&options, (uint8_t)NATIVE_ARCADE_LINK_SEAT_AUTO, TEST_DISC_ENUM_LINK_PORT, TEST_DISC_ENUM_PORT, TEST_DISC_PEER_PORT);
+	options.discoveryTargetCount = 0u;
+	memset(options.discoveryTargets, 0, sizeof(options.discoveryTargets));
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options) == 1);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(g_logCalls == 1u);
+	CHECK(strcmp(g_lastLog, "[CTR Native] arcade discovery: listening on port 48579, group ctr-native, link port 48578, "
+	                        "broadcast\n") == 0);
+	CHECK(CheckDiscoveryRefresh(1u, 0u) == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 0u);
+
+	/* The Launch frame's RaceBegin: the pacing is on, a race runs. */
+	CHECK(NativeArcadeLinkHost_RaceBegin() == 1);
+	CHECK(CheckPacingUntouched(1, calls + 1u) == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 1u);
+
+	/* Service ticks 0..299 (IdleTick): nothing due. Tick 300 (IdleTick):
+	 * due and held. Ticks 301..600 (Tick): still one held refresh. */
+	for (i = 0u; i < NATIVE_ARCADE_DISCOVERY_SERVICE_REFRESH_TICKS; i++)
+	{
+		NativeArcadeLinkHost_IdleTick();
+	}
+	CHECK(DiscoveryTicks() == 300u);
+	CHECK(CheckDiscoveryRefresh(1u, 0u) == 0);
+	NativeArcadeLinkHost_IdleTick();
+	CHECK(CheckDiscoveryRefresh(1u, 1u) == 0);
+	for (i = 0u; i < NATIVE_ARCADE_DISCOVERY_SERVICE_REFRESH_TICKS; i++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+		CHECK(CheckDiscoveryRefresh(1u, 1u) == 0);
+	}
+	CHECK(DiscoveryTicks() == 601u);
+	CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 1u);
+
+	/* The Disarm frame's RaceEnd: the race is over; the next tick runs the
+	 * held refresh, once. */
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(CheckPacingUntouched(0, calls + 2u) == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceRunning() == 0u);
+	CHECK(CheckDiscoveryRefresh(1u, 1u) == 0);
+	NativeArcadeLinkHost_IdleTick();
+	CHECK(CheckDiscoveryRefresh(2u, 0u) == 0);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(CheckDiscoveryRefresh(2u, 0u) == 0);
+	CHECK(g_logCalls == 1u);
+
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestInertBeforeConfigure() == 0);
@@ -5537,6 +5780,8 @@ int main(void)
 	CHECK(TestDiscoveryStaticModeOpensNothing() == 0);
 	CHECK(TestDiscoveryPairsAndLocalCab() == 0);
 	CHECK(TestDiscoveryBindFailureNotFatal() == 0);
+	CHECK(TestDiscoveryIdleTick() == 0);
+	CHECK(TestDiscoveryRefreshHeldInRace() == 0);
 	puts("native_arcade_link_host_test: passed");
 	return 0;
 }

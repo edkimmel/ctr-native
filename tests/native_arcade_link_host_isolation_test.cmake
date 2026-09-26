@@ -61,6 +61,11 @@
 # library links the service (rule 4); rule 3m pins where the service is
 # opened, ticked, and closed, the pairing hand-over, and the view's cabinet
 # from the adapter's role. The lease tokens of rule 2 still hold.
+# Since the discovery risks 6 and 10 (docs/DISCOVERY_MILESTONE.md section 5)
+# the service's interface refresh is held while a race runs, and the header
+# declares IdleTick, the discovery-only tick for the frames the game hook
+# does not tick the host on (rule 3m; the hook side is pinned by
+# tests/main_arcade_link_hook_isolation_test.cmake rule 5c).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -921,6 +926,15 @@ ctr_require_in("${host_source} (Configure)" "${configure_body}"
 #       AbortToTitle never closes the service.
 #     - The view's localCab reads the adapter's role (its view's localRole),
 #       and g_config.localRole is named only where Configure stores it.
+#     Since risks 6 and 10 (docs/DISCOVERY_MILESTONE.md section 5):
+#     - The service Tick's mayRefresh is 0 exactly while RaceRunning holds;
+#       RaceRunning is LINK only and reads the flow's RACING screen, the race
+#       pacing flag, the begun-drive flag, and the drive's finish linger, and
+#       nothing else. Only TickDiscovery and the test read-back call it.
+#     - The public IdleTick is TickDiscovery alone behind the LINK mode check
+#       (no flow or adapter tick, no attract counter, no drive), and the
+#       header declares it. TickDiscovery has exactly two callers, Tick and
+#       IdleTick.
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_Open(" 1)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_Tick(" 1)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_TakeEvent(" 1)
@@ -928,7 +942,9 @@ ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryServic
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_Close(" 1)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeNetplay_SetPairing(" 3)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_OpenDiscovery(" 2)
-ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_TickDiscovery(" 2)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_TickDiscovery(" 3)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_RaceRunning(" 3)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_IdleTick(" 1)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_HandPairing(" 3)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_LogDiscoveryEvent(" 2)
 ctr_require_count("${host_source}" "${source_flat}" "g_discoveryMode = 1u;" 1)
@@ -951,7 +967,20 @@ if(tick_discovery_at EQUAL -1 OR tick_adapter_at EQUAL -1 OR NOT tick_discovery_
 endif()
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_TickDiscovery(" tick_discovery_body)
 ctr_require_in("${host_source} (TickDiscovery)" "${tick_discovery_body}"
-    "{ struct NativeArcadeDiscoveryEvent event; if (g_discoveryMode == 0u) { return; } NativeArcadeDiscoveryService_Tick(&g_discovery); while (NativeArcadeDiscoveryService_TakeEvent(&g_discovery, &event)) { NativeArcadeLinkHost_LogDiscoveryEvent(&event); } NativeArcadeLinkHost_HandPairing();")
+    "{ struct NativeArcadeDiscoveryEvent event; if (g_discoveryMode == 0u) { return; } NativeArcadeDiscoveryService_Tick(&g_discovery, (NativeArcadeLinkHost_RaceRunning() != 0) ? 0 : 1); while (NativeArcadeDiscoveryService_TakeEvent(&g_discovery, &event)) { NativeArcadeLinkHost_LogDiscoveryEvent(&event); } NativeArcadeLinkHost_HandPairing();")
+ctr_body("${host_source}" "${source_code}" "static int NativeArcadeLinkHost_RaceRunning(" race_running_body)
+if(NOT race_running_body STREQUAL "static int NativeArcadeLinkHost_RaceRunning(void) { if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) { return 0; } if ((NativeArcadeLinkHost_LinkScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) || (g_racePacing != 0u) || (g_driveBegun != 0u)) { return 1; } return (NativeArcadeRaceDrive_EndIsFinish(&g_drive) && (NativeArcadeRaceDrive_LingerTicksLeft(&g_drive) > 0u)) ? 1 : 0;")
+    message(FATAL_ERROR "arcade link host isolation: NativeArcadeLinkHost_RaceRunning must be exactly the LINK-only RACING, pacing, begun-drive, and finish-linger test (found '${race_running_body}')")
+endif()
+ctr_body("${host_source}" "${source_code}" "uint8_t NativeArcadeLinkHost_InternalRaceRunning(" internal_race_running_body)
+if(NOT internal_race_running_body STREQUAL "uint8_t NativeArcadeLinkHost_InternalRaceRunning(void) { return (uint8_t)((NativeArcadeLinkHost_RaceRunning() != 0) ? 1u : 0u);")
+    message(FATAL_ERROR "arcade link host isolation: NativeArcadeLinkHost_InternalRaceRunning must only read RaceRunning (found '${internal_race_running_body}')")
+endif()
+ctr_body("${host_source}" "${source_code}" "void NativeArcadeLinkHost_IdleTick(" idle_tick_body)
+if(NOT idle_tick_body STREQUAL "void NativeArcadeLinkHost_IdleTick(void) { if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) { return; } NativeArcadeLinkHost_TickDiscovery();")
+    message(FATAL_ERROR "arcade link host isolation: NativeArcadeLinkHost_IdleTick must be exactly TickDiscovery behind the LINK mode check (found '${idle_tick_body}')")
+endif()
+ctr_require_in("${host_header}" "${header_flat}" "void NativeArcadeLinkHost_IdleTick(void);")
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_HandPairing(" hand_body)
 ctr_require_in("${host_source} (HandPairing)" "${hand_body}"
     "{ struct NativeArcadeDiscoveryPairing pairing; struct NativeArcadeNetplayPairing handed; if (g_discoveryMode == 0u) { return; }"

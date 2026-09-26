@@ -611,12 +611,39 @@ leave room.
    pairing, election, and lobby wiring, not the broadcast path or the
    interface list (docs/LOBBY_MILESTONE.md:157-159); those need a manual
    check or the S6 fleet acceptance.
-6. The host does not tick in the boot intro, the attract demo race, or a
-   load outside a race (section 2.6). A cabinet in a demo stops beaconing
-   and is dropped after 10 s; the pairing returns about 2 s after the
-   title, and the LOBBY retry re-reads it, so the cost is at worst a solo
-   offer. S4 checks this live; if it matters, the fix is a discovery-only
-   host entry on every frame the hook does not tick.
+6. Resolved after S5. The host did not tick in the pre-menu intro, the
+   attract demo race, or a load outside a race (section 2.6), so a cabinet
+   in a demo stopped beaconing and was dropped after 10 s. Now
+   MainArcadeLink_Frame, after its MODE_OFF return (unchanged and still
+   first), calls the discovery-only `NativeArcadeLinkHost_IdleTick` right
+   before every return on which it has not ticked the host: the NULL
+   guard, the decision-failure return, and the `owns == 0` return (the
+   intro before the menu-ready frame, the attract demo race, a level load
+   outside a race). Every hook frame in LINK mode therefore ticks discovery
+   exactly once, through the full Tick or through IdleTick, never both.
+   IdleTick is TickDiscovery alone behind the LINK mode check: one service
+   tick, the event log lines, and the pairing handed to the adapter's
+   pending slot, which the adapter applies only at its DISC-12 LOBBY Begin
+   points (SetPairing writes only `pending*`), so handing it while idle is
+   safe. No flow or adapter tick, no attract counter, no drive, and no
+   game state, pad, or RNG. A no-op in OFF, PREVIEW, and static LINK.
+   Pinned by tests/main_arcade_link_hook_isolation_test.cmake rule 5c (three
+   IdleTick calls, each block exact, every `return 0` after the OFF check
+   right after IdleTick or MainArcadeLink_LinkTick, no other game caller)
+   and tests/native_arcade_link_host_isolation_test.cmake rule 3m.
+   Remaining gaps: the hook runs from MainFrame_RenderFrame
+   (MainFrame_RenderFrame.c:81), which the main loop (game/MAIN/MainMain.c)
+   skips on StateZero (mainGameState 0; its blocking boot splashes run
+   before the loop and are out of scope here, Task 3 skips them on link
+   configs), on the one-pass states 1 and 2 at a load's end, and on the
+   case-3 load passes that `break` before the render (the LOAD_VLC wait,
+   LOAD_RESTART and LOAD_FINISHED on the checkered flag, FinishLoading).
+   Those are single loop passes at a load's edges, not a sustained gap. A
+   load stage that blocks inside LOAD_TenStages delays that frame's beacon
+   by its own length. The peer's expiry is 300 of its own ticks, so only a
+   gap near 10 s would drop us. The live proof still starts both processes
+   at the title, so it does not cover the demo (the unit tests do: IdleTick
+   alone pairs the host with a fake peer).
 7. A mixed pair (one static, one discovery) never links (DISC-11); the
    operator card says so.
 8. The nonce is drawn from the same clock sources as `selectEntropy` at
@@ -630,10 +657,37 @@ leave room.
    targets before the peer is up. The service ends that tick's drain
    (DISC-15); S3 may instead set SIO_UDP_CONNRESET in the transport. Port
    7000 taken by another program is DISC-15's bind failure: solo only.
-10. Without explicit targets the service refreshes the interface list
-    (GetAdaptersAddresses) every 300 ticks on the game thread, linked race
-    frames included. S4 should measure that cost or refresh only outside
-    races.
+10. Resolved after S5. Without explicit targets the service re-read the
+    interface list (GetAdaptersAddresses) every 300 ticks on the game
+    thread, linked race frames included. Measured cost of one
+    NativeNetInterfaces_List call on the dev PC (AMD Ryzen 7 8745HS,
+    Windows 11 Pro build 26200, 2 adapters up, 5 IPv4 addresses listed),
+    with a throwaway QueryPerformanceCounter harness (not committed): 500
+    calls after 5 warm-up calls, three Release runs and one Debug run.
+    Min 1.17-1.20 ms, median 1.24-1.30 ms, p95 1.39-1.52 ms, max
+    1.9-3.0 ms. At the median that is about 4% of a 33.3 ms frame, and
+    up to 9% at the worst call. Mechanism:
+    `NativeArcadeDiscoveryService_Tick(service, mayRefresh)`. With
+    mayRefresh 0 a refresh that falls due is only marked pending; the
+    drain, the core's tick, and the 30-tick beacon cadence are unchanged.
+    It runs once on the first tick that allows it, however many fell due
+    meanwhile, and the 300-tick schedule does not move. The host passes 0
+    while `NativeArcadeLinkHost_RaceRunning` holds. That is LINK mode and
+    any of these:
+    - the flow on RACING (linked or solo: START_RACE or START_SOLO_RACE to
+      the finish report or a link end, so the launch and the race-track
+      load too);
+    - the race pacing on (`g_racePacing`, RaceBegin on the Launch frame to
+      RaceEnd on the Disarm frame: RESULTS and the return load);
+    - a begun drive (set only by RaceBegin, so inside the pacing term);
+    - a drive in its finish linger, which can outlast RaceEnd on RESULTS
+      (LR-13).
+    The first refresh after the race happens on the first host tick or
+    IdleTick after the last of these ends. The service status gained
+    `refreshPending`, `refreshCount` (the Open read included), and
+    `beaconCount`. The host has the test read-backs
+    `NativeArcadeLinkHost_InternalRaceRunning` and
+    `NativeArcadeLinkHost_InternalDiscoveryStatus`.
 11. Resolved in S5: docs/PACKAGING.md PK-5 and its error table describe
     DISC-11's rules as ApplyLink, ApplyArgs, and ValidateMerged enforce them.
 12. In discovery mode a defaulted link port (7001) is stored in
@@ -734,4 +788,24 @@ leave room.
   - The smoke refuses a package arcade.cfg that sets a port, a peer, a
     group, or a seat other than auto; package_arcade_stage covers that and
     the checker's new argument checks with a dummy exe.
+- Risks 6 and 10 (after S5): resolved, as section 5 describes.
+  - The service's interface refresh is held while a race runs, and a held
+    refresh runs on the first tick after the race.
+  - The frame hook ticks discovery through `NativeArcadeLinkHost_IdleTick`
+    on every LINK frame it does not tick the host.
+  - Tests: the service unit test covers a held refresh (deferred, run once,
+    schedule kept, beacons every 30 ticks while held). This case beacons to
+    the broadcast targets at its own test port; the other service cases
+    send to loopback only. The host unit test covers IdleTick: inert in
+    OFF, PREVIEW, and static LINK; in discovery mode one service tick per
+    call, pairs with a fake peer through IdleTick alone, and moves no flow.
+    It also covers the refresh held from RaceBegin to RaceEnd through
+    IdleTick and Tick and run once after. RaceRunning is checked across a
+    linked race (including the linger after RaceEnd) and a solo race.
+  - Isolation: host rule 3m (RaceRunning and IdleTick bodies exact), hook
+    rule 5c, the pacing test's g_racePacing count (seven names, three
+    writes), and the service's refresh pin.
+  - Not covered live: the demo and the load passes that skip the render
+    (risk 6).
+  - Section 2.6 still describes the tick model as S1 found it.
 - DISC-S6: not started.

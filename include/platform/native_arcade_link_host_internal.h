@@ -63,6 +63,18 @@ uint32_t NativeArcadeLinkHost_InternalPairingsHanded(void);
  * (a NULL output included). */
 int NativeArcadeLinkHost_InternalPendingPairing(uint32_t *peerIpv4, uint16_t *peerPort, uint8_t *localRole);
 
+/* Discovery (risks 6 and 10): while the discovery socket is open, writes its
+ * service ticks since Configure, its interface-list reads (the one at
+ * Configure included; none with explicit targets), and 1 while a refresh
+ * held by a race waits, and returns 1; otherwise returns 0 with the outputs
+ * untouched (a NULL output included). */
+int NativeArcadeLinkHost_InternalDiscoveryStatus(uint32_t *ticks, uint32_t *refreshes, uint8_t *refreshPending);
+
+/* 1 while a race runs, the state that holds the discovery refresh (risk 10):
+ * the flow on RACING, the race pacing on (RaceBegin to RaceEnd), a begun
+ * drive, or a drive in its finish linger; 0 otherwise and outside LINK. */
+uint8_t NativeArcadeLinkHost_InternalRaceRunning(void);
+
 /* Forward-declared only, as in the public header. */
 struct NativeMatchConfigV1;
 

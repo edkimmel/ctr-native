@@ -472,8 +472,16 @@ int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 	{
 		return 0;
 	}
+	/* From here on every frame ticks the host exactly once: the full tick
+	 * (MainArcadeLink_LinkTick, or the PREVIEW tick) on a ticked or owned
+	 * frame, and on every other frame, right before its return, the
+	 * discovery-only NativeArcadeLinkHost_IdleTick (docs/DISCOVERY_MILESTONE.md
+	 * risk 6: the boot intro, the attract demo race, and a level load outside
+	 * a race keep beaconing). IdleTick reads and writes no game state, pad,
+	 * or RNG, and is a no-op outside discovery-mode LINK. */
 	if ((gGT == NULL) || (gGS == NULL))
 	{
+		NativeArcadeLinkHost_IdleTick();
 		return 0;
 	}
 
@@ -486,6 +494,7 @@ int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 	if (!MainArcadeLinkPolicy_Decide(&input, &output))
 	{
 		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
+		NativeArcadeLinkHost_IdleTick();
 		return 0;
 	}
 
@@ -507,6 +516,7 @@ int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 		/* No arcade-link screen this frame: the next owned frame has no
 		 * previous view for sounds. */
 		MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound);
+		NativeArcadeLinkHost_IdleTick();
 		return 0;
 	}
 

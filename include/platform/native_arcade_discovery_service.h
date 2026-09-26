@@ -22,9 +22,13 @@
  * - Targets: the caller's override list when it has entries (DISC-18: no
  *   broadcast, no interface enumeration); otherwise
  *   NativeNetInterfaces_BuildTargets over the OS interface list (DISC-5) at
- *   the discovery port, refreshed every
+ *   the discovery port, read at Open and refreshed every
  *   NATIVE_ARCADE_DISCOVERY_SERVICE_REFRESH_TICKS ticks, or
- *   255.255.255.255 alone while the enumeration fails.
+ *   255.255.255.255 alone while the enumeration fails. The caller may hold
+ *   the refresh (Tick's mayRefresh; docs/DISCOVERY_MILESTONE.md risk 10:
+ *   the OS call takes over a millisecond, too long for a race frame): a
+ *   refresh that falls due while held is pending and runs on the first tick
+ *   that allows it, never skipped; the schedule itself does not move.
  * - Failure is never fatal (DISC-15): a bind failure makes Open return 0
  *   with the service closed, and the caller logs it and carries on without
  *   discovery; a receive error ends that tick's drain.
@@ -54,13 +58,15 @@ struct NativeArcadeDiscoveryService
 	uint8_t open;
 	uint8_t overridden;        /* targets are the caller's override list */
 	uint8_t enumerationFailed; /* the latest interface enumeration failed */
-	uint8_t reserved;
+	uint8_t refreshPending;    /* a refresh fell due while the caller held it */
 	uint16_t bindPort;
 	uint16_t reserved2;
 	uint32_t tickCount; /* service ticks since Open */
 	uint32_t targetCount;
 	uint32_t sendFailures;
 	uint32_t receiveErrors;
+	uint32_t refreshCount; /* interface-list reads since Open, Open's included */
+	uint32_t beaconCount;  /* beacon rounds since Open */
 	struct NativeUdpTransportAddress targets[NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_TARGETS];
 	struct NativeUdpTransport transport;
 	struct NativeArcadeDiscoveryTable table;
@@ -73,13 +79,15 @@ struct NativeArcadeDiscoveryServiceStatus
 	uint8_t open;
 	uint8_t overridden;
 	uint8_t enumerationFailed;
-	uint8_t reserved;
+	uint8_t refreshPending; /* a held refresh waits for a tick that allows it */
 	uint16_t bindPort;
 	uint16_t reserved2;
 	uint32_t targetCount;
 	uint32_t tickCount;
 	uint32_t sendFailures;  /* beacon sends the socket refused */
 	uint32_t receiveErrors; /* drains ended by a receive error */
+	uint32_t refreshCount;  /* interface-list reads since Open, Open's included */
+	uint32_t beaconCount;   /* beacon rounds since Open (sent or refused) */
 };
 
 /*
@@ -98,8 +106,12 @@ int NativeArcadeDiscoveryService_Open(struct NativeArcadeDiscoveryService *servi
                                       const uint8_t identity[NATIVE_ARCADE_DISCOVERY_IDENTITY_BYTES], uint16_t ourLinkPort, uint8_t ourSeatPreference,
                                       const struct NativeUdpTransportAddress *overrideTargets, uint32_t overrideCount);
 
-/* One 30 Hz tick, as described above. No-op on NULL or a closed service. */
-void NativeArcadeDiscoveryService_Tick(struct NativeArcadeDiscoveryService *service);
+/* One 30 Hz tick, as described above. mayRefresh 0 holds the interface
+ * refresh; the drain, the core's tick, and the beacon cadence are
+ * unchanged. A refresh due on this tick, or pending from an earlier held
+ * one, runs on the first tick with mayRefresh nonzero, once however many
+ * fell due meanwhile. No-op on NULL or a closed service. */
+void NativeArcadeDiscoveryService_Tick(struct NativeArcadeDiscoveryService *service, int mayRefresh);
 
 /* NativeArcadeDiscovery_Pairing on the table; 0 (out untouched) when closed. */
 int NativeArcadeDiscoveryService_Pairing(const struct NativeArcadeDiscoveryService *service, struct NativeArcadeDiscoveryPairing *out);

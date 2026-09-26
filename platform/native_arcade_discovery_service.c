@@ -39,6 +39,7 @@ static void NativeArcadeDiscoveryService_RefreshTargets(struct NativeArcadeDisco
 		service->targets[i].port = service->bindPort;
 	}
 	service->targetCount = count;
+	service->refreshCount++;
 }
 
 static void NativeArcadeDiscoveryService_SendBeacon(struct NativeArcadeDiscoveryService *service)
@@ -49,6 +50,7 @@ static void NativeArcadeDiscoveryService_SendBeacon(struct NativeArcadeDiscovery
 	{
 		return;
 	}
+	service->beaconCount++;
 	for (uint32_t i = 0; i < service->targetCount; i++)
 	{
 		if (!NativeUdpTransport_Send(&service->transport, &service->targets[i], beacon, sizeof(beacon)))
@@ -120,7 +122,7 @@ int NativeArcadeDiscoveryService_Open(struct NativeArcadeDiscoveryService *servi
 	return 1;
 }
 
-void NativeArcadeDiscoveryService_Tick(struct NativeArcadeDiscoveryService *service)
+void NativeArcadeDiscoveryService_Tick(struct NativeArcadeDiscoveryService *service, int mayRefresh)
 {
 	uint8_t datagram[NATIVE_ARCADE_DISCOVERY_BEACON_BYTES + 1u];
 
@@ -153,8 +155,15 @@ void NativeArcadeDiscoveryService_Tick(struct NativeArcadeDiscoveryService *serv
 
 	NativeArcadeDiscovery_Tick(&service->table);
 
+	/* A due refresh is only marked here; it runs now unless the caller holds
+	 * it, else on the first tick that allows it (risk 10). */
 	if ((service->overridden == 0) && (service->tickCount != 0) && ((service->tickCount % NATIVE_ARCADE_DISCOVERY_SERVICE_REFRESH_TICKS) == 0))
 	{
+		service->refreshPending = 1;
+	}
+	if ((service->refreshPending != 0) && (mayRefresh != 0))
+	{
+		service->refreshPending = 0;
 		NativeArcadeDiscoveryService_RefreshTargets(service);
 	}
 	if ((service->tickCount % NATIVE_ARCADE_DISCOVERY_BEACON_INTERVAL_TICKS) == 0)
@@ -201,6 +210,9 @@ int NativeArcadeDiscoveryService_GetStatus(const struct NativeArcadeDiscoverySer
 	out->tickCount = service->tickCount;
 	out->sendFailures = service->sendFailures;
 	out->receiveErrors = service->receiveErrors;
+	out->refreshPending = service->refreshPending;
+	out->refreshCount = service->refreshCount;
+	out->beaconCount = service->beaconCount;
 	return 1;
 }
 

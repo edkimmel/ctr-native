@@ -368,6 +368,81 @@ if(NOT tick_block MATCHES "^\\{[ \t\r\n]*MainArcadeLink_LinkTick\\(gGT, &output\
     message(FATAL_ERROR "arcade link hook isolation: the tickOnly branch in MainArcadeLink_Frame must run MainArcadeLink_LinkTick(gGT, &output) and return 0, and nothing else (found '${tick_block}')")
 endif()
 
+# 5c. Discovery keeps beaconing on frames the host is not ticked
+#     (docs/DISCOVERY_MILESTONE.md risk 6). After the host-mode OFF check
+#     (which stays first and returns 0 at once, rule 5), every frame ticks
+#     the host exactly once: MainArcadeLink_LinkTick (a ticked or owned LINK
+#     frame), the PREVIEW tick (an owned PREVIEW frame), or the
+#     discovery-only NativeArcadeLinkHost_IdleTick right before each other
+#     return. So:
+#     - IdleTick is called exactly three times in the hook, all in
+#       MainArcadeLink_Frame after the OFF check's block: the NULL guard, the
+#       decision-failure block, and the owns == 0 block, each exactly as
+#       pinned below (after the sound reset where there is one, right before
+#       its return 0);
+#     - every return 0 after the OFF check comes right after either IdleTick
+#       or MainArcadeLink_LinkTick(gGT, &output), so a new early return
+#       without a tick fails here;
+#     - no other game source names IdleTick.
+string(REGEX MATCHALL "NativeArcadeLinkHost_IdleTick\\(" idle_calls "${hook_code}")
+list(LENGTH idle_calls idle_call_count)
+string(REGEX MATCHALL "NativeArcadeLinkHost_IdleTick\\(" frame_idle_calls "${frame_block}")
+list(LENGTH frame_idle_calls frame_idle_call_count)
+if(NOT idle_call_count EQUAL 3 OR NOT frame_idle_call_count EQUAL 3)
+    message(FATAL_ERROR "arcade link hook isolation: ${hook_source_path} must call NativeArcadeLinkHost_IdleTick exactly three times, all in MainArcadeLink_Frame (found ${idle_call_count}, ${frame_idle_call_count} in the frame)")
+endif()
+ctr_find_block("${hook_source_path} (MainArcadeLink_Frame)" "${frame_block}" "${off_check}" off_begin off_end)
+math(EXPR after_off_at "${off_end} + 1")
+string(SUBSTRING "${frame_block}" ${after_off_at} -1 after_off)
+string(SUBSTRING "${frame_block}" 0 ${after_off_at} through_off)
+string(FIND "${through_off}" "NativeArcadeLinkHost_IdleTick" early_idle_at)
+if(NOT early_idle_at EQUAL -1)
+    message(FATAL_ERROR "arcade link hook isolation: NativeArcadeLinkHost_IdleTick may run only after the host-mode OFF check's block in MainArcadeLink_Frame")
+endif()
+foreach(pair
+        "if ((gGT == NULL) || (gGS == NULL))@@{ NativeArcadeLinkHost_IdleTick(); return 0; }"
+        "if (!MainArcadeLinkPolicy_Decide(&input, &output))@@{ MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound); NativeArcadeLinkHost_IdleTick(); return 0; }"
+        "if (output.owns == 0u)@@{ MainArcadeLinkSound_Reset(&s_mainArcadeLinkSound); NativeArcadeLinkHost_IdleTick(); return 0; }")
+    string(FIND "${pair}" "@@" bar_at)
+    string(SUBSTRING "${pair}" 0 ${bar_at} idle_opener)
+    math(EXPR idle_block_at "${bar_at} + 2")
+    string(SUBSTRING "${pair}" ${idle_block_at} -1 idle_expected)
+    ctr_find_block("${hook_source_path} (MainArcadeLink_Frame)" "${after_off}" "${idle_opener}" idle_begin idle_end)
+    math(EXPR idle_length "${idle_end} - ${idle_begin} + 1")
+    string(SUBSTRING "${after_off}" ${idle_begin} ${idle_length} idle_block)
+    string(REGEX REPLACE "[ \t\r\n]+" " " idle_block "${idle_block}")
+    if(NOT idle_block STREQUAL idle_expected)
+        message(FATAL_ERROR "arcade link hook isolation: in MainArcadeLink_Frame the block of '${idle_opener}' must be exactly '${idle_expected}' (found '${idle_block}')")
+    endif()
+endforeach()
+# Semicolons would split the CMake list of matches, so they are swapped for
+# a marker first ('#' never appears inside the frame's body).
+string(REPLACE ";" "#SC#" after_off_marked "${after_off}")
+string(REGEX MATCHALL "return 0#SC#" frame_returns "${after_off_marked}")
+list(LENGTH frame_returns frame_return_count)
+string(REGEX MATCHALL "[^#{}]*#SC#[ \t\r\n]*return 0#SC#" frame_ticked_returns "${after_off_marked}")
+list(LENGTH frame_ticked_returns frame_ticked_return_count)
+if(frame_return_count LESS 4 OR NOT frame_ticked_return_count EQUAL frame_return_count)
+    message(FATAL_ERROR "arcade link hook isolation: every return 0 after the host-mode OFF check in MainArcadeLink_Frame must follow a statement (found ${frame_return_count} returns, ${frame_ticked_return_count} after a statement)")
+endif()
+foreach(ticked_return IN LISTS frame_ticked_returns)
+    string(REGEX REPLACE "[ \t\r\n]+" " " ticked_return "${ticked_return}")
+    string(STRIP "${ticked_return}" ticked_return)
+    if(NOT ticked_return STREQUAL "NativeArcadeLinkHost_IdleTick()#SC# return 0#SC#" AND
+       NOT ticked_return STREQUAL "MainArcadeLink_LinkTick(gGT, &output)#SC# return 0#SC#")
+        message(FATAL_ERROR "arcade link hook isolation: a return 0 after the host-mode OFF check in MainArcadeLink_Frame must follow NativeArcadeLinkHost_IdleTick() or MainArcadeLink_LinkTick(gGT, &output) (found '${ticked_return}')")
+    endif()
+endforeach()
+file(GLOB_RECURSE idle_scan_paths "${repo}/game/*.c" "${repo}/game/*.h")
+foreach(path IN LISTS idle_scan_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    if(relative_path STREQUAL hook_source_path)
+        continue()
+    endif()
+    file(READ "${path}" scanned)
+    ctr_forbid("${relative_path}" "${scanned}" "NativeArcadeLinkHost_IdleTick")
+endforeach()
+
 # 6. The MainFrame_RenderFrame.c call, its input clear, and the prototype
 #    include each sit inside a CTR_NATIVE guard.
 set(render_path "game/MAIN/MainFrame_RenderFrame.c")

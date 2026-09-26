@@ -887,9 +887,42 @@ static void NativeArcadeLinkHost_HandPairing(void)
 	}
 }
 
+/*
+ * LINK only: 1 while a race runs, linked or solo, from the frame the flow
+ * enters RACING (START_RACE or START_SOLO_RACE) until the race caller's
+ * Disarm frame and any finish linger after it, 0 otherwise. The terms, in
+ * order: the flow on RACING (the launch, the race-track load, and the race;
+ * it leaves RACING on the caller's finish report or a link end); the race
+ * pacing RaceBegin turned on (the Launch frame to the RaceEnd of the Disarm
+ * frame: RESULTS and the return load); a begun drive (set only by RaceBegin,
+ * so inside the pacing term; kept as its own guard); and a drive still in
+ * its finish linger, which may outlast RaceEnd on RESULTS (LR-13).
+ * Host-local reads only.
+ */
+static int NativeArcadeLinkHost_RaceRunning(void)
+{
+	if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK)
+	{
+		return 0;
+	}
+	if ((NativeArcadeLinkHost_LinkScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) || (g_racePacing != 0u) || (g_driveBegun != 0u))
+	{
+		return 1;
+	}
+	return (NativeArcadeRaceDrive_EndIsFinish(&g_drive) && (NativeArcadeRaceDrive_LingerTicksLeft(&g_drive) > 0u)) ? 1 : 0;
+}
+
+uint8_t NativeArcadeLinkHost_InternalRaceRunning(void)
+{
+	return (uint8_t)((NativeArcadeLinkHost_RaceRunning() != 0) ? 1u : 0u);
+}
+
 /* Discovery mode only, at the top of every LINK host Tick, before the
- * adapter's (DISC-12): one service tick (drain, beacon), its events to the
- * log, and the current pairing to the adapter. */
+ * adapter's (DISC-12), and on every IdleTick: one service tick (drain,
+ * beacon), its events to the log, and the current pairing to the adapter.
+ * The interface refresh is held while a race runs (risk 10: the OS call
+ * takes over a millisecond); one that falls due meanwhile runs on the first
+ * tick after the race. */
 static void NativeArcadeLinkHost_TickDiscovery(void)
 {
 	struct NativeArcadeDiscoveryEvent event;
@@ -898,7 +931,7 @@ static void NativeArcadeLinkHost_TickDiscovery(void)
 	{
 		return;
 	}
-	NativeArcadeDiscoveryService_Tick(&g_discovery);
+	NativeArcadeDiscoveryService_Tick(&g_discovery, (NativeArcadeLinkHost_RaceRunning() != 0) ? 0 : 1);
 	while (NativeArcadeDiscoveryService_TakeEvent(&g_discovery, &event))
 	{
 		NativeArcadeLinkHost_LogDiscoveryEvent(&event);
@@ -925,6 +958,21 @@ uint16_t NativeArcadeLinkHost_InternalDiscoveryPort(void)
 uint32_t NativeArcadeLinkHost_InternalPairingsHanded(void)
 {
 	return g_pairingsHanded;
+}
+
+int NativeArcadeLinkHost_InternalDiscoveryStatus(uint32_t *ticks, uint32_t *refreshes, uint8_t *refreshPending)
+{
+	struct NativeArcadeDiscoveryServiceStatus status;
+
+	if ((ticks == NULL) || (refreshes == NULL) || (refreshPending == NULL) || !NativeArcadeDiscoveryService_GetStatus(&g_discovery, &status) ||
+	    (status.open == 0u))
+	{
+		return 0;
+	}
+	*ticks = status.tickCount;
+	*refreshes = status.refreshCount;
+	*refreshPending = status.refreshPending;
+	return 1;
 }
 
 int NativeArcadeLinkHost_InternalPendingPairing(uint32_t *peerIpv4, uint16_t *peerPort, uint8_t *localRole)
@@ -1183,6 +1231,18 @@ uint32_t NativeArcadeLinkHost_Tick(uint32_t heldMenuButtons, uint8_t raceFinishe
 	NativeArcadeLinkHost_TickDrive();
 	NativeArcadeLinkHost_LatchDivergence();
 	return action;
+}
+
+void NativeArcadeLinkHost_IdleTick(void)
+{
+	/* Discovery only (risk 6): no flow or adapter tick, no attract counter,
+	 * no drive. The pairing handed here waits in the adapter's pending slot
+	 * until its next lobby Begin on LOBBY (DISC-12). */
+	if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK)
+	{
+		return;
+	}
+	NativeArcadeLinkHost_TickDiscovery();
 }
 
 /*

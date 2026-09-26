@@ -317,10 +317,21 @@ string(FIND "${shutdown_normalized}" "{ if (g_racePacing != 0u) { Platform_SetFi
 if(NOT shutdown_off_at EQUAL 0)
     message(FATAL_ERROR "${prefix}: NativeArcadeLinkHost_Shutdown must first turn off only the pacing RaceBegin turned on (found '${shutdown_normalized}')")
 endif()
+# Since the discovery risk 10 (docs/DISCOVERY_MILESTONE.md section 5) the
+# host's RaceRunning also reads the flag (a race runs while the pacing is
+# on, so the discovery interface refresh is held): a seventh name, a read.
+# The writes stay RaceBegin's set and the two clears.
 ctr_count_identifier("${host_code}" "g_racePacing" race_flag_hits)
-if(NOT race_flag_hits EQUAL 6)
-    message(FATAL_ERROR "${prefix}: ${host_path} must name g_racePacing exactly six times: its declaration, RaceBegin's set, and the check and clear of RaceEnd and Shutdown (found ${race_flag_hits})")
+if(NOT race_flag_hits EQUAL 7)
+    message(FATAL_ERROR "${prefix}: ${host_path} must name g_racePacing exactly seven times: its declaration, RaceBegin's set, the check and clear of RaceEnd and Shutdown, and RaceRunning's read (found ${race_flag_hits})")
 endif()
+string(REGEX MATCHALL "g_racePacing[ \t\n]*=[^=]" race_flag_writes "${host_code}")
+list(LENGTH race_flag_writes race_flag_write_count)
+if(NOT race_flag_write_count EQUAL 3)
+    message(FATAL_ERROR "${prefix}: ${host_path} must write g_racePacing exactly three times: RaceBegin's set and the clears of RaceEnd and Shutdown (found ${race_flag_write_count})")
+endif()
+ctr_block("${host_path}" "${host_code}" "static int NativeArcadeLinkHost_RaceRunning(void)\n{" race_running_body)
+ctr_require("${host_path} (NativeArcadeLinkHost_RaceRunning)" "${race_running_body}" "(g_racePacing != 0u)")
 ctr_require("${host_path}" "${host_code}" "\nstatic uint8_t g_racePacing;\n")
 
 # 2 and 3. The flag and the one place the pacer reads it.
