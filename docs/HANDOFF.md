@@ -517,37 +517,68 @@ Run from the repository root:
 ```sh
 cmake --preset windows-msvc-x86
 cmake --build build-msvc-x86 --config Debug
-ctest --test-dir build-msvc-x86 -C Debug --output-on-failure
+# Per-change check: the fast suite (163 tests, about 35 s).
+ctest --test-dir build-msvc-x86 -C Debug -LE live -j 8 --output-on-failure
+# One live area, only when the change reaches it:
+ctest --test-dir build-msvc-x86 -C Debug -L live-link --output-on-failure
+ctest --test-dir build-msvc-x86 -C Debug -L live-roster -j 8 --output-on-failure
+ctest --test-dir build-msvc-x86 -C Debug -L live-render --output-on-failure
+ctest --test-dir build-msvc-x86 -C Debug -L live-package --output-on-failure
+# The full suite (168 tests), all live tests at once:
+ctest --test-dir build-msvc-x86 -C Debug -j 8 --output-on-failure
 ```
 
 Use `build-msvc-x86`; other `build-msvc-x86-*` directories are from earlier
-milestones. The full suite is 157 tests and passes; it takes about 605 s
-of wall time. Three tests carry the ctest label `live`
-(`arcade_link_preview_render`, about 45 s; `arcade_roster_determinism`,
-about 266 s; and `arcade_link_launch`, about 233 s); `ctest -LE live`
-excludes them and runs the other 154 in about 62 s, and the default full
-run includes them. LF-to-CRLF warnings are benign. The
-`arcade_link_preview_render` test (Windows only) renders all 17
-arcade-link previews with `ctr_native.exe` and checks each capture; it skips
-when `assets/ctr-u.bin` is absent, no display is available, or the build
-rejects the internal-only preview option, and writes its captures and logs
-under `build-msvc-x86\arcade_link_preview_captures\<config>`. The
-`arcade_roster_determinism` test (Windows only) runs
+milestones. Keep `-C Debug` even with `-N`: this multi-configuration build
+tree sets the test labels per configuration, so without `-C` the label
+filters select nothing (`-L`) or everything (`-LE`). LF-to-CRLF warnings
+are benign.
+
+Five tests carry the ctest label `live` plus one area label:
+`arcade_link_preview_render` (`live-render`, about 47 s),
+`arcade_roster_determinism_two_cab` and `arcade_roster_determinism_one_cab`
+(`live-roster`, about 273 s each), `arcade_link_launch` (`live-link`, about
+242 s), and `package_arcade_smoke` (`live-package`, about 242 s).
+`ctest -LE live` excludes all five; the default run includes them. They are
+parallel-safe (no RUN_SERIAL or RESOURCE_LOCK): with `-L live -j 8` all five
+passed together in 273 s (the old serial full suite took about 605 s), so a
+full `-j 8` run should take about as long as the slowest live test (not
+measured separately); `-j 16` gave the fast suite no gain over `-j 8`. Each live test writes only under its own
+directory of the build tree, and the two link gates use distinct loopback
+ports (`arcade_link_launch` 7101 and 7102, `package_arcade_smoke` the
+package's 7001 and 7002; the fast suite's socket tests use 48000-48600).
+Runs from the build tree still read the repository's `memcards\` and write
+the gitignored `Crash Team Racing.log` in the repository root (shared,
+diagnostic only, never read by a check). All live tests are Windows only
+and skip (77) when `assets/ctr-u.bin` is absent, no display is available,
+or the build rejects the internal-only option they use. A skip is not a
+pass.
+
+The `arcade_link_preview_render` test renders all 17 arcade-link previews
+with `ctr_native.exe` and checks each capture (the game's own window
+framebuffer, not the desktop), under
+`build-msvc-x86\arcade_link_preview_captures\<config>`. The two
+`arcade_roster_determinism_*` tests run
 `tools/arcade-roster-proof-check.ps1` (docs/ROSTER_MILESTONE.md section
-3.4); it skips on the same three conditions and writes its reports and
-logs under `build-msvc-x86\arcade_roster_proof\<config>`. The
-`arcade_link_launch` test (Windows only) runs
-`tools/arcade-link-launch-check.ps1`, the two-process three-race lockstep
-gate (`docs/RACE_LAUNCH_MILESTONE.md` RL-15,
-`docs/LOCKSTEP_RACE_MILESTONE.md` LR-16 and LR-76); it skips on the same
-three conditions and also without a known build identity (a build from a
-tree with uncommitted or untracked changes), because `--arcade-link`
-needs one. A skip (77) is not a pass. It uses the fixed ports 7001 and
-7002 and writes its reports, logs, and the two race-1 frame captures
+3.4) with `-Group two-cab` (runs A-E and the stall hold K) and `-Group
+one-cab` (runs F-J plus its own A, the base of the cross-profile checks);
+together they run every check of the unsplit eleven-run proof (`-Group all`,
+still the script's default), each prints which checks it ran, and the fast
+test `arcade_roster_proof_groups` pins the split. They write under
+`build-msvc-x86\arcade_roster_proof\<group>\<config>`. The
+`arcade_link_launch` test runs `tools/arcade-link-launch-check.ps1`, the
+two-process three-race lockstep gate (`docs/RACE_LAUNCH_MILESTONE.md`
+RL-15, `docs/LOCKSTEP_RACE_MILESTONE.md` LR-16 and LR-76), on ports 7101
+and 7102 (`-Cab1Port`/`-Cab2Port`; the script's default is 7001 and 7002);
+it also skips without a known build identity (a build from a tree with
+uncommitted or untracked changes), because `--arcade-link` needs one. It
+writes its reports, logs, and the two race-1 frame captures
 (`cab1.race1.bmp`, `cab2.race1.bmp`, retail imagery, never committed)
 under `build-msvc-x86\arcade_link_launch\<config>`; the checker's own
-limit is 780 s and ctest's TIMEOUT 900 s. All three live tests run
-serially (RUN_SERIAL).
+limit is 780 s and ctest's TIMEOUT 900 s. The `package_arcade_smoke` test
+(docs/PACKAGING.md "Package smoke gate") runs the same gate on a staged
+package copy under `build-msvc-x86\package_smoke\<config>`, with the
+package's config files.
 
 `ctr_native.exe` needs a connected desktop session with a display. Without
 one, platform init fails, the SDL error is logged, and the exe exits 1. SDL
