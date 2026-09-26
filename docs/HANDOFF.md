@@ -633,7 +633,9 @@ See `docs/PACKAGING.md` (decisions PK-1..PK-10).
   the same-exe and same-disc hash checks, starting) are
   `docs/PACKAGING.md` "Per-cabinet setup". A linked cabinet needs the disc
   image `ctr-u.bin` (the link's content identity); extracted files serve
-  an unlinked run only. `arcade.cfg`, `memcards\`, and the log are
+  an unlinked run only, and a linked `data_dir` holds only `ctr-u.bin`
+  (extracted files beside it override the disc image unhashed; PK-6).
+  `arcade.cfg`, `memcards\`, and the log are
   per-cabinet and stay out of any folder sync (PK-10).
 
 ## Key files

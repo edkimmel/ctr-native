@@ -67,6 +67,14 @@ plays the role `assets/` plays without a config.
   `NativeDiscImage_GetContentIdentity`). With only the extracted files a
   linked cabinet stops at startup (exit 1) with
   `[CTR Native] arcade link requires a known build and content identity.`
+- For a linked cabinet the folder holds only `ctr-u.bin`, with no extracted
+  game files beside it. An extracted file on disk is read before the disc
+  image (`NativeAssets_ReadBytes`; `platform/native_cd.c` keeps them as
+  dev and modding overrides), but the content identity hashes only
+  `ctr-u.bin`. So a leftover `BIGFILE.BIG` passes the handshake and the
+  same-disc hash check and is still what the game runs, and different
+  leftovers on the two cabinets desync the race instead of refusing the
+  link.
 - A relative path resolves against the exe directory. This holds for
   `--data-dir` too, so one relative value means the same thing in the file
   and on the command line.
@@ -122,10 +130,11 @@ in "Per-cabinet setup", step 4.
 **PK-10 Per-cabinet files.** A default the owner may change. `arcade.cfg`,
 `memcards\`, and `Crash Team Racing.log` in the package folder belong to
 one cabinet. Any sync of the folder between cabinets (docs/HANDOFF.md: CAB2
-receives the bundle through the fleet rsync path) excludes them. A sync
-that does not must be followed by "Per-cabinet setup" step 3 again on the
-receiving cabinet, since it would otherwise run the other cabinet's seat
-and peer.
+receives the bundle through the fleet rsync path) excludes them. If a sync
+copied them anyway, the receiving cabinet deletes the copied `memcards\`
+and log and redoes "Per-cabinet setup" step 3, since it would otherwise run
+the other cabinet's seat and peer. A `memcards\` save is never copied to a
+cabinet.
 
 ## Config grammar
 
@@ -134,8 +143,8 @@ and peer.
 - Whitespace (space, tab) around the key and the value is trimmed.
 - The value is the rest of the line after the first `=`. It may contain
   spaces and `=`, and it takes no quotes. A trailing `# comment` is part of
-  the value, and so makes it invalid (for `data_dir`, a wrong path: "Per-cabinet
-  setup", step 3).
+  the value, and so makes it invalid (for `data_dir`, a wrong path:
+  "Per-cabinet setup", step 3).
 - Blank lines, and lines whose first non-blank character is `#` or `;`, are
   comments.
 - CRLF or LF line ends are accepted (and a CR that ends the file). Any
@@ -371,7 +380,9 @@ $pkg = 'C:\Arcade\games\ctr-native'
 `arcade.cfg`, `memcards\`, and `Crash Team Racing.log` in `$pkg` belong to
 this cabinet (PK-10). Exclude them from any sync of the folder to the
 other cabinet (such as the fleet rsync path). If a sync copied them
-anyway, redo step 3 on the receiving cabinet.
+anyway, delete the copied `memcards\` and `Crash Team Racing.log` on the
+receiving cabinet and redo step 3. Never copy a `memcards\` save to a
+cabinet.
 
 1. **Copy the package.** Copy the contents of the package folder,
    `build-msvc-x86\package\ctr-arcade-<short12>\` (made by
@@ -387,9 +398,12 @@ anyway, redo step 3 on the receiving cabinet.
    the game content by the disc image's SHA-256, so with only the extracted
    files (`BIGFILE.BIG` and the rest) it stops at startup with
    `[CTR Native] arcade link requires a known build and content identity.`
-   The extracted files are enough only for an unlinked run. Both cabinets
-   need the same disc image (step 5). The package holds no game data
-   (PK-6).
+   The extracted files are enough only for an unlinked run. For a linked
+   cabinet the folder holds only `ctr-u.bin`: delete any extracted game
+   files beside it. They would be read in place of the disc image without
+   being part of its hash, so the link checks pass and the cabinets can
+   desync (PK-6). Both cabinets need the same disc image (step 5). The
+   package holds no game data (PK-6).
 3. **Config file.** Copy the cabinet's template to `arcade.cfg` next to
    the exe. Cabinet 1:
 
@@ -463,6 +477,12 @@ anyway, redo step 3 on the receiving cabinet.
    be the same on both cabinets. The `ctr-u.bin` hash must be the same on
    both cabinets. The link handshake refuses two different builds or two
    different disc images: both show `LINK REFUSED: SETTINGS DO NOT MATCH`.
+   Neither check sees extracted files, so also confirm that the
+   `data_dir` folder holds only `ctr-u.bin` on both cabinets (step 2):
+
+   ```powershell
+   Get-ChildItem 'C:\ctr-data' -Force
+   ```
 6. **Start.** Double-click `ctr_native.exe` in `$pkg`, or run it with no
    arguments with `$pkg` as the working directory:
 
@@ -487,7 +507,10 @@ anyway, redo step 3 on the receiving cabinet.
    `Config file: none (... not found)` means there is no `arcade.cfg` next
    to the exe (check for a hidden `.txt` extension), and the cabinet would
    start unlinked. An error in the file stops the game with a message
-   naming the file and, where there is one, the line.
+   naming the file and, where there is one, the line. Startup errors, such
+   as that one or `arcade link requires a known build and content
+   identity.`, are printed on the console only, not in the log. After a
+   double-click the console stays open on an error until Enter is pressed.
 
 ## Template line ends
 

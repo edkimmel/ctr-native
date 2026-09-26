@@ -19,7 +19,11 @@ named ctr-u.bin, in a folder on each cabinet, for example C:\ctr-data (the
 folder both templates name in data_dir). A linked cabinet needs ctr-u.bin:
 with only the extracted BIGFILE.BIG files it stops at startup with "arcade
 link requires a known build and content identity" (the extracted files
-serve an unlinked run only). Both cabinets need the same ctr-u.bin.
+serve an unlinked run only). For a linked cabinet the folder holds ONLY
+ctr-u.bin: delete any extracted game files (BIGFILE.BIG and the rest)
+beside it. They would be read in place of the disc image without being
+part of its hash, so the link checks pass and the cabinets can desync.
+Both cabinets need the same ctr-u.bin.
 
 Set up each cabinet
 -------------------
@@ -30,7 +34,8 @@ included, with that cabinet's fixed IP address.
    folder must be writable: the log file (Crash Team Racing.log) and
    memcards\ are created next to the exe. arcade.cfg, memcards\ and the log
    belong to one cabinet: leave them out of any folder sync between the
-   cabinets, or redo steps 2 and 3 after the sync.
+   cabinets. If a sync copied them, delete the copied memcards\ and log
+   and redo steps 2 and 3. Never copy a memcards\ save to a cabinet.
 2. Cabinet 1: copy cab1.cfg to arcade.cfg (next to ctr_native.exe).
    Cabinet 2: copy cab2.cfg to arcade.cfg.
 3. Edit arcade.cfg (save it as UTF-8 or ANSI text): set peer to the OTHER
@@ -49,14 +54,19 @@ included, with that cabinet's fixed IP address.
    A Block rule for the exe beats the Allow rule (Windows may add one, for
    example when its firewall prompt is cancelled). This must list nothing:
        Get-NetFirewallApplicationFilter -Program "$PWD\ctr_native.exe" | Get-NetFirewallRule | Where-Object Action -eq 'Block'
-   Remove what it lists by adding | Remove-NetFirewallRule to it.
+   Remove what it lists by adding | Remove-NetFirewallRule to it. Check
+   again after the first start if Windows showed a firewall prompt. If
+   this folder or the other cabinet's IP changes, remove the rule
+   (Remove-NetFirewallRule -DisplayName "CTR arcade link") and add it again.
 5. Same build and same disc. On both cabinets, in PowerShell in this folder:
        Get-FileHash ctr_native.exe -Algorithm SHA256
        Get-FileHash C:\ctr-data\ctr-u.bin -Algorithm SHA256
    (use your data_dir). The ctr_native.exe hash must equal its line in
    MANIFEST.txt, and each hash must be the same on both cabinets: the link
    refuses two different builds or disc images ("LINK REFUSED: SETTINGS DO
-   NOT MATCH").
+   NOT MATCH"). Neither check sees extracted files: on both cabinets
+   Get-ChildItem C:\ctr-data -Force (your data_dir) must list only
+   ctr-u.bin.
 
 Start
 -----
@@ -68,4 +78,7 @@ These lines are on the console only, not in the log; the fullscreen window
 may hide the console (Alt+Tab to it). "Config file: none" means there is no
 arcade.cfg next to the exe (check for a hidden .txt extension), and the
 cabinet would start unlinked. A config file with an error stops the game
-with a message naming the file and, where there is one, the line.
+with a message naming the file and, where there is one, the line. Startup
+errors, such as that one or "arcade link requires a known build and
+content identity.", are on the console only, not in the log. After a
+double-click the console stays open on an error until Enter is pressed.
