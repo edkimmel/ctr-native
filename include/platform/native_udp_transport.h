@@ -58,6 +58,12 @@ int NativeUdpTransport_Open(struct NativeUdpTransport *transport, uint16_t local
 
 uint16_t NativeUdpTransport_LocalPort(const struct NativeUdpTransport *transport);
 
+/* Turns SO_BROADCAST on for an open transport, so Send may target a
+ * broadcast address (docs/DISCOVERY_MILESTONE.md DISC-2).  Returns 0 when
+ * the transport is not open or setsockopt fails; the transport stays open
+ * and usable either way. */
+int NativeUdpTransport_EnableBroadcast(struct NativeUdpTransport *transport);
+
 /* Returns 0 on any failure (not open, WSA error, oversize for a UDP
  * datagram) without destructively touching transport state. */
 int NativeUdpTransport_Send(struct NativeUdpTransport *transport,

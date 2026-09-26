@@ -493,7 +493,9 @@ plus the live labels named in its gate.
   post-merge validate called from main.c after the file group merges
   (:322-331), not part of ApplyArgs. The per-line seat probe learns `auto`;
   the five peerless expectations change (section 2.7), each noted in its
-  test. Every other option and config test keeps its outcome.
+  test; so does a sixth the list missed, the hand-built seat-only group in
+  tests/native_arcade_config_test.c TestApplyLink, which now uses a
+  port-only group. Every other option and config test keeps its outcome.
 - Transport: NativeUdpTransport_EnableBroadcast (SO_BROADCAST) in
   platform/native_udp_transport.c; its isolation test gains the token.
 - Interface enumeration behind platform/native_*: a new
@@ -504,7 +506,8 @@ plus the live labels named in its gate.
   list calls confined to that file; no game/, lease, replay, checkpoint, or
   canonical token in it; the discovery isolation scan gains its names.
 - Service: platform/native_arcade_discovery_service.c and its header: open
-  (bind, broadcast on), tick (drain, feed the core, beacon every 30 ticks,
+  (bind, broadcast on), tick (drain, at most 64 datagrams per tick as a
+  flood guard, feed the core, beacon every 30 ticks,
   refresh targets every 300), pairing, close. Unit test with two real
   sockets on loopback, targets set explicitly, in a new port band
   48610-48629 (the CMakeLists comment at :2060-2062 updated): the two pair
@@ -626,4 +629,6 @@ leave room.
 - DISC-S1, this plan: the commit that adds this file.
 - DISC-S2, pure core: done (beacon codec, group hash, election, peer
   table; an entry heard at tick T expires on the Tick reaching T + 300).
-- DISC-S3 to DISC-S6: not started.
+- DISC-S3, options, config, transport, interfaces, service: done (main.c
+  refuses discovery mode until S4; SIO_UDP_CONNRESET not set, risk 9).
+- DISC-S4 to DISC-S6: not started.

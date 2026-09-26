@@ -398,7 +398,8 @@ target_include_directories(ctr_native_arcade_link_sound PUBLIC ${CMAKE_SOURCE_DI
 # sections 2.5 and 3, UX-8, Task 6a): pure argv parsing and a pure fixture
 # builder over a caller-supplied identity, valid under the arcade bot rules
 # (R-3). Uses only the identity struct, so it does not link
-# ctr_native_identity. Reaches ctr_native through the host glue.
+# ctr_native_identity. Links the discovery core for its group name check
+# only (DISC-9, DISC-S3). Reaches ctr_native through the host glue.
 add_library(ctr_native_arcade_link_options STATIC platform/native_arcade_link_options.c)
 set_target_properties(ctr_native_arcade_link_options PROPERTIES
     C_STANDARD 17
@@ -406,7 +407,7 @@ set_target_properties(ctr_native_arcade_link_options PROPERTIES
     C_EXTENSIONS OFF
 )
 target_include_directories(ctr_native_arcade_link_options PUBLIC ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_config ctr_native_arcade_bot_rules)
+target_link_libraries(ctr_native_arcade_link_options PUBLIC ctr_native_match_config ctr_native_arcade_bot_rules PRIVATE ctr_native_arcade_discovery)
 
 # Per-cabinet config file (docs/PACKAGING.md PK-2..PK-6): pure key = value
 # parsing of a caller-read buffer and of --config / --data-dir. The link group
@@ -425,7 +426,8 @@ target_link_libraries(ctr_native_arcade_config PUBLIC ctr_native_arcade_link_opt
 # Arcade-link peer discovery, pure core (docs/DISCOVERY_MILESTONE.md
 # DISC-S2): the 96-byte beacon codec, the group name check and FNV-1a hash,
 # the seat election, and a caller-owned, tick-driven peer table. No heap,
-# clock, or socket; links nothing (DISC-14). Not yet linked by any target.
+# clock, or socket; links nothing (DISC-14). Linked by the link options (the
+# group name check) and the discovery service (DISC-S3).
 add_library(ctr_native_arcade_discovery STATIC platform/native_arcade_discovery.c)
 set_target_properties(ctr_native_arcade_discovery PROPERTIES
     C_STANDARD 17
@@ -433,6 +435,33 @@ set_target_properties(ctr_native_arcade_discovery PROPERTIES
     C_EXTENSIONS OFF
 )
 target_include_directories(ctr_native_arcade_discovery PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
+# IPv4 interface list and broadcast targets for discovery
+# (docs/DISCOVERY_MILESTONE.md DISC-5, DISC-S3): the one OS adapter-list
+# call, into a caller-owned scratch (no heap), and a pure directed-broadcast
+# helper. The only target that links iphlpapi.
+add_library(ctr_native_net_interfaces STATIC platform/native_net_interfaces.c)
+set_target_properties(ctr_native_net_interfaces PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_net_interfaces PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_net_interfaces PRIVATE iphlpapi)
+
+# Arcade-link discovery socket service (docs/DISCOVERY_MILESTONE.md DISC-2,
+# DISC-4, DISC-15, DISC-S3): the discovery socket with broadcast on, the
+# beacon cadence, and the target list over the pure core. Caller-owned, no
+# heap, no clock; uses only the UDP transport, the interface list, and the
+# core (DISC-14). Not yet linked by any target (the link host, DISC-S4).
+add_library(ctr_native_arcade_discovery_service STATIC platform/native_arcade_discovery_service.c)
+set_target_properties(ctr_native_arcade_discovery_service PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_discovery_service PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(ctr_native_arcade_discovery_service PUBLIC ctr_native_udp_transport ctr_native_net_interfaces ctr_native_arcade_discovery)
 
 # Match-select resolution rules (docs/MATCH_SELECT_MILESTONE.md section 2.1,
 # MS-2): pure tables mirrored from retail, seed derivation, tie draws, vote,
@@ -1596,6 +1625,35 @@ if(BUILD_TESTING)
     add_test(NAME native_arcade_discovery_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_discovery_isolation_test.cmake")
 
+    # IPv4 interface list (docs/DISCOVERY_MILESTONE.md DISC-5, DISC-S3): the
+    # pure directed-broadcast helper without the OS, and the OS list's shape.
+    add_executable(native_net_interfaces_test tests/native_net_interfaces_test.c)
+    set_target_properties(native_net_interfaces_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_net_interfaces_test PRIVATE ctr_native_net_interfaces)
+    add_test(NAME native_net_interfaces_unit COMMAND $<TARGET_FILE:native_net_interfaces_test>)
+
+    add_test(NAME native_net_interfaces_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_net_interfaces_isolation_test.cmake")
+
+    # Discovery socket service (DISC-S3): two real services on loopback in the
+    # 48610-48629 band with explicit targets pair with opposite seats, lose
+    # the pairing 300 ticks after one closes, and survive a bind conflict.
+    add_executable(native_arcade_discovery_service_test tests/native_arcade_discovery_service_test.c)
+    set_target_properties(native_arcade_discovery_service_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_discovery_service_test PRIVATE ctr_native_arcade_discovery_service)
+    add_test(NAME native_arcade_discovery_service_unit COMMAND $<TARGET_FILE:native_arcade_discovery_service_test>)
+
+    add_test(NAME native_arcade_discovery_service_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_discovery_service_isolation_test.cmake")
+
     # The explicit data directory (PK-6): NativeAssets_InitWithAssetDir over
     # fabricated folders with tiny dummy files under the build tree.
     add_executable(native_assets_data_dir_test
@@ -2087,7 +2145,8 @@ if(BUILD_TESTING)
     # only under its own directory of the build tree; the link gates use
     # distinct loopback ports (arcade_link_launch 7101/7102,
     # package_arcade_smoke the package's 7001/7002, arcade_solo_race
-    # 7201-7204; the fast suite's socket tests use 48000-48600); each
+    # 7201-7204; the fast suite's socket tests use 48000-48600, and the
+    # discovery service test 48610-48629); each
     # capture reads the game's own window framebuffer, not the desktop.  What they still share is read-only or
     # diagnostic: every run from the build tree reads the developer's
     # memcards\ in the repository root, and writes the repository root's

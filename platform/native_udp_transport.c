@@ -117,6 +117,18 @@ uint16_t NativeUdpTransport_LocalPort(const struct NativeUdpTransport *transport
 	return transport->localPort;
 }
 
+int NativeUdpTransport_EnableBroadcast(struct NativeUdpTransport *transport)
+{
+	BOOL enable = TRUE;
+
+	if (!transport || !transport->open)
+		return 0;
+	if (setsockopt((SOCKET)transport->socketHandle, SOL_SOCKET, SO_BROADCAST, (const char *)&enable,
+		(int)sizeof(enable)) == SOCKET_ERROR)
+		return 0;
+	return 1;
+}
+
 int NativeUdpTransport_Send(struct NativeUdpTransport *transport,
 	const struct NativeUdpTransportAddress *destination, const void *bytes, size_t byteCount)
 {

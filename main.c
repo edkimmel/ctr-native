@@ -313,7 +313,9 @@ int main(int argc, char *argv[])
 	NativeArcadeLinkOptions_SetDefaults(&arcadeLinkOptions);
 	if (!NativeArcadeLinkOptions_ApplyArgs(argc, argv, &arcadeLinkOptions))
 	{
-		fprintf(stderr, "[CTR Native] invalid arcade-link option; expected --arcade-link cab1|cab2 --arcade-link-port <1-65535> --arcade-link-peer <a.b.c.d:port> (repeatable), or --arcade-link-preview <screen> alone.\n");
+		fprintf(stderr, "[CTR Native] invalid arcade-link option; expected --arcade-link cab1|cab2 --arcade-link-port <1-65535> --arcade-link-peer <a.b.c.d:port> (repeatable), "
+		                "or --arcade-link cab1|cab2|auto [--arcade-link-port <1-65535>] [--arcade-link-group <name>] with no peer (discovery), "
+		                "or --arcade-link-preview <screen> alone; discovery mode also takes --arcade-discovery-port <1-65535> and --arcade-discovery-target <a.b.c.d:port> (up to 4).\n");
 		return NativeConsole_Return(1);
 	}
 	/* The config's link group reaches the link only through these options,
@@ -327,6 +329,20 @@ int main(int argc, char *argv[])
 			return NativeConsole_Return(1);
 		}
 		linkFromConfig = 1;
+	}
+	/* The discovery test flags are not link-group options (DISC-11), so they
+	 * are checked only now, against the merged options (DISC-18). */
+	if (!NativeArcadeLinkOptions_ValidateMerged(&arcadeLinkOptions))
+	{
+		fprintf(stderr, "[CTR Native] invalid arcade-link option; --arcade-discovery-port and --arcade-discovery-target need discovery mode (--arcade-link or seat without a peer).\n");
+		return NativeConsole_Return(1);
+	}
+	/* Discovery mode parses and validates, but the link host does not run it
+	 * until DISC-S4: refuse it rather than come up without a peer. */
+	if (arcadeLinkOptions.discovery != 0u)
+	{
+		fprintf(stderr, "[CTR Native] arcade link: discovery mode (no peer) is not wired yet (DISC-S4).\n");
+		return NativeConsole_Return(1);
 	}
 
 	if (configLoaded != 0)
@@ -606,8 +622,13 @@ int main(int argc, char *argv[])
 	}
 	if (arcadeLinkOptions.enabled != 0u)
 	{
-		printf("[CTR Native] arcade link: cab%u port %u, %u peers\n", (arcadeLinkOptions.localRole == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN) ? 2u : 1u,
-		       (unsigned)arcadeLinkOptions.localPort, (unsigned)arcadeLinkOptions.peerCount);
+		/* The seat as given: cab1 or cab2 (static mode), or auto (discovery, DISC-11). */
+		const char *arcadeLinkSeat = (arcadeLinkOptions.seatPreference == (uint8_t)NATIVE_ARCADE_LINK_SEAT_CAB2)   ? "cab2"
+		                             : (arcadeLinkOptions.seatPreference == (uint8_t)NATIVE_ARCADE_LINK_SEAT_CAB1) ? "cab1"
+		                                                                                                          : "auto";
+
+		printf("[CTR Native] arcade link: %s port %u, %u peers\n", arcadeLinkSeat, (unsigned)arcadeLinkOptions.localPort,
+		       (unsigned)arcadeLinkOptions.peerCount);
 	}
 	else if (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE)
 	{

@@ -15,10 +15,11 @@
  *   data_dir   = <dir>          folder holding the user's own ctr-u.bin (or
  *                               the extracted BIGFILE.BIG tree); the rest of
  *                               the line, spaces allowed, no quotes
- *   seat       = cab1|cab2      as --arcade-link
+ *   seat       = cab1|cab2|auto as --arcade-link
  *   port       = 1..65535       as --arcade-link-port
  *   peer       = a.b.c.d:port   as --arcade-link-peer; repeatable, up to
  *                               NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS
+ *   group      = <name>         as --arcade-link-group (discovery group)
  *   fullscreen = 0|1|yes|no|true|false
  *   render_scale   = 1|2|3|4|6|8       as --render-scale
  *   texture_filter = nearest|bilinear  as --texture-filter
@@ -38,14 +39,19 @@
  * non-repeatable key given twice, an empty value, a bad value, a peer beyond
  * the maximum, and an incomplete link group.
  *
- * The link group (seat, port, peer) is all-or-none with exactly the command
- * line's rules (PK-5): every seat, port, and peer value, and the group as a
- * whole, is checked by NativeArcadeLinkOptions_ApplyArgs itself over a
- * synthetic argv (--arcade-link <seat> --arcade-link-port <port>
- * --arcade-link-peer <peer>...), so this module has no port or peer grammar
- * of its own. The group reaches the link only through
- * NativeArcadeConfig_ApplyLink, which writes struct NativeArcadeLinkOptions
- * exactly as the flags do.
+ * The link group (seat, port, peer, group) follows exactly the command
+ * line's rules (PK-5; docs/DISCOVERY_MILESTONE.md DISC-11): seat turns the
+ * link on; with a peer (static mode) the seat must be cab1 or cab2, the port
+ * is required, and group is refused; without a peer (discovery mode) any
+ * seat is valid and port and group are optional; port, peer, or group
+ * without seat is incomplete. Every seat, port, peer, and group value, and
+ * the group as a whole, is checked by NativeArcadeLinkOptions_ApplyArgs
+ * itself over a synthetic argv (--arcade-link <seat> --arcade-link-port
+ * <port> --arcade-link-group <group> --arcade-link-peer <peer>...), so this
+ * module has no port, peer, or group grammar of its own. The group reaches
+ * the link only through NativeArcadeConfig_ApplyLink, which writes struct
+ * NativeArcadeLinkOptions exactly as the flags do. The discovery test flags
+ * (--arcade-discovery-port, --arcade-discovery-target) have no key.
  *
  * render_scale and texture_filter have no display grammar here either: each
  * value is checked, at its line, by NativeDisplayConfig_ApplyArgs itself over
@@ -103,13 +109,15 @@ struct NativeArcadeConfig
 	uint8_t hasFullscreen;
 	uint8_t hasRenderScale;
 	uint8_t hasTextureFilter;
-	uint8_t reserved[2];
+	uint8_t hasGroup;
+	uint8_t reserved;
 	int fullscreen; /* 0 or 1 when hasFullscreen */
 	uint32_t peerCount;
 	char dataDir[NATIVE_ARCADE_CONFIG_DATA_DIR_BYTES];
 	char seat[NATIVE_ARCADE_CONFIG_SEAT_BYTES];
 	char port[NATIVE_ARCADE_CONFIG_PORT_BYTES];
 	char peers[NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS][NATIVE_ARCADE_CONFIG_PEER_BYTES];
+	char group[NATIVE_ARCADE_LINK_OPTIONS_GROUP_BYTES];                /* as written, when hasGroup */
 	char renderScaleText[NATIVE_ARCADE_CONFIG_RENDER_SCALE_BYTES];     /* as written, when hasRenderScale */
 	char textureFilterText[NATIVE_ARCADE_CONFIG_TEXTURE_FILTER_BYTES]; /* as written, when hasTextureFilter */
 };
@@ -125,7 +133,7 @@ void NativeArcadeConfig_SetDefaults(struct NativeArcadeConfig *config);
  */
 int NativeArcadeConfig_Parse(const char *text, size_t size, struct NativeArcadeConfig *config, struct NativeArcadeConfigStatus *status);
 
-/* 1 when the config sets any of seat, port, or peer. 0 for NULL. */
+/* 1 when the config sets any of seat, port, peer, or group. 0 for NULL. */
 int NativeArcadeConfig_HasLink(const struct NativeArcadeConfig *config);
 
 /*
@@ -152,7 +160,9 @@ struct NativeArcadeConfigArgs
 {
 	const char *configPath;  /* --config <path>, else NULL; points into argv */
 	const char *dataDir;     /* --data-dir <dir>, else NULL; points into argv */
-	uint8_t namesLinkOption; /* any --arcade-link, --arcade-link-port, --arcade-link-peer, or --arcade-link-preview */
+	/* Any --arcade-link, --arcade-link-port, --arcade-link-peer, --arcade-link-group, or
+	 * --arcade-link-preview; not the discovery test flags (DISC-11). */
+	uint8_t namesLinkOption;
 	uint8_t namesWindowMode;    /* any --fullscreen or --windowed */
 	uint8_t namesRenderScale;   /* any --render-scale or --render-scale=... */
 	uint8_t namesTextureFilter; /* any --texture-filter or --texture-filter=... */

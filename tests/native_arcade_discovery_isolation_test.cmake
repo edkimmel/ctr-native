@@ -12,13 +12,16 @@
 #    finished byte buffer), never a struct image.
 # 4. ctr_native_arcade_discovery links nothing and is C17 with extensions
 #    off; its unit test and this test are registered, without a live label.
-# 5. Replay, checkpoint, canonical, and lease code never names the module:
-#    platform/native_replay*, native_checkpoint*, native_canonical*, their
-#    include/platform headers, and game/MAIN/MainCanonical* (the topology
-#    lease files included). Every glob must match files, so the scan cannot
-#    pass vacuously, and the scan is first proven against a planted hit.
-# 6. No other game/, platform/, include/, or main.c file names the module
-#    yet (S3 and S4 extend this allow-list for the service and link host).
+# 5. Replay, checkpoint, canonical, and lease code never names the module,
+#    the discovery service, or the interface list (native_net_interfaces,
+#    DISC-S3): platform/native_replay*, native_checkpoint*,
+#    native_canonical*, their include/platform headers, and
+#    game/MAIN/MainCanonical* (the topology lease files included). Every
+#    glob must match files, so the scan cannot pass vacuously, and the scan
+#    is first proven against planted hits.
+# 6. Only the consumers allowed so far name the module in game/, platform/,
+#    include/, or main.c: the link options (the group name check, DISC-S3)
+#    and the discovery service (DISC-S3). S4 adds the link host.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade discovery isolation")
@@ -67,7 +70,9 @@ endfunction()
 
 # Sets out_var to the first module name found in text (case-insensitive,
 # comments included), or to "" when there is none.
-set(module_names native_arcade_discovery nativearcadediscovery)
+# Rule 5 scans for the discovery and interface-list names; rule 6 resets
+# the list to the discovery names alone.
+set(module_names native_arcade_discovery nativearcadediscovery native_net_interfaces nativenetinterfaces)
 function(ctr_find_module_name text out_var)
     string(TOLOWER "${text}" lower)
     set(found "")
@@ -170,9 +175,10 @@ ctr_require("CMakeLists.txt" "${cmake}" "add_test(NAME native_arcade_discovery_u
 ctr_require("CMakeLists.txt" "${cmake}" "tests/native_arcade_discovery_isolation_test.cmake")
 ctr_forbid("CMakeLists.txt" "${cmake}" "set_tests_properties(native_arcade_discovery")
 
-# 5. Replay, checkpoint, canonical, and lease code never names the module.
-#    First prove the matcher finds a planted name (so a broken matcher
-#    cannot pass), then require every glob to match at least one file.
+# 5. Replay, checkpoint, canonical, and lease code never names the module,
+#    the service, or the interface list. First prove the matcher finds
+#    planted names (so a broken matcher cannot pass), then require every
+#    glob to match at least one file.
 ctr_find_module_name("x = NativeArcadeDiscovery_Tick(t);" planted_hit)
 if(NOT planted_hit STREQUAL "nativearcadediscovery")
     message(FATAL_ERROR "${prefix}: the module-name matcher missed a planted name; the scan is broken")
@@ -180,6 +186,18 @@ endif()
 ctr_find_module_name("#include \"platform/NATIVE_ARCADE_DISCOVERY.h\"" planted_hit)
 if(NOT planted_hit STREQUAL "native_arcade_discovery")
     message(FATAL_ERROR "${prefix}: the module-name matcher missed a planted include; the scan is broken")
+endif()
+ctr_find_module_name("x = NativeArcadeDiscoveryService_Tick(s);" planted_hit)
+if(NOT planted_hit STREQUAL "nativearcadediscovery")
+    message(FATAL_ERROR "${prefix}: the module-name matcher missed a planted service name; the scan is broken")
+endif()
+ctr_find_module_name("n = NativeNetInterfaces_List(s, l, 4, &c);" planted_hit)
+if(NOT planted_hit STREQUAL "nativenetinterfaces")
+    message(FATAL_ERROR "${prefix}: the module-name matcher missed a planted interface-list name; the scan is broken")
+endif()
+ctr_find_module_name("#include \"platform/native_net_interfaces.h\"" planted_hit)
+if(NOT planted_hit STREQUAL "native_net_interfaces")
+    message(FATAL_ERROR "${prefix}: the module-name matcher missed a planted interface-list include; the scan is broken")
 endif()
 ctr_find_module_name("native_arcade_link_host" planted_hit)
 if(NOT planted_hit STREQUAL "")
@@ -215,7 +233,13 @@ foreach(path IN LISTS state_files)
     endif()
 endforeach()
 
-# 6. No other source names the module yet.
+# 6. Only the allowed consumers name the module (the discovery names alone;
+#    tests/native_net_interfaces_isolation_test.cmake pins the interface
+#    list's consumers).
+set(module_names native_arcade_discovery nativearcadediscovery)
+set(allowed_consumers "${core_header}" "${core_source}"
+    "include/platform/native_arcade_link_options.h" "platform/native_arcade_link_options.c"
+    "include/platform/native_arcade_discovery_service.h" "platform/native_arcade_discovery_service.c")
 file(GLOB_RECURSE scan_files LIST_DIRECTORIES false
     "${repo}/game/*.c" "${repo}/game/*.h"
     "${repo}/platform/*.c" "${repo}/platform/*.h"
@@ -227,7 +251,8 @@ if(scanned LESS 100)
 endif()
 foreach(path IN LISTS scan_files)
     file(RELATIVE_PATH relative_path "${repo}" "${path}")
-    if(relative_path STREQUAL core_header OR relative_path STREQUAL core_source)
+    list(FIND allowed_consumers "${relative_path}" allowed_at)
+    if(NOT allowed_at EQUAL -1)
         continue()
     endif()
     file(READ "${path}" scanned_source)
@@ -236,3 +261,11 @@ foreach(path IN LISTS scan_files)
         message(FATAL_ERROR "${prefix}: ${relative_path} names '${hit}'; no module may use discovery before its slice allows it")
     endif()
 endforeach()
+# The options use the core for the group name check only.
+ctr_read_source("platform/native_arcade_link_options.c" options_source)
+ctr_strip_comments("${options_source}" options_code)
+string(REGEX MATCHALL "NativeArcadeDiscovery_[A-Za-z0-9_]*" options_calls "${options_code}")
+list(REMOVE_DUPLICATES options_calls)
+if(NOT "${options_calls}" STREQUAL "NativeArcadeDiscovery_GroupNameValid")
+    message(FATAL_ERROR "${prefix}: platform/native_arcade_link_options.c may call only NativeArcadeDiscovery_GroupNameValid (found '${options_calls}')")
+endif()

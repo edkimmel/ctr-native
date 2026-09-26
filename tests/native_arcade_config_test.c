@@ -51,6 +51,21 @@ static int RejectsTextAt(const char *text, uint32_t error, uint32_t line)
 	return RejectsAt(text, strlen(text), error, line);
 }
 
+/* Parse must succeed with status OK and a link group. */
+static int AcceptsLinkText(const char *text)
+{
+	struct NativeArcadeConfig config;
+	struct NativeArcadeConfigStatus status;
+
+	Sentinel(&config);
+	if (!ParseText(text, &config, &status) || (status.error != NATIVE_ARCADE_CONFIG_OK) || (status.line != 0))
+	{
+		fprintf(stderr, "rejected (error %u line %u): %.60s\n", (unsigned)status.error, (unsigned)status.line, text);
+		return 0;
+	}
+	return NativeArcadeConfig_HasLink(&config);
+}
+
 static int TestDefaults(void)
 {
 	struct NativeArcadeConfig config;
@@ -281,10 +296,13 @@ static int TestErrors(void)
 	                    NATIVE_ARCADE_CONFIG_ERROR_TOO_MANY_PEERS, 11));
 
 	/* Link group all-or-none, reported at the first link line. */
-	CHECK(RejectsTextAt("# c\nseat = cab1\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 2));
+	/* DISC-11 (docs/DISCOVERY_MILESTONE.md): a seat without a peer is
+	 * discovery mode now, so these two, LINK_INCOMPLETE before DISC-S3,
+	 * parse. */
+	CHECK(AcceptsLinkText("# c\nseat = cab1\n"));
 	CHECK(RejectsTextAt("fullscreen = 1\nport = 7001\npeer = 1.2.3.4:5\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 2));
 	CHECK(RejectsTextAt("data_dir = x\n\npeer = 1.2.3.4:5\nseat = cab2\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 3));
-	CHECK(RejectsTextAt("seat = cab1\nport = 7001\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 1));
+	CHECK(AcceptsLinkText("seat = cab1\nport = 7001\n")); /* DISC-11, as above */
 	CHECK(RejectsTextAt("port = 7001\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 1));
 	CHECK(RejectsTextAt("peer = 1.2.3.4:5\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 1));
 
@@ -340,10 +358,24 @@ static int TestApplyLink(void)
 	CHECK(!NativeArcadeConfig_ApplyLink(NULL, &fromConfig));
 	CHECK(!NativeArcadeConfig_ApplyLink(&config, NULL));
 
-	/* An incomplete group assembled by hand is rejected by the link parser, untouched. */
+	/* An incomplete group assembled by hand is rejected by the link parser,
+	 * untouched. (Before DISC-S3 the hand-built group was a seat alone,
+	 * which DISC-11 makes valid; a port alone keeps the check.) */
+	NativeArcadeConfig_SetDefaults(&config);
+	config.hasPort = 1;
+	memcpy(config.port, "7001", 5);
+	CHECK(!NativeArcadeConfig_ApplyLink(&config, &fromConfig));
+	CHECK(memcmp(&fromConfig, &snapshot, sizeof(fromConfig)) == 0);
+	/* And a hand-built group of a seat plus a group with a peer. */
 	NativeArcadeConfig_SetDefaults(&config);
 	config.hasSeat = 1;
 	memcpy(config.seat, "cab1", 5);
+	config.hasPort = 1;
+	memcpy(config.port, "7001", 5);
+	config.hasGroup = 1;
+	memcpy(config.group, "g", 2);
+	config.peerCount = 1;
+	memcpy(config.peers[0], "1.2.3.4:5", 10);
 	CHECK(!NativeArcadeConfig_ApplyLink(&config, &fromConfig));
 	CHECK(memcmp(&fromConfig, &snapshot, sizeof(fromConfig)) == 0);
 
@@ -353,6 +385,125 @@ static int TestApplyLink(void)
 	snapshot = fromConfig;
 	CHECK(!NativeArcadeConfig_ApplyLink(&config, &fromConfig));
 	CHECK(memcmp(&fromConfig, &snapshot, sizeof(fromConfig)) == 0);
+	return 0;
+}
+
+/* seat = auto, the group key, and argv precedence (docs/DISCOVERY_MILESTONE.md DISC-11, DISC-18). */
+static int TestDiscoveryKeys(void)
+{
+	char text[256];
+	struct NativeArcadeConfig config;
+	struct NativeArcadeConfigArgs args;
+	struct NativeArcadeLinkOptions fromConfig;
+	struct NativeArcadeLinkOptions fromArgs;
+
+	/* seat = auto alone, and with a port and a group: the exact command line. */
+	Sentinel(&config);
+	CHECK(ParseText("seat = auto\n", &config, NULL));
+	CHECK((config.hasSeat == 1) && (strcmp(config.seat, "auto") == 0) && (config.hasPort == 0) && (config.hasGroup == 0));
+	CHECK(NativeArcadeConfig_HasLink(&config));
+	NativeArcadeLinkOptions_SetDefaults(&fromConfig);
+	CHECK(NativeArcadeConfig_ApplyLink(&config, &fromConfig));
+	CHECK((fromConfig.enabled == 1) && (fromConfig.discovery == 1) && (fromConfig.localRole == 0) && (fromConfig.localPort == 7001u));
+	{
+		static const char file[] = "group = cab-room.2\n# c\nseat = auto\nport = 7301\n";
+		char *argv[] = { "ctr_native", "--arcade-link", "auto", "--arcade-link-port", "7301", "--arcade-link-group", "cab-room.2" };
+
+		Sentinel(&config);
+		CHECK(ParseText(file, &config, NULL));
+		CHECK((config.hasGroup == 1) && (strcmp(config.group, "cab-room.2") == 0));
+		NativeArcadeLinkOptions_SetDefaults(&fromConfig);
+		fromConfig.discoveryNonce = UINT64_C(0x1122334455667788);
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		fromArgs.discoveryNonce = UINT64_C(0x1122334455667788);
+		CHECK(NativeArcadeConfig_ApplyLink(&config, &fromConfig));
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argv), argv, &fromArgs));
+		CHECK(memcmp(&fromConfig, &fromArgs, sizeof(fromConfig)) == 0);
+		CHECK((fromConfig.discovery == 1) && (fromConfig.hasGroup == 1) && (strcmp(fromConfig.group, "cab-room.2") == 0));
+		CHECK(fromConfig.discoveryNonce == UINT64_C(0x1122334455667788));
+	}
+	/* A group alone is incomplete; so is a group with a peer, and auto with a peer. */
+	Sentinel(&config);
+	CHECK(ParseText("seat = cab2\ngroup = abcdefghijklmnopqrstuvwxyz012345\n", &config, NULL));
+	CHECK(strlen(config.group) == 32u);
+	CHECK(RejectsTextAt("# c\ngroup = ctr-native\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 2));
+	CHECK(RejectsTextAt("group = ctr-native\nport = 7001\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 1));
+	CHECK(RejectsTextAt("seat = cab1\nport = 7001\npeer = 1.2.3.4:5\ngroup = g\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 1));
+	CHECK(RejectsTextAt("data_dir = x\nseat = auto\nport = 7001\npeer = 1.2.3.4:5\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 2));
+
+	/* Bad values at their line, by the options' own grammar (the discovery
+	 * core's group rule), and group is not repeatable. */
+	{
+		static const char *const badSeats[] = { "seat = Auto", "seat = auto2", "seat = AUTO", "seat = -auto" };
+		static const char *const badGroups[] = { "group = -lead", "group = two words", "group = a/b", "group = abcdefghijklmnopqrstuvwxyz0123456",
+		                                         "group = caf\xC3\xA9", "group = a # c" };
+
+		for (size_t i = 0; i < sizeof(badSeats) / sizeof(badSeats[0]); i++)
+		{
+			snprintf(text, sizeof(text), "# c\n%s\n", badSeats[i]);
+			CHECK(RejectsTextAt(text, NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 2));
+		}
+		for (size_t i = 0; i < sizeof(badGroups) / sizeof(badGroups[0]); i++)
+		{
+			snprintf(text, sizeof(text), "seat = auto\n%s\n", badGroups[i]);
+			CHECK(RejectsTextAt(text, NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 2));
+		}
+	}
+	CHECK(RejectsTextAt("seat = auto\ngroup = a\ngroup = a\n", NATIVE_ARCADE_CONFIG_ERROR_DUPLICATE_KEY, 3));
+	CHECK(RejectsTextAt("seat = auto\ngroup =\n", NATIVE_ARCADE_CONFIG_ERROR_EMPTY_VALUE, 2));
+	CHECK(strstr(NativeArcadeConfig_ErrorText(NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY), "peer, group,") != NULL);
+	CHECK(strstr(NativeArcadeConfig_ErrorText(NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE), "seat: cab1, cab2, or auto") != NULL);
+
+	/* Precedence (PK-4): argv naming --arcade-link-group ignores the file's
+	 * whole group, as main.c does: argv alone is then applied, and a group
+	 * without --arcade-link is an error there. */
+	{
+		char *argv[] = { "ctr_native", "--arcade-link-group", "g" };
+
+		CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
+		CHECK(args.namesLinkOption == 1);
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		CHECK(!NativeArcadeLinkOptions_ApplyArgs(ARGC(argv), argv, &fromArgs));
+	}
+	{
+		char *argv[] = { "ctr_native", "--arcade-link", "auto", "--arcade-link-group", "from-argv" };
+
+		CHECK(ParseText("seat = cab1\nport = 7001\npeer = 1.2.3.4:5\n", &config, NULL));
+		CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
+		CHECK(args.namesLinkOption == 1);
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argv), argv, &fromArgs));
+		CHECK((fromArgs.discovery == 1) && (fromArgs.peerCount == 0) && (strcmp(fromArgs.group, "from-argv") == 0));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&fromArgs));
+	}
+	/* The discovery flags keep the file's group: argv first, then the file,
+	 * then the post-merge check, which passes for a discovery-mode file and
+	 * fails for a static one (DISC-18). */
+	{
+		char *argv[] = { "ctr_native", "--arcade-discovery-port", "7303", "--arcade-discovery-target", "127.0.0.1:7304" };
+
+		CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
+		CHECK(args.namesLinkOption == 0);
+		CHECK(ParseText("seat = auto\ngroup = g\nport = 7301\n", &config, NULL));
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argv), argv, &fromArgs));
+		CHECK(NativeArcadeConfig_ApplyLink(&config, &fromArgs));
+		CHECK((fromArgs.discovery == 1) && (fromArgs.localPort == 7301u) && (fromArgs.discoveryPort == 7303u));
+		CHECK((fromArgs.discoveryTargetCount == 1u) && (fromArgs.discoveryTargets[0].port == 7304u) && (strcmp(fromArgs.group, "g") == 0));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&fromArgs));
+
+		CHECK(ParseText("seat = cab1\nport = 7001\npeer = 1.2.3.4:5\n", &config, NULL));
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argv), argv, &fromArgs));
+		CHECK(NativeArcadeConfig_ApplyLink(&config, &fromArgs));
+		CHECK(fromArgs.discovery == 0);
+		CHECK(!NativeArcadeLinkOptions_ValidateMerged(&fromArgs));
+
+		/* No file group at all: the flags alone fail the post-merge check. */
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argv), argv, &fromArgs));
+		CHECK(!NativeArcadeLinkOptions_ValidateMerged(&fromArgs));
+	}
 	return 0;
 }
 
@@ -492,8 +643,12 @@ static int TestDisplayKeys(void)
 	CHECK(RejectsTextAt("data_dir = x\nseat = cab1\nport = 7001\npeer = 1.2.3.4:5\nfullscreen = 1\ntexture_filter = bilinear\nrender_scale = 5\n",
 	                    NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 7));
 	CHECK(RejectsTextAt("render_scale = 8\n\ntexture_filter = linear\nrender_scale = 8\n", NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 3));
-	/* A good display key does not complete a link group. */
-	CHECK(RejectsTextAt("render_scale = 8\nseat = cab1\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 2));
+	/* A good display key does not complete a link group. (Before DISC-S3 this
+	 * was "render_scale = 8\nseat = cab1\n", LINK_INCOMPLETE; DISC-11 makes a
+	 * seat alone valid, discovery mode, so it parses now and a port alone
+	 * keeps the check.) */
+	CHECK(AcceptsLinkText("render_scale = 8\nseat = cab1\n"));
+	CHECK(RejectsTextAt("render_scale = 8\nport = 7001\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 2));
 	return 0;
 }
 
@@ -641,7 +796,7 @@ static int TestParseArgs(void)
 		CHECK((args.namesRenderScale == 1) && (args.namesTextureFilter == 1) && (args.namesWindowMode == 0));
 	}
 	{
-		static const char *const linkNames[] = { "--arcade-link", "--arcade-link-port", "--arcade-link-peer", "--arcade-link-preview" };
+		static const char *const linkNames[] = { "--arcade-link", "--arcade-link-port", "--arcade-link-peer", "--arcade-link-group", "--arcade-link-preview" };
 
 		for (size_t i = 0; i < sizeof(linkNames) / sizeof(linkNames[0]); i++)
 		{
@@ -652,6 +807,14 @@ static int TestParseArgs(void)
 			CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
 			CHECK((args.namesLinkOption == 1) && (args.namesWindowMode == 0));
 		}
+	}
+	{
+		/* The discovery test flags are not link-group options (DISC-11). */
+		char *argv[] = { "ctr_native", "--arcade-discovery-port", "7303", "--arcade-discovery-target", "127.0.0.1:7304" };
+
+		memset(&args, 0xA5, sizeof(args));
+		CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
+		CHECK((args.namesLinkOption == 0) && (args.namesWindowMode == 0) && (args.configPath == NULL));
 	}
 	{
 		char *argv[] = { "ctr_native", "--fullscreen", "--arcade-link-autopilot", "x" };
@@ -743,6 +906,7 @@ int main(int argc, char *argv[])
 	CHECK(TestFullscreen() == 0);
 	CHECK(TestErrors() == 0);
 	CHECK(TestApplyLink() == 0);
+	CHECK(TestDiscoveryKeys() == 0);
 	CHECK(TestDisplayKeys() == 0);
 	CHECK(TestApplyDisplay() == 0);
 	CHECK(TestParseArgs() == 0);

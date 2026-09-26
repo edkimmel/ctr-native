@@ -1,6 +1,7 @@
 #include "platform/native_arcade_link_options.h"
 
 #include "platform/native_arcade_bot_rules.h"
+#include "platform/native_arcade_discovery.h"
 #include "platform/native_identity.h"
 #include "platform/native_match_config.h"
 
@@ -10,10 +11,24 @@
 
 #define NATIVE_ARCADE_LINK_PREVIEW_LAST NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO_ERROR
 
+/* The group buffer holds the longest name the discovery core accepts. */
+_Static_assert(NATIVE_ARCADE_LINK_OPTIONS_GROUP_BYTES == NATIVE_ARCADE_DISCOVERY_GROUP_MAX_CHARS + 1u, "the group buffer fits a 32-character name");
+/* The seat preference is the beacon's value as is. */
+_Static_assert((NATIVE_ARCADE_LINK_SEAT_AUTO == NATIVE_ARCADE_DISCOVERY_SEAT_AUTO) && (NATIVE_ARCADE_LINK_SEAT_CAB1 == NATIVE_ARCADE_DISCOVERY_SEAT_CAB1) &&
+                   (NATIVE_ARCADE_LINK_SEAT_CAB2 == NATIVE_ARCADE_DISCOVERY_SEAT_CAB2),
+               "the seat preference values match the beacon's");
+/* Every byte is a named field: the 88 bytes of the original fields, then 88
+ * of discovery fields, the sum of their sizes (no padding). */
+_Static_assert(offsetof(struct NativeArcadeLinkOptions, seatPreference) == 88u, "the discovery fields follow the original fields");
+_Static_assert(sizeof(struct NativeArcadeLinkOptions) == 176u, "struct NativeArcadeLinkOptions holds no padding");
+
 static const char k_linkOption[] = "--arcade-link";
 static const char k_portOption[] = "--arcade-link-port";
 static const char k_peerOption[] = "--arcade-link-peer";
+static const char k_groupOption[] = "--arcade-link-group";
 static const char k_previewOption[] = "--arcade-link-preview";
+static const char k_discoveryPortOption[] = "--arcade-discovery-port";
+static const char k_discoveryTargetOption[] = "--arcade-discovery-target";
 
 /* Indexed by enum NativeArcadeLinkPreview. */
 static const char *const k_previewNames[NATIVE_ARCADE_LINK_PREVIEW_LAST + 1u] = {
@@ -175,7 +190,9 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
 	struct NativeArcadeLinkOptions candidate;
 	int linkGiven = 0;
 	int portGiven = 0;
+	int groupGiven = 0;
 	int previewGiven = 0;
+	int discoveryPortGiven = 0;
 
 	if ((options == NULL) || ((argc > 1) && (argv == NULL)))
 	{
@@ -193,7 +210,8 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
 			return 0;
 		}
 		if ((strcmp(arg, k_linkOption) != 0) && (strcmp(arg, k_portOption) != 0) && (strcmp(arg, k_peerOption) != 0) &&
-		    (strcmp(arg, k_previewOption) != 0))
+		    (strcmp(arg, k_groupOption) != 0) && (strcmp(arg, k_previewOption) != 0) && (strcmp(arg, k_discoveryPortOption) != 0) &&
+		    (strcmp(arg, k_discoveryTargetOption) != 0))
 		{
 			continue;
 		}
@@ -212,10 +230,17 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
 			if (strcmp(value, "cab1") == 0)
 			{
 				candidate.localRole = NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN;
+				candidate.seatPreference = NATIVE_ARCADE_LINK_SEAT_CAB1;
 			}
 			else if (strcmp(value, "cab2") == 0)
 			{
 				candidate.localRole = NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN;
+				candidate.seatPreference = NATIVE_ARCADE_LINK_SEAT_CAB2;
+			}
+			else if (strcmp(value, "auto") == 0)
+			{
+				candidate.localRole = 0;
+				candidate.seatPreference = NATIVE_ARCADE_LINK_SEAT_AUTO;
 			}
 			else
 			{
@@ -241,6 +266,35 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
 			}
 			candidate.peerCount++;
 		}
+		else if (strcmp(arg, k_groupOption) == 0)
+		{
+			/* The discovery core's one group grammar (DISC-9). */
+			if (groupGiven || !NativeArcadeDiscovery_GroupNameValid(value))
+			{
+				return 0;
+			}
+			memset(candidate.group, 0, sizeof(candidate.group));
+			memcpy(candidate.group, value, strlen(value));
+			candidate.hasGroup = 1;
+			groupGiven = 1;
+		}
+		else if (strcmp(arg, k_discoveryPortOption) == 0)
+		{
+			if (discoveryPortGiven || !NativeArcadeLinkOptions_ParsePort(value, &candidate.discoveryPort))
+			{
+				return 0;
+			}
+			discoveryPortGiven = 1;
+		}
+		else if (strcmp(arg, k_discoveryTargetOption) == 0)
+		{
+			if ((candidate.discoveryTargetCount >= NATIVE_ARCADE_LINK_OPTIONS_MAX_DISCOVERY_TARGETS) ||
+			    !NativeArcadeLinkOptions_ParsePeer(value, &candidate.discoveryTargets[candidate.discoveryTargetCount]))
+			{
+				return 0;
+			}
+			candidate.discoveryTargetCount++;
+		}
 		else
 		{
 			if (previewGiven || !NativeArcadeLinkOptions_ParsePreview(value, &candidate.preview))
@@ -251,19 +305,51 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
 		}
 	}
 
+	/* DISC-11. A peer makes static mode (seat cab1 or cab2, port required,
+	 * no group); no peer makes discovery mode (any seat, the port optional). */
 	if (candidate.enabled)
 	{
-		if ((candidate.localPort == 0) || (candidate.peerCount == 0) || (candidate.preview != NATIVE_ARCADE_LINK_PREVIEW_NONE))
+		if (candidate.preview != NATIVE_ARCADE_LINK_PREVIEW_NONE)
 		{
 			return 0;
 		}
+		if (candidate.peerCount != 0)
+		{
+			if ((candidate.seatPreference == NATIVE_ARCADE_LINK_SEAT_AUTO) || (candidate.localPort == 0) || (candidate.hasGroup != 0))
+			{
+				return 0;
+			}
+			candidate.discovery = 0;
+		}
+		else
+		{
+			if (candidate.localPort == 0)
+			{
+				candidate.localPort = (uint16_t)NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_LINK_PORT;
+			}
+			candidate.discovery = 1;
+		}
 	}
-	else if ((candidate.localPort != 0) || (candidate.peerCount != 0))
+	else if ((candidate.localPort != 0) || (candidate.peerCount != 0) || (candidate.hasGroup != 0))
 	{
 		return 0;
 	}
 
 	*options = candidate;
+	return 1;
+}
+
+int NativeArcadeLinkOptions_ValidateMerged(const struct NativeArcadeLinkOptions *options)
+{
+	if (options == NULL)
+	{
+		return 0;
+	}
+	/* DISC-18: the discovery flags would be silently ignored outside discovery mode. */
+	if (((options->discoveryPort != 0) || (options->discoveryTargetCount != 0)) && (options->discovery == 0))
+	{
+		return 0;
+	}
 	return 1;
 }
 

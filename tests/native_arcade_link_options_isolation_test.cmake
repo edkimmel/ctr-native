@@ -4,9 +4,11 @@
 # netplay, topology-lease, heap, clock, game, or deterministic-state
 # dependency, and the identity arrives from the caller (the module never
 # fetches it). Its includes are limited to stddef.h, stdint.h, string.h, its
-# own header, and the arcade-bot-rules, identity, and match-config headers;
-# the library links exactly ctr_native_arcade_bot_rules and
-# ctr_native_match_config (no SHA-256 of its own); the target stays portable
+# own header, and the arcade-bot-rules, identity, and match-config headers
+# (and, in the source only, the discovery core's header, for the group name
+# check of DISC-9); the library links exactly ctr_native_arcade_bot_rules,
+# ctr_native_arcade_discovery, and ctr_native_match_config (no SHA-256 of
+# its own); discoveryNonce, like selectEntropy, is never parsed; the target stays portable
 # C17 with extensions off; the fixture values (UX-8) cannot silently change;
 # and the fixture's botRulesDigest comes from the real bot rules (R-3).
 
@@ -73,13 +75,19 @@ foreach(relative_path IN LISTS options_files)
     string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${source}")
     foreach(include_line IN LISTS include_lines)
         if(NOT include_line MATCHES "^#[ \t]*include[ \t]*(<stddef\\.h>|<stdint\\.h>|<string\\.h>|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_bot_rules\\.h\"|\"platform/native_identity\\.h\"|\"platform/native_match_config\\.h\")[ \t]*$")
+            # The source (not the header) may also include the discovery
+            # core, for its group name check (DISC-9, DISC-S3).
+            if(relative_path STREQUAL "platform/native_arcade_link_options.c" AND include_line MATCHES "^#[ \t]*include[ \t]*\"platform/native_arcade_discovery\\.h\"[ \t]*$")
+                continue()
+            endif()
             message(FATAL_ERROR "arcade link options isolation: disallowed include '${include_line}' in ${relative_path}")
         endif()
     endforeach()
 endforeach()
 
-# 8. ctr_native_arcade_link_options links exactly ctr_native_arcade_bot_rules
-#    and ctr_native_match_config, in exactly one target_link_libraries call.
+# 8. ctr_native_arcade_link_options links exactly ctr_native_arcade_bot_rules,
+#    ctr_native_arcade_discovery (the group name check, DISC-S3), and
+#    ctr_native_match_config, in exactly one target_link_libraries call.
 #    It never links ctr_native_identity, and never ctr_native_sha256: the
 #    module hashes nothing itself (section 13; the bot rules link it).
 ctr_read_source("CMakeLists.txt" cmake)
@@ -95,8 +103,8 @@ string(REGEX REPLACE "\\)$" "" link_body "${link_body}")
 string(REGEX REPLACE "[ \t\r\n]+" ";" link_items "${link_body}")
 list(REMOVE_ITEM link_items "" PUBLIC PRIVATE INTERFACE)
 list(SORT link_items)
-if(NOT "${link_items}" STREQUAL "ctr_native_arcade_bot_rules;ctr_native_match_config")
-    message(FATAL_ERROR "arcade link options isolation: ${target} must link exactly ctr_native_arcade_bot_rules and ctr_native_match_config (found '${link_items}')")
+if(NOT "${link_items}" STREQUAL "ctr_native_arcade_bot_rules;ctr_native_arcade_discovery;ctr_native_match_config")
+    message(FATAL_ERROR "arcade link options isolation: ${target} must link exactly ctr_native_arcade_bot_rules, ctr_native_arcade_discovery, and ctr_native_match_config (found '${link_items}')")
 endif()
 
 # 9. C17, no extensions, on the options target, in order.
@@ -184,6 +192,10 @@ ctr_require_single("platform/native_arcade_link_options.c" "PREVIEW_LAST definit
 ctr_forbid("platform/native_arcade_link_options.c" "${options_source}" "selectEntropy")
 # (The pattern stops before the ';', which a CMake list would split on.)
 ctr_require_single("${options_header}" "the selectEntropy field" "${header}" "uint64_t selectEntropy")
+# 12b. Likewise the discovery nonce (docs/DISCOVERY_MILESTONE.md DISC-13):
+#      never parsed, never named by the options source.
+ctr_forbid("platform/native_arcade_link_options.c" "${options_source}" "discoveryNonce")
+ctr_require_single("${options_header}" "the discoveryNonce field" "${header}" "uint64_t discoveryNonce")
 
 # 13. The fixture is built on the real bot rules (R-3): the builder takes
 #     botRulesDigest from NativeArcadeBotRules_DigestV1, exactly once, and

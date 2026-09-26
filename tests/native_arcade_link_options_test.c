@@ -392,10 +392,11 @@ static int TestApplyArgsErrors(void)
 	char *previewUnknown[] = {"ctr_native", "--arcade-link-preview", "credits"};
 	char *previewNone[] = {"ctr_native", "--arcade-link-preview", "none"};
 	char *previewTwice[] = {"ctr_native", "--arcade-link-preview", "title", "--arcade-link-preview", "title"};
-	/* Post-scan rules. */
+	/* Post-scan rules. (linkNoPeer, cab1 with a port and no peer, and
+	 * linkAlone, cab2 with neither, were errors here; since DISC-11
+	 * (docs/DISCOVERY_MILESTONE.md) a seat without a peer is discovery mode
+	 * and both are valid: TestDiscoveryModes checks them.) */
 	char *linkNoPort[] = {"ctr_native", "--arcade-link", "cab1", "--arcade-link-peer", "1.2.3.4:5"};
-	char *linkNoPeer[] = {"ctr_native", "--arcade-link", "cab1", "--arcade-link-port", "1"};
-	char *linkAlone[] = {"ctr_native", "--arcade-link", "cab2"};
 	char *linkAndPreview[] = {"ctr_native", "--arcade-link", "cab1", "--arcade-link-port", "1", "--arcade-link-peer",
 		"1.2.3.4:5", "--arcade-link-preview", "lobby"};
 	char *portOnly[] = {"ctr_native", "--arcade-link-port", "48000"};
@@ -410,7 +411,7 @@ static int TestApplyArgsErrors(void)
 		linkMissing, linkDash, linkNull, portMissing, portDash, peerMissing, peerDash, previewMissing, previewDash,
 		previewNull, linkBadValue, linkUpper, linkTwice, linkTwiceMixed, portZero, portHigh, portLong, portAlpha,
 		portPlus, portEmpty, portTwice, peerBad, ninePeers, previewUnknown, previewNone, previewTwice, linkNoPort,
-		linkNoPeer, linkAlone, linkAndPreview, portOnly, peerOnly, portPeerOnly, previewAndPort, previewAndPeer,
+		linkAndPreview, portOnly, peerOnly, portPeerOnly, previewAndPort, previewAndPeer,
 		nullEntry,
 	};
 	const int allCounts[] = {
@@ -418,8 +419,8 @@ static int TestApplyArgsErrors(void)
 		ARGC(peerDash), ARGC(previewMissing), ARGC(previewDash), ARGC(previewNull), ARGC(linkBadValue),
 		ARGC(linkUpper), ARGC(linkTwice), ARGC(linkTwiceMixed), ARGC(portZero), ARGC(portHigh), ARGC(portLong),
 		ARGC(portAlpha), ARGC(portPlus), ARGC(portEmpty), ARGC(portTwice), ARGC(peerBad), ARGC(ninePeers),
-		ARGC(previewUnknown), ARGC(previewNone), ARGC(previewTwice), ARGC(linkNoPort), ARGC(linkNoPeer),
-		ARGC(linkAlone), ARGC(linkAndPreview), ARGC(portOnly), ARGC(peerOnly), ARGC(portPeerOnly),
+		ARGC(previewUnknown), ARGC(previewNone), ARGC(previewTwice), ARGC(linkNoPort),
+		ARGC(linkAndPreview), ARGC(portOnly), ARGC(peerOnly), ARGC(portPeerOnly),
 		ARGC(previewAndPort), ARGC(previewAndPeer), ARGC(nullEntry),
 	};
 
@@ -434,6 +435,158 @@ static int TestApplyArgsErrors(void)
 	}
 	CHECK(RejectsUntouched(3, NULL));
 	CHECK(!NativeArcadeLinkOptions_ApplyArgs(ARGC(valid), valid, NULL));
+	return 0;
+}
+
+/* Discovery mode, the group, and the discovery flags (docs/DISCOVERY_MILESTONE.md DISC-11, DISC-18). */
+static int TestDiscoveryModes(void)
+{
+	/* DISC-11 flips these two former errors (TestApplyArgsErrors' linkNoPeer and linkAlone). */
+	char *linkNoPeer[] = {"ctr_native", "--arcade-link", "cab1", "--arcade-link-port", "1"};
+	char *linkAlone[] = {"ctr_native", "--arcade-link", "cab2"};
+	char *autoAlone[] = {"ctr_native", "--arcade-link", "auto"};
+	char *autoFull[] = {"ctr_native", "--arcade-link-group", "Arcade_2.cabs-B", "--arcade-link", "auto", "--arcade-link-port", "7301",
+		"--arcade-discovery-port", "7303", "--arcade-discovery-target", "127.0.0.1:7304", "--arcade-discovery-target", "10.0.0.2:7000"};
+	char *group32[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-group", "abcdefghijklmnopqrstuvwxyz012345"};
+	char *staticCab2[] = {"ctr_native", "--arcade-link", "cab2", "--arcade-link-port", "7002", "--arcade-link-peer", "192.168.1.11:7001"};
+	char *flagsOnly[] = {"ctr_native", "--arcade-discovery-port", "7303", "--arcade-discovery-target", "127.0.0.1:7304"};
+	char *fourTargets[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-target", "1.0.0.1:1", "--arcade-discovery-target",
+		"1.0.0.2:2", "--arcade-discovery-target", "1.0.0.3:3", "--arcade-discovery-target", "1.0.0.4:4"};
+	/* Errors. */
+	char *autoWithPeer[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-port", "7001", "--arcade-link-peer", "1.2.3.4:5"};
+	char *groupWithPeer[] = {"ctr_native", "--arcade-link", "cab1", "--arcade-link-port", "7001", "--arcade-link-peer", "1.2.3.4:5",
+		"--arcade-link-group", "ctr-native"};
+	char *groupAlone[] = {"ctr_native", "--arcade-link-group", "ctr-native"};
+	char *groupDash[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-group", "-lead"};
+	char *groupEmpty[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-group", ""};
+	char *group33[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-group", "abcdefghijklmnopqrstuvwxyz0123456"};
+	char *groupSpace[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-group", "two words"};
+	char *groupSlash[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-group", "a/b"};
+	char *groupTwice[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-group", "a", "--arcade-link-group", "a"};
+	char *groupMissing[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-group"};
+	char *autoUpper[] = {"ctr_native", "--arcade-link", "AUTO"};
+	char *autoAndPreview[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-preview", "lobby"};
+	char *discoveryPortZero[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-port", "0"};
+	char *discoveryPortHigh[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-port", "65536"};
+	char *discoveryPortTwice[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-port", "7000", "--arcade-discovery-port", "7000"};
+	char *discoveryPortMissing[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-port"};
+	char *targetBad[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-target", "localhost:7000"};
+	char *targetNoPort[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-target", "1.2.3.4"};
+	char *fiveTargets[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-target", "1.0.0.1:1", "--arcade-discovery-target",
+		"1.0.0.2:2", "--arcade-discovery-target", "1.0.0.3:3", "--arcade-discovery-target", "1.0.0.4:4", "--arcade-discovery-target",
+		"1.0.0.5:5"};
+	char **errors[] = {
+		autoWithPeer, groupWithPeer, groupAlone, groupDash, groupEmpty, group33, groupSpace, groupSlash, groupTwice, groupMissing,
+		autoUpper, autoAndPreview, discoveryPortZero, discoveryPortHigh, discoveryPortTwice, discoveryPortMissing, targetBad,
+		targetNoPort, fiveTargets,
+	};
+	const int errorCounts[] = {
+		ARGC(autoWithPeer), ARGC(groupWithPeer), ARGC(groupAlone), ARGC(groupDash), ARGC(groupEmpty), ARGC(group33),
+		ARGC(groupSpace), ARGC(groupSlash), ARGC(groupTwice), ARGC(groupMissing), ARGC(autoUpper), ARGC(autoAndPreview),
+		ARGC(discoveryPortZero), ARGC(discoveryPortHigh), ARGC(discoveryPortTwice), ARGC(discoveryPortMissing), ARGC(targetBad),
+		ARGC(targetNoPort), ARGC(fiveTargets),
+	};
+	struct NativeArcadeLinkOptions options;
+	struct NativeArcadeLinkOptions snapshot;
+
+	/* A seat without a peer: discovery mode, the port defaulting to 7001. */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(linkNoPeer), linkNoPeer, &options));
+	CHECK((options.enabled == 1) && (options.discovery == 1) && (options.localRole == NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN));
+	CHECK((options.seatPreference == NATIVE_ARCADE_LINK_SEAT_CAB1) && (options.localPort == 1u) && (options.peerCount == 0));
+	CHECK((options.hasGroup == 0) && (options.group[0] == '\0') && (options.discoveryPort == 0) && (options.discoveryTargetCount == 0));
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(linkAlone), linkAlone, &options));
+	CHECK((options.enabled == 1) && (options.discovery == 1) && (options.localRole == NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN));
+	CHECK((options.seatPreference == NATIVE_ARCADE_LINK_SEAT_CAB2) && (options.localPort == NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_LINK_PORT));
+	CHECK(NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_LINK_PORT == 7001u);
+
+	/* auto: localRole stays 0. */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(autoAlone), autoAlone, &options));
+	CHECK((options.enabled == 1) && (options.discovery == 1) && (options.localRole == 0));
+	CHECK((options.seatPreference == NATIVE_ARCADE_LINK_SEAT_AUTO) && (options.localPort == 7001u) && (options.peerCount == 0));
+
+	/* Every discovery option at once, in any order; the nonce is never parsed or changed. */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	options.discoveryNonce = UINT64_C(0x0123456789ABCDEF);
+	options.selectEntropy = UINT64_C(0xFEDCBA9876543210);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(autoFull), autoFull, &options));
+	CHECK((options.enabled == 1) && (options.discovery == 1) && (options.localRole == 0) && (options.localPort == 7301u));
+	CHECK((options.hasGroup == 1) && (strcmp(options.group, "Arcade_2.cabs-B") == 0));
+	CHECK(options.discoveryPort == 7303u);
+	CHECK(options.discoveryTargetCount == 2u);
+	CHECK((options.discoveryTargets[0].ipv4 == UINT32_C(0x7F000001)) && (options.discoveryTargets[0].port == 7304u));
+	CHECK((options.discoveryTargets[1].ipv4 == UINT32_C(0x0A000002)) && (options.discoveryTargets[1].port == 7000u));
+	CHECK(options.discoveryNonce == UINT64_C(0x0123456789ABCDEF));
+	CHECK(options.selectEntropy == UINT64_C(0xFEDCBA9876543210));
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+
+	/* The longest group (32 characters), and four targets. */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(group32), group32, &options));
+	CHECK((options.hasGroup == 1) && (strlen(options.group) == 32u));
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(fourTargets), fourTargets, &options));
+	CHECK(options.discoveryTargetCount == NATIVE_ARCADE_LINK_OPTIONS_MAX_DISCOVERY_TARGETS);
+	CHECK((options.discoveryTargets[3].ipv4 == UINT32_C(0x01000004)) && (options.discoveryTargets[3].port == 4u));
+
+	/* Static mode is today's: not discovery, seat preference as the role. */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(staticCab2), staticCab2, &options));
+	CHECK((options.enabled == 1) && (options.discovery == 0) && (options.localRole == NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN));
+	CHECK((options.seatPreference == NATIVE_ARCADE_LINK_SEAT_CAB2) && (options.localPort == 7002u) && (options.peerCount == 1u));
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+
+	/* The discovery flags alone parse (they are checked after the merge),
+	 * and ValidateMerged refuses them without discovery mode. */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(flagsOnly), flagsOnly, &options));
+	CHECK((options.enabled == 0) && (options.discovery == 0) && (options.discoveryPort == 7303u) && (options.discoveryTargetCount == 1u));
+	snapshot = options;
+	CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+	CHECK(memcmp(&options, &snapshot, sizeof(options)) == 0);
+	options.discoveryTargetCount = 0;
+	CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+	options.discoveryPort = 0;
+	options.discoveryTargetCount = 1u;
+	CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+	/* ... in static mode too, and with a preview. */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(staticCab2), staticCab2, &options));
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(flagsOnly), flagsOnly, &options));
+	CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	options.preview = NATIVE_ARCADE_LINK_PREVIEW_TITLE;
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+	options.discoveryPort = 7000u;
+	CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+	CHECK(!NativeArcadeLinkOptions_ValidateMerged(NULL));
+	/* The merge order main.c uses: the flags from argv first, then the
+	 * file's group (seat auto) applied over them; the merged result validates. */
+	{
+		char *fileGroup[] = {"arcade.cfg", "--arcade-link", "auto"};
+
+		NativeArcadeLinkOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(flagsOnly), flagsOnly, &options));
+		CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(fileGroup), fileGroup, &options));
+		CHECK((options.discovery == 1) && (options.discoveryPort == 7303u) && (options.discoveryTargetCount == 1u));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+	}
+
+	/* Errors leave the options untouched, from a sentinel and from defaults. */
+	CHECK(sizeof(errors) / sizeof(errors[0]) == sizeof(errorCounts) / sizeof(errorCounts[0]));
+	for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); i++)
+	{
+		if (!RejectsUntouched(errorCounts[i], errors[i]) || !RejectsFromDefaults(errorCounts[i], errors[i]))
+		{
+			fprintf(stderr, "discovery error case %u was accepted or wrote the options\n", (unsigned)i);
+			return 1;
+		}
+	}
 	return 0;
 }
 
@@ -573,6 +726,7 @@ int main(void)
 	CHECK(TestApplyArgsValid() == 0);
 	CHECK(TestApplyArgsErrors() == 0);
 	CHECK(TestSelectEntropyNotParsed() == 0);
+	CHECK(TestDiscoveryModes() == 0);
 	CHECK(TestFixture() == 0);
 	puts("native_arcade_link_options_test: ok");
 	return 0;

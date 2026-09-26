@@ -59,6 +59,31 @@ foreach(term IN ITEMS "socket(" "sendto(" "recvfrom(" "WSAStartup")
     ctr_require("platform/native_udp_transport.c" "${udp_source}" "${term}")
 endforeach()
 
+# Broadcast (docs/DISCOVERY_MILESTONE.md DISC-2, DISC-S3): SO_BROADCAST is
+# set only by NativeUdpTransport_EnableBroadcast, never by Open, so the link
+# socket stays unicast-only; the adapter-list API stays out of the transport
+# (platform/native_net_interfaces.c owns it).
+ctr_read_source("include/platform/native_udp_transport.h" udp_header)
+ctr_require("include/platform/native_udp_transport.h" "${udp_header}" "int NativeUdpTransport_EnableBroadcast(struct NativeUdpTransport *transport);")
+ctr_require("platform/native_udp_transport.c" "${udp_source}" "int NativeUdpTransport_EnableBroadcast(struct NativeUdpTransport *transport)")
+ctr_require("platform/native_udp_transport.c" "${udp_source}" "SO_BROADCAST")
+string(FIND "${udp_source}" "SO_BROADCAST" broadcast_at)
+string(FIND "${udp_source}" "SO_BROADCAST" broadcast_last_at REVERSE)
+if(NOT broadcast_at EQUAL broadcast_last_at)
+    message(FATAL_ERROR "udp transport isolation: SO_BROADCAST must appear exactly once in platform/native_udp_transport.c")
+endif()
+string(FIND "${udp_source}" "int NativeUdpTransport_EnableBroadcast(" enable_at)
+string(FIND "${udp_source}" "uint16_t NativeUdpTransport_LocalPort(" local_port_at)
+if(NOT (local_port_at LESS enable_at AND enable_at LESS broadcast_at))
+    message(FATAL_ERROR "udp transport isolation: SO_BROADCAST must be set inside NativeUdpTransport_EnableBroadcast, not in Open")
+endif()
+foreach(relative_path IN LISTS udp_transport_files)
+    ctr_read_source("${relative_path}" source)
+    foreach(term IN ITEMS iphlpapi GetAdaptersAddresses GetAdaptersInfo)
+        ctr_forbid("${relative_path}" "${source}" "${term}")
+    endforeach()
+endforeach()
+
 ctr_read_source("CMakeLists.txt" cmake)
 set(target ctr_native_udp_transport)
 string(FIND "${cmake}" "add_library(${target} STATIC" declare_at)

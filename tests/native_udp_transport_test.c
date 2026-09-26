@@ -90,6 +90,19 @@ int main(void)
 	for (index = 16u; index < sizeof(guarded); index++)
 		CHECK(guarded[index] == 0xAAu);
 
+	/* SO_BROADCAST: on for an open transport (twice is fine), which still
+	 * sends and receives unicast afterwards; refused on a never-opened one. */
+	CHECK(NativeUdpTransport_EnableBroadcast(&a));
+	CHECK(NativeUdpTransport_EnableBroadcast(&a));
+	CHECK(!NativeUdpTransport_EnableBroadcast(&neverOpened));
+	CHECK(!NativeUdpTransport_EnableBroadcast(NULL));
+	CHECK(NativeUdpTransport_Send(&a, &addrB, payload, sizeof(payload)));
+	receivedBytes = sizeof(received);
+	CHECK(PollReceive(&b, received, sizeof(received), &receivedBytes, &sender) ==
+		NATIVE_UDP_TRANSPORT_RECEIVE_OK);
+	CHECK(receivedBytes == sizeof(payload));
+	CHECK(sender.port == portA);
+
 	/* Send from a transport that was never Opened: fails, does not crash. */
 	CHECK(!NativeUdpTransport_Send(&neverOpened, &addrB, payload, sizeof(payload)));
 

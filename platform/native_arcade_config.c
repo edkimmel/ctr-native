@@ -6,8 +6,8 @@
 #include <stdint.h>
 #include <string.h>
 
-/* Synthetic argv: program, link, seat, port option, port, and one option-value pair per peer. */
-#define NATIVE_ARCADE_CONFIG_LINK_ARGV_MAX (5u + (2u * NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS))
+/* Synthetic argv: program, link, seat, port option, port, group option, group, and one option-value pair per peer. */
+#define NATIVE_ARCADE_CONFIG_LINK_ARGV_MAX (7u + (2u * NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS))
 
 /* Synthetic display argv: program, --render-scale=<value>, --texture-filter=<value>. */
 #define NATIVE_ARCADE_CONFIG_DISPLAY_ARGV_MAX 3u
@@ -21,6 +21,7 @@ enum NativeArcadeConfigKey
 	NATIVE_ARCADE_CONFIG_KEY_SEAT,
 	NATIVE_ARCADE_CONFIG_KEY_PORT,
 	NATIVE_ARCADE_CONFIG_KEY_PEER,
+	NATIVE_ARCADE_CONFIG_KEY_GROUP,
 	NATIVE_ARCADE_CONFIG_KEY_FULLSCREEN,
 	NATIVE_ARCADE_CONFIG_KEY_RENDER_SCALE,
 	NATIVE_ARCADE_CONFIG_KEY_TEXTURE_FILTER
@@ -56,15 +57,17 @@ static int NativeArcadeConfig_CopyValue(char *dst, size_t dstSize, const char *v
 
 /*
  * Runs the command line's own link parser over
- *   <program> --arcade-link <seat> --arcade-link-port <port> [--arcade-link-peer <peer>]...
+ *   <program> --arcade-link <seat> --arcade-link-port <port> --arcade-link-group <group> [--arcade-link-peer <peer>]...
  * with the entries that are not NULL. Returns its result; *options is only
  * written on success.
  */
-static int NativeArcadeConfig_RunLinkParser(char *seat, char *port, char *const *peers, uint32_t peerCount, struct NativeArcadeLinkOptions *options)
+static int NativeArcadeConfig_RunLinkParser(char *seat, char *port, char *group, char *const *peers, uint32_t peerCount,
+                                            struct NativeArcadeLinkOptions *options)
 {
 	char program[] = NATIVE_ARCADE_CONFIG_DEFAULT_NAME;
 	char linkOption[] = "--arcade-link";
 	char portOption[] = "--arcade-link-port";
+	char groupOption[] = "--arcade-link-group";
 	char peerOption[] = "--arcade-link-peer";
 	char *argv[NATIVE_ARCADE_CONFIG_LINK_ARGV_MAX];
 	int argc = 0;
@@ -84,6 +87,11 @@ static int NativeArcadeConfig_RunLinkParser(char *seat, char *port, char *const 
 		argv[argc++] = portOption;
 		argv[argc++] = port;
 	}
+	if (group != NULL)
+	{
+		argv[argc++] = groupOption;
+		argv[argc++] = group;
+	}
 	for (uint32_t i = 0; i < peerCount; i++)
 	{
 		argv[argc++] = peerOption;
@@ -93,8 +101,13 @@ static int NativeArcadeConfig_RunLinkParser(char *seat, char *port, char *const 
 }
 
 /*
- * Checks one link value in isolation with the command line's parser: the
- * other two members of the group are fixed known-good samples.
+ * Checks one link value in isolation with the command line's parser, in a
+ * group that is valid for every good value (DISC-11):
+ *   seat:  <seat> with a sample port and no peer (discovery mode, which
+ *          takes cab1, cab2, and auto alike);
+ *   port:  a sample seat and peer with <port> (static mode);
+ *   peer:  a sample seat and port with <peer> (static mode);
+ *   group: a sample seat with <group> and no peer (discovery mode).
  */
 static int NativeArcadeConfig_LinkValueAccepted(enum NativeArcadeConfigKey key, char *value)
 {
@@ -102,11 +115,13 @@ static int NativeArcadeConfig_LinkValueAccepted(enum NativeArcadeConfigKey key, 
 	char samplePort[] = "1";
 	char samplePeer[] = "127.0.0.1:1";
 	char *peer = (key == NATIVE_ARCADE_CONFIG_KEY_PEER) ? value : samplePeer;
+	const int discoveryProbe = (key == NATIVE_ARCADE_CONFIG_KEY_SEAT) || (key == NATIVE_ARCADE_CONFIG_KEY_GROUP);
 	struct NativeArcadeLinkOptions probe;
 
 	NativeArcadeLinkOptions_SetDefaults(&probe);
 	return NativeArcadeConfig_RunLinkParser((key == NATIVE_ARCADE_CONFIG_KEY_SEAT) ? value : sampleSeat,
-	                                        (key == NATIVE_ARCADE_CONFIG_KEY_PORT) ? value : samplePort, &peer, 1u, &probe);
+	                                        (key == NATIVE_ARCADE_CONFIG_KEY_PORT) ? value : samplePort, (key == NATIVE_ARCADE_CONFIG_KEY_GROUP) ? value : NULL,
+	                                        &peer, discoveryProbe ? 0u : 1u, &probe);
 }
 
 /*
@@ -215,6 +230,10 @@ static enum NativeArcadeConfigKey NativeArcadeConfig_LookupKey(const char *key)
 	{
 		return NATIVE_ARCADE_CONFIG_KEY_PEER;
 	}
+	if (strcmp(key, "group") == 0)
+	{
+		return NATIVE_ARCADE_CONFIG_KEY_GROUP;
+	}
 	if (strcmp(key, "fullscreen") == 0)
 	{
 		return NATIVE_ARCADE_CONFIG_KEY_FULLSCREEN;
@@ -281,7 +300,8 @@ static uint32_t NativeArcadeConfig_ParseLine(char *line, struct NativeArcadeConf
 		return NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY;
 	}
 	if (((keyID == NATIVE_ARCADE_CONFIG_KEY_DATA_DIR) && config->hasDataDir) || ((keyID == NATIVE_ARCADE_CONFIG_KEY_SEAT) && config->hasSeat) ||
-	    ((keyID == NATIVE_ARCADE_CONFIG_KEY_PORT) && config->hasPort) || ((keyID == NATIVE_ARCADE_CONFIG_KEY_FULLSCREEN) && config->hasFullscreen) ||
+	    ((keyID == NATIVE_ARCADE_CONFIG_KEY_PORT) && config->hasPort) || ((keyID == NATIVE_ARCADE_CONFIG_KEY_GROUP) && config->hasGroup) ||
+	    ((keyID == NATIVE_ARCADE_CONFIG_KEY_FULLSCREEN) && config->hasFullscreen) ||
 	    ((keyID == NATIVE_ARCADE_CONFIG_KEY_RENDER_SCALE) && config->hasRenderScale) ||
 	    ((keyID == NATIVE_ARCADE_CONFIG_KEY_TEXTURE_FILTER) && config->hasTextureFilter))
 	{
@@ -337,6 +357,7 @@ static uint32_t NativeArcadeConfig_ParseLine(char *line, struct NativeArcadeConf
 	case NATIVE_ARCADE_CONFIG_KEY_SEAT:
 	case NATIVE_ARCADE_CONFIG_KEY_PORT:
 	case NATIVE_ARCADE_CONFIG_KEY_PEER:
+	case NATIVE_ARCADE_CONFIG_KEY_GROUP:
 	{
 		if ((keyID == NATIVE_ARCADE_CONFIG_KEY_PEER) && (config->peerCount >= NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS))
 		{
@@ -347,7 +368,8 @@ static uint32_t NativeArcadeConfig_ParseLine(char *line, struct NativeArcadeConf
 			return NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE;
 		}
 		/* An accepted value always fits: a seat is 4 characters, a port
-		 * at most 5 digits, a peer at most 21 characters. */
+		 * at most 5 digits, a peer at most 21 characters, a group at most
+		 * 32. */
 		if (keyID == NATIVE_ARCADE_CONFIG_KEY_SEAT)
 		{
 			if (!NativeArcadeConfig_CopyValue(config->seat, sizeof(config->seat), value))
@@ -363,6 +385,14 @@ static uint32_t NativeArcadeConfig_ParseLine(char *line, struct NativeArcadeConf
 				return NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE;
 			}
 			config->hasPort = 1;
+		}
+		else if (keyID == NATIVE_ARCADE_CONFIG_KEY_GROUP)
+		{
+			if (!NativeArcadeConfig_CopyValue(config->group, sizeof(config->group), value))
+			{
+				return NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE;
+			}
+			config->hasGroup = 1;
 		}
 		else
 		{
@@ -485,7 +515,7 @@ int NativeArcadeConfig_Parse(const char *text, size_t size, struct NativeArcadeC
 
 int NativeArcadeConfig_HasLink(const struct NativeArcadeConfig *config)
 {
-	return (config != NULL) && ((config->hasSeat != 0) || (config->hasPort != 0) || (config->peerCount != 0));
+	return (config != NULL) && ((config->hasSeat != 0) || (config->hasPort != 0) || (config->peerCount != 0) || (config->hasGroup != 0));
 }
 
 int NativeArcadeConfig_ApplyLink(const struct NativeArcadeConfig *config, struct NativeArcadeLinkOptions *options)
@@ -503,7 +533,8 @@ int NativeArcadeConfig_ApplyLink(const struct NativeArcadeConfig *config, struct
 	{
 		peers[i] = copy.peers[i];
 	}
-	return NativeArcadeConfig_RunLinkParser((copy.hasSeat != 0) ? copy.seat : NULL, (copy.hasPort != 0) ? copy.port : NULL, peers, copy.peerCount, options);
+	return NativeArcadeConfig_RunLinkParser((copy.hasSeat != 0) ? copy.seat : NULL, (copy.hasPort != 0) ? copy.port : NULL,
+	                                        (copy.hasGroup != 0) ? copy.group : NULL, peers, copy.peerCount, options);
 }
 
 int NativeArcadeConfig_ApplyDisplay(const struct NativeArcadeConfig *config, struct NativeDisplayConfig *display)
@@ -550,7 +581,7 @@ const char *NativeArcadeConfig_ErrorText(uint32_t error)
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY:
 	{
-		return "unknown key (expected data_dir, seat, port, peer, fullscreen, render_scale, or texture_filter)";
+		return "unknown key (expected data_dir, seat, port, peer, group, fullscreen, render_scale, or texture_filter)";
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_DUPLICATE_KEY:
 	{
@@ -562,7 +593,7 @@ const char *NativeArcadeConfig_ErrorText(uint32_t error)
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE:
 	{
-		return "invalid value (seat: cab1 or cab2; port: 1-65535; peer: a.b.c.d:port; fullscreen: 0, 1, yes, no, true, or false; render_scale: 1, 2, 3, 4, 6, or 8; texture_filter: nearest or bilinear)";
+		return "invalid value (seat: cab1, cab2, or auto; port: 1-65535; peer: a.b.c.d:port; group: 1-32 letters, digits, dots, underscores, or hyphens, not starting with a hyphen; fullscreen: 0, 1, yes, no, true, or false; render_scale: 1, 2, 3, 4, 6, or 8; texture_filter: nearest or bilinear)";
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_TOO_MANY_PEERS:
 	{
@@ -570,7 +601,7 @@ const char *NativeArcadeConfig_ErrorText(uint32_t error)
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE:
 	{
-		return "incomplete link group: seat, port, and at least one peer must all be set, or none of them";
+		return "incomplete link group: port, peer, and group need seat; peer needs seat cab1 or cab2 and port, and excludes group";
 	}
 	default:
 	{
@@ -598,8 +629,11 @@ int NativeArcadeConfig_ParseArgs(int argc, char *argv[], struct NativeArcadeConf
 		{
 			return 0;
 		}
+		/* The link group's own options only: the discovery flags
+		 * (--arcade-discovery-port, --arcade-discovery-target) are not
+		 * among them (DISC-11), so argv naming them keeps the file's group. */
 		if ((strcmp(arg, "--arcade-link") == 0) || (strcmp(arg, "--arcade-link-port") == 0) || (strcmp(arg, "--arcade-link-peer") == 0) ||
-		    (strcmp(arg, "--arcade-link-preview") == 0))
+		    (strcmp(arg, "--arcade-link-group") == 0) || (strcmp(arg, "--arcade-link-preview") == 0))
 		{
 			candidate.namesLinkOption = 1;
 			continue;

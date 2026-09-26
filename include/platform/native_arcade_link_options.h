@@ -12,20 +12,38 @@
  *
  * Host options are host-local launch configuration, never match identity:
  *
- *   --arcade-link cab1|cab2          enable the link as cabinet 1 or 2
+ *   --arcade-link cab1|cab2|auto     enable the link as cabinet 1 or 2, or
+ *                                    with the seat left to discovery
  *   --arcade-link-port N             local port, decimal 1..65535
  *   --arcade-link-peer a.b.c.d:port  one candidate peer; repeatable, up to
  *                                    NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS
+ *   --arcade-link-group name         discovery group (DISC-9)
  *   --arcade-link-preview name       drive one screen with no socket
+ *   --arcade-discovery-port N        discovery bind port, 1..65535 (DISC-18)
+ *   --arcade-discovery-target a.b.c.d:port
+ *                                    one explicit beacon target; repeatable,
+ *                                    up to NATIVE_ARCADE_LINK_OPTIONS_MAX_DISCOVERY_TARGETS
  *
  * Parsing is transactional: on any error the caller's options are left
- * untouched. Arguments that are not one of these four options are ignored,
+ * untouched. Arguments that are not one of these options are ignored,
  * because other host parsers own them. An option whose value is missing (end
  * of argv, a NULL entry, or a next argument starting with '-') is an error.
- * After the scan, an enabled link needs a port and at least one peer and may
- * not also request a preview; a port or peer without --arcade-link is an
- * error, since it would otherwise be silently ignored. A preview on its own
- * is valid.
+ * Every option but the peer and the discovery target may be given once.
+ *
+ * After the scan (docs/DISCOVERY_MILESTONE.md DISC-11):
+ * - Static mode, a peer given: the seat must be cab1 or cab2 and the port is
+ *   required, and no group may be given (it would be silently ignored).
+ * - Discovery mode, --arcade-link without a peer: seat cab1, cab2, or auto
+ *   (cab1 and cab2 become the beacon's seat preference); the port is
+ *   optional and defaults to NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_LINK_PORT;
+ *   the group is optional (NATIVE_ARCADE_DISCOVERY_DEFAULT_GROUP when
+ *   unset, applied by the consumer).
+ * - An enabled link may not also request a preview. A port, peer, or group
+ *   without --arcade-link is an error. A preview on its own is valid.
+ * The two discovery flags are parsed here but checked only after the
+ * config file's link group has been merged, by
+ * NativeArcadeLinkOptions_ValidateMerged (DISC-18): they are not link-group
+ * options, so argv naming them does not make the file's link group ignored.
  *
  * The fixture is the one race both cabinets propose (UX-8). It is fixed by
  * the build rather than chosen per cabinet, because the link handshake is
@@ -52,6 +70,17 @@
  */
 
 #define NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS 8u
+
+/* Discovery (docs/DISCOVERY_MILESTONE.md DISC-11, DISC-18). */
+#define NATIVE_ARCADE_LINK_OPTIONS_MAX_DISCOVERY_TARGETS  4u
+#define NATIVE_ARCADE_LINK_OPTIONS_GROUP_BYTES            33u   /* 32 characters and the NUL */
+#define NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_LINK_PORT      7001u /* discovery mode without a port */
+#define NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_DISCOVERY_PORT 7000u /* discoveryPort 0, applied at use */
+
+/* seatPreference values; the same numbers as the beacon's seat preference. */
+#define NATIVE_ARCADE_LINK_SEAT_AUTO 0u
+#define NATIVE_ARCADE_LINK_SEAT_CAB1 1u
+#define NATIVE_ARCADE_LINK_SEAT_CAB2 2u
 
 /* Frozen fixture values (UX-8). */
 #define NATIVE_ARCADE_LINK_FIXTURE_TRACK_ID 3u /* CRASH_COVE in include/namespace_Level.h */
@@ -100,7 +129,7 @@ struct NativeArcadeLinkPeer
 struct NativeArcadeLinkOptions
 {
 	uint8_t enabled;   /* --arcade-link given */
-	uint8_t localRole; /* NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN or _CAB2_HUMAN when enabled, else 0 */
+	uint8_t localRole; /* NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN or _CAB2_HUMAN for cab1 or cab2, else 0 (auto included) */
 	uint16_t localPort;
 	uint32_t peerCount;
 	struct NativeArcadeLinkPeer peers[NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS];
@@ -113,15 +142,38 @@ struct NativeArcadeLinkOptions
 	 * nonces and so the agreed masterSeed. Previews and default runs never
 	 * read it. */
 	uint64_t selectEntropy;
+	/* Discovery (docs/DISCOVERY_MILESTONE.md DISC-11, DISC-13, DISC-18). */
+	uint8_t seatPreference; /* NATIVE_ARCADE_LINK_SEAT_*: auto, cab1, or cab2; 0 when disabled */
+	uint8_t discovery;      /* 1 when enabled with no peer (discovery mode), else 0 */
+	uint8_t hasGroup;       /* --arcade-link-group given */
+	char group[NATIVE_ARCADE_LINK_OPTIONS_GROUP_BYTES]; /* NUL-terminated when hasGroup, else empty */
+	uint16_t discoveryPort; /* --arcade-discovery-port, or 0 for NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_DISCOVERY_PORT */
+	uint16_t discoveryReserved;
+	uint32_t discoveryTargetCount;
+	struct NativeArcadeLinkPeer discoveryTargets[NATIVE_ARCADE_LINK_OPTIONS_MAX_DISCOVERY_TARGETS];
+	uint32_t discoveryReserved2;
+	/* The discovery instance nonce (DISC-13). Like selectEntropy, never
+	 * parsed from argv: ApplyArgs leaves it unchanged and SetDefaults zeroes
+	 * it; main.c fills it for a discovery-mode run only. Not match identity. */
+	uint64_t discoveryNonce;
 };
 
 /* NULL is a no-op. Otherwise zeroes the options: disabled, preview NONE,
- * selectEntropy 0. */
+ * selectEntropy and discoveryNonce 0, no group, no discovery flags. */
 void NativeArcadeLinkOptions_SetDefaults(struct NativeArcadeLinkOptions *options);
 
 /* Returns 1 and updates *options on success; 0 with *options untouched
- * otherwise. selectEntropy is never read or changed. */
+ * otherwise. selectEntropy and discoveryNonce are never read or changed. */
 int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcadeLinkOptions *options);
+
+/*
+ * The post-merge check (DISC-18), run after argv and the config file's link
+ * group have both been applied: --arcade-discovery-port and
+ * --arcade-discovery-target need discovery mode, since they would otherwise
+ * be silently ignored. Returns 1 when the options are consistent, 0 for
+ * NULL or a discovery flag without discovery mode. Never writes.
+ */
+int NativeArcadeLinkOptions_ValidateMerged(const struct NativeArcadeLinkOptions *options);
 
 /*
  * Strict "a.b.c.d:port": four decimal octets 0..255 of 1-3 digits, one ':',
