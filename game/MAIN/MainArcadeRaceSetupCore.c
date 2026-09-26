@@ -156,11 +156,20 @@ int MainArcadeRaceSetupCore_Arm(struct MainArcadeRaceSetupCore *core, const stru
 	 * marked (OPTIONS_LOADED): the live volumes, stereo mode, data.rwd, and
 	 * vibration bits stay as they are, and any later retail options load
 	 * becomes its retail no-op, the state Launch requires. With a save loaded
-	 * the flag is already set and nothing is written. */
+	 * the flag is already set and nothing is written. A flag of 0 cannot be
+	 * told apart from a boot memcard load (RefreshCard.c) that has not finished
+	 * yet; that ordering is not reachable in practice, since the link handshake
+	 * and title-menu wait take far longer than the file-backed boot load, and if
+	 * it did happen the cabinet would run with its live settings for the
+	 * session. optionsMarked is set only when the op was actually pushed (an
+	 * overflow resets opCount to 0 and Launch fails closed either way). */
 	if (optionsLoaded == 0u)
 	{
 		MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_OPTIONS_LOADED, 0u, 1);
-		outcome->optionsMarked = 1u;
+		if (outcome->opCount != 0u)
+		{
+			outcome->optionsMarked = 1u;
+		}
 	}
 	MainArcadeRaceSetupCore_Enter(core, MAIN_ARCADE_RACE_SETUP_ARMED, outcome);
 	outcome->result = 1u;

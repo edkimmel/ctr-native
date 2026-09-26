@@ -146,6 +146,9 @@ const struct NativeDeterministicRngBankV1 *MainArcadeRaceSetup_Bank(void);
  * restored, since gameMode1 is in the canonical control domain and must not
  * change under a running race; the drop is logged, and the bits stay at the
  * plan's pinned 0 (rumble enabled on every pad) until the owner changes them.
+ * The options-loaded flag Arm may mark is deliberately not restored (unlike
+ * the vibration bits): it is a one-time retail latch, and leaving it at 1
+ * matches a cabinet that loaded a save.
  */
 void MainArcadeRaceSetup_Disarm(void);
 
