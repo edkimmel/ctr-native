@@ -518,7 +518,13 @@ superseded by match select, as its entry says.
    ticks (5 s) and a HELLO retransmit every tick, as the peer-link contract
    requires (Retransmit before Poll on every tick while HANDSHAKING); the
    adapter only accepts a retransmit interval of 1. A REJECTED handshake is
-   never retried automatically.
+   never retried automatically. Since the solo-cabinet milestone
+   (docs/SOLO_CAB_MILESTONE.md, SOLO-2, gate on since SOLO-S4) a linked
+   cabinet with a silent peer is no longer stuck on the LOBBY: after 90
+   ticks (3 s) of not hearing the peer it offers a solo race (one human,
+   seven bots), and the lobby keeps retrying as above until the player
+   takes it. During solo the cabinet only listens (SOLO-4); the two
+   cabinets link from the LOBBY, which solo RESULTS offers as a row.
 6. UX-6: An in-race link failure outranks a same-tick race finish, because a
    desynced or dropped race's standings cannot be trusted.
 7. UX-7: A rematch needs both players to choose REMATCH, and REMATCH is the
@@ -567,10 +573,11 @@ shows most of the screen, including the whole panel rectangle, as white or
 transparent with only fragments of the title art. That is a viewing
 artefact, not a rendering bug; review the RGB only.
 
-The recommended path is one command. It renders all 17 previews (the 12
-screens of section 2.4 and the five match-select screens) plus the default
-path in parallel (measured runs of the 17 previews plus the default took
-about 45 to 48 seconds wall time in ctest), captures frame 1320 of
+The recommended path is one command. It renders all 21 previews (the 12
+screens of section 2.4, the five match-select screens, and the four solo
+screens of docs/SOLO_CAB_MILESTONE.md SOLO-S3) plus the default path in
+parallel (measured runs of the 17 previews before the solo ones, plus the
+default, took about 45 to 48 seconds wall time in ctest), captures frame 1320 of
 each, checks each capture with the RGB checker, and with -Png writes
 alpha-stripped review PNGs. -OutputDirectory must be an absolute path:
 
@@ -1199,10 +1206,12 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
     the dark panel. On the results screens the EXIT row overlaps the title
     art's CTR logo and TM mark behind the translucent panel; it is still
     legible.
-14. The preview capture checker covers all 17 preview screens, including
-    the five match-select screens. Its limits are unchanged in kind: it
-    cannot tell apart screens that share a layout (the four results
-    screens, exit and exit-opponent-left, lobby and lobby-connecting, and
+14. The preview capture checker covers all 21 preview screens, including
+    the five match-select screens and the four solo screens
+    (docs/SOLO_CAB_MILESTONE.md SOLO-S3). Its limits are unchanged in
+    kind: it cannot tell apart screens that share a layout (the four
+    linked results screens and results-solo-error, exit and
+    exit-opponent-left, lobby and lobby-connecting, and
     select screens beyond their band structure). It does not check title
     wording or colour. Its thresholds were calibrated on 800x600
     nearest-filter captures only.

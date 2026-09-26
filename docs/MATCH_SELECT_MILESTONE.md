@@ -152,7 +152,8 @@ ctr_native_sha256 only).
   minus 1 (CAB1 -> 0, CAB2 -> 1; indices 2 and 3 are reserved for step 8).
   humanCount is 1..4 in this module and on the wire. NativeMatchConfigV1
   has only two human roles, so building a config supports humanCount 2
-  (profile ARCADE_TWO_CAB) only, until step 8.
+  (profile ARCADE_TWO_CAB) and humanCount 1 (profile ARCADE_ONE_CAB, the
+  solo select of docs/SOLO_CAB_MILESTONE.md SOLO-5) only, until step 8.
 - Tables: the base characters 0..7; the 16 base tracks in retail menu order
   (section 1); the lap options {3, 5, 7}; the seven retail 2P AI sets,
   mirrored, with an isolation test that checks the mirror against
@@ -185,7 +186,10 @@ ctr_native_sha256 only).
   Every ordered pair of distinct base characters has such a set; the unit
   test checks all of them exhaustively. For 3-4 humans there is no retail
   set; the provisional rule is ascending unpicked base characters, to be
-  revisited at step 8.
+  revisited at step 8. For one human on a ONE_CAB base (seven bots) that
+  rule gives exactly the retail 1P bots (LOAD_Robots1P); the solo config
+  is still checked against the bot rules and fails closed
+  (docs/SOLO_CAB_MILESTONE.md SOLO-6, risk 2).
 - Outcome: masterSeed, trackID, lapCount, per-human characterID, per-bot
   characterID, and the flags trackDrawn, lapsDrawn, and
   characterReassignedMask.
@@ -197,8 +201,9 @@ ctr_native_sha256 only).
   Everything else (profile, tick rate, identity, difficulty, bot rules,
   gameMode and rules) is unchanged. The result must pass
   NativeMatchConfigV1_Validate. NativeMatchSelect_BuildConfig also requires
-  humanCount to equal the base's number of human-role slots (so only 2
-  builds today) and rejects any outcome Resolve cannot produce: tracks,
+  humanCount to equal the base's number of human-role slots (so only 2 on
+  ARCADE_TWO_CAB and 1 on ARCADE_ONE_CAB build today) and rejects any
+  outcome Resolve cannot produce: tracks,
   laps, or characters outside the tables, duplicate or stray characters, a
   stale or zero seed, reassignment bit 0, and, for two humans and four bots,
   anything but the first qualifying retail 2P AI set in set order.
@@ -434,6 +439,20 @@ The adapter owns one select session.
 - NativeArcadeNetplay_AgreedConfig is non-NULL on RACING, and on RESULTS
   only after START_RACE armed a race on it. A RESULTS screen reached
   without a race reads NULL.
+- Solo select (docs/SOLO_CAB_MILESTONE.md SOLO-5, SOLO-6, SOLO-14; since
+  SOLO-S2, live since SOLO-S4). BEGIN_SOLO_SELECT closes the lobby, opens
+  the listen-only link, and starts a one-human session (humanCount 1,
+  localHuman 0 on either seat) on the ONE_CAB solo base the link host
+  builds. The cursors start on the base's CAB1_HUMAN character, track, and
+  laps, except that on the cab2 seat the character cursor starts on the
+  TWO_CAB fixture's CAB2_HUMAN character; RACE AGAIN starts on the previous
+  solo picks (OD-3). Nothing is sent: with no peer the session confirms on
+  the tick it resolves, and SEL-9 peer silence never fires. There is no
+  relink and no launch agreement: START_SOLO_RACE builds the ONE_CAB race
+  config with NativeMatchSelect_BuildConfig on the solo base and the
+  outcome. AgreedConfig stays NULL in solo; NativeArcadeNetplay_SoloConfig
+  answers instead, and the host returns it only through the bot rules'
+  fail-closed check.
 
 ### 2.7 Host, options, preview, logging
 

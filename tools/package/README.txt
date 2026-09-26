@@ -85,3 +85,16 @@ with a message naming the file and, where there is one, the line. Startup
 errors, such as that one or "arcade link requires a known build and
 content identity.", are on the console only, not in the log. After a
 double-click the console stays open on an error until Enter is pressed.
+
+Solo race
+---------
+A player can race when the other cabinet is off or sits on its attract
+title. After START the cabinet shows CONNECTING; after about 3 s without
+an answer it shows WAITING FOR OTHER CABINET and PRESS START TO RACE
+SOLO. START or CROSS (on a G29 also the throttle pedal) then starts a
+one-player race against 7 bots: pick a character, a track and the laps,
+then race. RESULTS offers RACE AGAIN and LOBBY; left alone for 30 s it
+returns to the attract title. OTHER CABINET IS READY on RESULTS means the
+other cabinet's player is in its LOBBY: choose LOBBY, and from the LOBBY
+the two cabinets link as before. Solo needs no setting: arcade.cfg has no
+key for it.

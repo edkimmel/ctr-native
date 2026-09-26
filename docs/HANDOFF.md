@@ -58,7 +58,10 @@ Integration order:
    and comparing live V4 digests every race tick; a rematch launches the
    next race in the same process. The two-process gate
    (`arcade_link_launch`) proves three linked races live on one machine
-   over loopback. Physical two-cabinet validation remains open before
+   over loopback. A linked cabinet whose peer is not heard offers a solo
+   race (one human, seven bots) from its LOBBY and links again from the
+   LOBBY afterwards (`docs/SOLO_CAB_MILESTONE.md`; live test
+   `arcade_solo_race`). Physical two-cabinet validation remains open before
    steps 6-7.
 5. Failure handling, results, and rematch — stall-timeout policy, peer-drop
    roster, and rematch config builder complete and fault-tested against
@@ -197,7 +200,7 @@ Integration order:
   projects both relative to race tick 0.
 - **Live V4 projection (LR-10).** `game/MAIN/MainArcadeRaceDigest` is the
   one live caller of the V4 runtime (`MainCanonicalRuntime`). On every
-  race tick of a linked race it projects race-relative control, the
+  race tick of a linked or solo race it projects race-relative control, the
   retail RNGs, the post-setup bank, the four pads the tick read, the
   complete drivers (Physics included), and WORLD (the world-counter and
   mine-registry extractors, compiled into `ctr_native` through the unity
@@ -252,8 +255,8 @@ Integration order:
   race run with host-local fixed VBlank pacing
   (`Platform_SetFixedVBlankPacing`), so a late host frame emits no
   catch-up VBlanks and every race tick emits exactly 2. `main.c` turns it
-  on for the proof; the arcade-link host turns it on for a linked race on
-  the Launch frame (`NativeArcadeLinkHost_RaceBegin`) and off on the
+  on for the proof; the arcade-link host turns it on for a linked or solo
+  race on the Launch frame (`NativeArcadeLinkHost_RaceBegin`) and off on the
   Disarm frame and at shutdown, touching only a pacing it turned on. Every
   other run keeps the default catch-up pacing, in which a late frame
   raises `elapsedTimeMS` and so changes the race. Each extra VBlank also
@@ -499,6 +502,31 @@ the arcade-link screens and host adapter exist and are tested on top of it
   across the two, and each race's config different from the one before.
   Each cabinet writes one frame capture in race 1 (retail imagery, never
   committed).
+- **Solo race** (`docs/SOLO_CAB_MILESTONE.md`, defaults SOLO-1..SOLO-18;
+  on in production). A LINK cabinet whose lobby has not heard the peer
+  (WAITING, CONNECTING, or LOST) for 90 ticks (3 s) since entering the
+  LOBBY shows WAITING FOR OTHER CABINET and PRESS START TO RACE SOLO;
+  START or CROSS begins solo. The lobby link closes and the peer link
+  opens listen-only on the link port: it sends nothing and latches
+  `peerHeard` on a handshake HELLO from the configured peer, so a woken
+  peer stays in its own LOBBY. A one-human match select on a ONE_CAB base
+  (localHuman 0 on either seat) builds the ONE_CAB race config, which the
+  host returns only through the bot rules' fail-closed check. The race
+  caller arms the agreed config or else the solo config through the one
+  Arm and Launch, and the race runs on the race drive's local mode with
+  the linked pacing and end rules: pad 0 the local sample on the same
+  race tick, no session, bundle, digest exchange, or hold. Solo RESULTS
+  has RACE AGAIN and LOBBY (the idle timeout goes to the title), shows RACE
+  ERROR for a local failure, and OTHER CABINET IS READY once the peer was
+  heard; from the LOBBY the cabinets link as before. Solo state is
+  host-local: nothing about it enters simulation identity, replay, or
+  canonical state beyond the config's ONE_CAB profile. The internal
+  `--arcade-link-autopilot-solo` drives one solo race for the live test
+  `arcade_solo_race` (`tools/arcade-solo-race-check.ps1`: two independent
+  one-cabinet processes on ports 7201-7204 with silent peers, a
+  900-race-tick cap, each ending FINISHED and back in the LOBBY). No live
+  test covers a peer that wakes during solo and then links (unit-tested
+  only).
 - None of this has been exercised over real two-cabinet LAN hardware or with
   a real G29 (only two real OS processes on one machine over loopback); that
   remains open before step 6.
@@ -535,7 +563,7 @@ ctest --test-dir build-msvc-x86 -C Debug -L live-link --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-roster -j 8 --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-render --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-package --output-on-failure
-# Milestone gate, once before the work is done: the full suite (168 tests).
+# Milestone gate, once before the work is done: the full suite (169 tests).
 ctest --test-dir build-msvc-x86 -C Debug -j 8 --output-on-failure
 ```
 
@@ -549,20 +577,23 @@ tree sets the test labels per configuration, so without `-C` the label
 filters select nothing (`-L`) or everything (`-LE`). LF-to-CRLF warnings
 are benign.
 
-Five tests carry the ctest label `live` plus one area label:
+Six tests carry the ctest label `live` plus one area label:
 `arcade_link_preview_render` (`live-render`, about 47 s),
 `arcade_roster_determinism_two_cab` and `arcade_roster_determinism_one_cab`
 (`live-roster`, about 273 s each), `arcade_link_launch` (`live-link`, about
-242 s), and `package_arcade_smoke` (`live-package`, about 242 s).
-`ctest -LE live` excludes all five; the default run includes them. They are
+242 s), `arcade_solo_race` (`live-link`, about 87 s), and
+`package_arcade_smoke` (`live-package`, about 242 s).
+`ctest -LE live` excludes all six; the default run includes them. They are
 parallel-safe (no RUN_SERIAL or RESOURCE_LOCK). Measured in Debug: the fast
-suite (163 tests) takes 86 s serial and 36 s with `-j 8`, and all five live
-tests together with `-L live -j 8` take 273 s (the old serial full suite
+suite (163 tests) takes 86 s serial and 36 s with `-j 8`, and the five live
+tests other than `arcade_solo_race` together with `-L live -j 8` take 273 s
+(`arcade_solo_race` is not in that measurement; the old serial full suite
 took about 605 s); `-j 16` gave the fast suite no gain over `-j 8`. Each
 live test writes only under its own directory of the build tree, and the
-two link gates use distinct loopback ports (`arcade_link_launch` 7101 and
-7102, `package_arcade_smoke` the package's 7001 and 7002; the fast suite's
-socket tests use 48000-48600).
+three link gates use distinct loopback ports (`arcade_link_launch` 7101 and
+7102, `package_arcade_smoke` the package's 7001 and 7002,
+`arcade_solo_race` 7201-7204; the fast suite's socket tests use
+48000-48600).
 Runs from the build tree still read the repository's `memcards\` and write
 the gitignored `Crash Team Racing.log` in the repository root (shared,
 diagnostic only, never read by a check). All live tests are Windows only
@@ -570,7 +601,7 @@ and skip (77) when `assets/ctr-u.bin` is absent, no display is available,
 or the build rejects the internal-only option they use. A skip is not a
 pass.
 
-The `arcade_link_preview_render` test renders all 17 arcade-link previews
+The `arcade_link_preview_render` test renders all 21 arcade-link previews
 with `ctr_native.exe` and checks each capture (the game's own window
 framebuffer, not the desktop), under
 `build-msvc-x86\arcade_link_preview_captures\<config>`. The two
@@ -594,7 +625,15 @@ under `build-msvc-x86\arcade_link_launch\<config>`; the checker's own
 limit is 780 s and ctest's TIMEOUT 900 s. The `package_arcade_smoke` test
 (docs/PACKAGING.md "Package smoke gate") runs the same gate on a staged
 package copy under `build-msvc-x86\package_smoke\<config>`, with the
-package's config files.
+package's config files. The `arcade_solo_race` test runs
+`tools/arcade-solo-race-check.ps1` (docs/SOLO_CAB_MILESTONE.md SOLO-S4):
+two independent one-cabinet processes at once, cab1 on port 7201 pointing
+at 7202 and cab2 on 7203 pointing at 7204 (nothing listens on 7202 or
+7204), each driven by `--arcade-link-autopilot-solo` through one solo race
+with a 900-race-tick cap, which must end FINISHED and return to the LOBBY.
+Like `arcade_link_launch` it skips without a known build identity. It
+writes under `build-msvc-x86\arcade_solo_race\<config>`; the checker's
+own limit is 300 s and ctest's TIMEOUT 420 s.
 
 `ctr_native.exe` needs a connected desktop session with a display. Without
 one, platform init fails, the SDL error is logged, and the exe exits 1. SDL
@@ -637,6 +676,9 @@ See `docs/PACKAGING.md` (decisions PK-1..PK-10).
   (extracted files beside it override the disc image unhashed; PK-6).
   `arcade.cfg`, `memcards\`, and the log are
   per-cabinet and stay out of any folder sync (PK-10).
+- The operator card and `docs/PACKAGING.md` "Solo race" describe the solo
+  race of a cabinet whose other cabinet is off; it needs no `arcade.cfg`
+  key, and none exists.
 
 ## Key files
 
@@ -701,7 +743,8 @@ See `docs/PACKAGING.md` (decisions PK-1..PK-10).
   `include/platform/native_arcade_link_autopilot.h` (options, steering,
   fault injections, three-race decisions, report);
   `game/MAIN/MainArcadeLinkAutopilot.{c,h}` (glue);
-  `tools/arcade-link-launch-check.ps1` (checker).
+  `tools/arcade-link-launch-check.ps1` (checker);
+  `tools/arcade-solo-race-check.ps1` (the solo live test's checker).
 - In-race lockstep drive (Task 8): `platform/native_arcade_race_drive.c`,
   `include/platform/native_arcade_race_drive.h` (pure drive core, library
   `ctr_native_arcade_race_drive`); the drive glue and `RaceBegin`,
@@ -761,7 +804,7 @@ See `docs/PACKAGING.md` (decisions PK-1..PK-10).
   (RGB-only BMP checker for arcade-link preview captures);
   `tools/arcade_link_capture_check.c` (CLI
   `ctr_native_arcade_link_capture_check <capture.bmp> <screen>`);
-  `tools/arcade-link-preview-check.ps1` (renders and checks all 17 previews
+  `tools/arcade-link-preview-check.ps1` (renders and checks all 21 previews
   plus the default path; `-Png` writes alpha-stripped review PNGs, since the
   capture alpha byte is the PS1 mask bit).
 - Startup robustness: `platform/native_sdl_assert.c`,
@@ -780,7 +823,7 @@ See `docs/PACKAGING.md` (decisions PK-1..PK-10).
   `docs/GAME_LOOP_UI_MILESTONE.md`, `docs/MATCH_SELECT_MILESTONE.md`,
   `docs/ROSTER_MILESTONE.md`, `docs/RACE_LAUNCH_MILESTONE.md`,
   `docs/LOCKSTEP_MILESTONE.md`, `docs/LOCKSTEP_RACE_MILESTONE.md`,
-  `docs/PACKAGING.md`.
+  `docs/SOLO_CAB_MILESTONE.md`, `docs/PACKAGING.md`.
 
 ## Rules and constraints
 

@@ -25,7 +25,8 @@ mode bit, cheat bits included, through the seam.
 
 Out of scope: in-race lockstep (Task 8); live V4 projection; deterministic
 VBlank pacing for linked races (ROSTER risk 7, Task 8); a ONE_CAB lobby and
-UI flow (a separate follow-up, ROSTER risk 14); physical two-cabinet
+UI flow (a separate follow-up, ROSTER risk 14, since done by
+docs/SOLO_CAB_MILESTONE.md; risk 9); physical two-cabinet
 validation (HANDOFF steps 6-7).
 
 ## 2. Starting point
@@ -1033,7 +1034,16 @@ game/MAIN/MainArcadeRaceSetupPlan.h and game/MAIN/MainArcadeRaceSetupCore.h.
    instead of faulting the rematch's session, tested by the rematch cases
    of native_arcade_netplay_unit and native_lockstep_peer_link_unit
    (GAME_LOOP_UI risk 2).
-9. The ONE_CAB lobby and UI flow is a follow-up (ROSTER risk 14).
+9. Done by docs/SOLO_CAB_MILESTONE.md SOLO-S1 to SOLO-S4: the ONE_CAB
+   lobby and UI flow (ROSTER risk 14) exists. A LINK cabinet whose peer is
+   not heard offers a solo race from its LOBBY. On START_SOLO_RACE the
+   arcade-link hook hands the launch to this race caller in the same
+   branch as START_RACE, and the caller arms the agreed config or, with
+   none, the host's solo config (ONE_CAB, checked against the bot rules,
+   fail closed) through the same one Arm and Launch
+   (game/MAIN/MainArcadeRaceLaunch.c:371-435), so the race setup caller
+   allow-list is unchanged. A solo race runs on the race drive's local
+   mode with the linked race's pacing and end rules (SOLO-7, SOLO-15).
 10. Fixed: the link's own return to title did not check the load stage.
     Its return step now runs only at LOAD_IDLE or LOAD_REQUESTED, like the
     race caller's: MainArcadeLinkPolicy_ReturnStep decides, and on any

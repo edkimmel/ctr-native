@@ -132,8 +132,9 @@ See "Running the package script" below.
 - Both templates set `data_dir = C:\ctr-data`, `fullscreen = 1`,
   `render_scale = 8`, and `texture_filter = bilinear`.
 - `tools/package/README.txt` is the operator card: data, per-cabinet setup,
-  the PK-9 firewall rule, starting, and the same-build and same-disc hash
-  checks. It follows "Per-cabinet setup" below.
+  the PK-9 firewall rule, starting, the same-build and same-disc hash
+  checks, and the solo race. It follows "Per-cabinet setup" and "Solo
+  race" below.
 - `native_arcade_config_unit` parses both templates with the real parser and
   checks the resulting link options and display config.
 
@@ -542,6 +543,22 @@ cabinet.
    as that one or `arcade link requires a known build and content
    identity.`, are printed on the console only, not in the log. After a
    double-click the console stays open on an error until Enter is pressed.
+
+## Solo race
+
+A linked cabinet does not need the other cabinet to be on
+(docs/SOLO_CAB_MILESTONE.md). When the other cabinet is off, or sits on
+its attract title, the player's START shows `CONNECTING`, and after about
+3 s without an answer `WAITING FOR OTHER CABINET` and
+`PRESS START TO RACE SOLO`. START or CROSS (on a G29
+CROSS is also the throttle pedal) then starts a one-player race against 7
+bots, after the player picks a character, a track, and the laps. RESULTS
+offers `RACE AGAIN` and `LOBBY`; left alone for 30 s it returns to the
+attract title. `OTHER CABINET IS READY` on RESULTS means the other
+cabinet's player is in its LOBBY; from the LOBBY the two cabinets link as
+before. During solo the cabinet only listens on its link port and sends
+nothing, so the PK-9 firewall rule is unchanged. No `arcade.cfg` key is
+needed for solo, and none exists (PK-3).
 
 ## Template line ends
 

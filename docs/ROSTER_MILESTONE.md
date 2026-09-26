@@ -12,7 +12,9 @@ bots) and ARCADE_ONE_CAB (the retail 1P arcade race, one human and seven
 bots). The single-cabinet tasks OC-1..OC-5 (section 6) added ONE_CAB to
 the bot rules, the race setup plan, facts, and core, and the live roster
 proof; it gives one machine a path to launch a real race without a peer.
-The fixture, the arcade-link lobby, and match select remain TWO_CAB-only.
+The fixture and the linked match remain TWO_CAB; since
+docs/SOLO_CAB_MILESTONE.md the arcade-link lobby also offers a
+player-facing ONE_CAB solo race when the peer is not heard (RS-1, risk 14).
 
 It gates docs/GAME_LOOP_UI_MILESTONE.md Task 7 (networked race launch) and,
 through it, Task 8. Networked race launch itself (START_RACE loading the
@@ -547,10 +549,13 @@ overrode the TWO_CAB-only default.
    race, two humans and four bots, 6 drivers; ONE_CAB is the retail 1P
    arcade single race, one human and seven bots on the LOAD_Robots1P rule
    (RS-20), 8 drivers. The reason is a one-machine path to launch a real
-   race without a peer. The fixture, the arcade-link lobby, and match
-   select remain TWO_CAB-only; only the internal roster proof (RS-23)
-   launches a race through the ONE_CAB setup today, and a ONE_CAB
-   lobby/UI flow is a follow-up (risk 14).
+   race without a peer. The fixture and the linked match stay TWO_CAB.
+   The ONE_CAB lobby/UI flow, first left as a follow-up (risk 14), now
+   exists: since docs/SOLO_CAB_MILESTONE.md (SOLO-S1 to SOLO-S4) a LINK
+   cabinet whose peer is not heard offers a solo race from its LOBBY, runs
+   a one-human match select on a ONE_CAB base, and launches the ONE_CAB
+   config through the same race setup seam. The internal roster proof
+   (RS-23) still launches ONE_CAB from the title with no lobby.
 2. RS-2: The config's gameMode1, gameMode2, and rules stay 0 and mean
    "retail arcade single race, no cheats, no cup". The plan pins every
    non-transient gameMode1 and gameMode2 bit, not only the cheat and cup
@@ -707,9 +712,9 @@ this section, so they are owner decisions.
     character, and bot difficulty, the bots are ExpectedBots1P of the CAB1
     character, masterSeed is the seed option itself, and botRulesDigest is
     Digest1PV1; the result must pass ValidateConfigV1
-    (platform/native_arcade_roster_proof.c:356-419).
+    (platform/native_arcade_roster_proof.c:389-457).
 24. RS-24 (OC-3, 5e0c71c36): The proof's scripted pads per profile
-    (platform/native_arcade_roster_proof.c:515-576): pads 0 and 1 connected
+    (platform/native_arcade_roster_proof.c:566-627): pads 0 and 1 connected
     digital pads in both profiles (the same pad layout), pads 2 and 3
     disconnected, all neutral through race tick 0. From race tick 1,
     TWO_CAB: both players hold CROSS and player 1 also holds RIGHT in the
@@ -1092,13 +1097,18 @@ parallel (C and I about 264 s each, the other eight about 81 s).
     c6a2a67ff. a98dccbe8 fixed it in place under the owner's standing
     directive to fix retail bugs in place (render-only, no simulation
     change), and F-J now run 900 race ticks (3.4).
-14. ONE_CAB has no lobby or UI flow. The fixture, the arcade-link lobby,
-    and match select remain TWO_CAB-only (RS-1); the only path that
-    launches a race through the ONE_CAB setup is the internal roster proof
-    (`--arcade-roster-proof-profile one-cab`, RS-23). Task 7's networked
-    launch arms only the agreed config of the TWO_CAB link, so it does not
-    change this. A player-facing single-cabinet lobby and UI flow stays a
-    follow-up.
+14. Resolved by docs/SOLO_CAB_MILESTONE.md (SOLO-S1 to SOLO-S4): the
+    ONE_CAB lobby and UI flow exists. When the risk was written, the
+    fixture, the arcade-link lobby, and match select were TWO_CAB-only
+    (RS-1), and the only path that launched a race through the ONE_CAB
+    setup was the internal roster proof
+    (`--arcade-roster-proof-profile one-cab`, RS-23). Now a LINK cabinet
+    whose peer is not heard offers a player-facing solo race from its
+    LOBBY (one human, seven bots): a one-human select on a ONE_CAB base,
+    and the race caller launches the solo config through the same one Arm
+    and Launch as the agreed TWO_CAB config, so the race setup caller
+    allow-list is unchanged. The live test `arcade_solo_race` proves it on
+    one machine.
 15. Open optional review nits. OC-1 re-review: the bot rules isolation
     test does not pin numDrivers between the else-if chain and the spawn
     loop of MainInit_Drivers, and does not count LOAD_Robots1P calls with
