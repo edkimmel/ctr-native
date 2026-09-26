@@ -893,13 +893,25 @@ open source.
    deployed: the package is `ctr-arcade-086114299b71`. Open: no
    two-cabinet live test of "peer wakes during solo, then links"; unit
    tests only.
-2. Automatic discovery (stretch goal 8). Cabinets find each other on the
-   subnet with no configured IPs, so a new install needs no per-cabinet
-   network config. A continuous background poll finds peers that wake
-   later. ONE_CAB versus TWO_CAB follows from whether a peer is found.
-   Discovery replaces the static `peer` in `arcade.cfg`, which stays as an
-   optional override. The handshake still checks build and content
-   identity.
+2. Automatic discovery (stretch goal 8; `docs/DISCOVERY_MILESTONE.md`,
+   DISC-1..18). Done: S1-S4. With `seat = auto` and no `peer`, two
+   cabinets find each other by UDP beacon on port 7000 (limited broadcast
+   plus each NIC's subnet broadcast), elect seats (the lower IPv4:port is
+   cab1), link and race. `group` (default `ctr-native`) and an identity
+   digest keep unrelated installs apart. A static `peer` still runs
+   exactly as before. The live test `arcade_discovery_link` proves it over
+   loopback with explicit targets; real broadcast is unproven. Next:
+   - DISC-S5: one `arcade.cfg` template with `seat = auto`, a two-copy
+     package smoke, and README/PACKAGING (PK-3/5/8/9).
+   - Close the open risks: the NIC re-read every 300 ticks on the game
+     thread (skip it during races), and beacons stopping while the host
+     does not tick (attract demo, intro, loads).
+   - C:Arcade follow-up (DISC-17), in `setup-ctr-native.ps1`: the
+     firewall becomes one rule for the program, UDP 7000,7001 from
+     LocalSubnet, and the cfg writer writes `seat = auto`.
+   - DISC-S6: the physical two-cabinet acceptance: pairing at boot,
+     .11 as cab1, one race, solo with a cabinet off, relink when it is
+     powered back on.
 3. Small cabinet polish, queued behind 1 and 2:
    - Skip the Sony and Naughty Dog boot splashes on arcade/link configs.
      Boot still runs all of StateZero's init, and levelID goes straight to
