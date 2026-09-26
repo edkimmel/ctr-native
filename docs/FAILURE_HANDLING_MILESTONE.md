@@ -46,9 +46,10 @@ the same 33435 us (`MAIN_ARCADE_RACE_HOLD_PERIOD_US`,
 arcade-link adapter, passes 90 frames, about 3.0 s
 (`NATIVE_ARCADE_NETPLAY_DEFAULT_STALL_TIMEOUT_TICKS`,
 `include/platform/native_arcade_netplay.h`), 90 periods of 33435 us,
-3009150 us in all. In the two-process gate's recorded run cab1 held 90 tick
-periods (3010214 us and 3010293 us) before it ended the race as a stall
-timeout (`docs/LOCKSTEP_RACE_MILESTONE.md` LR-S13).
+3009150 us in all. In the two-process gate's recorded run cab1 ended two
+races, races 2 and 3, as a stall timeout, each after holding 90 tick
+periods: 3010214 us in race 2 and 3010293 us in race 3
+(`docs/LOCKSTEP_RACE_MILESTONE.md` LR-S13).
 
 `NativeLockstepMatchOutcome_Init` (`platform/native_lockstep_match_outcome.c:5-23`)
 zeroes the tracker and uses the default when the caller passes `0`, otherwise

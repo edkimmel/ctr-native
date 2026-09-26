@@ -641,9 +641,11 @@ relink and the launch agreement the linked race: START_RACE logs the
 agreed match and launches the race (Task 7), and from race tick 0 both
 instances drive it in lockstep, each player steering with its own
 instance's player 1 (Task 8, docs/LOCKSTEP_RACE_MILESTONE.md). The race
-ends as RACE COMPLETE at END_OF_RACE or 900 ticks after the first human
-finish (or as OPPONENT DISCONNECTED, RACE OUT OF SYNC, or LINK ERROR on a
-failure), then RESULTS with REMATCH and EXIT back on the main-menu level.
+ends as RACE COMPLETE at END_OF_RACE, 900 ticks after the first human
+finish, or at the race-length bound of race tick 18000
+(NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT) (or as OPPONENT DISCONNECTED,
+RACE OUT OF SYNC, or LINK ERROR on a failure), then RESULTS with REMATCH
+and EXIT back on the main-menu level.
 The undriven launch rehearsal that stood in for the drive before Task 8
 (docs/RACE_LAUNCH_MILESTONE.md RL-10) is closed.
 

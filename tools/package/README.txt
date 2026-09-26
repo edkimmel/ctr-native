@@ -14,36 +14,58 @@ Files
 
 Game data
 ---------
-The package contains NO game data. Put your own ctr-u.bin (or the extracted
-BIGFILE.BIG files) in a folder on each cabinet, for example C:\ctr-data, and
-set data_dir to that folder in arcade.cfg: a full path such as C:\ctr-data,
-or a path relative to this folder (C:ctr-data and \ctr-data are refused).
+The package contains NO game data. Put your own raw NTSC-U disc image,
+named ctr-u.bin, in a folder on each cabinet, for example C:\ctr-data (the
+folder both templates name in data_dir). A linked cabinet needs ctr-u.bin:
+with only the extracted BIGFILE.BIG files it stops at startup with "arcade
+link requires a known build and content identity" (the extracted files
+serve an unlinked run only). Both cabinets need the same ctr-u.bin.
 
 Set up each cabinet
 -------------------
-1. Copy this whole folder to the cabinet. The folder must be writable: the
-   log file (Crash Team Racing.log) and memcards\ are created next to the exe.
+Below, replace <cabinet 1 IP> or <cabinet 2 IP> as a whole, angle brackets
+included, with that cabinet's fixed IP address.
+1. Copy the contents of this folder to the cabinet, so that ctr_native.exe
+   is directly in the target folder (not in a nested package folder). The
+   folder must be writable: the log file (Crash Team Racing.log) and
+   memcards\ are created next to the exe. arcade.cfg, memcards\ and the log
+   belong to one cabinet: leave them out of any folder sync between the
+   cabinets, or redo steps 2 and 3 after the sync.
 2. Cabinet 1: copy cab1.cfg to arcade.cfg (next to ctr_native.exe).
    Cabinet 2: copy cab2.cfg to arcade.cfg.
-3. Edit arcade.cfg: set peer to the OTHER cabinet's fixed IP address (keep
-   its port), and set data_dir to your data folder.
-4. Allow the link port through the firewall. In an elevated PowerShell:
+3. Edit arcade.cfg (save it as UTF-8 or ANSI text): set peer to the OTHER
+   cabinet's fixed IP and keep its port (cabinet 1: <cabinet 2 IP>:7002,
+   cabinet 2: <cabinet 1 IP>:7001). Change data_dir only if ctr-u.bin is
+   not in C:\ctr-data (a full path, or one relative to this folder;
+   C:ctr-data and \ctr-data are refused). Keep seat, port and fullscreen.
+   A comment goes on its own line: after a value it becomes part of it.
+4. Firewall. In an elevated PowerShell (Run as administrator), after
+   Set-Location to this folder, allow the link port for this exe from the
+   other cabinet only:
      cabinet 1:
-       New-NetFirewallRule -DisplayName "CTR arcade link" -Direction Inbound -Protocol UDP -LocalPort 7001 -Action Allow
+       New-NetFirewallRule -DisplayName "CTR arcade link" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 7001 -RemoteAddress <cabinet 2 IP> -Program "$PWD\ctr_native.exe"
      cabinet 2:
-       New-NetFirewallRule -DisplayName "CTR arcade link" -Direction Inbound -Protocol UDP -LocalPort 7002 -Action Allow
+       New-NetFirewallRule -DisplayName "CTR arcade link" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 7002 -RemoteAddress <cabinet 1 IP> -Program "$PWD\ctr_native.exe"
+   A Block rule for the exe beats the Allow rule (Windows may add one, for
+   example when its firewall prompt is cancelled). This must list nothing:
+       Get-NetFirewallApplicationFilter -Program "$PWD\ctr_native.exe" | Get-NetFirewallRule | Where-Object Action -eq 'Block'
+   Remove what it lists by adding | Remove-NetFirewallRule to it.
+5. Same build and same disc. On both cabinets, in PowerShell in this folder:
+       Get-FileHash ctr_native.exe -Algorithm SHA256
+       Get-FileHash C:\ctr-data\ctr-u.bin -Algorithm SHA256
+   (use your data_dir). The ctr_native.exe hash must equal its line in
+   MANIFEST.txt, and each hash must be the same on both cabinets: the link
+   refuses two different builds or disc images ("LINK REFUSED: SETTINGS DO
+   NOT MATCH").
 
 Start
 -----
-Double-click ctr_native.exe (it reads arcade.cfg next to it), or, from a
-command prompt in this folder, run
-  ctr_native.exe --config cab1.cfg
-(a relative --config path is read from the current folder). A config file
-with an error stops the game with a message naming the file and, where there
-is one, the line.
-
-Both cabinets must run the same build
--------------------------------------
-The link handshake rejects two different builds. On both cabinets run
-  Get-FileHash ctr_native.exe -Algorithm SHA256
-and check that the hash equals the ctr_native.exe line in MANIFEST.txt.
+Double-click ctr_native.exe, or run it with no arguments. It reads
+arcade.cfg next to it. Among its first console lines it must show
+  [CTR Native] Config file: <this folder>\arcade.cfg
+  [CTR Native] Config groups from the file: link fullscreen data_dir
+These lines are on the console only, not in the log; the fullscreen window
+may hide the console (Alt+Tab to it). "Config file: none" means there is no
+arcade.cfg next to the exe (check for a hidden .txt extension), and the
+cabinet would start unlinked. A config file with an error stops the game
+with a message naming the file and, where there is one, the line.

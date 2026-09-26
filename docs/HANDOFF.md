@@ -181,9 +181,10 @@ Integration order:
   without running the retail options load, so Launch's options
   precondition holds and the live audio settings stay
   (`docs/PACKAGING.md` "Fresh cabinet: game options"). Dormant unless
-  armed; its state is never checkpointed, recorded, or canonical. The init of the main-menu level while VALIDATED (the return
-  load after a linked race) is a no-op, and the owner Disarms on the first
-  idle main-menu frame, which restores the saved vibration bits.
+  armed; its state is never checkpointed, recorded, or canonical. The init
+  of the main-menu level while VALIDATED (the return load after a linked
+  race) is a no-op, and the owner Disarms on the first idle main-menu
+  frame, which restores the saved vibration bits.
 - **Race counter pins (RS-17, LR-8).** The same race-init hook pins the
   boot-relative counters that feed the race simulation or its RNG,
   `gGT->timer` and `gGT->frameTimer_Confetti`, to 0, and the root counter
@@ -603,7 +604,7 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
 
 ## Packaging
 
-See `docs/PACKAGING.md` (decisions PK-1..PK-9).
+See `docs/PACKAGING.md` (decisions PK-1..PK-10).
 
 - `tools/package-arcade.ps1`, run from a clean tree after the full Debug
   and Release suites pass, builds the Release `ctr_native` (the tested
@@ -629,7 +630,11 @@ See `docs/PACKAGING.md` (decisions PK-1..PK-9).
   package of the build's own exe; the fast ctests `package_arcade_stage`
   and `package_arcade_content_guard` check the stage mode and the guard.
 - The owner's per-cabinet steps (data, config lines, the firewall rule,
-  starting) are `docs/PACKAGING.md` "Per-cabinet setup".
+  the same-exe and same-disc hash checks, starting) are
+  `docs/PACKAGING.md` "Per-cabinet setup". A linked cabinet needs the disc
+  image `ctr-u.bin` (the link's content identity); extracted files serve
+  an unlinked run only. `arcade.cfg`, `memcards\`, and the log are
+  per-cabinet and stay out of any folder sync (PK-10).
 
 ## Key files
 

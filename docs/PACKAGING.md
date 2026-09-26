@@ -1,6 +1,6 @@
 # Packaging and the per-cabinet config file
 
-How a cabinet build is packaged and configured. Decisions PK-1..PK-9. The
+How a cabinet build is packaged and configured. Decisions PK-1..PK-10. The
 owner's step-by-step cabinet setup is "Per-cabinet setup" below.
 
 ## Decisions
@@ -52,7 +52,7 @@ its own.
   fills `struct NativeArcadeLinkOptions` through the same parser, exactly as
   the flags do. Every later check in `main.c` then applies unchanged: it is
   rejected with replay options and with `--arcade-roster-proof`, and it
-  needs a known build identity.
+  needs a known build and content identity (PK-6).
 - The config never reaches the match config, simulation or canonical state,
   replay, checkpoints, identity, or the topology lease. It reaches only the
   window mode, the link options, and the assets directory.
@@ -61,6 +61,12 @@ its own.
 **PK-6 Data directory.** `data_dir` and `--data-dir` name the folder that
 holds the user's own `ctr-u.bin`, or the extracted `BIGFILE.BIG` tree. It
 plays the role `assets/` plays without a config.
+- An unlinked run works from either. A linked run needs the disc image
+  `ctr-u.bin`: the link fixture carries the content identity, the SHA-256
+  of the open disc image (`NativeIdentity_Get`,
+  `NativeDiscImage_GetContentIdentity`). With only the extracted files a
+  linked cabinet stops at startup (exit 1) with
+  `[CTR Native] arcade link requires a known build and content identity.`
 - A relative path resolves against the exe directory. This holds for
   `--data-dir` too, so one relative value means the same thing in the file
   and on the command line.
@@ -97,9 +103,9 @@ See "Running the package script" below.
 - The IPs are placeholders. A comment says to edit each to the other
   cabinet's fixed IP.
 - Both templates set `data_dir = C:\ctr-data` and `fullscreen = 1`.
-- `tools/package/README.txt` is the operator guide: data, per-cabinet setup,
-  the firewall rule, starting, and the same-build hash check. Its firewall
-  rule is the port-only form; PK-9 narrows it.
+- `tools/package/README.txt` is the operator card: data, per-cabinet setup,
+  the PK-9 firewall rule, starting, and the same-build and same-disc hash
+  checks. It follows "Per-cabinet setup" below.
 - `native_arcade_config_unit` parses both templates with the real parser and
   checks the resulting link options.
 
@@ -107,11 +113,19 @@ See "Running the package script" below.
 allows inbound UDP on its own link port only, only for the packaged
 `ctr_native.exe` (`-Program`), and only from the other cabinet's fixed IP
 (`-RemoteAddress`). The link's only partner is the configured `peer`, so
-this is the narrowest rule the link needs; a port-only rule (as in
-`tools/package/README.txt`) also works but admits any program on the port
-and any sender on the LAN. The rule leaves `-Profile` at its default (all
-profiles), since a cabinet LAN on a dumb switch may not be classified as a
-private network. The exact commands are in "Per-cabinet setup", step 4.
+this is the narrowest rule the link needs. A port-only rule also works, but
+it admits any program and any sender on any network profile. The rule leaves
+`-Profile` at its default (all profiles), since a cabinet LAN on a dumb
+switch may not be classified as a private network. The exact commands are
+in "Per-cabinet setup", step 4.
+
+**PK-10 Per-cabinet files.** A default the owner may change. `arcade.cfg`,
+`memcards\`, and `Crash Team Racing.log` in the package folder belong to
+one cabinet. Any sync of the folder between cabinets (docs/HANDOFF.md: CAB2
+receives the bundle through the fleet rsync path) excludes them. A sync
+that does not must be followed by "Per-cabinet setup" step 3 again on the
+receiving cabinet, since it would otherwise run the other cabinet's seat
+and peer.
 
 ## Config grammar
 
@@ -120,7 +134,8 @@ private network. The exact commands are in "Per-cabinet setup", step 4.
 - Whitespace (space, tab) around the key and the value is trimmed.
 - The value is the rest of the line after the first `=`. It may contain
   spaces and `=`, and it takes no quotes. A trailing `# comment` is part of
-  the value, and so makes it invalid.
+  the value, and so makes it invalid (for `data_dir`, a wrong path: "Per-cabinet
+  setup", step 3).
 - Blank lines, and lines whose first non-blank character is `#` or `;`, are
   comments.
 - CRLF or LF line ends are accepted (and a CR that ends the file). Any
@@ -340,6 +355,10 @@ and the peer differ:
 | `port` (this cabinet's inbound UDP port) | `7001` | `7002` |
 | `peer` | `<cabinet 2 IP>:7002` | `<cabinet 1 IP>:7001` |
 
+`<cabinet 1 IP>` and `<cabinet 2 IP>` stand for that cabinet's fixed IP
+address. Replace the whole placeholder, angle brackets included: for
+example `192.168.1.102:7002`, and `-RemoteAddress 192.168.1.102` in step 4.
+
 The commands are PowerShell. They use `$pkg` for the folder the package
 was copied to; `C:\Arcade\games\ctr-native` is the example (the fleet
 location named in docs/HANDOFF.md). Set it first in each PowerShell
@@ -349,16 +368,28 @@ window:
 $pkg = 'C:\Arcade\games\ctr-native'
 ```
 
-1. **Copy the package.** Copy the whole package folder,
+`arcade.cfg`, `memcards\`, and `Crash Team Racing.log` in `$pkg` belong to
+this cabinet (PK-10). Exclude them from any sync of the folder to the
+other cabinet (such as the fleet rsync path). If a sync copied them
+anyway, redo step 3 on the receiving cabinet.
+
+1. **Copy the package.** Copy the contents of the package folder,
    `build-msvc-x86\package\ctr-arcade-<short12>\` (made by
-   `tools/package-arcade.ps1`), to `$pkg` on the cabinet. The folder must
-   be writable: the game writes `Crash Team Racing.log` (recreated at each
-   start) and `memcards\` next to `ctr_native.exe`. No `memcards\` is
-   needed ("Fresh cabinet: game options").
+   `tools/package-arcade.ps1`), to `$pkg` on the cabinet, so that
+   `$pkg\ctr_native.exe` exists (not a nested
+   `$pkg\ctr-arcade-<short12>\` folder). The folder must be writable: the
+   game writes `Crash Team Racing.log` (recreated at each start) and
+   `memcards\` next to `ctr_native.exe`. No `memcards\` is needed ("Fresh
+   cabinet: game options").
 2. **Game data.** Put your own raw NTSC-U disc image (MODE2/2352), named
    `ctr-u.bin`, in `C:\ctr-data`, the folder both templates name in
-   `data_dir`. The extracted files (`BIGFILE.BIG` and the rest) in that
-   folder work too. The package holds no game data (PK-6).
+   `data_dir`. A linked cabinet requires `ctr-u.bin`: the link identifies
+   the game content by the disc image's SHA-256, so with only the extracted
+   files (`BIGFILE.BIG` and the rest) it stops at startup with
+   `[CTR Native] arcade link requires a known build and content identity.`
+   The extracted files are enough only for an unlinked run. Both cabinets
+   need the same disc image (step 5). The package holds no game data
+   (PK-6).
 3. **Config file.** Copy the cabinet's template to `arcade.cfg` next to
    the exe. Cabinet 1:
 
@@ -386,7 +417,11 @@ $pkg = 'C:\Arcade\games\ctr-native'
    - `fullscreen`: keep `1` on a cabinet (`0` is windowed, for testing).
 
    There are no other keys (PK-3). A comment goes on its own line: a
-   `# comment` after a value makes the value invalid.
+   `# comment` after a value becomes part of the value. After `seat`,
+   `port`, `peer`, or `fullscreen` that is a bad value, and the game stops
+   with the file and line. After `data_dir` it becomes part of the path, and
+   the game stops with `data directory ... does not hold ctr-u.bin or
+   BIGFILE.BIG.` Either way the cabinet does not start.
 4. **Firewall (PK-9).** In an elevated PowerShell (Run as administrator),
    after setting `$pkg`, allow inbound UDP on this cabinet's port for the
    packaged exe, from the other cabinet only. Cabinet 1:
@@ -401,18 +436,33 @@ $pkg = 'C:\Arcade\games\ctr-native'
    New-NetFirewallRule -DisplayName 'CTR arcade link' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 7002 -RemoteAddress <cabinet 1 IP> -Program "$pkg\ctr_native.exe"
    ```
 
+   A Block rule beats every Allow rule. Windows may have added one for
+   this exe (for example when its firewall prompt was cancelled). List the
+   Block rules that name the exe; the list must be empty:
+
+   ```powershell
+   Get-NetFirewallApplicationFilter -Program "$pkg\ctr_native.exe" | Get-NetFirewallRule | Where-Object Action -eq 'Block'
+   ```
+
+   Remove any it lists by adding `| Remove-NetFirewallRule` to that
+   command. Check again after the first start if Windows showed a firewall
+   prompt.
+
    If the package folder or the other cabinet's IP changes, remove the
    rule (`Remove-NetFirewallRule -DisplayName 'CTR arcade link'`) and add
    it again.
-5. **Same build.** On both cabinets:
+5. **Same build and same disc.** On both cabinets:
 
    ```powershell
    Get-FileHash "$pkg\ctr_native.exe" -Algorithm SHA256
+   Get-FileHash 'C:\ctr-data\ctr-u.bin' -Algorithm SHA256
    ```
 
-   The hash must equal the `ctr_native.exe` line in `$pkg\MANIFEST.txt`,
-   and so be the same on both cabinets: the link handshake rejects two
-   different builds.
+   (Use the cabinet's own `data_dir` in place of `C:\ctr-data`.) The exe
+   hash must equal the `ctr_native.exe` line in `$pkg\MANIFEST.txt`, and so
+   be the same on both cabinets. The `ctr-u.bin` hash must be the same on
+   both cabinets. The link handshake refuses two different builds or two
+   different disc images: both show `LINK REFUSED: SETTINGS DO NOT MATCH`.
 6. **Start.** Double-click `ctr_native.exe` in `$pkg`, or run it with no
    arguments with `$pkg` as the working directory:
 
@@ -431,6 +481,9 @@ $pkg = 'C:\Arcade\games\ctr-native'
    [CTR Native] Local window mode: fullscreen
    ```
 
+   These lines are printed before the log file opens, so they are on the
+   console only, not in `Crash Team Racing.log`. The fullscreen window may
+   hide the console; switch to it (Alt+Tab) to read them.
    `Config file: none (... not found)` means there is no `arcade.cfg` next
    to the exe (check for a hidden `.txt` extension), and the cabinet would
    start unlinked. An error in the file stops the game with a message

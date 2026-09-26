@@ -876,9 +876,9 @@ Acceptance: docs-only; the full suite must still pass, because
    reports a stall; it does not decide how long to wait, whether to drop the
    peer, or what to show on screen. That is integration step 5, whose
    outcome tracker ends a stall after a configured number of consecutive
-   stalled polls: its own default is 180 frames (6 s at the 30 Hz tick; its
-   header still calls it 3 s at 60 Hz), and the arcade-link adapter passes
-   90, 3 s at 30 Hz (`docs/GAME_LOOP_UI_MILESTONE.md` UX-9).
+   stalled polls: its own default is 180 frames (about 6.0 s at the
+   ~29.91 Hz race tick, as its header says), and the arcade-link adapter
+   passes 90, about 3.0 s (`docs/GAME_LOOP_UI_MILESTONE.md` UX-9).
 3. The local digest history is `D + 2` frames deep. A peer whose verification
    falls further behind than that produces `FRAME_UNAVAILABLE` rather than a
    digest comparison. The depth is a constant and can be raised without a wire
