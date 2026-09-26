@@ -395,9 +395,10 @@ static int TestLiveLinkBuilds(void)
  * solo enabled by its test-only setter, against a dead peer port. Every
  * tick from Enter through the solo offer in the LOBBY, the one-human SELECT
  * on each item, SELECT_RESULT, the START_SOLO_RACE tick, and the solo
- * RESULTS screen passes the build check.
+ * RESULTS screen passes the build check. The body runs with the gate on; the
+ * wrapper below turns it off whatever the body returns.
  */
-static int TestSoloLiveBuilds(void)
+static int RunSoloLiveBuilds(void)
 {
 	struct NativeArcadeLinkOptions options;
 	struct NativeIdentityV1 identity;
@@ -409,7 +410,6 @@ static int TestSoloLiveBuilds(void)
 	uint32_t tick;
 	uint32_t item;
 
-	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
 	NativeArcadeLinkLoopback_Identity(&identity);
 	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SOLO_HOST_PORT,
 		TEST_SOLO_DEAD_PEER_PORT);
@@ -469,8 +469,18 @@ static int TestSoloLiveBuilds(void)
 	CHECK(CheckViewBuilds(&view) == 0);
 	CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF);
 	NativeArcadeLinkHost_Shutdown();
-	NativeArcadeLinkHost_InternalSetSoloEnabled(0u);
 	return 0;
+}
+
+static int TestSoloLiveBuilds(void)
+{
+	int failed;
+
+	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
+	failed = RunSoloLiveBuilds();
+	/* Unconditional: a failed CHECK must not leave the gate on for later tests. */
+	NativeArcadeLinkHost_InternalSetSoloEnabled(0u);
+	return failed;
 }
 
 int main(void)

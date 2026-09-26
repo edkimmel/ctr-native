@@ -29,7 +29,7 @@
  * twice in a row as part of verification.
  *
  * Fixed loopback test ports, in the 48400-48499 band (and 48540-48541 for
- * the race hold service, 48542-48547 for solo), distinct from every other test file's own bands (tests/native_lobby_state_test.c uses
+ * the race hold service, 48542-48549 for solo), distinct from every other test file's own bands (tests/native_lobby_state_test.c uses
  * 48300-48399; see tests/native_lockstep_peer_link_test.c for the others).
  * Each socket test uses its own pair; a rematch deliberately reopens the
  * same local port, as a cabinet does.
@@ -178,7 +178,7 @@
  * 48520-48539). */
 #define TEST_RACE_SERVICE_A_PORT 48540u
 #define TEST_RACE_SERVICE_B_PORT 48541u
-/* Solo (docs/SOLO_CAB_MILESTONE.md SOLO-S2): 48542-48547, next to the race
+/* Solo (docs/SOLO_CAB_MILESTONE.md SOLO-S2): 48542-48549, next to the race
  * hold service's pair and outside every other test file's band. */
 #define TEST_SOLO_A_PORT 48542u
 #define TEST_SOLO_PEER_PORT 48543u
@@ -186,6 +186,8 @@
 #define TEST_SOLO_CAB2_PORT 48545u
 #define TEST_SOLO_LINK_A_PORT 48546u
 #define TEST_SOLO_LINK_B_PORT 48547u
+#define TEST_SOLO_LINKED_A_PORT 48548u
+#define TEST_SOLO_LINKED_B_PORT 48549u
 
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
@@ -7071,6 +7073,191 @@ static int TestSoloThenLobbyLinks(void)
 	return 0;
 }
 
+/* SOLO-12 on a linked path: not listening, and soloFlags is 0, or exactly
+ * SOLO_OFFERED on LOBBY; counts the offered ticks. */
+static int LinkedSoloFlagsOk(const struct NativeArcadeNetplay *netplay, uint32_t *offeredTicks)
+{
+	uint32_t flags = SoloFlagsOf(netplay);
+
+	if (netplay->listening != 0u)
+	{
+		return 0;
+	}
+	if (flags == 0u)
+	{
+		return 1;
+	}
+	if ((flags == NATIVE_ARCADE_NETPLAY_VIEW_SOLO_OFFERED) && (ScreenOf(netplay) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY))
+	{
+		*offeredTicks += 1u;
+		return 1;
+	}
+	return 0;
+}
+
+/* DriveBothToRaceChecked with no buttons, plus LinkedSoloFlagsOk on both
+ * every tick, no solo action, and each side's BEGIN_SELECT count. */
+static int DriveBothToRaceSoloLinked(uint32_t *offeredA, uint32_t *offeredB, uint32_t *selectsA, uint32_t *selectsB)
+{
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint32_t relinksA = 0u;
+	uint32_t relinksB = 0u;
+	int startedA = 0;
+	int startedB = 0;
+	uint32_t tick;
+
+	for (tick = 0; (tick < DRIVE_BUDGET) && !(startedA && startedB); tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK((actionA != ACT_CLOSE_LINK) && (actionA != ACT_RETURN_TO_TITLE));
+		CHECK((actionB != ACT_CLOSE_LINK) && (actionB != ACT_RETURN_TO_TITLE));
+		CHECK((actionA != NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT) && (actionA != NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE));
+		CHECK((actionB != NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT) && (actionB != NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE));
+		CHECK(CheckSelectPath(&g_a, actionA, &relinksA, &startedA));
+		CHECK(CheckSelectPath(&g_b, actionB, &relinksB, &startedB));
+		CHECK(LinkedSoloFlagsOk(&g_a, offeredA));
+		CHECK(LinkedSoloFlagsOk(&g_b, offeredB));
+		*selectsA += (actionA == ACT_BEGIN_SELECT) ? 1u : 0u;
+		*selectsB += (actionB == ACT_BEGIN_SELECT) ? 1u : 0u;
+	}
+	CHECK(startedA && startedB);
+	return 0;
+}
+
+/*
+ * SOLO-12: solo enabled on BOTH cabinets does not change the linked session.
+ * Each enters alone and waits on LOBBY until its own solo offer shows; from
+ * then on nobody presses CONFIRM in the LOBBY. The pair links, selects,
+ * relinks, launches, races, reaches RESULTS, picks REMATCH, and relinks and
+ * launches again, with the same milestones as TestBothRematch. The view's
+ * soloFlags is only ever SOLO_OFFERED, and only on LOBBY; 0 everywhere else.
+ */
+static int TestSoloEnabledLinkedSession(void)
+{
+	struct NativeArcadeNetplayConfig config;
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 first;
+	struct NativeArcadeNetplayView view;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	const struct NativeMatchConfigV1 *agreedA;
+	const struct NativeMatchConfigV1 *agreedB;
+	uint64_t expectedSeed = 0u;
+	uint32_t offeredA = 0u;
+	uint32_t offeredB = 0u;
+	uint32_t selectsA = 0u;
+	uint32_t selectsB = 0u;
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(MakeSoloConfig(&config, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SOLO_LINKED_A_PORT,
+		TEST_SOLO_LINKED_B_PORT) == 0);
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+	CHECK(MakeSoloConfig(&config, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, TEST_SOLO_LINKED_B_PORT,
+		TEST_SOLO_LINKED_A_PORT) == 0);
+	CHECK(NativeArcadeNetplay_Init(&g_b, &config) == 1);
+	CHECK((g_a.config.soloEnabled == 1u) && (g_b.config.soloEnabled == 1u));
+
+	/* A alone on LOBBY until its offer shows. */
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(LinkedSoloFlagsOk(&g_a, &offeredA));
+	for (tick = 0u; tick < SOLO_OFFER_DELAY_TICKS; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+		CHECK(LinkedSoloFlagsOk(&g_a, &offeredA));
+	}
+	CHECK(SoloFlagsOf(&g_a) == NATIVE_ARCADE_NETPLAY_VIEW_SOLO_OFFERED);
+
+	/* B alone on LOBBY until its offer shows too (its HELLOs queue at A). */
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(LinkedSoloFlagsOk(&g_b, &offeredB));
+	for (tick = 0u; tick < SOLO_OFFER_DELAY_TICKS; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_b, 0u, 0u) == ACT_NONE);
+		CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+		CHECK(LinkedSoloFlagsOk(&g_b, &offeredB));
+	}
+	CHECK(SoloFlagsOf(&g_b) == NATIVE_ARCADE_NETPLAY_VIEW_SOLO_OFFERED);
+
+	/* No CONFIRM from here: link, select, relink, launch, race. */
+	CHECK(DriveBothToRaceSoloLinked(&offeredA, &offeredB, &selectsA, &selectsB) == 0);
+	CHECK((offeredA > 0u) && (offeredB > 0u));
+	CHECK((selectsA == 1u) && (selectsB == 1u));
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	agreedA = NativeArcadeNetplay_AgreedConfig(&g_a);
+	agreedB = NativeArcadeNetplay_AgreedConfig(&g_b);
+	CHECK((agreedA != NULL) && (agreedB != NULL));
+	CHECK(agreedA->profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB);
+	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
+	CHECK((NativeArcadeNetplay_SoloConfig(&g_a) == NULL) && (NativeArcadeNetplay_SoloConfig(&g_b) == NULL));
+	first = *agreedA;
+	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+	CHECK(view.matchCount == 1u);
+	CHECK(NativeArcadeNetplay_GetView(&g_b, &view) == 1);
+	CHECK(view.matchCount == 1u);
+
+	/* The finish: RESULTS on both, through the dwell, REMATCH selected. */
+	TickBoth(0u, 0u, 1u, &actionA, &actionB);
+	CHECK((actionA == ACT_NONE) && (actionB == ACT_NONE));
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK((EndReasonOf(&g_a) == NATIVE_ARCADE_FLOW_END_FINISHED) && (EndReasonOf(&g_b) == NATIVE_ARCADE_FLOW_END_FINISHED));
+	CHECK((SoloFlagsOf(&g_a) == 0u) && (SoloFlagsOf(&g_b) == 0u));
+	for (tick = 0u; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK((actionA == ACT_NONE) && (actionB == ACT_NONE));
+		CHECK((SoloFlagsOf(&g_a) == 0u) && (SoloFlagsOf(&g_b) == 0u));
+	}
+	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+	CHECK((view.menuArmed == 1u) && (view.selectedRow == NATIVE_ARCADE_FLOW_ROW_REMATCH));
+	CHECK(NativeArcadeNetplay_GetView(&g_b, &view) == 1);
+	CHECK((view.menuArmed == 1u) && (view.selectedRow == NATIVE_ARCADE_FLOW_ROW_REMATCH));
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) != NULL);
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), &first, sizeof(first)) == 0);
+	CHECK(NativeArcadeNetplay_DeriveRematchSeed(&first, &expectedSeed) == 1);
+
+	/* REMATCH on both: a new link on the derived seed. */
+	TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
+	CHECK((actionA == ACT_BEGIN_REMATCH) && (actionB == ACT_BEGIN_REMATCH));
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+	CHECK((SoloFlagsOf(&g_a) == 0u) && (SoloFlagsOf(&g_b) == 0u));
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(g_a.currentConfig.masterSeed == expectedSeed);
+	CHECK(memcmp(&g_a.currentConfig, &g_b.currentConfig, sizeof(g_a.currentConfig)) == 0);
+
+	/* Relink and launch the rematch: no LOBBY on the way, so no offer. */
+	offeredA = 0u;
+	offeredB = 0u;
+	selectsA = 0u;
+	selectsB = 0u;
+	CHECK(DriveBothToRaceSoloLinked(&offeredA, &offeredB, &selectsA, &selectsB) == 0);
+	CHECK((offeredA == 0u) && (offeredB == 0u));
+	CHECK((selectsA == 1u) && (selectsB == 1u));
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	agreedA = NativeArcadeNetplay_AgreedConfig(&g_a);
+	agreedB = NativeArcadeNetplay_AgreedConfig(&g_b);
+	CHECK((agreedA != NULL) && (agreedB != NULL));
+	CHECK(agreedA->profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB);
+	CHECK(memcmp(agreedA, agreedB, sizeof(*agreedA)) == 0);
+	CHECK(agreedA->masterSeed != expectedSeed);
+	CHECK(agreedA->masterSeed != first.masterSeed);
+	CHECK((NativeArcadeNetplay_SoloConfig(&g_a) == NULL) && (NativeArcadeNetplay_SoloConfig(&g_b) == NULL));
+	CHECK((SoloFlagsOf(&g_a) == 0u) && (SoloFlagsOf(&g_b) == 0u));
+	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+	CHECK(view.matchCount == 2u);
+	CHECK(NativeArcadeNetplay_GetView(&g_b, &view) == 1);
+	CHECK(view.matchCount == 2u);
+
+	ShutdownBoth();
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestPure() == 0);
@@ -7129,6 +7316,7 @@ int main(void)
 	CHECK(TestSoloListenOnly() == 0);
 	CHECK(TestSoloCab2RaceAgain() == 0);
 	CHECK(TestSoloThenLobbyLinks() == 0);
+	CHECK(TestSoloEnabledLinkedSession() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }

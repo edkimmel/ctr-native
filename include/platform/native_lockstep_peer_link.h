@@ -201,9 +201,10 @@ int NativeLockstepPeerLink_OpenListen(struct NativeLockstepPeerLink *link, uint1
  * and never replies. Each is discarded unread unless it is exactly
  * NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES long, comes from an address
  * (ipv4 and port) equal to one of peers[0 .. peerCount), and decodes as a
- * well-formed handshake message (NativeLockstepHandshakeMessageV1_Decode,
- * its nested config included). Returns how many drained datagrams passed all
- * three. Nothing else changes: no handshake, session, aux inbox, or mode.
+ * well-formed handshake HELLO (NativeLockstepHandshakeMessageV1_Decode,
+ * its nested config included; an ACCEPT or REJECT does not count). Returns
+ * how many drained datagrams passed all three. Nothing else changes: no
+ * handshake, session, aux inbox, or mode.
  * peers may be NULL only when peerCount is 0 (then nothing passes).
  */
 uint32_t NativeLockstepPeerLink_PollListen(struct NativeLockstepPeerLink *link, const struct NativeUdpTransportAddress *peers,

@@ -202,12 +202,12 @@ default takes the safer option.
    - Today a WAITING lobby holds no socket (native_lobby_state.c:144, :163-166),
      so this is an open without the first HELLO that peer-link Open sends.
    - On every tick the adapter drains incoming datagrams without replying.
-     It latches `peerHeard` when a well-formed handshake datagram
+     It latches `peerHeard` when a well-formed handshake HELLO
      (NativeLockstepHandshakeMessageV1_Decode,
      include/platform/native_lockstep_handshake.h:146) arrives from a
      configured peer.
    - `peerHeard` means exactly that: a configured peer sent a well-formed
-     handshake datagram, so that peer's player is in its LOBBY (a cabinet
+     handshake HELLO, so that peer's player is in its LOBBY (a cabinet
      on its attract title sends nothing, SOLO-2).
    - Nothing is sent during solo, so a woken peer stays in its own LOBBY,
      where it can go solo too. A peer never interrupts solo select, race,

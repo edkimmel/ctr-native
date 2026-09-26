@@ -4563,9 +4563,10 @@ static int TestSoloDarkByDefault(void)
  * for every one of the 8 human characters, the solo race config passes the
  * bot rules' own check, is ONE_CAB, and its bots are ExpectedBots1P of the
  * pick in slot order. The agreed-config query stays empty in solo; the solo
- * query is empty off the solo race.
+ * query is empty off the solo race. The body runs with the gate on; the
+ * wrapper below turns it off whatever the body returns.
  */
-static int TestSoloConfigEveryCharacter(void)
+static int RunSoloConfigEveryCharacter(void)
 {
 	struct NativeArcadeLinkOptions options;
 	struct NativeIdentityV1 identity;
@@ -4580,7 +4581,6 @@ static int TestSoloConfigEveryCharacter(void)
 	uint32_t humans;
 	uint8_t character;
 
-	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
 	NativeArcadeLinkLoopback_Identity(&identity);
 	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SOLO_LOCAL_PORT,
 		TEST_SOLO_DEAD_PEER_PORT);
@@ -4679,8 +4679,18 @@ static int TestSoloConfigEveryCharacter(void)
 	NativeArcadeLinkHost_Shutdown();
 	CHECK(CheckInert() == 0);
 	CHECK(CheckNoSoloConfig() == 0);
-	NativeArcadeLinkHost_InternalSetSoloEnabled(0u);
 	return 0;
+}
+
+static int TestSoloConfigEveryCharacter(void)
+{
+	int failed;
+
+	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
+	failed = RunSoloConfigEveryCharacter();
+	/* Unconditional: a failed CHECK must not leave the gate on for later tests. */
+	NativeArcadeLinkHost_InternalSetSoloEnabled(0u);
+	return failed;
 }
 
 /*

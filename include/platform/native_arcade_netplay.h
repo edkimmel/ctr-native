@@ -205,7 +205,7 @@
  *   laps, or after a solo race on that race's picks (OD-3). The nonce is
  *   derived as for every select, so masterSeed is new each time.
  * - Each tick the listen-only link is drained and never answered; a
- *   well-formed handshake datagram from a configured candidate latches
+ *   well-formed handshake HELLO from a configured candidate latches
  *   peerHeard (the view's NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD bit) until
  *   solo ends. Nothing is sent during solo: no HELLO, select record, or
  *   launch record.

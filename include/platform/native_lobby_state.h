@@ -47,7 +47,7 @@
  * LISTENING (appended; docs/SOLO_CAB_MILESTONE.md SOLO-4, risk 1): the
  * listen-only link NativeLobbyState_BeginListen opened. Nothing is attempted
  * and nothing is sent; Poll only drains the socket and latches peerHeard
- * when a well-formed handshake datagram arrives from a candidate address.
+ * when a well-formed handshake HELLO arrives from a candidate address.
  */
 enum NativeLobbyStateMode
 {
@@ -86,7 +86,7 @@ struct NativeLobbyState
 	/* Snapshot of the proposal passed to Begin, reused verbatim by every
 	 * candidate attempt in this cycle and by NativeLobbyState_RestartCycle. */
 	struct NativeMatchConfigV1 proposedConfig;
-	/* LISTENING only: 1 once a well-formed handshake datagram arrived from a
+	/* LISTENING only: 1 once a well-formed handshake HELLO arrived from a
 	 * candidate address (SOLO-4). Cleared by every Begin, BeginListen, and
 	 * Close. */
 	uint8_t peerHeard;

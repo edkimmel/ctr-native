@@ -694,11 +694,32 @@ static int ComposeHello(const struct NativeMatchConfigV1 *config, uint8_t *bytes
 	return 0;
 }
 
+/* One well-formed handshake reply (284 bytes) from role CAB2 on config:
+ * an ACCEPT (rejectReason NONE) or a REJECT (with its reason). */
+static int ComposeReply(const struct NativeMatchConfigV1 *config, uint8_t messageType, uint8_t rejectReason, uint8_t *bytes,
+	size_t capacity, size_t *size)
+{
+	struct NativeLockstepHandshakeMessageV1 message;
+	struct NativeCodecWriter writer;
+
+	memset(&message, 0, sizeof(message));
+	message.messageType = messageType;
+	message.senderRole = (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN;
+	message.rejectReason = rejectReason;
+	message.config = *config;
+	NativeCodecWriter_Init(&writer, bytes, capacity, NULL);
+	CHECK(NativeLockstepHandshakeMessageV1_Encode(&writer, &message));
+	*size = NativeCodecWriter_Size(&writer);
+	CHECK(*size == NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES);
+	return 0;
+}
+
 /*
  * The listen-only lobby never sends, and it filters what it hears: only a
- * well-formed handshake datagram from a candidate address latches peerHeard.
- * A malformed handshake-width datagram, a datagram of another width, and a
- * well-formed handshake from an address that is not a candidate do not.
+ * well-formed handshake HELLO from a candidate address latches peerHeard.
+ * A malformed handshake-width datagram, a datagram of another width, a
+ * well-formed ACCEPT or REJECT from a candidate, and a well-formed HELLO from
+ * an address that is not a candidate do not.
  */
 static int TestListenNeverSendsAndFilters(void)
 {
@@ -711,10 +732,18 @@ static int TestListenNeverSendsAndFilters(void)
 	uint8_t hello[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
 	uint8_t junk[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
 	uint8_t aux[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	uint8_t accept[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
+	uint8_t reject[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
 	size_t helloSize = 0;
+	size_t acceptSize = 0;
+	size_t rejectSize = 0;
 
 	NativeLockstepPeerLinkFixture_BuildConfig(&config);
 	CHECK(ComposeHello(&config, hello, sizeof(hello), &helloSize) == 0);
+	CHECK(ComposeReply(&config, (uint8_t)NATIVE_LOCKSTEP_HANDSHAKE_MESSAGE_ACCEPT, (uint8_t)NATIVE_LOCKSTEP_HANDSHAKE_REJECT_NONE,
+		      accept, sizeof(accept), &acceptSize) == 0);
+	CHECK(ComposeReply(&config, (uint8_t)NATIVE_LOCKSTEP_HANDSHAKE_MESSAGE_REJECT,
+		      (uint8_t)NATIVE_LOCKSTEP_HANDSHAKE_REJECT_CONFIG_MISMATCH, reject, sizeof(reject), &rejectSize) == 0);
 	memset(junk, 0x5A, sizeof(junk));
 	memset(aux, 0x3C, sizeof(aux));
 	CHECK(NativeUdpTransport_MakeAddress(&candidates[0], "127.0.0.1", (uint16_t)TEST13_DEAD_PORT));
@@ -759,6 +788,19 @@ static int TestListenNeverSendsAndFilters(void)
 	/* A truncated HELLO from the candidate: not heard. */
 	CHECK(NativeUdpTransport_Send(&peer, &listenAddress, hello, helloSize - 1u));
 	CHECK(PollListeningQuiet(&state, &peer, 3u) == 0);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+
+	/* A well-formed ACCEPT, then a well-formed REJECT, from the candidate:
+	 * not heard, and not answered. Only a HELLO shows a peer in its lobby. */
+	CHECK(NativeUdpTransport_Send(&peer, &listenAddress, accept, acceptSize));
+	CHECK(PollListeningQuiet(&state, &peer, 3u) == 0);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+	CHECK(NativeUdpTransport_Send(&peer, &listenAddress, reject, rejectSize));
+	CHECK(PollListeningQuiet(&state, &peer, 3u) == 0);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+	CHECK(NativeUdpTransport_Send(&peer, &listenAddress, accept, acceptSize));
+	CHECK(NativeUdpTransport_Send(&peer, &listenAddress, reject, rejectSize));
+	CHECK(NativeLockstepPeerLink_PollListen(&state.link, candidates, 2u) == 0u);
 	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
 
 	/* A well-formed HELLO from an address that is not a candidate: not

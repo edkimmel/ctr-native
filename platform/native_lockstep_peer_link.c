@@ -441,7 +441,10 @@ uint32_t NativeLockstepPeerLink_PollListen(struct NativeLockstepPeerLink *link, 
 			continue;
 		}
 		NativeCodecReader_Init(&reader, bytes, byteCount);
-		if (NativeLockstepHandshakeMessageV1_Decode(&reader, &message, NULL))
+		/* Only a HELLO counts (SOLO-4): an ACCEPT or REJECT answers some
+		 * cabinet's HELLO, so it does not show a peer waiting in its lobby. */
+		if (NativeLockstepHandshakeMessageV1_Decode(&reader, &message, NULL) &&
+		    (message.messageType == (uint8_t)NATIVE_LOCKSTEP_HANDSHAKE_MESSAGE_HELLO))
 		{
 			heard++;
 		}

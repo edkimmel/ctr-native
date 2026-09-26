@@ -8,7 +8,8 @@
 # generic aux-route widths and keeps any select-layer token out of the peer
 # link and holds it to the lease and allocation scans (section 9). The fault
 # cause enum is append-only and its session-local VERIFY_AHEAD cause stays out
-# of the codec and the window (section 10).
+# of the codec and the window (section 10). The listen-only link and the
+# lobby's LISTENING poll never send (section 11).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -251,3 +252,83 @@ foreach(relative_path IN ITEMS "platform/native_lockstep_protocol.c" "platform/n
 endforeach()
 ctr_read_source("platform/native_lockstep_session.c" session_source)
 ctr_require("platform/native_lockstep_session.c" "${session_source}" "NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD")
+
+# 11. The listen-only link never sends (docs/SOLO_CAB_MILESTONE.md SOLO-4).
+#     The bodies of NativeLockstepPeerLink_OpenListen and
+#     NativeLockstepPeerLink_PollListen name no send path (no transport send,
+#     no link send helper, no retransmit, no composed handshake), and each
+#     calls only the functions listed here. The LISTENING branch of
+#     NativeLobbyState_Poll calls only NativeLockstepPeerLink_PollListen.
+#     Comments are stripped before the scans, and a body ends at the first
+#     closing brace in column 0 (a branch at the first "\n\t}").
+function(ctr_code_after relative_path source opener closer out_var)
+    string(REPLACE "\r\n" "\n" text "${source}")
+    string(FIND "${text}" "${opener}" at)
+    if(at EQUAL -1)
+        message(FATAL_ERROR "lockstep isolation: ${relative_path} must contain '${opener}'")
+    endif()
+    string(SUBSTRING "${text}" ${at} -1 tail)
+    string(FIND "${tail}" "${closer}" end)
+    if(end EQUAL -1)
+        message(FATAL_ERROR "lockstep isolation: cannot find the end of '${opener}' in ${relative_path}")
+    endif()
+    string(SUBSTRING "${tail}" 0 ${end} body)
+    string(REGEX REPLACE "/\\*([^*]|\\*+[^*/])*\\*+/" "" body "${body}")
+    string(REGEX REPLACE "//[^\n]*" "" body "${body}")
+    set(${out_var} "${body}" PARENT_SCOPE)
+endfunction()
+
+# Every identifier called in body (skipping the opener's own name and the C
+# keywords that take parentheses) must be one of the allowed names.
+function(ctr_calls_only label body opener_name)
+    set(allowed ${ARGN})
+    string(REGEX MATCHALL "[A-Za-z_][A-Za-z0-9_]*[ \t\n]*\\(" calls "${body}")
+    foreach(call IN LISTS calls)
+        string(REGEX REPLACE "[ \t\n]*\\($" "" name "${call}")
+        if(name STREQUAL opener_name OR name MATCHES "^(if|for|while|switch|return|sizeof)$")
+            continue()
+        endif()
+        list(FIND allowed "${name}" allowed_at)
+        if(allowed_at EQUAL -1)
+            message(FATAL_ERROR "lockstep isolation: ${label} calls '${name}', outside its listen-only allow-list")
+        endif()
+    endforeach()
+endfunction()
+
+set(listen_send_tokens Send sendto Retransmit ComposeMessage HandshakeDatagram "NativeLockstepPeerLink_Poll(")
+ctr_read_source("platform/native_lockstep_peer_link.c" peer_link_source)
+ctr_code_after("platform/native_lockstep_peer_link.c" "${peer_link_source}"
+    "int NativeLockstepPeerLink_OpenListen(" "\n}" open_listen_body)
+ctr_code_after("platform/native_lockstep_peer_link.c" "${peer_link_source}"
+    "uint32_t NativeLockstepPeerLink_PollListen(" "\n}" poll_listen_body)
+foreach(term IN LISTS listen_send_tokens)
+    ctr_forbid("platform/native_lockstep_peer_link.c (OpenListen)" "${open_listen_body}" "${term}")
+    ctr_forbid("platform/native_lockstep_peer_link.c (PollListen)" "${poll_listen_body}" "${term}")
+endforeach()
+ctr_require("platform/native_lockstep_peer_link.c (OpenListen)" "${open_listen_body}" "NativeUdpTransport_Open(")
+ctr_require("platform/native_lockstep_peer_link.c (OpenListen)" "${open_listen_body}"
+    "link->mode = NATIVE_LOCKSTEP_PEER_LINK_LISTENING;")
+ctr_require("platform/native_lockstep_peer_link.c (PollListen)" "${poll_listen_body}" "NativeUdpTransport_Receive(")
+ctr_calls_only("NativeLockstepPeerLink_OpenListen" "${open_listen_body}" NativeLockstepPeerLink_OpenListen
+    NativeUdpTransport_GlobalInit NativeUdpTransport_Open NativeUdpTransport_GlobalShutdown
+    NativeLockstepHandshake_Init memset NativeLockstepPeerLink_ResetAux)
+ctr_calls_only("NativeLockstepPeerLink_PollListen" "${poll_listen_body}" NativeLockstepPeerLink_PollListen
+    NativeUdpTransport_Receive NativeLockstepPeerLink_IsListedPeer NativeCodecReader_Init
+    NativeLockstepHandshakeMessageV1_Decode)
+# The two helpers the listen bodies call send nothing either.
+ctr_code_after("platform/native_lockstep_peer_link.c" "${peer_link_source}"
+    "static void NativeLockstepPeerLink_ResetAux(" "\n}" reset_aux_body)
+ctr_calls_only("NativeLockstepPeerLink_ResetAux" "${reset_aux_body}" NativeLockstepPeerLink_ResetAux memset)
+ctr_code_after("platform/native_lockstep_peer_link.c" "${peer_link_source}"
+    "static int NativeLockstepPeerLink_IsListedPeer(" "\n}" listed_peer_body)
+ctr_calls_only("NativeLockstepPeerLink_IsListedPeer" "${listed_peer_body}" NativeLockstepPeerLink_IsListedPeer)
+
+ctr_read_source("platform/native_lobby_state.c" lobby_source)
+ctr_code_after("platform/native_lobby_state.c" "${lobby_source}"
+    "void NativeLobbyState_Poll(struct NativeLobbyState *state)" "\n}" lobby_poll_body)
+ctr_code_after("platform/native_lobby_state.c (NativeLobbyState_Poll)" "${lobby_poll_body}"
+    "else if (state->mode == NATIVE_LOBBY_STATE_LISTENING)" "\n\t}" lobby_listening_branch)
+ctr_require("platform/native_lobby_state.c (LISTENING branch)" "${lobby_listening_branch}"
+    "NativeLockstepPeerLink_PollListen(&state->link, state->candidates, state->candidateCount)")
+ctr_calls_only("the LISTENING branch of NativeLobbyState_Poll" "${lobby_listening_branch}" ""
+    NativeLockstepPeerLink_PollListen)
