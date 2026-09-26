@@ -288,8 +288,11 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
 		}
 		else if (strcmp(arg, k_discoveryTargetOption) == 0)
 		{
+			/* 0.0.0.0 is no destination: the discovery service refuses it, so
+			 * it is refused here rather than silently disabling discovery. */
 			if ((candidate.discoveryTargetCount >= NATIVE_ARCADE_LINK_OPTIONS_MAX_DISCOVERY_TARGETS) ||
-			    !NativeArcadeLinkOptions_ParsePeer(value, &candidate.discoveryTargets[candidate.discoveryTargetCount]))
+			    !NativeArcadeLinkOptions_ParsePeer(value, &candidate.discoveryTargets[candidate.discoveryTargetCount]) ||
+			    (candidate.discoveryTargets[candidate.discoveryTargetCount].ipv4 == 0))
 			{
 				return 0;
 			}
@@ -347,6 +350,13 @@ int NativeArcadeLinkOptions_ValidateMerged(const struct NativeArcadeLinkOptions 
 	}
 	/* DISC-18: the discovery flags would be silently ignored outside discovery mode. */
 	if (((options->discoveryPort != 0) || (options->discoveryTargetCount != 0)) && (options->discovery == 0))
+	{
+		return 0;
+	}
+	/* The discovery socket holds its port for the whole run, so a link port
+	 * equal to it could never bind. */
+	if ((options->discovery != 0) &&
+	    (options->localPort == ((options->discoveryPort != 0) ? options->discoveryPort : (uint16_t)NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_DISCOVERY_PORT)))
 	{
 		return 0;
 	}

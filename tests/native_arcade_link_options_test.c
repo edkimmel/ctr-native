@@ -472,19 +472,23 @@ static int TestDiscoveryModes(void)
 	char *discoveryPortMissing[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-port"};
 	char *targetBad[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-target", "localhost:7000"};
 	char *targetNoPort[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-target", "1.2.3.4"};
+	/* The discovery service refuses 0.0.0.0, so the parser does too. */
+	char *targetZero[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-target", "0.0.0.0:7000"};
+	char *targetZeroSecond[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-target", "1.2.3.4:7000", "--arcade-discovery-target",
+		"0.0.0.0:7000"};
 	char *fiveTargets[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-target", "1.0.0.1:1", "--arcade-discovery-target",
 		"1.0.0.2:2", "--arcade-discovery-target", "1.0.0.3:3", "--arcade-discovery-target", "1.0.0.4:4", "--arcade-discovery-target",
 		"1.0.0.5:5"};
 	char **errors[] = {
 		autoWithPeer, groupWithPeer, groupAlone, groupDash, groupEmpty, group33, groupSpace, groupSlash, groupTwice, groupMissing,
 		autoUpper, autoAndPreview, discoveryPortZero, discoveryPortHigh, discoveryPortTwice, discoveryPortMissing, targetBad,
-		targetNoPort, fiveTargets,
+		targetNoPort, fiveTargets, targetZero, targetZeroSecond,
 	};
 	const int errorCounts[] = {
 		ARGC(autoWithPeer), ARGC(groupWithPeer), ARGC(groupAlone), ARGC(groupDash), ARGC(groupEmpty), ARGC(group33),
 		ARGC(groupSpace), ARGC(groupSlash), ARGC(groupTwice), ARGC(groupMissing), ARGC(autoUpper), ARGC(autoAndPreview),
 		ARGC(discoveryPortZero), ARGC(discoveryPortHigh), ARGC(discoveryPortTwice), ARGC(discoveryPortMissing), ARGC(targetBad),
-		ARGC(targetNoPort), ARGC(fiveTargets),
+		ARGC(targetNoPort), ARGC(fiveTargets), ARGC(targetZero), ARGC(targetZeroSecond),
 	};
 	struct NativeArcadeLinkOptions options;
 	struct NativeArcadeLinkOptions snapshot;
@@ -574,6 +578,57 @@ static int TestDiscoveryModes(void)
 		CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
 		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(fileGroup), fileGroup, &options));
 		CHECK((options.discovery == 1) && (options.discoveryPort == 7303u) && (options.discoveryTargetCount == 1u));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+	}
+	/* In discovery mode the link port may not be the effective discovery
+	 * port, which the discovery socket holds for the whole run. */
+	{
+		char *clashDefault[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-port", "7000"};
+		char *clashGiven[] = {"ctr_native", "--arcade-link", "cab1", "--arcade-link-port", "7301", "--arcade-discovery-port", "7301"};
+		char *clashDefaultedLink[] = {"ctr_native", "--arcade-link", "auto", "--arcade-discovery-port", "7001"};
+		char *nextToDefault[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-port", "6999"};
+		char *movedDiscovery[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-port", "7000", "--arcade-discovery-port", "7301"};
+		char *nextToGiven[] = {"ctr_native", "--arcade-link", "cab1", "--arcade-link-port", "7302", "--arcade-discovery-port", "7301"};
+		char *staticOn7000[] = {"ctr_native", "--arcade-link", "cab1", "--arcade-link-port", "7000", "--arcade-link-peer", "1.2.3.4:7000"};
+		char *argvDiscoveryPort[] = {"ctr_native", "--arcade-discovery-port", "7301"};
+		char *fileSeat[] = {"arcade.cfg", "--arcade-link", "auto", "--arcade-link-port", "7301"};
+
+		NativeArcadeLinkOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(clashDefault), clashDefault, &options));
+		CHECK((options.discovery == 1) && (options.localPort == 7000u) && (options.discoveryPort == 0));
+		snapshot = options;
+		CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+		CHECK(memcmp(&options, &snapshot, sizeof(options)) == 0);
+		NativeArcadeLinkOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(clashGiven), clashGiven, &options));
+		CHECK((options.discovery == 1) && (options.localPort == 7301u) && (options.discoveryPort == 7301u));
+		CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+		NativeArcadeLinkOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(clashDefaultedLink), clashDefaultedLink, &options));
+		CHECK((options.localPort == NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_LINK_PORT) && (options.discoveryPort == 7001u));
+		CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+		/* The config file's seat and port merged over the argv discovery port: the same clash. */
+		NativeArcadeLinkOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argvDiscoveryPort), argvDiscoveryPort, &options));
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(fileSeat), fileSeat, &options));
+		CHECK((options.discovery == 1) && (options.localPort == 7301u) && (options.discoveryPort == 7301u));
+		CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+
+		/* Neighbours still accepted. */
+		NativeArcadeLinkOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(nextToDefault), nextToDefault, &options));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+		NativeArcadeLinkOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(movedDiscovery), movedDiscovery, &options));
+		CHECK((options.localPort == 7000u) && (options.discoveryPort == 7301u));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+		NativeArcadeLinkOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(nextToGiven), nextToGiven, &options));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+		/* Static mode opens no discovery socket: 7000 is an ordinary link port there. */
+		NativeArcadeLinkOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(staticOn7000), staticOn7000, &options));
+		CHECK((options.discovery == 0) && (options.localPort == 7000u));
 		CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
 	}
 

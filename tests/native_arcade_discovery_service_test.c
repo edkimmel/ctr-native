@@ -37,25 +37,20 @@ static struct NativeArcadeDiscoveryService s_zero;
 static const uint8_t k_identity[NATIVE_ARCADE_DISCOVERY_IDENTITY_BYTES] = {1, 2, 3, 4, 5, 6, 7, 8};
 
 /*
- * Loopback delivery is asynchronous relative to sendto returning, so on a
- * beacon step (both send on the same steps) the test waits after each
- * service's tick. That makes the timing exact: A's beacon of step s is read
- * by B in the same step s, and B's beacon of step s by A at step s + 1.
+ * Loopback delivery is asynchronous relative to sendto returning, and under
+ * a loaded ctest -j 8 it can lag by more than any fixed wait. So the test
+ * never asserts on which step a datagram lands: it paces the ticks (a sleep
+ * after each step, so the 300-tick expiry spans at least 300 ms of wall
+ * time) and polls for each expected state up to POLL_BOUND_MS.
  */
-static void Settle(uint32_t step)
-{
-	if ((step % NATIVE_ARCADE_DISCOVERY_BEACON_INTERVAL_TICKS) == 0)
-	{
-		Sleep(20);
-	}
-}
+#define POLL_BOUND_MS 5000u
 
-static void Step(struct NativeArcadeDiscoveryService *a, struct NativeArcadeDiscoveryService *b, uint32_t step)
+static void Step(struct NativeArcadeDiscoveryService *a, struct NativeArcadeDiscoveryService *b, uint32_t *step)
 {
 	NativeArcadeDiscoveryService_Tick(a);
-	Settle(step);
 	NativeArcadeDiscoveryService_Tick(b);
-	Settle(step);
+	(*step)++;
+	Sleep(1);
 }
 
 static int Paired(const struct NativeArcadeDiscoveryService *service)
@@ -63,6 +58,22 @@ static int Paired(const struct NativeArcadeDiscoveryService *service)
 	struct NativeArcadeDiscoveryPairing pairing;
 
 	return NativeArcadeDiscoveryService_Pairing(service, &pairing);
+}
+
+/* Steps both until both are paired; 0 if that takes over POLL_BOUND_MS. */
+static int StepUntilBothPaired(struct NativeArcadeDiscoveryService *a, struct NativeArcadeDiscoveryService *b, uint32_t *step)
+{
+	const ULONGLONG deadline = GetTickCount64() + POLL_BOUND_MS;
+
+	do
+	{
+		Step(a, b, step);
+		if (Paired(a) && Paired(b))
+		{
+			return 1;
+		}
+	} while (GetTickCount64() < deadline);
+	return 0;
 }
 
 static int TestClosedAndArguments(void)
@@ -145,6 +156,7 @@ static int TestPairOnLoopback(void)
 	struct NativeArcadeDiscoveryEvent event;
 	struct NativeUdpTransportAddress address;
 	uint32_t step = 0;
+	uint32_t pairedStep;
 
 	CHECK(NativeArcadeDiscoveryService_Open(&s_a, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &toB, 1u));
 	CHECK(NativeArcadeDiscoveryService_Open(&s_b, PORT_B, NONCE_B, 1u, k_identity, LINK_PORT_B, NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &toA, 1u));
@@ -161,18 +173,15 @@ static int TestPairOnLoopback(void)
 	NativeArcadeDiscoveryService_Tick(&s_conflict);
 	NativeArcadeDiscoveryService_Close(&s_conflict);
 
-	/* Step 0: A beacons with no echo; B reads it (an entry that does not echo
-	 * B: not eligible) and beacons echoing A. Step 1: A reads that echo and
-	 * pairs; B still waits for an echo of its own nonce, which A's step-30
-	 * beacon carries: both are paired from step 30 on (DISC-7). */
-	Step(&s_a, &s_b, step++);
+	/* Step 0: A beacons with no echo, so nothing can pair yet: A has read
+	 * nothing, and B at most A's echo-less beacon (not eligible). Each side
+	 * pairs once it reads a beacon echoing its own nonce, which the other
+	 * sends from its first beacon after reading ours (DISC-7): within a few
+	 * intervals, however late loopback delivers. */
+	Step(&s_a, &s_b, &step);
 	CHECK(!Paired(&s_a) && !Paired(&s_b));
-	for (; step < 30u; step++)
-	{
-		Step(&s_a, &s_b, step);
-		CHECK(Paired(&s_a) && !Paired(&s_b));
-	}
-	Step(&s_a, &s_b, step++);
+	CHECK(StepUntilBothPaired(&s_a, &s_b, &step));
+	pairedStep = step;
 	CHECK(NativeArcadeDiscoveryService_Pairing(&s_a, &pairingA));
 	CHECK(NativeArcadeDiscoveryService_Pairing(&s_b, &pairingB));
 
@@ -189,31 +198,50 @@ static int TestPairOnLoopback(void)
 	CHECK((event.type == NATIVE_ARCADE_DISCOVERY_EVENT_PAIR_FOUND) && (event.localSeat == NATIVE_ARCADE_DISCOVERY_SEAT_CAB2));
 
 	/* The pairing holds while both beacon, through a few more intervals. */
-	for (; step < 90u; step++)
+	for (uint32_t held = 0; held < 2u * NATIVE_ARCADE_DISCOVERY_BEACON_INTERVAL_TICKS; held++)
 	{
-		Step(&s_a, &s_b, step);
+		Step(&s_a, &s_b, &step);
 		CHECK(Paired(&s_a) && Paired(&s_b));
 	}
-	for (; (step % NATIVE_ARCADE_DISCOVERY_BEACON_INTERVAL_TICKS) != 0u; step++)
+	while ((step % NATIVE_ARCADE_DISCOVERY_BEACON_INTERVAL_TICKS) != 0u)
 	{
-		Step(&s_a, &s_b, step);
+		Step(&s_a, &s_b, &step);
 	}
-	/* A beacons one last time and closes at once: B reads that beacon on its
-	 * first tick after the close and loses the pairing on its 300th (DISC-4:
-	 * an entry heard at tick T expires on the Tick reaching T + 300). */
+	/* A beacons one last time and closes at once. B reads that beacon on
+	 * some tick k >= 1 after the close and loses the pairing on tick
+	 * k + 299 (DISC-4: an entry heard at tick T expires on the Tick reaching
+	 * T + 300): never before tick 300. B's first interval of ticks is paced
+	 * for the beacon to land in, so k <= 31 bounds the loss above too. */
 	NativeArcadeDiscoveryService_Tick(&s_a);
-	Settle(step);
 	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_a, &status));
 	CHECK(status.tickCount == step + 1u);
 	NativeArcadeDiscoveryService_Close(&s_a);
 	CHECK(!Paired(&s_a));
-	for (uint32_t after = 1u; after < NATIVE_ARCADE_DISCOVERY_EXPIRY_TICKS; after++)
 	{
-		NativeArcadeDiscoveryService_Tick(&s_b);
-		CHECK(Paired(&s_b));
+		uint32_t after = 1u;
+
+		for (;; after++)
+		{
+			NativeArcadeDiscoveryService_Tick(&s_b);
+			if (!Paired(&s_b))
+			{
+				break;
+			}
+			CHECK(after < NATIVE_ARCADE_DISCOVERY_EXPIRY_TICKS + NATIVE_ARCADE_DISCOVERY_BEACON_INTERVAL_TICKS);
+			if (after <= NATIVE_ARCADE_DISCOVERY_BEACON_INTERVAL_TICKS)
+			{
+				Sleep(1);
+			}
+		}
+		if (after < NATIVE_ARCADE_DISCOVERY_EXPIRY_TICKS)
+		{
+			fprintf(stderr, "B lost the pairing %u ticks after A closed, before the %u-tick expiry\n", (unsigned)after,
+			        (unsigned)NATIVE_ARCADE_DISCOVERY_EXPIRY_TICKS);
+			return 1;
+		}
+		printf("native_arcade_discovery_service_test: paired by step %u; B lost the pairing %u ticks after A closed\n",
+		       (unsigned)pairedStep, (unsigned)after);
 	}
-	NativeArcadeDiscoveryService_Tick(&s_b);
-	CHECK(!Paired(&s_b));
 	CHECK(NativeArcadeDiscoveryService_TakeEvent(&s_b, &event));
 	CHECK((event.type == NATIVE_ARCADE_DISCOVERY_EVENT_PAIR_LOST) && (event.peerNonce == NONCE_A));
 

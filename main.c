@@ -334,7 +334,8 @@ int main(int argc, char *argv[])
 	 * are checked only now, against the merged options (DISC-18). */
 	if (!NativeArcadeLinkOptions_ValidateMerged(&arcadeLinkOptions))
 	{
-		fprintf(stderr, "[CTR Native] invalid arcade-link option; --arcade-discovery-port and --arcade-discovery-target need discovery mode (--arcade-link or seat without a peer).\n");
+		fprintf(stderr, "[CTR Native] invalid arcade-link option; --arcade-discovery-port and --arcade-discovery-target need discovery mode (--arcade-link or seat without a peer), "
+		                "and in discovery mode the link port may not equal the discovery port (default 7000).\n");
 		return NativeConsole_Return(1);
 	}
 	/* Discovery mode parses and validates, but the link host does not run it

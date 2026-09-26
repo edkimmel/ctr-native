@@ -22,7 +22,8 @@
  *   --arcade-discovery-port N        discovery bind port, 1..65535 (DISC-18)
  *   --arcade-discovery-target a.b.c.d:port
  *                                    one explicit beacon target; repeatable,
- *                                    up to NATIVE_ARCADE_LINK_OPTIONS_MAX_DISCOVERY_TARGETS
+ *                                    up to NATIVE_ARCADE_LINK_OPTIONS_MAX_DISCOVERY_TARGETS;
+ *                                    the address may not be 0.0.0.0
  *
  * Parsing is transactional: on any error the caller's options are left
  * untouched. Arguments that are not one of these options are ignored,
@@ -170,8 +171,12 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
  * The post-merge check (DISC-18), run after argv and the config file's link
  * group have both been applied: --arcade-discovery-port and
  * --arcade-discovery-target need discovery mode, since they would otherwise
- * be silently ignored. Returns 1 when the options are consistent, 0 for
- * NULL or a discovery flag without discovery mode. Never writes.
+ * be silently ignored; and in discovery mode the link port may not equal the
+ * effective discovery port (discoveryPort, or
+ * NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_DISCOVERY_PORT when 0), which the
+ * discovery socket holds. Returns 1 when the options are consistent, 0 for
+ * NULL, a discovery flag without discovery mode, or that port clash. Never
+ * writes.
  */
 int NativeArcadeLinkOptions_ValidateMerged(const struct NativeArcadeLinkOptions *options);
 

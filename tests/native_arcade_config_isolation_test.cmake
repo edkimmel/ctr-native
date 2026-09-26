@@ -236,7 +236,12 @@ foreach(path IN LISTS scan_files)
     endforeach()
 endforeach()
 
-# 8. main.c: the order of the wiring, and where the config may go.
+# 8. main.c: the order of the wiring, and where the config may go. The
+#    discovery checks (DISC-18) run on the merged options: the file's link
+#    group is applied, then NativeArcadeLinkOptions_ValidateMerged, then the
+#    discovery-mode refusal, all before the link host is configured. DISC-S4
+#    replaces the refusal pin ("arcadeLinkOptions.discovery != 0u" ...
+#    "not wired yet") with the discovery host wiring.
 ctr_read_source("main.c" main_source)
 ctr_strip_comments("${main_source}" main_code)
 ctr_require("main.c" "${main_code}" "#include \"platform/native_arcade_config.h\"")
@@ -250,6 +255,9 @@ ctr_require_order("main.c" "${main_code}"
     "NativeArcadeLinkOptions_ApplyArgs(argc, argv, &arcadeLinkOptions)"
     "if ((configArgs.namesLinkOption == 0u) && NativeArcadeConfig_HasLink(&arcadeConfig))"
     "NativeArcadeConfig_ApplyLink(&arcadeConfig, &arcadeLinkOptions)"
+    "NativeArcadeLinkOptions_ValidateMerged(&arcadeLinkOptions)"
+    "arcadeLinkOptions.discovery != 0u"
+    "not wired yet"
     "NativeArg_NamesReplayOption(argc, argv)"
     "NativeAssets_InitWithAssetDir(sdlBasePath, dataDir, resolvedDataDir, sizeof(resolvedDataDir))"
     "NativeAssets_Validate()"
@@ -293,7 +301,8 @@ if(NOT apply_display_at LESS display_args_at)
     message(FATAL_ERROR "${prefix}: main.c must call NativeArcadeConfig_ApplyDisplay before NativeDisplayConfig_ApplyArgs(argc, argv, &displayConfig)")
 endif()
 foreach(call IN ITEMS "NativeArcadeConfig_ParseArgs\\(" "NativeArcadeConfig_Parse\\(" "NativeArcadeConfig_ApplyLink\\(" "NativeArcadeConfig_ApplyDisplay\\("
-        "NativeConfigFile_Load\\(configArgs" "NativeAssets_InitWithAssetDir\\(" "NativeDisplayConfig_ApplyArgs\\(argc")
+        "NativeConfigFile_Load\\(configArgs" "NativeAssets_InitWithAssetDir\\(" "NativeDisplayConfig_ApplyArgs\\(argc"
+        "NativeArcadeLinkOptions_ValidateMerged\\(")
     ctr_count("${main_code}" "${call}" call_count)
     if(NOT call_count EQUAL 1)
         message(FATAL_ERROR "${prefix}: main.c must call ${call} exactly once (found ${call_count})")

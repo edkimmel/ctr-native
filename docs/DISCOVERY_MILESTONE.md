@@ -400,7 +400,10 @@ alternative.
       enumeration, and the core.
     - Only the link host may name the discovery modules; it owns the
       service, because the adapter may not link the transport (section
-      2.5). The netplay adapter receives plain values (peer address, role)
+      2.5). The one other user is the options library, which links the
+      pure core only, for NativeArcadeDiscovery_GroupNameValid (the one
+      group grammar, DISC-9), as
+      tests/native_arcade_discovery_isolation_test.cmake allows. The netplay adapter receives plain values (peer address, role)
       through its setter and keeps its include allow-list and nine-library
       pin (tests/native_arcade_netplay_isolation_test.cmake:67-78,
       :108-150) unchanged.
@@ -445,10 +448,14 @@ alternative.
     - `--arcade-discovery-port <p>`: the bind port, default 7000.
     - `--arcade-discovery-target a.b.c.d:port`: repeatable, up to 4. When
       given, beacons go only to those targets: no broadcast and no
-      interface enumeration.
+      interface enumeration. The address may not be 0.0.0.0 (the service
+      refuses it, so the parser does too).
     - Either flag without discovery mode is an error (it would be silently
       ignored, the options' own rule), checked by the post-merge validate
-      after the file group is applied (DISC-11), never in ApplyArgs.
+      after the file group is applied (DISC-11), never in ApplyArgs. The
+      same validate refuses a discovery-mode link port equal to the
+      discovery port (7000 when not given): the discovery socket holds it
+      for the whole run, so the link could never bind.
     - Two processes on 127.0.0.1 bind different discovery ports and target
       each other. Their link ports differ, so the election is by port: the
       lower link port is cab1. The live test runs both with
@@ -623,6 +630,17 @@ leave room.
    targets before the peer is up. The service ends that tick's drain
    (DISC-15); S3 may instead set SIO_UDP_CONNRESET in the transport. Port
    7000 taken by another program is DISC-15's bind failure: solo only.
+10. Without explicit targets the service refreshes the interface list
+    (GetAdaptersAddresses) every 300 ticks on the game thread, linked race
+    frames included. S4 should measure that cost or refresh only outside
+    races.
+11. docs/PACKAGING.md PK-5 and its error table still describe the old
+    all-or-none link group rule; S5 updates them to DISC-11.
+12. In discovery mode a defaulted link port (7001) is stored in
+    `localPort` and then looks given, a trap for a caller that applies
+    `NativeArcadeLinkOptions_ApplyArgs` incrementally (a later static-mode
+    pass would accept it as the required port). main.c applies argv and
+    the file's group exclusively (PK-4), so it cannot reach this.
 
 ## 6. Status
 
