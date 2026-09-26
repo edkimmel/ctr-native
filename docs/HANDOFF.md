@@ -718,77 +718,68 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
 
 ## Next work
 
-Task 7 (networked race launch) is complete and tracked in
-`docs/RACE_LAUNCH_MILESTONE.md`.
-- On START RACE, two linked cabinets agree through a launch commit, and
-  each loads the same race from the agreed config through
-  `MainArcadeRaceSetup`, with equal config, plan, bot, and bank digests.
-- Until Task 8, the race is a rehearsal: pads are held neutral, and after
-  about 5 s each cabinet returns to RESULTS; REMATCH goes back through
-  select.
-- The live ctest `arcade_link_launch` proves two races over loopback with
-  two processes.
-- The suite is 157 tests. `ctest -LE live` skips the three live tests
-  (about 390 s of the ~450 s run).
+Tasks 7 and 8 are complete. Linked races launch and run in lockstep end to
+end (`docs/RACE_LAUNCH_MILESTONE.md`, `docs/LOCKSTEP_RACE_MILESTONE.md`,
+defaults LR-1..LR-76).
+- The live ctest `arcade_link_launch` runs three races over loopback with
+  two processes and the autopilot:
+  - race 1 reaches the natural finish on the same tick on both cabinets,
+    with a 45-period freeze on cab2 held through by cab1;
+  - race 2 is a forced desync, ending DESYNC or PEER_TIMEOUT;
+  - race 3 kills cab2, ending PEER_TIMEOUT.
+  The gate takes about 235 s.
+- The suite is 157 tests and takes about 605 s. `ctest -LE live` runs 154
+  of them in about 60 s.
+- Menu sounds SND-1..11 are assumed approved until live testing. The input
+  delay (D = 2, 3 ticks) awaits a feel test on the cabinets.
 
-1. Task 8, in-race lockstep drive and failure handling
-   (`docs/LOCKSTEP_RACE_MILESTONE.md`, slices LR-S1..LR-S14, defaults
-   LR-1..LR-36).
-   - Owner decisions are folded into the plan:
-     - race end (LR-18): the race ends when every human has finished,
-       or 900 ticks (about 30 s) after the first finish; the 10-minute
-       cap is a backstop;
-     - LR-17 ruled (a): the NavHeader.last read is check-only;
-     - input delay: 3 ticks, pending a feel test;
-     - the split screen ships.
-   - Done: LR-S1 through LR-S12. Linked races now run in lockstep end to
-     end. The caller drives the race through RaceStep and RaceHold in
-     place of the rehearsal. Failures (stall, fault, desync, local, finish
-     grace, race-length bound) reach RESULTS, and a desync logs one line
-     per race. The hold banner uses the game's small font, read-only from
-     the host's VRAM copy, with the 5x7 block font as the fallback
-     (LR-72). Defaults now run to LR-72. The suite is 157 tests, 154 of
-     them in `-LE live`.
-   - The `arcade_link_launch` gate runs two lockstep races on a 300-tick
-     cap. It does not yet prove that steering moves a kart, that the hold
-     works live, or that the banner draws live.
-   - Next: LR-S13 (the one-machine three-race gate: a natural finish,
-     freeze and forced-desync injections, and cab2 killed in race 3),
-     then LR-S14 (docs close-out).
-   - For packaging: `ctr_native` always defines `CTR_INTERNAL`, so the
-     non-internal build branch is never compiled. The Release package
-     needs a decision on whether the internal autopilot and test options
-     ship.
-   - Hold banner: it is a host overlay, because DecalFont writes
-     render-pass state (LR-S2 (a)). The owner asked why it does not use the
-     game font. LR-S11 default: the host overlay draws the game font's
-     glyphs, read from VRAM without writing it, and falls back to the 5x7
-     block font if that proves unsafe.
-   - Menu sounds SND-1..11 are assumed approved until live testing.
-2. Package and ship, as soon as possible (owner directive). Overnight the
-   owner reprioritised: drive Task 8 autonomously to a real end-to-end
-   linked race first, then package; cabinets and hardware follow.
+1. Package and ship, as soon as possible (owner directive).
    - A Release build, checked against the Debug suite.
-   - A package step that produces one self-contained folder: the exe and
-     DLLs, with the runtime bundled so nothing needs installing, plus a
-     per-cabinet config file next to the exe (data path, seat, peer IP
-     and port, fullscreen). It contains NO retail data; each cabinet
-     reads its own data from the path in its config. Owner-approved:
-     static per-cabinet config until auto-discovery lands.
+   - A package step that produces one self-contained folder:
+     - the exe, with the runtime bundled so nothing needs installing (the
+       build is fully static);
+     - a per-cabinet config file next to the exe (data path, seat, peer IP
+       and port, fullscreen). This is owner-approved as static config
+       until auto-discovery lands.
+     - No retail data: each cabinet reads its own data from the path in
+       its config.
    - Both cabinets must run the byte-identical package, because the
      handshake rejects different builds.
+   - Default until the owner rules: v1 ships the tested `CTR_INTERNAL`
+     build. Its autopilot and fault options are opt-in command-line flags
+     only. `ctr_native` always defines `CTR_INTERNAL` (`CMakeLists.txt`
+     target definitions, and PUBLIC on `ctr_native_canonical_runtime`),
+     so the non-internal branches have never been compiled. A
+     non-internal release target needs a CMake switch, its own build, and
+     a smoke test, because the live gates skip on a non-internal exe.
    - The owner will guide deployment to `C:\arcade` and the sync between
-     cabinets. Later Task 8 builds ship the same way.
-   - Stretch goals (items 8-13 above) are developed in this repo after
-     shipping. `C:\arcade` only ever receives packaged builds.
-3. Cabinet auto-discovery (owner directive, after packaging). The
+     cabinets. `C:\arcade` only ever receives packaged builds.
+   - Stale docs to fix alongside packaging:
+     - `GAME_LOOP_UI_MILESTONE.md` (~639-643 and ~1078-1084) and
+       `RACE_LAUNCH_MILESTONE.md` risk 6 still describe the rehearsal.
+     - `ROSTER_MILESTONE.md` risks 2-4 still say "Task 8 must", and
+       ~158-160 and ~445 still call the pacing "proof-only".
+     - `FAILURE_HANDLING_MILESTONE.md` and
+       `include/platform/native_lockstep_match_outcome.h` still give 60 Hz
+       stall figures.
+2. Cabinet auto-discovery (owner directive, after packaging). The
    cabinets sit on a dumb switch and have fixed IPs.
    - Each cabinet announces itself on the subnet. A continuous background
      poll finds peers that wake up later.
    - ONE_CAB versus TWO_CAB is not a static setting: it follows from
      whether other cabinets are found or are silent.
    - Discovery replaces the static peer address in the config.
-4. Real two-cabinet and G29 validation (actual wire, LAN switch,
-   latency/loss, wheel input) needs cabinet access. It is the separately
-   gated requirement for step 6 (CAB1 G29/kiosk gate) and step 7
-   (two-cabinet fleet acceptance).
+3. Real two-cabinet and G29 validation (actual wire, LAN switch,
+   latency/loss, wheel input, and the D feel test) needs cabinet access.
+   It is the separately gated requirement for step 6 (CAB1 G29/kiosk
+   gate) and step 7 (two-cabinet fleet acceptance).
+4. Task 8 open items, none blocking shipping:
+   - A divergence found only by the Tick that closes the link while
+     leaving RESULTS is not logged (LR-70).
+   - The detecting cabinet logs no "drive end" line when the flow leaves
+     RACING.
+   - The race-tick cap is checked across cabinets only by the gate
+     (LR-60).
+   - Audio during a hold has not been observed.
+   - Whether RESULTS shows standings (risk 16).
+   - TOPOLOGY is not compared (risk 17).
