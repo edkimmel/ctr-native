@@ -1591,6 +1591,19 @@ if(BUILD_TESTING)
                 -DREPO_DIR=${CMAKE_SOURCE_DIR}
                 -DWORK_DIR=${CMAKE_BINARY_DIR}/package_guard_test/$<CONFIG>
                 -P "${CMAKE_SOURCE_DIR}/tests/package_arcade_content_guard_test.cmake")
+
+        # The package smoke tools, without a game run (docs/PACKAGING.md
+        # "Package smoke gate"): tools/package-arcade.ps1 stage mode writes
+        # the package file set and a MANIFEST marked as a staged test package
+        # from a fabricated dummy exe, refuses a destination outside
+        # build-msvc-x86\ or holding a non-package file, and shares one
+        # staging function with the real package; the smoke and gate scripts
+        # reject their argument misuses before any run.
+        add_test(NAME package_arcade_stage
+            COMMAND "${CMAKE_COMMAND}"
+                -DREPO_DIR=${CMAKE_SOURCE_DIR}
+                -DWORK_DIR=${CMAKE_BINARY_DIR}/package_stage_test/$<CONFIG>
+                -P "${CMAKE_SOURCE_DIR}/tests/package_arcade_stage_test.cmake")
     endif()
 
     # Internal two-process gate autopilot (docs/RACE_LAUNCH_MILESTONE.md
@@ -2106,6 +2119,29 @@ if(BUILD_TESTING)
                 -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_link_launch/$<CONFIG>"
                 -TimeoutSeconds 780)
         set_tests_properties(arcade_link_launch PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 900
+            RUN_SERIAL TRUE
+            LABELS live)
+
+        # The package smoke gate (docs/PACKAGING.md "Package smoke gate"):
+        # stages this configuration's ctr_native as a test package
+        # (ctr-arcade-staged, through tools/package-arcade.ps1
+        # -StageExecutable), runs the retail-data guard and checks every
+        # MANIFEST size and SHA-256, copies the package to a fresh run folder,
+        # derives loopback copies of the package's cab1.cfg and cab2.cfg
+        # (only the peer IP, data_dir, and fullscreen change), and runs the
+        # arcade_link_launch gate on the copied exe with --config in place of
+        # the link options. The same fixed ports as arcade_link_launch;
+        # RUN_SERIAL keeps them apart. Skips (77) like arcade_link_launch;
+        # a skip is not a pass. Everything is written under the build tree.
+        add_test(NAME package_arcade_smoke
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/package-arcade-smoke.ps1"
+                -StageExecutable "$<TARGET_FILE:ctr_native>"
+                -OutputDirectory "${CMAKE_BINARY_DIR}/package_smoke/$<CONFIG>"
+                -TimeoutSeconds 780)
+        set_tests_properties(package_arcade_smoke PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 900
             RUN_SERIAL TRUE

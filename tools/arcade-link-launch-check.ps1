@@ -17,6 +17,15 @@ param(
     # [CmdletBinding()] script run with -File.
     [string]$AssetsFile,
 
+    # Optional config files (docs/PACKAGING.md PK-2), both or neither: when
+    # given, each run gets --config <absolute path> instead of the
+    # --arcade-link/--arcade-link-port/--arcade-link-peer triple, so its link
+    # group comes from the file.  The package smoke gate
+    # (tools/package-arcade-smoke.ps1) passes loopback copies of the
+    # package's cab1.cfg and cab2.cfg.
+    [string]$Cab1Config,
+    [string]$Cab2Config,
+
     # Seconds both runs together may take.
     [int]$TimeoutSeconds = 780
 )
@@ -103,6 +112,13 @@ param(
 #     capture frame is none of that cabinet's "hold banner presented as
 #     capture frame <n>" frames (so it is not a hold banner's frame).
 #
+# With -Cab1Config and -Cab2Config (both or neither), each run gets
+# --config <file> in place of the three link options, and its stdout must show
+# that file loaded ("Config file: <path>", once), the link group taken from it,
+# and no group overridden by the command line; everything else is unchanged.
+# The config files must hold the same seats, ports, and peers as the options
+# above (the package smoke gate, tools/package-arcade-smoke.ps1, checks that).
+#
 # Skips (77) without the disc image, without a display, with a non-internal
 # build (the option is rejected), or with an unknown build identity (a build
 # from a dirty tree: the link refuses to start).  A skip is not a pass.
@@ -186,6 +202,10 @@ $stdoutFrozePattern = '^\[CTR Native\] arcade link: race ([0-9]+) race tick ([0-
 $stdoutDesyncPattern = '^\[CTR Native\] arcade link: race ([0-9]+) race tick ([0-9]+): autopilot desync injection flipped bit 0 of the CONTROL domain digest$'
 $stdoutBannerPattern = '^\[CTR Native\] hold banner presented as capture frame ([0-9]+)( in the (.*))?$'
 $stdoutCapturePattern = '^\[CTR Native\] frame capture wrote (.*) \(([0-9]+)x([0-9]+)\)$'
+# main.c's config file startup lines (docs/PACKAGING.md PK-4).
+$stdoutConfigFilePattern = '^\[CTR Native\] Config file: (.*)$'
+$stdoutConfigGroupsPattern = '^\[CTR Native\] Config groups from the file:(.*)$'
+$stdoutConfigOverriddenPattern = '^\[CTR Native\] Config groups overridden by the command line:(.*)$'
 # Race 3's kill watch: cab2's validated lines and per-tick lines, over its
 # whole stdout text.
 $killValidatedRegex = New-Object System.Text.RegularExpressions.Regex('^\[CTR Native\] arcade link: race ([0-9]+) validated config ', [System.Text.RegularExpressions.RegexOptions]::Multiline)
@@ -250,8 +270,13 @@ function Stop-StartedRuns($Runs) {
 }
 
 function Start-Run($Run) {
-    $arguments = @('--arcade-link', $Run.Cab, '--arcade-link-port', $Run.Port, '--arcade-link-peer', $Run.Peer,
-        '--arcade-link-autopilot', $Run.ReportPath, '--arcade-link-autopilot-race-ticks', $raceTickCap,
+    # With a config file, its link group replaces the three link options
+    # (PK-4: argv naming none, the file's group applies).
+    $linkArguments = @('--arcade-link', $Run.Cab, '--arcade-link-port', $Run.Port, '--arcade-link-peer', $Run.Peer)
+    if ($null -ne $Run.ConfigPath) {
+        $linkArguments = @('--config', $Run.ConfigPath)
+    }
+    $arguments = $linkArguments + @('--arcade-link-autopilot', $Run.ReportPath, '--arcade-link-autopilot-race-ticks', $raceTickCap,
         '--capture-frame', "$captureFrame=$($Run.CapturePath)") + $Run.FaultArguments
     $argumentLine = ($arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
     # A run that cannot start fails the check at once, not at the timeout.
@@ -472,6 +497,7 @@ function Read-Stdout($Run) {
     $log = [pscustomobject]@{
         Agreed = @(); Validated = @(); RaceTickLimits = @(); Ended = @(); OutOfSync = @(); DriveEnds = @(); Held = @(); Froze = @()
         Desyncs = @(); Banners = @(); Captures = @(); Ticks = @{}; LineCount = 0
+        ConfigFiles = @(); ConfigGroups = @(); ConfigOverridden = @()
     }
     $index = 0
     foreach ($line in ((Read-SharedText $Run.StdoutPath) -split "`r?`n")) {
@@ -517,6 +543,15 @@ function Read-Stdout($Run) {
         }
         elseif ($line -match $stdoutCapturePattern) {
             $log.Captures += [pscustomobject]@{ Index = $index; Path = $Matches[1]; Width = [int]$Matches[2]; Height = [int]$Matches[3] }
+        }
+        elseif ($line -match $stdoutConfigFilePattern) {
+            $log.ConfigFiles += $Matches[1]
+        }
+        elseif ($line -match $stdoutConfigGroupsPattern) {
+            $log.ConfigGroups += $Matches[1]
+        }
+        elseif ($line -match $stdoutConfigOverriddenPattern) {
+            $log.ConfigOverridden += $Matches[1]
         }
         $index++
     }
@@ -659,6 +694,21 @@ function Read-TickDigests($Run, $Log, [int]$K, $LastTick, $Problems) {
 
 try {
     $checkStartedAt = Get-Date
+    # The config files: both or neither.  A usage error fails, never skips.
+    $configPaths = @{}
+    $cab1ConfigGiven = -not [string]::IsNullOrWhiteSpace($Cab1Config)
+    $cab2ConfigGiven = -not [string]::IsNullOrWhiteSpace($Cab2Config)
+    if ($cab1ConfigGiven -ne $cab2ConfigGiven) {
+        Exit-Failed '-Cab1Config and -Cab2Config must be given together (or neither)'
+    }
+    if ($cab1ConfigGiven) {
+        foreach ($pair in @(@('cab1', $Cab1Config), @('cab2', $Cab2Config))) {
+            if (-not (Test-Path -LiteralPath $pair[1] -PathType Leaf)) {
+                Exit-Failed "config file for $($pair[0]) not found: $($pair[1])"
+            }
+            $configPaths[$pair[0]] = (Resolve-Path -LiteralPath $pair[1] -ErrorAction Stop).ProviderPath
+        }
+    }
     if ([string]::IsNullOrWhiteSpace($AssetsFile)) {
         $scriptDirectory = $PSScriptRoot
         if ([string]::IsNullOrWhiteSpace($scriptDirectory)) {
@@ -691,6 +741,8 @@ try {
             Port = $spec.Port
             Peer = $spec.Peer
             FaultArguments = $spec.FaultArguments
+            # $null without -Cab1Config/-Cab2Config: the three link options.
+            ConfigPath = $configPaths[$spec.Name]
             ReportPath = Join-Path $resolvedOutput "$($spec.Name).report.txt"
             StdoutPath = Join-Path $resolvedOutput "$($spec.Name).stdout.log"
             StderrPath = Join-Path $resolvedOutput "$($spec.Name).stderr.log"
@@ -718,6 +770,9 @@ try {
     Write-Output "executable: $resolvedExecutable"
     Write-Output "output:     $resolvedOutput"
     Write-Output "race tick cap $raceTickCap on both; cab2: freeze at race 1 tick $freezeTick, desync at race 2 tick $desyncTick; cab2 killed at its race 3 tick $killRaceTick; capture frame $captureFrame on both"
+    if ($cab1ConfigGiven) {
+        Write-Output "link options from config files: cab1 --config $($configPaths['cab1']); cab2 --config $($configPaths['cab2'])"
+    }
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     foreach ($run in $runs) {
@@ -752,6 +807,19 @@ try {
         }
         if (($log.RaceTickLimits.Count -ne 1) -or ($log.RaceTickLimits[0] -ne $raceTickCap)) {
             [void]$failures.Add("run $($run.Name): the race tick limit lines on stdout are '$($log.RaceTickLimits -join ', ')', expected one '$raceTickCap'")
+        }
+        if ($null -ne $run.ConfigPath) {
+            # The link group came from the file, and the command line overrode
+            # no group of it.
+            if (($log.ConfigFiles.Count -ne 1) -or ($log.ConfigFiles[0] -cne $run.ConfigPath)) {
+                [void]$failures.Add("run $($run.Name): the 'Config file:' lines on stdout are '$($log.ConfigFiles -join ''', ''')', expected one '$($run.ConfigPath)'")
+            }
+            if (($log.ConfigGroups.Count -ne 1) -or (@($log.ConfigGroups[0].Trim() -split ' +') -cnotcontains 'link')) {
+                [void]$failures.Add("run $($run.Name): the 'Config groups from the file:' lines on stdout are '$($log.ConfigGroups -join ''', ''')', expected one naming the link group")
+            }
+            if ($log.ConfigOverridden.Count -ne 0) {
+                [void]$failures.Add("run $($run.Name): the command line overrode config groups:$($log.ConfigOverridden -join ';')")
+            }
         }
     }
     if ($failures.Count -ne 0) {

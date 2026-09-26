@@ -222,6 +222,66 @@ dummy files under `build-msvc-x86/package_guard_test/`. It checks that:
   with a status line only if fsutil fails), a missing `MANIFEST.txt`, and a
   missing folder.
 
+## Package smoke gate
+
+`tools/package-arcade-smoke.ps1` proves that a packaged `ctr_native.exe`
+runs a two-process loopback lockstep race driven by the package's own config
+files. It runs the `arcade_link_launch` gate
+(`tools/arcade-link-launch-check.ps1`) on the packaged exe, with
+`-Cab1Config` and `-Cab2Config`: each run gets `--config <file>` in place of
+the three link options, and its stdout must show that file loaded, the link
+group taken from it, and no group overridden.
+
+Steps:
+1. Runs the retail-data guard (`-CheckFolder`) on the package folder, and
+   checks every `MANIFEST.txt` size and SHA-256 against the files.
+2. Copies the package to a fresh `<output>\run\` and re-checks the copies
+   against the MANIFEST. The game writes its log and `memcards\` next to the
+   exe, so the package folder itself is never run. The copy must hold no
+   `memcards\` before the gate starts: it runs as a fresh cabinet with no
+   memcard save, so no game options were ever loaded from one.
+3. Derives `<output>\cab1.loopback.cfg` and `cab2.loopback.cfg` from the
+   package's `cab1.cfg` and `cab2.cfg`. Only three values change: the peer
+   IP (to `127.0.0.1`, ports kept), `data_dir` (to the folder holding the
+   disc image), and `fullscreen` (to `0`). Every other line must be
+   unchanged, and seat, port, and peer port must equal the gate's
+   (cab1 7001 peer :7002, cab2 7002 peer :7001).
+4. Runs the gate in `<output>\gate\`. After a pass it also requires both
+   stdouts to show the groups `link fullscreen data_dir` from the file and a
+   windowed window mode, and re-checks the run copy and the package against
+   the MANIFEST.
+5. Prints the exe SHA-256 and size and `package smoke: PASS`.
+
+Two modes:
+- `-PackageDirectory <dir>` tests an existing package folder, which is only
+  read.
+- `-StageExecutable <exe>` first stages a test package into
+  `<output>\package\` with `tools/package-arcade.ps1 -StageExecutable <exe>
+  -StageDirectory <dir>`. The stage uses the same staging function and guard
+  as the real package, without the clean-tree, build, and `--version`
+  checks. Its MANIFEST names the package `ctr-arcade-staged` and says it is
+  a staged test package that must never be deployed. The stage destination
+  must resolve under `build-msvc-x86\`, and an existing destination must
+  hold only package files.
+
+`-OutputDirectory` must resolve under `build-msvc-x86\`. `-AssetsFile`
+defaults to `assets\ctr-u.bin`. The smoke skips (exit 77) like the other
+live gates: without the disc image, without a display, with a non-internal
+build, or with an unknown build identity (a build from a dirty tree). A skip
+is not a pass.
+
+The ctest `package_arcade_smoke` (label `live`, `RUN_SERIAL`) runs the stage
+mode on each configuration's own `ctr_native.exe`. It uses the same fixed
+ports as `arcade_link_launch`. `package_arcade_stage` (not live) checks the
+stage mode and the argument checks of both scripts with a dummy exe.
+
+To smoke-test a real package folder, with a clean tree:
+
+```sh
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-arcade.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-arcade-smoke.ps1 -PackageDirectory build-msvc-x86\package\ctr-arcade-<short12> -OutputDirectory build-msvc-x86\package_smoke\real
+```
+
 ## Template line ends
 
 `.gitattributes` checks out `tools/package/*.cfg` and `*.txt` with CRLF
