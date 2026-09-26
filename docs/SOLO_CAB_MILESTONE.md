@@ -8,8 +8,8 @@ background. Read AGENTS.md and docs/HANDOFF.md first. This document follows
 the pattern of docs/MATCH_SELECT_MILESTONE.md and
 docs/GAME_LOOP_UI_MILESTONE.md: a prospective plan with a slice list,
 updated to record status as slices land. Every line citation was checked
-against the tree at e614b7327. Physical two-cabinet validation stays gated
-behind HANDOFF steps 6 and 7.
+against the tree at 6e2c59abe (its code is that of e614b7327). Physical
+two-cabinet validation stays gated behind HANDOFF steps 6 and 7.
 
 ## 1. Why
 
@@ -33,9 +33,10 @@ Today a linked cabinet whose peer is off sits on the LOBBY forever (UX-5,
 docs/GAME_LOOP_UI_MILESTONE.md:516). With the default attempt budget of
 150 ticks per candidate
 (include/platform/native_arcade_netplay.h:201), one cycle is 150 ticks of
-CONNECTING (a HELLO every tick) and then WAITING. After
-lobbyRetryPauseTicks = 30 (include/platform/native_arcade_flow.h:64) the
-flow restarts the cycle (platform/native_arcade_flow.c:141-153, :179-182).
+CONNECTING (a HELLO every tick) per candidate, so longer with several peer
+entries, and then WAITING. After lobbyRetryPauseTicks = 30
+(include/platform/native_arcade_flow.h:64) the flow restarts the cycle
+(platform/native_arcade_flow.c:141-153, :179-182).
 BACK (Triangle) goes to EXIT and the title (:158-163, :380-392).
 
 Owner direction:
@@ -43,7 +44,11 @@ Owner direction:
 - One versus two cabinets is not a static setting. It follows from whether
   the other cabinet is heard, and a continuous background poll checks for it
   waking (docs/HANDOFF.md:841-847).
-- RS-1 was overridden: both ONE_CAB and TWO_CAB are supported.
+- RS-1 is itself the owner decision that overrode the TWO_CAB-only
+  default: both ONE_CAB and TWO_CAB are supported
+  (docs/ROSTER_MILESTONE.md:541-553). It left the ONE_CAB lobby/UI flow as
+  a named follow-up (risk 14), and this milestone carries that follow-up
+  out.
 - Auto-discovery (subnet announce) is a later milestone. For now the peer is
   the static `peer` of `arcade.cfg`, part of the all-or-none link group
   (include/platform/native_arcade_config.h:41-46). The solo flow must let
@@ -117,12 +122,18 @@ Owner direction:
 - Race launch: game/MAIN/MainArcadeRaceLaunch.c.
   - The race config comes from NativeArcadeLinkHost_GetAgreedConfig (:368),
     followed by Arm and Launch (:373-377).
-  - Each tick goes through NativeArcadeLinkHost_RaceStep and RaceHold
-    (:893, :699).
+  - Each tick goes through NativeArcadeLinkHost_RaceStep (:893); RaceHold
+    (:699) runs only while RaceStep returns HOLD.
   - End kinds are handled at :817-842. Disarm is RL-9 (:999-1008).
   - InstallPads hard-codes PROFILE_TWO_CAB (:258-264).
+  - With no config, Arm refuses; the core turns that into an RL-11 local
+    failure (game/MAIN/MainArcadeRaceLaunchCore.c:365-368), which the
+    caller reports through NativeArcadeLinkHost_ReportRaceFailure
+    (MainArcadeRaceLaunch.c:366-376, :950-959).
   - tests/main_arcade_race_setup_isolation_test.cmake:9-14 allows Arm,
-    Launch, and Disarm only in this caller, each named exactly once.
+    Launch, and Disarm only in MainArcadeRaceSetup.{c,h},
+    MainArcadeRosterProof.c, and one Task 7 caller, this file, which names
+    each exactly once.
 - Roster proof ONE_CAB config: NativeArcadeRosterProof_BuildOneCabConfig
   (platform/native_arcade_roster_proof.c:389-457).
   - The link fixture (NativeArcadeLinkFixture_Build) supplies the identity,
@@ -161,10 +172,19 @@ default takes the safer option.
      (native_arcade_flow.c:179-182), so the count spans the retry restarts.
    - There is no offer on REJECTED: CONFIRM there restarts the lobby
      (:169-178), and a mismatch is an operator fault.
-   - Reason: a cabinet pair booting together links before anyone can go
-     solo. The START that entered the LOBBY cannot start solo either, since
-     release-to-arm already swallows it (netplay.c:745-751); the delay adds
-     margin.
+   - "Peer not heard" includes a peer that is powered on but sits on its
+     attract title: LINK mode is dormant at boot, on screen OFF with no
+     socket open (include/platform/native_arcade_link_host.h:227-233), and
+     a cabinet enters its LOBBY only on its own player's START or CROSS
+     (game/MAIN/MainArcadeLink.c:356-358, UX-11,
+     docs/GAME_LOOP_UI_MILESTONE.md:547-551).
+   - Reason: two players who press START on their cabinets within about
+     3 s of each other link before either can go solo. The START that
+     entered the LOBBY cannot start solo either, since release-to-arm
+     already swallows it (netplay.c:745-751); the delay adds margin.
+   - Accepted consequence: a second player who arrives more than about 3 s
+     later may find the first cabinet already in solo. They can go solo
+     too, and the pair links once both players are back in the LOBBY.
 3. SOLO-3 (default): Input. CONFIRM (CROSS or START, edge-triggered as all
    flow input) begins solo while the offer stands. BACK still goes to EXIT.
    Priority keeps today's LOBBY order: BACK, then READY, then the solo
@@ -182,14 +202,19 @@ default takes the safer option.
    - Today a WAITING lobby holds no socket (native_lobby_state.c:144, :163-166),
      so this is an open without the first HELLO that peer-link Open sends.
    - On every tick the adapter drains incoming datagrams without replying.
-     It latches `peerAwake` when a well-formed handshake datagram
+     It latches `peerHeard` when a well-formed handshake datagram
      (NativeLockstepHandshakeMessageV1_Decode,
      include/platform/native_lockstep_handshake.h:146) arrives from a
      configured peer.
+   - `peerHeard` means exactly that: a configured peer sent a well-formed
+     handshake datagram, so that peer's player is in its LOBBY (a cabinet
+     on its attract title sends nothing, SOLO-2).
    - Nothing is sent during solo, so a woken peer stays in its own LOBBY,
      where it can go solo too. A peer never interrupts solo select, race,
      or results.
-   - This is the owner's "continuous background poll".
+   - This is the owner's "continuous background poll" for the static
+     peer. It is fully met only with discovery (docs/HANDOFF.md:841-847):
+     until then a peer is heard only once its player enters its LOBBY.
 5. SOLO-5 (default): Select. Solo uses the same SELECT and SELECT_RESULT
    screens and rules for one human (humanCount 1, localHuman 0 on either
    seat) on a ONE_CAB base: the OD-1 per-item timer and automatic pick
@@ -199,17 +224,27 @@ default takes the safer option.
    peer-locked markers, SEL-9 peer silence, the relink, and the launch
    agreement. Characters are the 8 base characters only (RS-20,
    docs/ROSTER_MILESTONE.md:679-686). Tracks and laps are the linked lists
-   (SEL-2, SEL-3: no Oxide Station).
+   (SEL-2, SEL-3: no Oxide Station). The bot rule is RS-20's LOAD_Robots1P,
+   which replaces SEL-4 (the 2P AI set bots,
+   docs/MATCH_SELECT_MILESTONE.md:598-599) in solo.
 6. SOLO-6 (default): Config. The solo race config is a ONE_CAB
-   NativeMatchConfigV1 built like the roster proof's
-   (native_arcade_roster_proof.c:389-457): the fixture identity, tick
-   rate, and bot difficulty; NativeMatchConfigV1_InitArcadeOneCab and
-   Digest1PV1; track, laps, and the human character from the select
-   outcome; bots exactly LOAD_Robots1P for that human. It must pass
-   NativeArcadeBotRules_ValidateConfigV1. masterSeed comes from the
-   select's existing derivation (DeriveSeed with humanCount 1: this
-   cabinet's nonce alone). The human is CAB1_HUMAN in slot 0 on either
-   seat.
+   NativeMatchConfigV1, built in two steps.
+   - The ONE_CAB base is built like the roster proof's
+     (native_arcade_roster_proof.c:389-457): the fixture identity, tick
+     rate, and bot difficulty; NativeMatchConfigV1_InitArcadeOneCab and
+     Digest1PV1; bots ExpectedBots1P for the base human. The human is
+     CAB1_HUMAN in slot 0 on either seat.
+   - The race config is NativeMatchSelect_BuildConfig on that base and the
+     one-human select's resolved outcome, as the linked relink does
+     (native_arcade_netplay.c:443), so the SELECT_RESULT CPU list and the
+     config agree: track, laps, and the human character from the outcome;
+     bots from its provisional branch (risk 2). masterSeed comes from the
+     select's existing derivation (DeriveSeed with humanCount 1: this
+     cabinet's nonce alone).
+   - NativeArcadeBotRules_ValidateConfigV1 is then a hard check that fails
+     closed: a config that fails it is never handed to the race caller, so
+     Arm refuses and no solo race launches (the RL-11 path in section 2
+     shows solo RESULTS instead).
 7. SOLO-7 (default): Race.
    - The race launches locally through MainArcadeRaceSetup, using the one
      existing Arm/Launch call (the RL-9 Disarm rule is unchanged).
@@ -218,14 +253,22 @@ default takes the safer option.
    - Pacing is the same fixed VBlank pacing as a linked race, and so are
      the end rules: END_OF_RACE, finish grace, race tick limit, local
      failure.
-   - The race then goes to RESULTS.
+   - The race then goes to RESULTS. A local failure (RL-11) reaches the
+     flow only as observation.linkFailure = LINK_ERROR
+     (platform/native_arcade_netplay.c:765-777), so solo RACING still acts
+     on LINK_ERROR (to solo RESULTS) while it ignores the lobby status and
+     the PEER_TIMEOUT and DESYNC link failures.
 8. SOLO-8 (default): Results.
    - Solo RESULTS has rows RACE AGAIN and LOBBY.
    - RACE AGAIN goes to solo SELECT with the cursors on the previous picks,
      as OD-3 (docs/MATCH_SELECT_MILESTONE.md:576-582), and a new masterSeed.
    - LOBBY goes to LOBBY and the handshake restarts on the TWO_CAB fixture.
-   - The idle timeout (900 ticks) goes to LOBBY.
-   - While `peerAwake` is latched the screen adds "OTHER CABINET IS READY".
+   - The idle timeout (resultsIdleTimeoutTicks = 900) goes to EXIT with
+     CLOSE_LINK (which also closes the listen socket) and then the
+     title/attract loop, exactly as the owner-accepted UX-10
+     (docs/GAME_LOOP_UI_MILESTONE.md:543-546) and today's RESULTS timeout
+     (native_arcade_flow.c:336-345, :380-392). It does not go to LOBBY.
+   - While `peerHeard` is latched the screen adds "OTHER CABINET IS READY".
      The default cursor stays on RACE AGAIN.
    - Back in the LOBBY, a peer that is heard links as it does today.
 9. SOLO-9 (default): Isolation. Solo state is host-local. Nothing about
@@ -244,12 +287,16 @@ default takes the safer option.
     native_arcade_flow.h:173, so the observation stays 12 bytes). It stays
     0 until the race launch slice and its live proof land, so a partial
     tree never strands a player on a solo screen that cannot race.
-12. SOLO-12 (default): TWO_CAB is unchanged: every linked transition,
-    timing, test, and live gate, and the linked LOBBY's text while solo is
-    not offered.
+12. SOLO-12 (default): TWO_CAB is unchanged: no existing assertion or
+    live-gate outcome changes for TWO_CAB. Every linked transition and
+    timing, and the linked LOBBY's text while solo is not offered, stay as
+    they are. (S1, S2, and S3 do edit isolation tests and add preview
+    captures, for the solo parts only.)
 13. SOLO-13 (default): Prompt text. While offered, the LOBBY shows
-    "WAITING FOR OTHER CABINET" and "PRESS START TO RACE SOLO". Before the
-    offer the lobby text stays as it is today
+    "WAITING FOR OTHER CABINET" and "PRESS START TO RACE SOLO". The prompt
+    names START, but CROSS confirms too
+    (include/platform/native_arcade_menu_input.h:55-56; risk 8).
+    Before the offer the lobby text stays as it is today
     (game/MAIN/MainArcadeLinkLayout.c:338, :362).
     - Every string uses only the glyphs the layout test accepts: A-Z,
       0-9, space, `.`, `:`, `,`, `-`, `'`
@@ -258,29 +305,50 @@ default takes the safer option.
       (MainArcadeLinkLayout.c:321).
     - The strings must fit the 400-wide panel (MainArcadeLinkLayout.c:14-17),
       which the same test checks (:1525-1531).
+    - Those glyph and panel checks live in CheckSelectLayout
+      (main_arcade_link_layout_test.c:1447), which runs only on SELECT and
+      SELECT_RESULT inputs (:1597, :1623, :1640) and expects a HIGHLIGHT
+      item. LOBBY and RESULTS strings are not checked today, so S3 extends
+      or generalises the check to cover the solo LOBBY and RESULTS
+      strings.
 
 ## 4. Slices
 
-S1 and S2 land dark (SOLO-11): solo is reachable only in tests until S4
-switches `soloAvailable` on. Order: S1, S2, S3, S4, S5.
+S1, S2, and S3 land dark (SOLO-11): solo is reachable only in tests, and
+S3's solo screens only through `--arcade-link-preview`, until S4 switches
+`soloAvailable` on. Order: S1, S2, S3, S4, S5.
 
 ### SOLO-S1 -- flow core (pure)
 
-- Files: include/platform/native_arcade_flow.h, platform/native_arcade_flow.c.
+- Files: include/platform/native_arcade_flow.h,
+  platform/native_arcade_flow.c, tests/native_arcade_flow_test.c,
+  tests/native_arcade_flow_isolation_test.cmake, and
+  tests/native_arcade_netplay_test.c. The last one only because
+  SmallTimings (:237-248) sets the nine timing fields one by one on stack
+  structs (for example TestPure's at :672), so the tenth timing must be set
+  there too or Init fails. The flow test does the same
+  (tests/native_arcade_flow_test.c:1459-1468).
 - Changes:
   - a solo mode bit in the flow, and `soloOffered` behind an accessor;
   - SOLO_OFFER_DELAY as a tenth frozen default timing (90u) with its own
     counter;
   - `soloAvailable` in the observation's reserved byte;
   - new actions (for example BEGIN_SOLO_SELECT and START_SOLO_RACE);
-  - the solo SELECT, SELECT_RESULT, RACING, and RESULTS transitions, in
-    which no lobby status or link failure is read;
-  - the solo RESULTS rows and the timeout to LOBBY.
+  - the solo SELECT and SELECT_RESULT transitions, which read no lobby
+    status or link failure;
+  - solo RACING, which ignores the lobby status and the PEER_TIMEOUT and
+    DESYNC link failures but still acts on LINK_ERROR: in solo that is the
+    local race failure (RL-11, platform/native_arcade_netplay.c:765-777),
+    and it goes to solo RESULTS;
+  - the solo RESULTS rows (RACE AGAIN, LOBBY) and the idle timeout to EXIT
+    with CLOSE_LINK, then RETURN_TO_TITLE (SOLO-8, UX-10).
 - tests/native_arcade_flow_test.c cases: offer timing across restarts;
   READY beats CONFIRM, and BACK beats both; REJECTED never offers and
   restarts the count; with the gate off there is never an offer; solo
-  ignores link observations; the RACE AGAIN and LOBBY rows; the timeout to
-  LOBBY.
+  SELECT and SELECT_RESULT ignore every lobby status and link failure; solo
+  RACING ignores LOST, PEER_TIMEOUT, and DESYNC, and LINK_ERROR there goes
+  to solo RESULTS; the RACE AGAIN and LOBBY rows; the idle timeout to EXIT
+  and then RETURN_TO_TITLE, never to LOBBY.
 - Also update the isolation test's frozen defaults (ten).
 - Scope: fast suite.
 
@@ -289,25 +357,67 @@ switches `soloAvailable` on. Order: S1, S2, S3, S4, S5.
 - Files: platform/native_arcade_netplay.c, platform/native_arcade_link_host.c,
   their headers, and the smallest lobby/peer-link addition needed.
 - Changes:
-  - the listen-only link (SOLO-4);
+  - the listen-only link (SOLO-4), as a listen mode in the lobby or the
+    peer link (risk 1);
   - a one-human select session on the ONE_CAB base (localHuman 0, the
     initial cursor from the CAB1_HUMAN slot);
   - the SOLO-6 config;
   - solo launch without agreement;
   - the race caller's config query (GetAgreedConfig answers in solo, or a
     solo query beside it);
-  - `soloOffered` and `peerAwake` in the views (the netplay view has a
-    reserved byte, include/platform/native_arcade_netplay.h:324).
-- Tests in tests/native_arcade_netplay_test.c, which uses real loopback UDP
-  sockets in its own port band (:31-35), not a fake transport:
-  - a probe socket on the peer address receives nothing in solo;
-  - a HELLO sent in solo sets `peerAwake` and changes no screen;
-  - LOBBY after solo links with a peer;
-  - the solo config passes ValidateConfigV1, and its bots equal
-    ExpectedBots1P for all 8 characters.
-- Update the isolation tests: the netplay include allow-list
-  (tests/native_arcade_netplay_isolation_test.cmake:74) does not name the
-  bot rules or the fixture today.
+  - `soloOffered` and `peerHeard` in the views.
+- Where the SOLO-6 config is built. The link host builds the ONE_CAB base,
+  beside the TWO_CAB fixture it already builds in Configure
+  (platform/native_arcade_link_host.c:718, NativeArcadeLinkFixture_Build),
+  and hands it to the adapter in its config beside `fixture`. The adapter
+  runs the one-human session and BuildConfig on the outcome, as its relink
+  does (native_arcade_netplay.c:443; it already links the select rules
+  through ctr_native_match_select_session). The host's solo config query
+  runs ValidateConfigV1 and fails closed (SOLO-6).
+  - Why the host: it already links ctr_native_arcade_link_options
+    (CMakeLists.txt:528-529), which links ctr_native_arcade_bot_rules
+    PUBLIC (:409), so its three-library pin
+    (tests/native_arcade_link_host_isolation_test.cmake rule 4, :749-783)
+    is unchanged. Only the host .c include allow-list (rule 3, :148-149)
+    gains the bot rules header.
+  - The other choice, building it in the adapter, would widen the netplay
+    adapter's pin (tests/native_arcade_netplay_isolation_test.cmake rule 4,
+    :108-146: exactly nine libraries) and its include allow-list (:74) to
+    the bot rules and the link options, so it is not taken. The netplay
+    link list and include allow-list stay as they are.
+- View growth.
+  - The netplay view packs the new flags as bits in its one reserved byte
+    (include/platform/native_arcade_netplay.h:324), so it does not grow.
+    tests/native_arcade_netplay_test.c:3790 checks that byte is 0; outside
+    solo it still is, so that check keeps its outcome under the byte's new
+    name.
+  - The host view (include/platform/native_arcade_link_host.h:150) has no
+    spare byte: its four uint8_t fields fill the word after
+    ticksInScreen. It grows by appending one 4-byte group after `select`
+    (for example `solo`, `soloOffered`, `peerHeard`, and a reserved byte).
+    No test names its size or offsets today and it is never serialised;
+    tests/main_arcade_link_view_layout_test.c gains the solo views.
+- Isolation pins to update in
+  tests/native_arcade_link_host_isolation_test.cmake, which pins the
+  host's declarations literally (:187-188, :260-263, :301-302): a solo
+  query and the view's new solo fields add pinned literals there, as the
+  select view did (:187), and rule 3 adds the bot rules include.
+- Unit tests.
+  - The listen mode gets its own cases in tests/native_lobby_state_test.c
+    (ports 48300-48399) or tests/native_lockstep_peer_link_test.c,
+    whichever module gains it: it never sends; it filters decodes (a
+    well-formed handshake from a configured peer latches, a malformed one
+    or one from any other address does not); and it closes and reopens on
+    the same local port.
+  - tests/native_arcade_netplay_test.c, which uses real loopback UDP
+    sockets in its own port band (:31-35), not a fake transport: a probe
+    socket on the peer address receives nothing in solo; a HELLO sent in
+    solo sets `peerHeard` and changes no screen; LOBBY after solo links
+    with a peer.
+  - tests/native_arcade_link_host_test.c (ports 48500-48519, :31-34): the
+    solo config passes ValidateConfigV1 and its bots equal ExpectedBots1P
+    for all 8 human characters; a config that fails the check is never
+    returned by the solo query.
 - Reviewer pass (link flow).
 - Scope: fast suite plus `-L live-link` (`arcade_link_launch` must stay
   green).
@@ -320,9 +430,17 @@ switches `soloAvailable` on. Order: S1, S2, S3, S4, S5.
   - the SOLO-13 prompt;
   - the solo select without opponent parts;
   - the solo RESULTS rows and the SOLO-8 notice;
+  - the solo RESULTS title for a LINK_ERROR end, which in solo is only the
+    local race failure (SOLO-7): "RACE ERROR", not the linked "LINK ERROR"
+    (MainArcadeLinkLayout.c:398), so no "link" wording reaches a solo
+    player. Its glyphs are in the accepted set (SOLO-13);
   - preview screens (for example `lobby-solo` and `results-solo`) for
     `--arcade-link-preview`, with their captures in the preview check.
-- Tests: layout unit tests (glyph and panel checks).
+- Tests: layout unit tests. The glyph and panel checks today run only on
+  SELECT and SELECT_RESULT (CheckSelectLayout,
+  tests/main_arcade_link_layout_test.c:1447, which expects a HIGHLIGHT
+  item), so S3 extends or generalises them to the solo LOBBY and RESULTS
+  layouts, including "RACE ERROR" and "OTHER CABINET IS READY" (SOLO-13).
 - Game code still names no match-select or lockstep module
   (docs/HANDOFF.md:795-797).
 - Scope: fast suite plus `-L live-render`.
@@ -340,11 +458,29 @@ switches `soloAvailable` on. Order: S1, S2, S3, S4, S5.
   - `soloAvailable` switched on.
 - Autopilot solo mode: press CONFIRM at the offer, pick, steer, choose
   LOBBY at RESULTS, and PASS on reaching LOBBY again.
+- Unit tests, where the code is pure, and isolation pins (AGENTS.md: every
+  new seam):
+  - the local-only drive: cases in tests/native_arcade_race_drive_test.c
+    (it never composes or sends a bundle); and
+    tests/native_arcade_race_drive_isolation_test.cmake updated for it,
+    both the allowed linkers (drive_allowed_linkers, :117) and the send
+    pins (rule 1c, :253-283);
+  - the host's solo RaceBegin and RaceEnd: cases in
+    tests/native_arcade_link_host_test.c (pacing on and off, refused
+    outside solo RACING); and the host isolation pins for the pacing
+    switch (rule 3f, :295-322) and the drive glue (rule 3g, :323-563)
+    updated for the solo path;
+  - profile-driven InstallPads: the choice of scripted-pad profile from
+    the config's profile as a pure helper (for example in
+    game/MAIN/MainArcadeRaceLaunchCore.c), with cases in
+    tests/main_arcade_race_launch_core_test.c for both profiles;
+  - the autopilot's solo mode in tests/native_arcade_link_autopilot_test.c.
 - New one-process live test `arcade_solo_race`:
   - labels `live;live-link`;
   - a race tick cap (`--arcade-link-autopilot-race-ticks`);
-  - the peer pointed at an unused loopback port, outside 7101/7102,
-    7001/7002, and 48000-48600 (CMakeLists.txt:2054-2057);
+  - both the solo process's own local port and the peer it points at are
+    unused loopback ports outside 7101/7102, 7001/7002, and 48000-48600
+    (CMakeLists.txt:2054-2057);
   - its own checker.
 - Add the test to the orchestrator's live test map
   (`.claude/agents/milestone.md`, which is local and excluded from the
@@ -358,7 +494,9 @@ switches `soloAvailable` on. Order: S1, S2, S3, S4, S5.
   (one-human select), docs/ROSTER_MILESTONE.md risk 14 and RS-1,
   docs/RACE_LAUNCH_MILESTONE.md risk 9.
 - tools/package/README.txt and docs/PACKAGING.md operator notes.
-- docs/HANDOFF.md state (not its Next work).
+- docs/HANDOFF.md state (not its Next work), and a link to this document
+  outside "## Next work", in the Key files list of related docs
+  (docs/HANDOFF.md:778-784).
 - This document's status.
 
 ## 5. Risks and open items
@@ -367,11 +505,14 @@ switches `soloAvailable` on. Order: S1, S2, S3, S4, S5.
    only inside a peer link, whose Open sends a HELLO
    (native_lockstep_peer_link.h:158-174), and a WAITING lobby holds none.
    S2 picks the smallest change: a lobby or peer-link listen mode that
-   decodes without replying, or a bare transport the adapter owns. Either
-   way it edits the lobby or the peer link. The match-select milestone
-   left native_lobby_state unedited (docs/MATCH_SELECT_MILESTONE.md:71-74)
-   and relaxed GAME_LOOP_UI constraint 2 only for the peer-link aux channel
-   (:63-65). This document records the same kind of relaxation for the
+   decodes without replying. A bare transport the adapter owns is not
+   allowed: the adapter reaches the transport only through the lobby layer
+   and may never link ctr_native_udp_transport
+   (tests/native_arcade_netplay_isolation_test.cmake rule 4, :108-146).
+   So the change edits the lobby or the peer link. The match-select
+   milestone left native_lobby_state unedited
+   (docs/MATCH_SELECT_MILESTONE.md:71-74) and relaxed GAME_LOOP_UI
+   constraint 2 only for the peer-link aux channel (:63-65). This document records the same kind of relaxation for the
    listen mode.
 2. Provisional bot branch versus LOAD_Robots1P. For one human on a ONE_CAB
    base (7 bots) the provisional branch
@@ -385,17 +526,20 @@ switches `soloAvailable` on. Order: S1, S2, S3, S4, S5.
 3. In the SOLO-3 race window the peer reaches RESULTS LINK ERROR up to
    about 135 ticks (45 + 90) after we leave. No live test covers it.
 4. Prompt text versus the font: the layout glyph and panel checks
-   (SOLO-13) catch a bad string in the unit test, not on the cabinet.
-5. `peerAwake` checks only that the HELLO is well formed and comes from a
+   (SOLO-13) catch a bad string in the unit test, not on the cabinet, and
+   only once S3 extends them from SELECT and SELECT_RESULT to the solo
+   LOBBY and RESULTS layouts (they do not check LOBBY or RESULTS today).
+5. `peerHeard` checks only that the HELLO is well formed and comes from a
    configured peer. A peer on a different build shows "OTHER CABINET IS
    READY" and then REJECTS when the player returns to the LOBBY: an
    operator fault, as today.
-6. An abandoned solo cabinet ends on the LOBBY (SOLO-8 timeout), not the
-   attract title, as a linked lobby does today (UX-5). A LOBBY idle
-   timeout is out of scope.
-7. A local race failure in solo shows LINK ERROR, the only failure end
-   reason (RL-11). S3 may choose solo title text; the flow's end reasons
-   do not change.
+6. An abandoned solo cabinet returns to the title/attract loop through the
+   RESULTS idle timeout, as the owner-accepted UX-10 does for a linked
+   cabinet (SOLO-8). An abandoned LOBBY still waits forever, as today
+   (UX-5); a LOBBY idle timeout is out of scope.
+7. A local race failure in solo reaches the flow as LINK_ERROR, the only
+   failure end reason (RL-11); the flow's end reasons do not change. S3
+   shows it to a solo player as "RACE ERROR" (not "LINK ERROR").
 8. CROSS is also the G29 throttle, so pressing the throttle at the offer
    starts solo. Release-to-arm makes a throttle held across the screen
    change harmless.
