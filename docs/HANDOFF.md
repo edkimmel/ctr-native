@@ -829,23 +829,40 @@ Tasks 7 and 8 and v1 packaging are complete.
   target (a CMake switch, its own build, and a smoke test) waits for the
   owner.
 
-1. Deploy to the cabinets (owner-guided). Build the package from HEAD with
-   `tools/package-arcade.ps1`. The owner guides the copy to `C:\arcade` and
-   the sync between cabinets, following the per-cabinet setup steps in
-   `docs/PACKAGING.md` (data, `arcade.cfg`, firewall, hash check, start).
-   `C:\arcade` only ever receives packaged builds.
-2. Real two-cabinet and G29 validation: the actual wire, the LAN switch,
-   latency and loss, wheel input, and the D feel test. It is the
-   separately gated requirement for step 6 (CAB1 G29/kiosk gate) and step
-   7 (two-cabinet fleet acceptance).
-3. Cabinet auto-discovery (owner directive). The cabinets sit on a dumb
-   switch and have fixed IPs.
-   - Each cabinet announces itself on the subnet. A continuous background
-     poll finds peers that wake up later.
-   - ONE_CAB versus TWO_CAB is not a static setting: it follows from
-     whether other cabinets are found or are silent.
-   - Discovery replaces the static `peer` in `arcade.cfg`.
-4. Open items, none blocking:
+Deployed. v1 runs on both cabinets from `C:\Arcade\games\ctr-native`.
+Each cabinet provisions and checks itself after every fleet sync
+(`C:\Arcade\scripts\setup-ctr-native.ps1 -Auto`). A linked race over the
+real LAN with both G29s works (owner-confirmed). The owner accepts the 4:3
+black bars and keeps the split screen.
+
+Owner priorities: finish the last stretch goals, so the port could ship as
+open source.
+
+1. Single-player race (the solo / ONE_CAB flow; `docs/SOLO_CAB_MILESTONE.md`,
+   SOLO defaults). When the peer is silent, the lobby offers a solo race
+   (1 human + 7 bots). The link poll keeps running, and a peer that wakes
+   is linked at the next lobby. Done so far: the `arcade.cfg` keys
+   `render_scale` and `texture_filter`, the plan, and SOLO-S1; later slices
+   are in progress.
+2. Automatic discovery (stretch goal 8). Cabinets find each other on the
+   subnet with no configured IPs, so a new install needs no per-cabinet
+   network config. A continuous background poll finds peers that wake
+   later. ONE_CAB versus TWO_CAB follows from whether a peer is found.
+   Discovery replaces the static `peer` in `arcade.cfg`, which stays as an
+   optional override. The handshake still checks build and content
+   identity.
+3. Small cabinet polish, queued behind 1 and 2:
+   - Skip the Sony and Naughty Dog boot splashes on arcade/link configs.
+     Boot still runs all of StateZero's init, and levelID goes straight to
+     MAIN_MENU_LEVEL (`game/MAIN/MainMain.c:744`).
+   - Always draw other karts as full 3D in arcade races. The far LOD looks
+     like stacked sprites in the split screen. The LOD choice is
+     presentation-only; see `MainFrame_RenderFrame.c:750-753` and
+     `RenderBucket_QueueExecute.c:1213-1269`, to be verified.
+4. Shelved (owner): stretch goals 9 and 10 (Oxide Station, unlock
+   everything and Turbo Track). Dropped (owner): 11 (16:9) and 13
+   (per-cabinet full screen). Not prioritised: 12 (G29 force feedback).
+5. Open items, none blocking:
    - Task 8:
      - A divergence found only by the Tick that closes the link while
        leaving RESULTS is not logged (LR-70).
