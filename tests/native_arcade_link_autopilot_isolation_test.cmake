@@ -38,7 +38,7 @@
 #     statement of its autopilot sample, inside its CTR_INTERNAL part;
 #  7. the live gate is registered: arcade_link_launch runs the checker on
 #     Windows with SKIP_RETURN_CODE 77, its own loopback ports (-Cab1Port 7101
-#     -Cab2Port 7102, so it may overlap package_arcade_smoke on 7001/7002),
+#     -Cab2Port 7102, so it may overlap package_arcade_smoke on 7001-7004),
 #     and the labels live and live-link,
 #     and the checker takes the loopback ports as parameters (default 7001
 #     and 7002) and uses the autopilot option,
@@ -831,10 +831,13 @@ endforeach()
 #      checker on Windows with SKIP_RETURN_CODE 77 and the labels live and
 #      live-link; the checker runs both processes in discovery mode (seat
 #      auto, no peer) on link ports 7301 and 7302 with discovery ports 7303
-#      and 7304 targeting each other, with the one-race option and the
+#      and 7304 targeting each other (its parameter defaults; the ctest
+#      passes no port and no config file), with the one-race option and the
 #      900-tick cap, reads the one-race report, requires the one "paired
 #      with" line, and never passes a peer, a fixed seat, a fault option, or a
-#      frame capture.
+#      frame capture. Since DISC-S5 its config mode passes --config in place
+#      of --arcade-link auto and the port, elects the lower link port cab1,
+#      and requires main.c's "auto port <p>, 0 peers" line.
 foreach(literal IN ITEMS "static const char k_oneRaceOption[] = \"--arcade-link-autopilot-one-race\";"
         "if (seenOneRace && (!seen || seenSolo || seenFreeze || seenDesync))" "candidate.oneRace = 1u;"
         "((autopilot->oneRace != 0u) && (autopilot->racesStarted >= NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES))")
@@ -896,13 +899,24 @@ ctr_require_order("CMakeLists.txt (arcade_discovery_link)" "${discovery_live_blo
     "-TimeoutSeconds 180)"
     "set_tests_properties(arcade_discovery_link PROPERTIES"
     "SKIP_RETURN_CODE 77" "TIMEOUT 240" "LABELS \"live;live-link\")")
+# The ctest runs the checker in its default mode (the 7301-7304 defaults, no
+# config files); config mode is the package smoke's (DISC-S5).
+string(FIND "${discovery_live_block}" "LABELS \"live;live-link\")" discovery_live_end)
+string(SUBSTRING "${discovery_live_block}" 0 ${discovery_live_end} discovery_live_registration)
+foreach(term IN ITEMS "-ConfigA" "-ConfigB" "-LinkPortA" "-LinkPortB" "-DiscoveryPortA" "-DiscoveryPortB")
+    ctr_forbid("CMakeLists.txt (arcade_discovery_link)" "${discovery_live_registration}" "${term}")
+endforeach()
 ctr_read_source("tools/arcade-discovery-link-check.ps1" discovery_checker)
 foreach(literal IN ITEMS "'--arcade-link', 'auto', '--arcade-link-port', \$Run.LinkPort"
         "'--arcade-discovery-port', \$Run.DiscoveryPort, '--arcade-discovery-target', \$Run.DiscoveryTarget"
         "'--arcade-link-autopilot', \$Run.ReportPath, '--arcade-link-autopilot-one-race', '--arcade-link-autopilot-race-ticks', \$raceTickCap"
         "\$raceTickCap = 900\n"
-        "LinkPort = '7301'; PeerLinkPort = '7302'; DiscoveryPort = '7303'; DiscoveryTarget = '127.0.0.1:7304'"
-        "LinkPort = '7302'; PeerLinkPort = '7301'; DiscoveryPort = '7304'; DiscoveryTarget = '127.0.0.1:7303'"
+        "[int]\$LinkPortA = 7301,\n" "[int]\$LinkPortB = 7302,\n" "[int]\$DiscoveryPortA = 7303,\n" "[int]\$DiscoveryPortB = 7304,\n"
+        "@{ Name = 'a'; CabNumber = \$cabA; LinkPort = \"\$LinkPortA\"; PeerLinkPort = \"\$LinkPortB\"; DiscoveryPort = \"\$DiscoveryPortA\"; DiscoveryTarget = \"127.0.0.1:\$DiscoveryPortB\" },"
+        "@{ Name = 'b'; CabNumber = \$cabB; LinkPort = \"\$LinkPortB\"; PeerLinkPort = \"\$LinkPortA\"; DiscoveryPort = \"\$DiscoveryPortB\"; DiscoveryTarget = \"127.0.0.1:\$DiscoveryPortA\" })"
+        "\$cabA = 1\n    \$cabB = 2\n    if (\$LinkPortA -gt \$LinkPortB) {\n        \$cabA = 2\n        \$cabB = 1\n    }"
+        "if (\$null -ne \$Run.ConfigPath) {\n        \$linkArguments = @('--config', \$Run.ConfigPath)\n    }"
+        "\"[CTR Native] arcade link: auto port \$(\$Run.LinkPort), 0 peers\""
         "'arcade link autopilot v3', \"cab \$(\$Run.CabNumber)\", 'mode one-race', 'result PASS (0)'"
         "\"[CTR Native] arcade discovery: paired with 127.0.0.1:\$(\$Run.PeerLinkPort) as cab\$(\$Run.CabNumber)\""
         "'race 1 end reason FINISHED'" "'end races 1'" "Start-Process" "exit \$skipExitCode"

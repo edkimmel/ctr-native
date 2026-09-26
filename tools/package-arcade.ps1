@@ -1,6 +1,6 @@
 <#
 Builds the arcade package (docs/PACKAGING.md PK-7): one self-contained folder
-with the tested Release ctr_native.exe, the two cabinet config templates, a
+with the tested Release ctr_native.exe, the one config template arcade.cfg, a
 README, and a MANIFEST with the SHA-256 of every file. Windows PowerShell 5.1
 compatible.
 
@@ -25,7 +25,7 @@ compatible.
       tools/package-arcade-smoke.ps1. Never deploy a staged package.
 
 The guard fails a folder whose files are not exactly ctr_native.exe,
-cab1.cfg, cab2.cfg, README.txt, and MANIFEST.txt (case-sensitive); that
+arcade.cfg, README.txt, and MANIFEST.txt (case-sensitive); that
 holds any subdirectory or any hidden or system file; that holds a file named
 like retail or BIOS data; whose non-exe files exceed 64 KiB; or whose exe is
 32 MiB or larger.
@@ -45,7 +45,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$allowedFiles = @('ctr_native.exe', 'cab1.cfg', 'cab2.cfg', 'README.txt', 'MANIFEST.txt')
+$allowedFiles = @('ctr_native.exe', 'arcade.cfg', 'README.txt', 'MANIFEST.txt')
 $retailExtensions = @('.bin', '.cue', '.iso', '.img', '.chd', '.ecm', '.pbp', '.big', '.hwl', '.str', '.xa', '.xnf', '.vag',
     '.mcd', '.mcr', '.sav', '.srm', '.bmp', '.png')
 $retailNameParts = @('bios', 'scph')
@@ -194,7 +194,7 @@ function Write-PackageFolder([string]$SourceExe, [string]$Destination, [string[]
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
 
     Copy-Item -LiteralPath $SourceExe -Destination (Join-Path $Destination 'ctr_native.exe')
-    foreach ($template in @('cab1.cfg', 'cab2.cfg', 'README.txt')) {
+    foreach ($template in @('arcade.cfg', 'README.txt')) {
         Copy-Item -LiteralPath (Join-Path $templates $template) -Destination (Join-Path $Destination $template)
     }
 
@@ -206,7 +206,7 @@ function Write-PackageFolder([string]$SourceExe, [string]$Destination, [string[]
     $manifest.Add('Both cabinets must show the same ctr_native.exe SHA-256 (Get-FileHash ctr_native.exe -Algorithm SHA256); the link handshake rejects different builds.')
     $manifest.Add('')
     $manifest.Add('files (name, size in bytes, SHA-256):')
-    foreach ($file in @('ctr_native.exe', 'cab1.cfg', 'cab2.cfg', 'README.txt')) {
+    foreach ($file in @('ctr_native.exe', 'arcade.cfg', 'README.txt')) {
         $path = Join-Path $Destination $file
         $size = (Get-Item -LiteralPath $path).Length
         $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash

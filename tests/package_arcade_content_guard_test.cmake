@@ -12,7 +12,7 @@ if(NOT EXISTS "${script}")
     message(FATAL_ERROR "package guard: missing ${script}")
 endif()
 
-set(allowlist ctr_native.exe cab1.cfg cab2.cfg README.txt MANIFEST.txt)
+set(allowlist ctr_native.exe arcade.cfg README.txt MANIFEST.txt)
 
 function(make_package_folder name)
     set(folder "${WORK_DIR}/${name}")
@@ -75,8 +75,8 @@ expect_guard(subdirectory 1 "subdirectory: memcards")
 # An oversize config.
 make_package_folder(oversize)
 string(REPEAT "x" 65537 over_limit)
-file(WRITE "${WORK_DIR}/oversize/cab1.cfg" "${over_limit}")
-expect_guard(oversize 1 "cab1.cfg is 65537 bytes")
+file(WRITE "${WORK_DIR}/oversize/arcade.cfg" "${over_limit}")
+expect_guard(oversize 1 "arcade.cfg is 65537 bytes")
 
 # A case variant of an allowlisted name (names are case-sensitive).
 make_package_folder(case_variant)

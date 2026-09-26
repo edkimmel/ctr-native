@@ -7,8 +7,7 @@ arcade link. Nothing needs installing: ctr_native.exe is fully static.
 Files
 -----
   ctr_native.exe   the game (Release build)
-  cab1.cfg         config template for cabinet 1
-  cab2.cfg         config template for cabinet 2
+  arcade.cfg       the config, the same file for every cabinet
   MANIFEST.txt     version, commit, and SHA-256 of every file
   README.txt       this file
 
@@ -16,7 +15,7 @@ Game data
 ---------
 The package contains NO game data. Put your own raw NTSC-U disc image,
 named ctr-u.bin, in a folder on each cabinet, for example C:\ctr-data (the
-folder both templates name in data_dir). A linked cabinet needs ctr-u.bin:
+folder arcade.cfg names in data_dir). A linked cabinet needs ctr-u.bin:
 with only the extracted BIGFILE.BIG files it stops at startup with "arcade
 link requires a known build and content identity" (the extracted files
 serve an unlinked run only). For a linked cabinet the folder holds ONLY
@@ -27,41 +26,53 @@ Both cabinets need the same ctr-u.bin.
 
 Set up each cabinet
 -------------------
-Below, replace <cabinet 1 IP> or <cabinet 2 IP> as a whole, angle brackets
-included, with that cabinet's fixed IP address.
+Do these steps on both cabinets. Both use the same arcade.cfg, as shipped:
+seat = auto. The cabinets find each other on the local network and elect
+their seats (the cabinet with the lower IP address is cabinet 1).
 1. Copy the contents of this folder to the cabinet, so that ctr_native.exe
    is directly in the target folder (not in a nested package folder). The
    folder must be writable: the log file (Crash Team Racing.log) and
-   memcards\ are created next to the exe. arcade.cfg, memcards\ and the log
-   belong to one cabinet: leave them out of any folder sync between the
-   cabinets. If a sync copied them, delete the copied memcards\ and log
-   and redo steps 2 and 3. Never copy a memcards\ save to a cabinet.
-2. Cabinet 1: copy cab1.cfg to arcade.cfg (next to ctr_native.exe).
-   Cabinet 2: copy cab2.cfg to arcade.cfg.
-3. Edit arcade.cfg (save it as UTF-8 or ANSI text): set peer to the OTHER
-   cabinet's fixed IP and keep its port (cabinet 1: <cabinet 2 IP>:7002,
-   cabinet 2: <cabinet 1 IP>:7001). Change data_dir only if ctr-u.bin is
-   not in C:\ctr-data (a full path, or one relative to this folder;
-   C:ctr-data and \ctr-data are refused). Keep seat, port and fullscreen.
-   render_scale (1, 2, 3, 4, 6, or 8; template 8) and texture_filter
-   (nearest or bilinear; template bilinear) set this cabinet's picture
-   only; the cabinets may differ. Lower render_scale if the game stutters.
-   A comment goes on its own line: after a value it becomes part of it.
-4. Firewall. In an elevated PowerShell (Run as administrator), after
-   Set-Location to this folder, allow the link port for this exe from the
-   other cabinet only:
-     cabinet 1:
-       New-NetFirewallRule -DisplayName "CTR arcade link" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 7001 -RemoteAddress <cabinet 2 IP> -Program "$PWD\ctr_native.exe"
-     cabinet 2:
-       New-NetFirewallRule -DisplayName "CTR arcade link" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 7002 -RemoteAddress <cabinet 1 IP> -Program "$PWD\ctr_native.exe"
-   A Block rule for the exe beats the Allow rule (Windows may add one, for
-   example when its firewall prompt is cancelled). This must list nothing:
+   memcards\ are created next to the exe. memcards\ and the log belong to
+   one cabinet, and so does arcade.cfg once you edit it: leave them out of
+   any folder sync between the cabinets. If a sync copied them, delete the
+   copied memcards\ and log and redo step 2. Never copy a memcards\ save to
+   a cabinet. Extracting a new package over this folder overwrites
+   arcade.cfg: keep a copy of an edited one and put it back afterwards.
+2. arcade.cfg ships ready. Edit it (save it as UTF-8 or ANSI text) only
+   to change data_dir, and only if ctr-u.bin is not in C:\ctr-data (a full
+   path, or one relative to this folder; C:ctr-data and \ctr-data are
+   refused). render_scale (1, 2, 3, 4, 6, or 8; shipped 8) and
+   texture_filter (nearest or bilinear; shipped bilinear) set this
+   cabinet's picture only; the cabinets may differ. Lower render_scale if
+   the game stutters. Keep fullscreen = 1. A comment goes on its own line:
+   after a value it becomes part of it.
+   Optional overrides (arcade.cfg shows each as a comment):
+   - seat = cab1 or seat = cab2 fixes this cabinet's seat; the other
+     cabinet takes the other one. Two cabinets that fix the same seat never
+     link.
+   - group = <name> keeps two installations on one network apart: only
+     cabinets with the same group link. Both cabinets need the same group.
+   - port = <port> sets this cabinet's link port (default 7001; never
+     7000, the discovery port). Use the same port in the firewall rule.
+   - A static peer turns the search off: seat = cab1 or cab2 (a different
+     one on each cabinet), port, and peer = <other cabinet IP>:<its port>,
+     with no group. Set it up on BOTH cabinets: a static cabinet does not
+     look for the other one, so a static cabinet and a searching one never
+     link.
+3. Firewall. In an elevated PowerShell (Run as administrator), after
+   Set-Location to this folder, allow the discovery port 7000 and the link
+   port 7001 for this exe from the local network (the same rule on both
+   cabinets):
+     New-NetFirewallRule -DisplayName "CTR arcade link" -Direction Inbound -Protocol UDP -LocalPort 7000,7001 -RemoteAddress LocalSubnet -Program "$PWD\ctr_native.exe" -Profile Any -Action Allow
+   (With a port override, put that port in place of 7001.) A Block rule
+   for the exe beats the Allow rule (Windows may add one, for example when
+   its firewall prompt is cancelled). This must list nothing:
        Get-NetFirewallApplicationFilter -Program "$PWD\ctr_native.exe" | Get-NetFirewallRule | Where-Object Action -eq 'Block'
    Remove what it lists by adding | Remove-NetFirewallRule to it. Check
    again after the first start if Windows showed a firewall prompt. If
-   this folder or the other cabinet's IP changes, remove the rule
+   this folder changes, remove the rule
    (Remove-NetFirewallRule -DisplayName "CTR arcade link") and add it again.
-5. Same build and same disc. On both cabinets, in PowerShell in this folder:
+4. Same build and same disc. On both cabinets, in PowerShell in this folder:
        Get-FileHash ctr_native.exe -Algorithm SHA256
        Get-FileHash C:\ctr-data\ctr-u.bin -Algorithm SHA256
    (use your data_dir). The ctr_native.exe hash must equal its line in
@@ -77,6 +88,7 @@ Double-click ctr_native.exe, or run it with no arguments. It reads
 arcade.cfg next to it. Among its first console lines it must show
   [CTR Native] Config file: <this folder>\arcade.cfg
   [CTR Native] Config groups from the file: link fullscreen render_scale texture_filter data_dir
+  [CTR Native] arcade link: auto port 7001, 0 peers
 These lines are on the console only, not in the log; the fullscreen window
 may hide the console (Alt+Tab to it). "Config file: none" means there is no
 arcade.cfg next to the exe (check for a hidden .txt extension), and the
@@ -85,6 +97,10 @@ with a message naming the file and, where there is one, the line. Startup
 errors, such as that one or "arcade link requires a known build and
 content identity.", are on the console only, not in the log. After a
 double-click the console stays open on an error until Enter is pressed.
+When the two cabinets have found each other (shortly after both show the
+title), each logs, on the console and in Crash Team Racing.log,
+  [CTR Native] arcade discovery: paired with <other cabinet IP>:7001 as cab1
+(as cab2 on the other cabinet).
 
 Solo race
 ---------

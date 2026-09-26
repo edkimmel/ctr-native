@@ -1606,8 +1606,7 @@ if(BUILD_TESTING)
     target_link_libraries(native_arcade_config_test PRIVATE ctr_native_arcade_config)
     add_test(NAME native_arcade_config_unit
         COMMAND $<TARGET_FILE:native_arcade_config_test>
-            "${CMAKE_SOURCE_DIR}/tools/package/cab1.cfg"
-            "${CMAKE_SOURCE_DIR}/tools/package/cab2.cfg")
+            "${CMAKE_SOURCE_DIR}/tools/package/arcade.cfg")
 
     add_test(NAME native_arcade_config_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_config_isolation_test.cmake")
@@ -2147,7 +2146,7 @@ if(BUILD_TESTING)
     # run in parallel (`ctest -j`): each writes its reports, captures, and logs
     # only under its own directory of the build tree; the link gates use
     # distinct loopback ports (arcade_link_launch 7101/7102,
-    # package_arcade_smoke the package's 7001/7002, arcade_solo_race
+    # package_arcade_smoke link 7001/7002 and discovery 7003/7004, arcade_solo_race
     # 7201-7204, arcade_discovery_link 7301-7304; the fast suite's socket
     # tests use 48000-48600, and the discovery service test 48610-48629); each
     # capture reads the game's own window framebuffer, not the desktop.  What they still share is read-only or
@@ -2207,7 +2206,7 @@ if(BUILD_TESTING)
         # RL-15, RL-S10; since LR-S13 part B the one-machine proof of
         # docs/LOCKSTEP_RACE_MILESTONE.md LR-16, LR-76): two internal
         # ctr_native processes linked over loopback (127.0.0.1 ports 7101 and
-        # 7102, cab1 and cab2: not the package's 7001 and 7002, so this gate
+        # 7102, cab1 and cab2: not package_arcade_smoke's 7001-7004, so this gate
         # can overlap package_arcade_smoke), each driven by
         # --arcade-link-autopilot through START, the select, and three
         # lockstep races with a 6000-tick cap: race 1 to the natural finish (or
@@ -2296,22 +2295,27 @@ if(BUILD_TESTING)
         # (ctr-arcade-staged, through tools/package-arcade.ps1
         # -StageExecutable), runs the retail-data guard and checks every
         # MANIFEST size and SHA-256, copies the package to a fresh run folder,
-        # derives loopback copies of the package's cab1.cfg and cab2.cfg
-        # (only the peer IP, data_dir, fullscreen, and render_scale change),
-        # and runs the arcade_link_launch gate on the copied exe with --config
-        # in place of the link options. It keeps the package's ports 7001 and 7002;
-        # arcade_link_launch uses 7101 and 7102, so the two may overlap.
-        # Skips (77) like arcade_link_launch. Everything is written under the
-        # build tree.
+        # checks the package's one arcade.cfg (seat auto, no port, peer, or
+        # group), derives two loopback copies of it (DISC-S5: only data_dir,
+        # fullscreen, and render_scale change, and each adds one port line,
+        # link 7001 and 7002), and runs the arcade_discovery_link gate
+        # (tools/arcade-discovery-link-check.ps1) on the copied exe in config
+        # mode: --config in place of the link options, with the discovery
+        # flags on the command line (discovery 7003 and 7004 targeting each
+        # other), to one linked race; 7001 is elected cab1. The static LR-16
+        # three-race scenario stays arcade_link_launch's, on the build-tree
+        # exe. Its ports 7001-7004 differ from arcade_link_launch's and
+        # arcade_discovery_link's, so they may overlap. Skips (77) like
+        # arcade_discovery_link. Everything is written under the build tree.
         add_test(NAME package_arcade_smoke
             COMMAND powershell -NoProfile -ExecutionPolicy Bypass
                 -File "${CMAKE_SOURCE_DIR}/tools/package-arcade-smoke.ps1"
                 -StageExecutable "$<TARGET_FILE:ctr_native>"
                 -OutputDirectory "${CMAKE_BINARY_DIR}/package_smoke/$<CONFIG>"
-                -TimeoutSeconds 780)
+                -TimeoutSeconds 240)
         set_tests_properties(package_arcade_smoke PROPERTIES
             SKIP_RETURN_CODE 77
-            TIMEOUT 900
+            TIMEOUT 360
             LABELS "live;live-package")
 
         # The roster check's two-way split, without a game run: -Group

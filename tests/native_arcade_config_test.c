@@ -863,31 +863,37 @@ static int ReadFile(const char *path, char *buffer, size_t capacity, size_t *siz
 	return *size < capacity;
 }
 
-/* The committed package templates parse with the real parser to the documented values (PK-8). */
-static int TestTemplate(const char *path, const char *seat, uint8_t role, uint16_t port, uint32_t peerIPv4, uint16_t peerPort)
+/*
+ * The committed package template, tools/package/arcade.cfg, parses with the
+ * real parser to the documented values (PK-8, DISC-11): one file for every
+ * cabinet, seat auto (discovery mode), the default link port, no peer, no
+ * group, and the display defaults.
+ */
+static int TestTemplate(const char *path)
 {
 	struct NativeArcadeConfig config;
 	struct NativeArcadeConfigStatus status;
 	struct NativeArcadeLinkOptions options;
 	struct NativeDisplayConfig display;
 	size_t size = 0;
-	char peerText[32];
 
 	CHECK(ReadFile(path, s_big, sizeof(s_big), &size));
 	CHECK(NativeArcadeConfig_Parse(s_big, size, &config, &status));
 	CHECK((config.hasDataDir == 1) && (strcmp(config.dataDir, "C:\\ctr-data") == 0));
 	CHECK((config.hasFullscreen == 1) && (config.fullscreen == 1));
-	CHECK((config.hasSeat == 1) && (strcmp(config.seat, seat) == 0));
-	CHECK((config.hasPort == 1) && (config.peerCount == 1));
-	snprintf(peerText, sizeof(peerText), "%u.%u.%u.%u:%u", (unsigned)(peerIPv4 >> 24), (unsigned)((peerIPv4 >> 16) & 0xFFu),
-	         (unsigned)((peerIPv4 >> 8) & 0xFFu), (unsigned)(peerIPv4 & 0xFFu), (unsigned)peerPort);
-	CHECK(strcmp(config.peers[0], peerText) == 0);
+	CHECK((config.hasSeat == 1) && (strcmp(config.seat, "auto") == 0));
+	/* port, peer, and group are commented-out examples only. */
+	CHECK((config.hasPort == 0) && (config.peerCount == 0) && (config.hasGroup == 0));
 
 	NativeArcadeLinkOptions_SetDefaults(&options);
 	CHECK(NativeArcadeConfig_ApplyLink(&config, &options));
-	CHECK((options.enabled == 1) && (options.localRole == role) && (options.localPort == port));
-	CHECK((options.peerCount == 1) && (options.peers[0].ipv4 == peerIPv4) && (options.peers[0].port == peerPort));
+	CHECK((options.enabled == 1) && (options.discovery == 1) && (options.seatPreference == NATIVE_ARCADE_LINK_SEAT_AUTO) && (options.localRole == 0));
+	CHECK((options.localPort == NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_LINK_PORT) && (options.localPort == 7001u));
+	CHECK((options.peerCount == 0) && (options.hasGroup == 0) && (options.group[0] == '\0'));
+	CHECK((options.discoveryPort == 0) && (options.discoveryTargetCount == 0));
 	CHECK(options.preview == NATIVE_ARCADE_LINK_PREVIEW_NONE);
+	/* The default link port is not the default discovery port (7000). */
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
 
 	/* Presentation defaults: 8x, bilinear (fullscreen 1 is checked above). */
 	CHECK((config.hasRenderScale == 1) && (strcmp(config.renderScaleText, "8") == 0));
@@ -910,10 +916,9 @@ int main(int argc, char *argv[])
 	CHECK(TestDisplayKeys() == 0);
 	CHECK(TestApplyDisplay() == 0);
 	CHECK(TestParseArgs() == 0);
-	/* tools/package/cab1.cfg and cab2.cfg, passed by ctest. */
-	CHECK(argc == 3);
-	CHECK(TestTemplate(argv[1], "cab1", NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, 7001, 0xC0A80166u, 7002) == 0);
-	CHECK(TestTemplate(argv[2], "cab2", NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, 7002, 0xC0A80165u, 7001) == 0);
+	/* tools/package/arcade.cfg, passed by ctest. */
+	CHECK(argc == 2);
+	CHECK(TestTemplate(argv[1]) == 0);
 	puts("native_arcade_config_test: ok");
 	return 0;
 }

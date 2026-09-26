@@ -23,7 +23,7 @@ param(
 # Solo live race gate (docs/SOLO_CAB_MILESTONE.md SOLO-S4).  Starts two
 # independent one-cabinet internal ctr_native processes at once, each with a
 # silent peer (nothing listens on its peer port), on loopback ports outside
-# 7001/7002 (package_arcade_smoke), 7101/7102 (arcade_link_launch), and
+# 7001-7004 (package_arcade_smoke), 7101/7102 (arcade_link_launch), and
 # 48000-48600 (the fast suite's socket tests):
 #   cab1  --arcade-link cab1 --arcade-link-port 7201 --arcade-link-peer 127.0.0.1:7202
 #   cab2  --arcade-link cab2 --arcade-link-port 7203 --arcade-link-peer 127.0.0.1:7204

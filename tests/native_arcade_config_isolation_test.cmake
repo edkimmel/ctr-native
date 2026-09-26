@@ -209,8 +209,7 @@ if("${native_hit}" STREQUAL "")
 endif()
 ctr_require("CMakeLists.txt" "${cmake}" "add_test(NAME native_arcade_config_unit")
 ctr_require("CMakeLists.txt" "${cmake}" "tests/native_arcade_config_isolation_test.cmake")
-ctr_require("CMakeLists.txt" "${cmake}" "\"\${CMAKE_SOURCE_DIR}/tools/package/cab1.cfg\"")
-ctr_require("CMakeLists.txt" "${cmake}" "\"\${CMAKE_SOURCE_DIR}/tools/package/cab2.cfg\"")
+ctr_require("CMakeLists.txt" "${cmake}" "\"\${CMAKE_SOURCE_DIR}/tools/package/arcade.cfg\")")
 
 # 7. Callers: no game/, platform/, or include/ file other than the module
 #    names the module; main.c is the only non-test caller.

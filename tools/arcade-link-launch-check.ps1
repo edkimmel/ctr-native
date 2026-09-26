@@ -20,18 +20,18 @@ param(
     # Optional config files (docs/PACKAGING.md PK-2), both or neither: when
     # given, each run gets --config <absolute path> instead of the
     # --arcade-link/--arcade-link-port/--arcade-link-peer triple, so its link
-    # group comes from the file.  The package smoke gate
-    # (tools/package-arcade-smoke.ps1) passes loopback copies of the
-    # package's cab1.cfg and cab2.cfg.
+    # group comes from the file: static-seat files for cab1 and cab2 (the
+    # package's one arcade.cfg is a discovery-mode file; its smoke gate runs
+    # tools/arcade-discovery-link-check.ps1 instead, DISC-S5).
     [string]$Cab1Config,
     [string]$Cab2Config,
 
     # The loopback ports of cab1 and cab2 (each the other's peer port), used
     # only without -Cab1Config/-Cab2Config (the config files hold their own
     # ports; giving a port with them is a usage error).  The defaults are the
-    # package's 7001 and 7002 for manual runs; the ctest arcade_link_launch
-    # passes its own pair so it can overlap package_arcade_smoke, which keeps
-    # 7001 and 7002 through the package's config files.
+    # cabinet ports 7001 and 7002 for manual runs; the ctest
+    # arcade_link_launch passes its own pair so it can overlap
+    # package_arcade_smoke, which uses 7001-7004.
     [int]$Cab1Port = 7001,
     [int]$Cab2Port = 7002,
 
@@ -127,17 +127,16 @@ param(
 # that file loaded ("Config file: <path>", once), the link group taken from it,
 # and no group overridden by the command line; everything else is unchanged.
 # The config files must hold the same seats as the options above, and each
-# cabinet's peer must be the other's loopback port (the package smoke gate,
-# tools/package-arcade-smoke.ps1, checks that its files hold 7001 and 7002).
+# cabinet's peer must be the other's loopback port.
 #
 # Skips (77) without the disc image, without a display, with a non-internal
 # build (the option is rejected), or with an unknown build identity (a build
 # from a dirty tree: the link refuses to start).  A skip is not a pass.
 #
 # Two checks may overlap only on distinct port pairs: the ctest
-# arcade_link_launch passes -Cab1Port/-Cab2Port distinct from the 7001 and
-# 7002 that package_arcade_smoke's config files use.  Every ctr_native the
-# check started is stopped when the check exits or is interrupted.
+# arcade_link_launch passes -Cab1Port/-Cab2Port distinct from the 7001-7004
+# that package_arcade_smoke uses.  Every ctr_native the check started is
+# stopped when the check exits or is interrupted.
 #
 # Exit codes: 0 pass, 1 fail, 77 skipped (ctest SKIP_RETURN_CODE).
 $skipExitCode = 77

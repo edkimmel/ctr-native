@@ -16,6 +16,25 @@ param(
     # [CmdletBinding()] script run with -File.
     [string]$AssetsFile,
 
+    # Optional config files (docs/PACKAGING.md PK-2), both or neither: when
+    # given, run a gets --config <ConfigA> and run b --config <ConfigB> in
+    # place of --arcade-link auto --arcade-link-port <port>, so each link
+    # group comes from its file.  The package smoke gate
+    # (tools/package-arcade-smoke.ps1) passes two loopback copies of the
+    # package's arcade.cfg.
+    [string]$ConfigA,
+    [string]$ConfigB,
+
+    # The loopback link ports of runs a and b, and their discovery ports
+    # (each run beacons at the other's).  The defaults are the ctest
+    # arcade_discovery_link's; the package smoke passes 7001-7004.  With
+    # -ConfigA/-ConfigB the link ports must be the ones the files hold: the
+    # pairing check expects them.  All four must differ.
+    [int]$LinkPortA = 7301,
+    [int]$LinkPortB = 7302,
+    [int]$DiscoveryPortA = 7303,
+    [int]$DiscoveryPortB = 7304,
+
     # Seconds both runs together may take.
     [int]$TimeoutSeconds = 180
 )
@@ -23,13 +42,15 @@ param(
 # Discovery live link gate (docs/DISCOVERY_MILESTONE.md DISC-12, slice
 # DISC-S4).  Starts two internal ctr_native processes at once in discovery
 # mode: no peer and no fixed seat, each beaconing at the other's discovery
-# port on loopback, on ports outside 7001/7002 (package_arcade_smoke),
-# 7101/7102 (arcade_link_launch), 7201-7204 (arcade_solo_race), and
-# 48000-48629 (the fast suite's socket tests):
+# port on loopback.  By default (the ctest arcade_discovery_link) on ports
+# outside 7001-7004 (package_arcade_smoke), 7101/7102 (arcade_link_launch),
+# 7201-7204 (arcade_solo_race), and 48000-48629 (the fast suite's socket
+# tests):
 #   a  --arcade-link auto --arcade-link-port 7301
 #      --arcade-discovery-port 7303 --arcade-discovery-target 127.0.0.1:7304
 #   b  --arcade-link auto --arcade-link-port 7302
 #      --arcade-discovery-port 7304 --arcade-discovery-target 127.0.0.1:7303
+# (the ports are -LinkPortA/-LinkPortB and -DiscoveryPortA/-DiscoveryPortB)
 # each with --arcade-link-autopilot <report> --arcade-link-autopilot-one-race
 # --arcade-link-autopilot-race-ticks 900, which drives the link host's own
 # inputs (never a pad; include/platform/native_arcade_link_autopilot.h, the
@@ -37,7 +58,7 @@ param(
 # discovered pairing links the two, the linked select, one lockstep race,
 # RESULTS, EXIT, and the title, where the autopilot passes and the process
 # exits.  Both seats are auto on one IPv4, so the election (DISC-8) makes the
-# lower link port, a on 7301, cab1 and b cab2.
+# lower link port cab1: by default a on 7301 cab1 and b cab2.
 # Per run it requires:
 #   - exit code 0;
 #   - the report: "arcade link autopilot v3", "cab <n>" (a 1, b 2),
@@ -56,11 +77,22 @@ param(
 # Across the runs: the agreed match text and the config, plan, bots, and bank
 # digests are equal.
 #
+# With -ConfigA and -ConfigB (both or neither; DISC-S5), each run gets
+# --config <file> in place of --arcade-link auto --arcade-link-port <port>
+# (the discovery flags stay on the command line: they are not link-group
+# options, DISC-11), and its stdout must also show that file loaded ("Config
+# file: <path>", once), the link group taken from it, no group overridden by
+# the command line, and main.c's "arcade link: auto port <link port>, 0
+# peers" line once (the file's seat auto, its port, and no peer); everything
+# else is unchanged.  The files must hold seat = auto, no peer, and the link
+# ports given here (the package smoke gate checks its files).
+#
 # Skips (77) without the disc image, without a display, with a non-internal
 # build (the option is rejected), or with an unknown build identity (a build
-# from a dirty tree: the link cannot start).  A skip is not a pass.  Every
-# ctr_native the check started is stopped when the check exits or is
-# interrupted.  Everything is written under -OutputDirectory.
+# from a dirty tree: the link cannot start).  A skip is not a pass.  Usage
+# errors fail (1) before the disc image check.  Every ctr_native the check
+# started is stopped when the check exits or is interrupted.  Everything is
+# written under -OutputDirectory.
 #
 # Exit codes: 0 pass, 1 fail, 77 skipped (ctest SKIP_RETURN_CODE).
 $skipExitCode = 77
@@ -81,6 +113,11 @@ $stdoutAgreedPattern = '^\[CTR Native\] arcade link: (agreed match .*)$'
 $stdoutValidatedPattern = '^\[CTR Native\] arcade link: race ([0-9]+) validated config ([0-9a-f]{64}) plan ([0-9a-f]{64}) bots ([0-9a-f]{64}) bank ([0-9a-f]{64})$'
 $stdoutOutOfSyncPattern = '^\[CTR Native\] arcade link: race ([0-9]+) out of sync '
 $stdoutPassPattern = '^\[CTR Native\] arcade link autopilot: PASS after ([0-9]+) ticks \(1 races started, 1 validated, 1 ended; last screen [A-Z_]+ end reason [A-Z_]+\); exit code 0$'
+# main.c's config file startup lines (docs/PACKAGING.md PK-4), checked with
+# -ConfigA/-ConfigB only.
+$stdoutConfigFilePattern = '^\[CTR Native\] Config file: (.*)$'
+$stdoutConfigGroupsPattern = '^\[CTR Native\] Config groups from the file:(.*)$'
+$stdoutConfigOverriddenPattern = '^\[CTR Native\] Config groups overridden by the command line:(.*)$'
 $runs = @()
 
 function Exit-Skipped([string]$Reason) {
@@ -141,8 +178,14 @@ function Stop-StartedRuns($Runs) {
 }
 
 function Start-Run($Run) {
-    $arguments = @('--arcade-link', 'auto', '--arcade-link-port', $Run.LinkPort,
-        '--arcade-discovery-port', $Run.DiscoveryPort, '--arcade-discovery-target', $Run.DiscoveryTarget,
+    # With a config file, its link group replaces the two link options (PK-4:
+    # argv naming none, the file's group applies; the discovery flags are not
+    # link-group options, DISC-11).
+    $linkArguments = @('--arcade-link', 'auto', '--arcade-link-port', $Run.LinkPort)
+    if ($null -ne $Run.ConfigPath) {
+        $linkArguments = @('--config', $Run.ConfigPath)
+    }
+    $arguments = $linkArguments + @('--arcade-discovery-port', $Run.DiscoveryPort, '--arcade-discovery-target', $Run.DiscoveryTarget,
         '--arcade-link-autopilot', $Run.ReportPath, '--arcade-link-autopilot-one-race', '--arcade-link-autopilot-race-ticks', $raceTickCap)
     $argumentLine = ($arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
     # A run that cannot start fails the check at once, not at the timeout.
@@ -322,12 +365,59 @@ function Test-Stdout($Run, $Report, $Failures) {
     if (@($lines | Where-Object { $_ -match $stdoutPassPattern }).Count -ne 1) {
         [void]$Failures.Add("${prefix}: no autopilot PASS line (1 race started, validated, and ended) on stdout")
     }
+    if ($null -ne $Run.ConfigPath) {
+        # The link group came from the file (seat auto, its link port, no
+        # peer), and the command line overrode no group of it.
+        $configFiles = @($lines | Where-Object { $_ -match $stdoutConfigFilePattern } | ForEach-Object { $_ -replace $stdoutConfigFilePattern, '$1' })
+        if (($configFiles.Count -ne 1) -or ($configFiles[0] -cne $Run.ConfigPath)) {
+            [void]$Failures.Add("${prefix}: the 'Config file:' lines on stdout are '$($configFiles -join ''', ''')', expected one '$($Run.ConfigPath)'")
+        }
+        $configGroups = @($lines | Where-Object { $_ -match $stdoutConfigGroupsPattern } | ForEach-Object { $_ -replace $stdoutConfigGroupsPattern, '$1' })
+        if (($configGroups.Count -ne 1) -or (@($configGroups[0].Trim() -split ' +') -cnotcontains 'link')) {
+            [void]$Failures.Add("${prefix}: the 'Config groups from the file:' lines on stdout are '$($configGroups -join ''', ''')', expected one naming the link group")
+        }
+        $configOverridden = @($lines | Where-Object { $_ -match $stdoutConfigOverriddenPattern })
+        if ($configOverridden.Count -ne 0) {
+            [void]$Failures.Add("${prefix}: the command line overrode config groups: '$($configOverridden -join ''', ''')'")
+        }
+        $expectedLinkLine = "[CTR Native] arcade link: auto port $($Run.LinkPort), 0 peers"
+        $linkLines = @($lines | Where-Object { $_ -ceq $expectedLinkLine })
+        if ($linkLines.Count -ne 1) {
+            [void]$Failures.Add("${prefix}: $($linkLines.Count) '$expectedLinkLine' lines on stdout, expected 1 (the file's seat auto, port $($Run.LinkPort), and no peer)")
+        }
+    }
     Write-Output ("{0}: {1}" -f $Run.Name, (($paired | Select-Object -First 1) -replace '^\[CTR Native\] arcade discovery: ', ''))
     return $stdoutValidated
 }
 
 try {
     $checkStartedAt = Get-Date
+    # The config files: both or neither, each an existing file.  The ports:
+    # in range and all four distinct (one host binds them all).  A usage
+    # error fails, never skips.
+    $configPaths = @{}
+    $configAGiven = -not [string]::IsNullOrWhiteSpace($ConfigA)
+    $configBGiven = -not [string]::IsNullOrWhiteSpace($ConfigB)
+    if ($configAGiven -ne $configBGiven) {
+        Exit-Failed '-ConfigA and -ConfigB must be given together (or neither)'
+    }
+    if ($configAGiven) {
+        foreach ($pair in @(@('a', $ConfigA), @('b', $ConfigB))) {
+            if (-not (Test-Path -LiteralPath $pair[1] -PathType Leaf)) {
+                Exit-Failed "config file for run $($pair[0]) not found: $($pair[1])"
+            }
+            $configPaths[$pair[0]] = (Resolve-Path -LiteralPath $pair[1] -ErrorAction Stop).ProviderPath
+        }
+    }
+    $ports = @($LinkPortA, $LinkPortB, $DiscoveryPortA, $DiscoveryPortB)
+    foreach ($port in $ports) {
+        if (($port -lt 1) -or ($port -gt 65535)) {
+            Exit-Failed "invalid port $port (1..65535)"
+        }
+    }
+    if (@($ports | Sort-Object -Unique).Count -ne $ports.Count) {
+        Exit-Failed "-LinkPortA, -LinkPortB, -DiscoveryPortA, and -DiscoveryPortB must all differ ($($ports -join ', '))"
+    }
     if ([string]::IsNullOrWhiteSpace($AssetsFile)) {
         $scriptDirectory = $PSScriptRoot
         if ([string]::IsNullOrWhiteSpace($scriptDirectory)) {
@@ -348,9 +438,17 @@ try {
     $resolvedOutput = [System.IO.Path]::GetFullPath($OutputDirectory)
     [System.IO.Directory]::CreateDirectory($resolvedOutput) | Out-Null
 
+    # The election (DISC-8): both seats auto on one IPv4, so the lower link
+    # port is cab1.
+    $cabA = 1
+    $cabB = 2
+    if ($LinkPortA -gt $LinkPortB) {
+        $cabA = 2
+        $cabB = 1
+    }
     $specs = @(
-        @{ Name = 'a'; CabNumber = 1; LinkPort = '7301'; PeerLinkPort = '7302'; DiscoveryPort = '7303'; DiscoveryTarget = '127.0.0.1:7304' },
-        @{ Name = 'b'; CabNumber = 2; LinkPort = '7302'; PeerLinkPort = '7301'; DiscoveryPort = '7304'; DiscoveryTarget = '127.0.0.1:7303' })
+        @{ Name = 'a'; CabNumber = $cabA; LinkPort = "$LinkPortA"; PeerLinkPort = "$LinkPortB"; DiscoveryPort = "$DiscoveryPortA"; DiscoveryTarget = "127.0.0.1:$DiscoveryPortB" },
+        @{ Name = 'b'; CabNumber = $cabB; LinkPort = "$LinkPortB"; PeerLinkPort = "$LinkPortA"; DiscoveryPort = "$DiscoveryPortB"; DiscoveryTarget = "127.0.0.1:$DiscoveryPortA" })
     foreach ($spec in $specs) {
         $run = [pscustomobject]@{
             Name = $spec.Name
@@ -359,6 +457,8 @@ try {
             PeerLinkPort = $spec.PeerLinkPort
             DiscoveryPort = $spec.DiscoveryPort
             DiscoveryTarget = $spec.DiscoveryTarget
+            # $null without -ConfigA/-ConfigB: --arcade-link auto and the port.
+            ConfigPath = $configPaths[$spec.Name]
             ReportPath = Join-Path $resolvedOutput "$($spec.Name).report.txt"
             StdoutPath = Join-Path $resolvedOutput "$($spec.Name).stdout.log"
             StderrPath = Join-Path $resolvedOutput "$($spec.Name).stderr.log"
@@ -374,9 +474,12 @@ try {
         $runs += $run
     }
 
-    Write-Output "arcade discovery link check: two discovery-mode runs, seat auto, no peer (a link 7301 discovery 7303 -> 7304, b link 7302 discovery 7304 -> 7303), one linked race, race tick cap $raceTickCap"
+    Write-Output "arcade discovery link check: two discovery-mode runs, seat auto, no peer (a link $LinkPortA discovery $DiscoveryPortA -> $DiscoveryPortB, b link $LinkPortB discovery $DiscoveryPortB -> $DiscoveryPortA), one linked race, race tick cap $raceTickCap"
     Write-Output "executable: $resolvedExecutable"
     Write-Output "output:     $resolvedOutput"
+    if ($configAGiven) {
+        Write-Output "link groups from config files: a --config $($configPaths['a']); b --config $($configPaths['b'])"
+    }
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     foreach ($run in $runs) {
@@ -418,7 +521,10 @@ try {
         exit 1
     }
     Write-Output "agreed match (both): $($reports['a'].Agreed)"
-    Write-Output "both runs: discovered each other, elected a (7301) cab1 and b (7302) cab2, linked, raced one validated race on the same match and digests to FINISHED, and exited"
+    Write-Output "both runs: discovered each other, elected a ($LinkPortA) cab$($runs[0].CabNumber) and b ($LinkPortB) cab$($runs[1].CabNumber), linked, raced one validated race on the same match and digests to FINISHED, and exited"
+    if ($configAGiven) {
+        Write-Output "both runs: link group (seat auto, link port, no peer) from their config files, no group overridden by the command line"
+    }
     Write-Output "arcade discovery link check: PASS"
     Write-Output ("arcade discovery link check: total time {0} s" -f [math]::Round(((Get-Date) - $checkStartedAt).TotalSeconds, 1))
     exit 0

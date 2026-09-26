@@ -1,7 +1,8 @@
 <#
 Package smoke gate (docs/PACKAGING.md "Package smoke gate"): proves that a
 PACKAGED ctr_native.exe runs a two-process loopback lockstep race driven by
-the package's own config files. Windows PowerShell 5.1 compatible.
+the package's own arcade.cfg, in discovery mode (seat auto: the two runs find
+each other and elect their seats). Windows PowerShell 5.1 compatible.
 
   tools/package-arcade-smoke.ps1 -PackageDirectory <dir> -OutputDirectory <dir>
       Smoke-tests an existing package folder (for example the one
@@ -17,13 +18,30 @@ size and SHA-256 against the files; a copy of the package into a fresh
 <output>\run (the game writes its log and memcards\ next to the exe, so the
 package folder itself is never run); the copied files re-checked against the
 MANIFEST, and asserted to hold no memcards\ (a fresh cabinet, no memcard
-save); <output>\cab1.loopback.cfg and cab2.loopback.cfg derived from the
-package's cab1.cfg and cab2.cfg by changing ONLY the peer IP (to 127.0.0.1,
-ports kept), data_dir (to the folder holding -AssetsFile), fullscreen (to 0),
-and render_scale (to 1: two cabinets at 8x on one test PC is needless load;
-texture_filter stays the template's bilinear); then
-tools/arcade-link-launch-check.ps1 on <output>\run\ctr_native.exe with
--Cab1Config and -Cab2Config, output in <output>\gate.
+save); the package's arcade.cfg checked to set data_dir, seat, fullscreen,
+render_scale, and texture_filter once each, seat = auto, and no port, peer,
+or group (those are commented-out examples); <output>\a.loopback.cfg and
+b.loopback.cfg derived from it by changing ONLY data_dir (to the folder
+holding -AssetsFile), fullscreen (to 0), and render_scale (to 1: two
+cabinets at 8x on one test PC is needless load; texture_filter stays the
+template's bilinear, seat stays auto, no peer), and by ADDING one port line
+after the seat line (a 7001, b 7002: two processes on one host need distinct
+link ports); then tools/arcade-discovery-link-check.ps1 on
+<output>\run\ctr_native.exe with -ConfigA and -ConfigB and the ports
+-LinkPortA 7001 -LinkPortB 7002 -DiscoveryPortA 7003 -DiscoveryPortB 7004,
+output in <output>\gate. Each run gets --config <its file> and, on the
+command line (they are test flags, not arcade.cfg keys; DISC-18), its
+discovery port and the other's as its target:
+  a  --arcade-discovery-port 7003 --arcade-discovery-target 127.0.0.1:7004
+  b  --arcade-discovery-port 7004 --arcade-discovery-target 127.0.0.1:7003
+The election makes a (the lower link port, 7001) cab1 and b cab2.
+
+Why this gate (DISC-S5): the package ships one arcade.cfg for every
+cabinet, so the smoke proves the packaged exe plus that file in discovery
+mode, to one linked race. The static-seat LR-16 three-race scenario (the
+finish, the desync, the peer drop) stays covered by the ctest
+arcade_link_launch (tools/arcade-link-launch-check.ps1) on the build-tree
+exe.
 
 -OutputDirectory must resolve under <repo>\build-msvc-x86\. Exit codes: 0
 pass, 1 fail, 77 skipped (no disc image, or the gate skipped: no display, a
@@ -50,31 +68,33 @@ param(
     [string]$AssetsFile,
 
     # Passed to the gate: seconds both runs together may take.
-    [int]$TimeoutSeconds = 780
+    [int]$TimeoutSeconds = 240
 )
 
 $ErrorActionPreference = 'Stop'
 $skipExitCode = 77
 $startedAt = Get-Date
 # The files MANIFEST.txt lists (every package file but itself).
-$manifestFiles = @('ctr_native.exe', 'cab1.cfg', 'cab2.cfg', 'README.txt')
+$manifestFiles = @('ctr_native.exe', 'arcade.cfg', 'README.txt')
 $packageFiles = $manifestFiles + @('MANIFEST.txt')
-# The seats, ports, and loopback peers of the package's cab1.cfg and cab2.cfg
-# (the real cabinet ports, also tools/arcade-link-launch-check.ps1's default
-# -Cab1Port and -Cab2Port); the loopback configs must hold the same.  The
-# ctest arcade_link_launch runs the gate on another port pair, so it can
-# overlap this smoke.
-$cabs = @(
-    @{ Name = 'cab1'; Seat = 'cab1'; Port = '7001'; PeerPort = '7002' },
-    @{ Name = 'cab2'; Seat = 'cab2'; Port = '7002'; PeerPort = '7001' })
-$loopbackIp = '127.0.0.1'
+# The two loopback runs: each loopback config adds its link port; the
+# discovery ports go to the gate (on the command line). The package's real
+# cabinets all use the default link port 7001 and discovery port 7000 on
+# their own IPs; on one host the two runs need four distinct ports. The ctest
+# arcade_discovery_link runs the same gate on 7301-7304, so it can overlap
+# this smoke.
+$loopbackRuns = @(
+    @{ Name = 'a'; LinkPort = '7001'; DiscoveryPort = '7003' },
+    @{ Name = 'b'; LinkPort = '7002'; DiscoveryPort = '7004' })
 $loopbackFullscreen = '0'
 $loopbackRenderScale = '1'
-# The template's texture filter, kept by the loopback configs and required on
-# each run's stdout.
+# The template's seat and texture filter, kept by the loopback configs; the
+# texture filter is required on each run's stdout.
+$templateSeat = 'auto'
 $templateTextureFilter = 'bilinear'
-# The keys each template must set exactly once.
-$configKeys = @('data_dir', 'seat', 'port', 'peer', 'fullscreen', 'render_scale', 'texture_filter')
+# The keys the template must set exactly once; every other key (port, peer,
+# group) it must leave commented out.
+$templateKeys = @('data_dir', 'seat', 'fullscreen', 'render_scale', 'texture_filter')
 
 # Write-Host, not Write-Output: these also run inside functions whose output
 # is captured, and the reason must still reach the console.
@@ -200,10 +220,7 @@ function Split-ConfigText([string]$Text) {
 }
 
 # The loopback value of a key the smoke changes, or $null for a key it keeps.
-function Get-LoopbackValue($Cab, [string]$Key) {
-    if ($Key -ceq 'peer') {
-        return "${loopbackIp}:$($Cab.PeerPort)"
-    }
+function Get-LoopbackValue([string]$Key) {
     if ($Key -ceq 'data_dir') {
         return $dataDir
     }
@@ -216,106 +233,117 @@ function Get-LoopbackValue($Cab, [string]$Key) {
     return $null
 }
 
-# Writes $Destination from the package's $Source, changing only the peer IP,
-# data_dir, fullscreen, and render_scale. seat, port, and the peer port must
-# already be the gate's, and texture_filter the template's bilinear; each of
-# the seven keys must appear exactly once.
-function New-LoopbackConfig($Cab, [string]$Source, [string]$Destination) {
-    $text = [System.IO.File]::ReadAllText($Source)
-    $newline = "`n"
-    if ($text.Contains("`r`n")) {
-        $newline = "`r`n"
-    }
-    $lines = Split-ConfigText $text
+# Checks the package's arcade.cfg: each of $templateKeys set exactly once,
+# seat auto, texture_filter bilinear, and no other key set (port, peer, and
+# group are commented-out examples only).
+function Assert-Template([string]$Source) {
+    $lines = Split-ConfigText ([System.IO.File]::ReadAllText($Source))
     $counts = @{}
-    foreach ($key in $configKeys) {
+    foreach ($key in $templateKeys) {
         $counts[$key] = 0
     }
-    $derivedLines = New-Object System.Collections.Generic.List[string]
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
         if (Test-ConfigComment $line) {
-            $derivedLines.Add($line)
             continue
         }
         $entry = Split-ConfigLine $line
         if ($null -eq $entry) {
             Exit-Failed "$Source line $($i + 1) has no '=': '$line'"
         }
-        if ($counts.ContainsKey($entry.Key)) {
-            $counts[$entry.Key]++
+        if (-not $counts.ContainsKey($entry.Key)) {
+            Exit-Failed "$Source line $($i + 1) sets '$($entry.Key)'; the template sets only $($templateKeys -join ', ') (port, peer, and group are commented-out examples)"
         }
-        if ($entry.Key -ceq 'seat') {
-            if ($entry.Value -cne $Cab.Seat) {
-                Exit-Failed "$Source line $($i + 1): seat is '$($entry.Value)', the gate's $($Cab.Name) is '$($Cab.Seat)'"
-            }
+        $counts[$entry.Key]++
+        if (($entry.Key -ceq 'seat') -and ($entry.Value -cne $templateSeat)) {
+            Exit-Failed "$Source line $($i + 1): seat is '$($entry.Value)', the template's is '$templateSeat' (every cabinet uses the same file)"
         }
-        elseif ($entry.Key -ceq 'port') {
-            if ($entry.Value -cne $Cab.Port) {
-                Exit-Failed "$Source line $($i + 1): port is '$($entry.Value)', the gate's $($Cab.Name) uses $($Cab.Port)"
-            }
+        if (($entry.Key -ceq 'texture_filter') -and ($entry.Value -cne $templateTextureFilter)) {
+            Exit-Failed "$Source line $($i + 1): texture_filter is '$($entry.Value)', the template's is '$templateTextureFilter'"
         }
-        elseif ($entry.Key -ceq 'peer') {
-            if ($entry.Value -cnotmatch '^[0-9]{1,3}(\.[0-9]{1,3}){3}:([0-9]+)$') {
-                Exit-Failed "$Source line $($i + 1): peer '$($entry.Value)' is not a.b.c.d:port"
-            }
-            if ($Matches[2] -cne $Cab.PeerPort) {
-                Exit-Failed "$Source line $($i + 1): the peer port is $($Matches[2]), the gate's $($Cab.Name) peer port is $($Cab.PeerPort)"
-            }
+    }
+    foreach ($key in $templateKeys) {
+        if ($counts[$key] -ne 1) {
+            Exit-Failed "$Source has $($counts[$key]) '$key' line(s), expected exactly 1"
         }
-        elseif ($entry.Key -ceq 'texture_filter') {
-            if ($entry.Value -cne $templateTextureFilter) {
-                Exit-Failed "$Source line $($i + 1): texture_filter is '$($entry.Value)', the template's is '$templateTextureFilter'"
-            }
+    }
+}
+
+# Writes $Destination from the package's $Source (already checked by
+# Assert-Template), changing only data_dir, fullscreen, and render_scale, and
+# adding "port = <link port>" right after the seat line.
+function New-LoopbackConfig($Run, [string]$Source, [string]$Destination) {
+    $text = [System.IO.File]::ReadAllText($Source)
+    $newline = "`n"
+    if ($text.Contains("`r`n")) {
+        $newline = "`r`n"
+    }
+    $lines = Split-ConfigText $text
+    $derivedLines = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $lines) {
+        if (Test-ConfigComment $line) {
+            $derivedLines.Add($line)
+            continue
         }
-        $loopbackValue = Get-LoopbackValue $Cab $entry.Key
+        $entry = Split-ConfigLine $line
+        $loopbackValue = Get-LoopbackValue $entry.Key
         if ($null -eq $loopbackValue) {
             $derivedLines.Add($line)
         }
         else {
             $derivedLines.Add("$($entry.Key) = $loopbackValue")
         }
-    }
-    foreach ($key in $configKeys) {
-        if ($counts[$key] -ne 1) {
-            Exit-Failed "$Source has $($counts[$key]) '$key' line(s), expected exactly 1"
+        if ($entry.Key -ceq 'seat') {
+            $derivedLines.Add("port = $($Run.LinkPort)")
         }
     }
     [System.IO.File]::WriteAllText($Destination, ($derivedLines -join $newline), (New-Object System.Text.UTF8Encoding($false)))
 }
 
-# Re-reads both files: the same line count, every comment and every other
-# non-comment line byte-equal, and peer, data_dir, fullscreen, and
-# render_scale holding exactly their loopback values.
-function Assert-LoopbackConfig($Cab, [string]$Source, [string]$Derived) {
+# Re-reads both files: one line more in the derived file, every comment and
+# every other non-comment line byte-equal, data_dir, fullscreen, and
+# render_scale holding exactly their loopback values, and exactly
+# "port = <link port>" right after the seat line, the one added line.
+function Assert-LoopbackConfig($Run, [string]$Source, [string]$Derived) {
     $sourceLines = Split-ConfigText ([System.IO.File]::ReadAllText($Source))
     $derivedLines = Split-ConfigText ([System.IO.File]::ReadAllText($Derived))
-    if ($sourceLines.Count -ne $derivedLines.Count) {
-        Exit-Failed "$Derived has $($derivedLines.Count) lines, $Source has $($sourceLines.Count)"
+    if ($derivedLines.Count -ne ($sourceLines.Count + 1)) {
+        Exit-Failed "$Derived has $($derivedLines.Count) lines, expected $($sourceLines.Count + 1) ($Source's $($sourceLines.Count) and the port line)"
     }
     $changed = 0
+    $added = 0
+    $expectedPortLine = "port = $($Run.LinkPort)"
     for ($i = 0; $i -lt $sourceLines.Count; $i++) {
         $sourceLine = $sourceLines[$i]
-        $derivedLine = $derivedLines[$i]
+        $derivedIndex = $i + $added
+        $derivedLine = $derivedLines[$derivedIndex]
+        $sourceEntry = $null
         $loopbackValue = $null
         if (-not (Test-ConfigComment $sourceLine)) {
-            $loopbackValue = Get-LoopbackValue $Cab (Split-ConfigLine $sourceLine).Key
+            $sourceEntry = Split-ConfigLine $sourceLine
+            $loopbackValue = Get-LoopbackValue $sourceEntry.Key
         }
         if ($null -eq $loopbackValue) {
             if ($derivedLine -cne $sourceLine) {
-                Exit-Failed "$Derived line $($i + 1) is '$derivedLine', expected it unchanged from $Source ('$sourceLine')"
+                Exit-Failed "$Derived line $($derivedIndex + 1) is '$derivedLine', expected it unchanged from $Source line $($i + 1) ('$sourceLine')"
             }
-            continue
         }
-        $sourceEntry = Split-ConfigLine $sourceLine
-        $derivedEntry = Split-ConfigLine $derivedLine
-        if (($null -eq $derivedEntry) -or ($derivedEntry.Key -cne $sourceEntry.Key) -or ($derivedEntry.Value -cne $loopbackValue)) {
-            Exit-Failed "$Derived line $($i + 1) is '$derivedLine', expected '$($sourceEntry.Key) = $loopbackValue'"
+        else {
+            $derivedEntry = Split-ConfigLine $derivedLine
+            if (($null -eq $derivedEntry) -or ($derivedEntry.Key -cne $sourceEntry.Key) -or ($derivedEntry.Value -cne $loopbackValue)) {
+                Exit-Failed "$Derived line $($derivedIndex + 1) is '$derivedLine', expected '$($sourceEntry.Key) = $loopbackValue'"
+            }
+            $changed++
         }
-        $changed++
+        if (($null -ne $sourceEntry) -and ($sourceEntry.Key -ceq 'seat')) {
+            $added++
+            if ($derivedLines[$i + $added] -cne $expectedPortLine) {
+                Exit-Failed "$Derived line $($i + $added + 1) is '$($derivedLines[$i + $added])', expected the added '$expectedPortLine' after the seat line"
+            }
+        }
     }
-    if ($changed -ne 4) {
-        Exit-Failed "$Derived changes $changed lines of $Source, expected 4 (peer, data_dir, fullscreen, render_scale)"
+    if (($changed -ne 3) -or ($added -ne 1)) {
+        Exit-Failed "$Derived changes $changed lines of $Source and adds $added, expected 3 changed (data_dir, fullscreen, render_scale) and 1 added (port)"
     }
 }
 
@@ -325,7 +353,7 @@ function Assert-LoopbackConfig($Cab, [string]$Source, [string]$Derived) {
 $repo = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $buildDir = (Join-Path $repo 'build-msvc-x86').TrimEnd('\')
 $packageScript = Join-Path $PSScriptRoot 'package-arcade.ps1'
-$gateScript = Join-Path $PSScriptRoot 'arcade-link-launch-check.ps1'
+$gateScript = Join-Path $PSScriptRoot 'arcade-discovery-link-check.ps1'
 # The PowerShell running this script runs the two helpers too.
 $powershellExe = (Get-Process -Id $PID).Path
 
@@ -378,7 +406,7 @@ Assert-NoReparsePoint $runDir
 Assert-NoReparsePoint $gateDir
 [System.IO.Directory]::CreateDirectory($output) | Out-Null
 
-Write-Output 'package smoke: a packaged ctr_native.exe, run from a copy of its package folder, in the two-process loopback gate driven by the package''s own config files'
+Write-Output 'package smoke: a packaged ctr_native.exe, run from a copy of its package folder, in the two-process loopback discovery gate driven by the package''s own arcade.cfg'
 Write-Output "output: $output"
 
 # ---------------------------------------------------------------------------
@@ -428,18 +456,20 @@ Assert-ManifestMatches $runDir $manifest 'run copy'
 $runExe = Join-Path $runDir 'ctr_native.exe'
 
 # ---------------------------------------------------------------------------
-# d. The loopback configs.
+# d. The template and the loopback configs.
 
 Write-Output ''
+$template = Join-Path $packageDir 'arcade.cfg'
+Assert-Template $template
+Write-Output ("template: {0} sets {1} once each, seat {2}, and no port, peer, or group" -f $template, ($templateKeys -join ', '), $templateSeat)
 $configs = @{}
-foreach ($cab in $cabs) {
-    $source = Join-Path $packageDir "$($cab.Name).cfg"
-    $derived = Join-Path $output "$($cab.Name).loopback.cfg"
-    New-LoopbackConfig $cab $source $derived
-    Assert-LoopbackConfig $cab $source $derived
-    $configs[$cab.Name] = $derived
-    Write-Output ("loopback config {0}: {1} (seat {2}, port {3}, peer {4}:{5}, data_dir {6}, fullscreen {7}, render_scale {8}, texture_filter {9}; every other line as in the package's {0}.cfg)" -f
-        $cab.Name, $derived, $cab.Seat, $cab.Port, $loopbackIp, $cab.PeerPort, $dataDir, $loopbackFullscreen, $loopbackRenderScale, $templateTextureFilter)
+foreach ($run in $loopbackRuns) {
+    $derived = Join-Path $output "$($run.Name).loopback.cfg"
+    New-LoopbackConfig $run $template $derived
+    Assert-LoopbackConfig $run $template $derived
+    $configs[$run.Name] = $derived
+    Write-Output ("loopback config {0}: {1} (seat {2}, added port {3}, no peer, data_dir {4}, fullscreen {5}, render_scale {6}, texture_filter {7}; every other line as in the package's arcade.cfg); discovery port {8} on the command line" -f
+        $run.Name, $derived, $templateSeat, $run.LinkPort, $dataDir, $loopbackFullscreen, $loopbackRenderScale, $templateTextureFilter, $run.DiscoveryPort)
 }
 
 # ---------------------------------------------------------------------------
@@ -453,15 +483,16 @@ if (Test-Path -LiteralPath $runMemcards) {
     Exit-Failed "the run copy holds $runMemcards; the smoke must run as a fresh cabinet with no memcard save"
 }
 Write-Output "run copy: no memcards\ folder in $runDir (a fresh cabinet with no memcard save)"
-& $powershellExe -NoProfile -ExecutionPolicy Bypass -File $gateScript -Executable $runExe -Cab1Config $configs['cab1'] `
-    -Cab2Config $configs['cab2'] -OutputDirectory $gateDir -AssetsFile $AssetsFile -TimeoutSeconds $TimeoutSeconds
+& $powershellExe -NoProfile -ExecutionPolicy Bypass -File $gateScript -Executable $runExe -ConfigA $configs['a'] -ConfigB $configs['b'] `
+    -LinkPortA $loopbackRuns[0].LinkPort -LinkPortB $loopbackRuns[1].LinkPort -DiscoveryPortA $loopbackRuns[0].DiscoveryPort `
+    -DiscoveryPortB $loopbackRuns[1].DiscoveryPort -OutputDirectory $gateDir -AssetsFile $AssetsFile -TimeoutSeconds $TimeoutSeconds
 $gateExit = $LASTEXITCODE
 Write-Output ''
 if ($gateExit -eq $skipExitCode) {
-    Exit-Skipped 'tools/arcade-link-launch-check.ps1 skipped (see its SKIPPED line above)'
+    Exit-Skipped 'tools/arcade-discovery-link-check.ps1 skipped (see its SKIPPED line above)'
 }
 if ($gateExit -ne 0) {
-    Exit-Failed "tools/arcade-link-launch-check.ps1 exited $gateExit"
+    Exit-Failed "tools/arcade-discovery-link-check.ps1 exited $gateExit"
 }
 
 # ---------------------------------------------------------------------------
@@ -469,8 +500,8 @@ if ($gateExit -ne 0) {
 # render scale, and texture filter too), the exe that ran and the package are
 # still the MANIFEST's.
 
-foreach ($cab in $cabs) {
-    $stdoutPath = Join-Path $gateDir "$($cab.Name).stdout.log"
+foreach ($run in $loopbackRuns) {
+    $stdoutPath = Join-Path $gateDir "$($run.Name).stdout.log"
     $stdoutLines = @([System.IO.File]::ReadAllLines($stdoutPath))
     foreach ($expected in @('[CTR Native] Config groups from the file: link fullscreen render_scale texture_filter data_dir',
             '[CTR Native] Local render scale: 1x', '[CTR Native] Local window mode: windowed',
@@ -480,7 +511,7 @@ foreach ($cab in $cabs) {
             Exit-Failed "$stdoutPath has $($hits.Count) '$expected' line(s), expected 1"
         }
     }
-    Write-Output "$($cab.Name): link, fullscreen (windowed), render_scale (1x), texture_filter ($templateTextureFilter), and data_dir from $($configs[$cab.Name])"
+    Write-Output "$($run.Name): link, fullscreen (windowed), render_scale (1x), texture_filter ($templateTextureFilter), and data_dir from $($configs[$run.Name])"
 }
 Assert-ManifestMatches $runDir $manifest 'after the run, run copy'
 Assert-ManifestMatches $packageDir $manifest 'after the run, package'
