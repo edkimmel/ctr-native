@@ -78,6 +78,44 @@ string(REPEAT "x" 65537 over_limit)
 file(WRITE "${WORK_DIR}/oversize/cab1.cfg" "${over_limit}")
 expect_guard(oversize 1 "cab1.cfg is 65537 bytes")
 
+# A case variant of an allowlisted name (names are case-sensitive).
+make_package_folder(case_variant)
+file(REMOVE "${WORK_DIR}/case_variant/ctr_native.exe")
+file(WRITE "${WORK_DIR}/case_variant/CTR_NATIVE.EXE" "dummy")
+expect_guard(case_variant 1 "file not in the allowlist: CTR_NATIVE.EXE")
+expect_guard(case_variant 1 "missing file: ctr_native.exe")
+
+# Hidden files: an extra one, and an allowlisted name with the hidden attribute.
+function(make_hidden path)
+    file(TO_NATIVE_PATH "${path}" native_path)
+    execute_process(COMMAND attrib +h "${native_path}" RESULT_VARIABLE attrib_result)
+    if(NOT attrib_result EQUAL 0)
+        message(FATAL_ERROR "package guard: attrib +h ${native_path} failed (${attrib_result})")
+    endif()
+endfunction()
+make_package_folder(hidden_extra)
+file(WRITE "${WORK_DIR}/hidden_extra/Thumbs.db" "dummy")
+make_hidden("${WORK_DIR}/hidden_extra/Thumbs.db")
+expect_guard(hidden_extra 1 "hidden or system file: Thumbs.db")
+make_package_folder(hidden_allowlisted)
+make_hidden("${WORK_DIR}/hidden_allowlisted/README.txt")
+expect_guard(hidden_allowlisted 1 "hidden or system file: README.txt")
+
+# An oversize exe (32 MiB + 1 byte): a zero-filled file from
+# `fsutil file createnew`, which needs no elevation. Skipped, with a status
+# line saying so, only if fsutil fails on this host.
+make_package_folder(oversize_exe)
+file(REMOVE "${WORK_DIR}/oversize_exe/ctr_native.exe")
+file(TO_NATIVE_PATH "${WORK_DIR}/oversize_exe/ctr_native.exe" oversize_exe_path)
+execute_process(COMMAND fsutil file createnew "${oversize_exe_path}" 33554433
+    RESULT_VARIABLE fsutil_result OUTPUT_QUIET ERROR_QUIET)
+if(fsutil_result EQUAL 0)
+    expect_guard(oversize_exe 1 "exe is 33554433 bytes (limit: under 33554432)")
+else()
+    message(STATUS "package guard [oversize_exe] SKIPPED: fsutil file createnew failed (${fsutil_result})")
+endif()
+file(REMOVE_RECURSE "${WORK_DIR}/oversize_exe")
+
 # A missing file.
 make_package_folder(missing)
 file(REMOVE "${WORK_DIR}/missing/MANIFEST.txt")

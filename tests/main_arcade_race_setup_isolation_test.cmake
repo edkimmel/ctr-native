@@ -654,7 +654,7 @@ ctr_find_block("main.c" "${main_code}" "${proof_reject}" reject_begin reject_end
 math(EXPR reject_length "${reject_end} - ${reject_begin} + 1")
 string(SUBSTRING "${main_code}" ${reject_begin} ${reject_length} reject_block)
 ctr_require_order("main.c (proof rejection)" "${reject_block}"
-    "--arcade-roster-proof cannot be combined with --arcade-link, --arcade-link-preview, --exit-after-frame, or replay record or playback options."
+    "--arcade-roster-proof cannot be combined with --arcade-link, --arcade-link-preview, --exit-after-frame, or replay record or playback options%s%s%s."
     "return NativeConsole_Return(1);")
 ctr_require_order("main.c" "${main_code}"
     "NativeArcadeLinkOptions_ApplyArgs(argc, argv, &arcadeLinkOptions)"

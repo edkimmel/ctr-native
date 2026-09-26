@@ -21,15 +21,17 @@
  *   fullscreen = 0|1|yes|no|true|false
  *
  * One key = value per line. Keys are lowercase and exact. Whitespace (space,
- * tab, CR) around the key and the value is trimmed; the value is the rest of
- * the line after the first '=' (so no trailing comments). Blank lines and
- * lines whose first non-blank character is '#' or ';' are comments. CRLF line
- * ends and a leading UTF-8 BOM are accepted.
+ * tab) around the key and the value is trimmed; the value is the rest of the
+ * line after the first '=' (so no trailing comments). Blank lines and lines
+ * whose first non-blank character is '#' or ';' are comments. CRLF line ends
+ * and a leading UTF-8 BOM are accepted; a CR anywhere else in a line is a
+ * syntax error.
  *
  * Errors carry the 1-based line number (0 when not line-specific): a file
  * over NATIVE_ARCADE_CONFIG_MAX_FILE_BYTES, a line over
  * NATIVE_ARCADE_CONFIG_MAX_LINE_CHARS characters (line end excluded), a NUL
- * byte, a line without '=' or with an empty key, an unknown key, a
+ * byte, a line without '=', with an empty key, or with a bare CR (one not
+ * part of a CRLF line end), an unknown key, a
  * non-repeatable key given twice, an empty value, a bad value, a peer beyond
  * the maximum, and an incomplete link group.
  *
@@ -62,7 +64,7 @@ enum NativeArcadeConfigError
 	NATIVE_ARCADE_CONFIG_ERROR_FILE_TOO_LARGE = 2, /* line 0 */
 	NATIVE_ARCADE_CONFIG_ERROR_LINE_TOO_LONG = 3,
 	NATIVE_ARCADE_CONFIG_ERROR_NUL_BYTE = 4,
-	NATIVE_ARCADE_CONFIG_ERROR_SYNTAX = 5, /* no '=' or an empty key */
+	NATIVE_ARCADE_CONFIG_ERROR_SYNTAX = 5, /* no '=', an empty key, or a bare CR */
 	NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY = 6,
 	NATIVE_ARCADE_CONFIG_ERROR_DUPLICATE_KEY = 7,
 	NATIVE_ARCADE_CONFIG_ERROR_EMPTY_VALUE = 8,

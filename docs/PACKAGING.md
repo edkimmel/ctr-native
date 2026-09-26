@@ -11,6 +11,11 @@ There is no non-internal target in v1.
 **PK-2 Config file.** A `key = value` text file. The default is `arcade.cfg`
 in the exe directory (`SDL_GetBasePath`). `--config <path>` selects another
 file; a relative path resolves against the launch directory.
+- If `SDL_GetBasePath` fails (returns NULL; startup then prints
+  `SDL base path: (null)`), the default `arcade.cfg` is looked up in the
+  launch directory instead, and a relative `data_dir` resolves against the
+  launch directory too. This is the existing no-base-path fallback; it is
+  not an error.
 - No `--config` and no default file: exactly the behaviour without a config.
 - A missing `--config` file, a file that cannot be opened or read (including
   a default `arcade.cfg` that exists but cannot be opened), or a malformed
@@ -61,6 +66,12 @@ plays the role `assets/` plays without a config.
 - When a data directory is set, the base directory (cwd, the log file,
   `memcards/`) stays the exe directory. The folder is used as the assets
   directory, and the parent and grandparent search is skipped.
+- A drive-relative value (`C:` or `C:dir`) or, on Windows, a root-relative
+  one (`\dir` or `/dir`; a UNC `\\server\share` is fine) is fatal: it would
+  resolve against the launch directory before startup enters the base
+  directory and against the base directory after. The message names the
+  value and where it came from, and asks for a full path or one relative to
+  the exe folder (`NativeAssets_IsDriveOrRootRelativePath`).
 - A folder with neither file (either case) is fatal. The message names the
   value, the resolved path, and where it came from. The full asset
   validation still runs after it.
@@ -91,23 +102,27 @@ See "Running the package script" below.
 
 - One `key = value` per line. Keys are exactly `data_dir`, `seat`, `port`,
   `peer`, `fullscreen` (lowercase).
-- Whitespace (space, tab, CR) around the key and the value is trimmed.
+- Whitespace (space, tab) around the key and the value is trimmed.
 - The value is the rest of the line after the first `=`. It may contain
   spaces and `=`, and it takes no quotes. A trailing `# comment` is part of
   the value, and so makes it invalid.
 - Blank lines, and lines whose first non-blank character is `#` or `;`, are
   comments.
-- CRLF or LF line ends are accepted. A UTF-8 BOM is accepted at the start
-  of the file only.
+- CRLF or LF line ends are accepted (and a CR that ends the file). Any
+  other CR, such as old Mac CR-only line ends or a stray CR inside a line,
+  is a syntax error at its line. A UTF-8 BOM is accepted at the start of the
+  file only. A UTF-16 file fails on its NUL bytes, and the message says to
+  save the file as UTF-8 or ANSI text.
 
-Errors, each reported as `config file <path> line <n>: <reason>`:
+Errors are reported as `config file <path> line <n>: <reason>`, except the
+file-size error, which has no line: `config file <path>: <reason>`.
 
 | Error | Line reported |
 | --- | --- |
-| file over 16384 bytes | none |
+| file over 16384 bytes | none (no `line <n>` in the message) |
 | line over 1023 characters (line end excluded) | that line |
-| NUL byte | that line |
-| no `=`, or an empty key | that line |
+| NUL byte (for example a UTF-16 file) | that line |
+| no `=`, an empty key, or a bare CR | that line |
 | unknown key | that line |
 | non-repeatable key given twice | the second line |
 | empty value | that line |
@@ -121,17 +136,39 @@ Code: `platform/native_arcade_config.c` and
 `ctr_native_arcade_link_options`. `main.c` reads the file and is the only
 caller.
 
+## Before packaging
+
+The package script builds and packages; it runs no tests. At the commit
+being packaged, with a clean tree, the full Debug and Release suites must
+pass first, including the `live` gates. Those run against each
+configuration's own `ctr_native.exe`, so the Release run gates the exe that
+ships:
+
+```sh
+cmake --preset windows-msvc-x86
+cmake --build build-msvc-x86 --config Debug
+ctest --test-dir build-msvc-x86 -C Debug --output-on-failure
+cmake --build build-msvc-x86 --config Release
+ctest --test-dir build-msvc-x86 -C Release --output-on-failure
+```
+
+Do not add `-LE live` here: the fast suite is for iteration, not release.
+Package only a commit whose two runs both pass in full.
+
 ## Running the package script
 
-From the repository root, with a clean tree (commit first):
+From the repository root, with a clean tree (commit first), after the
+suites above pass:
 
 ```sh
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-arcade.ps1
 ```
 
 The script:
-1. Refuses (exit 1) unless `git status --porcelain` is empty. Untracked files
-   count; ignored files do not.
+1. Refuses (exit 1) unless
+   `git status --porcelain --untracked-files=all --ignore-submodules=none`
+   is empty. The flags are explicit so no user git config can hide a file.
+   Untracked files count; ignored files do not.
 2. Runs `cmake --preset windows-msvc-x86` and
    `cmake --build build-msvc-x86 --config Release --target ctr_native`, then
    checks the tree is still clean.
@@ -140,7 +177,9 @@ The script:
    `-dirty` or `unknown` build is refused.
 4. Recreates `build-msvc-x86\package\ctr-arcade-<short12>\`. There is no
    output-path parameter. The script refuses any destination outside
-   `build-msvc-x86\package\`, and anything under `C:\arcade`.
+   `build-msvc-x86\package\`, and anything under `C:\arcade`. Before any
+   delete it refuses if `build-msvc-x86`, `build-msvc-x86\package`, or the
+   destination is a junction or symbolic link (a reparse point).
 5. Copies the Release `ctr_native.exe` and the templates `cab1.cfg`,
    `cab2.cfg`, and `README.txt` verbatim.
 6. Writes `MANIFEST.txt` (ASCII, CRLF). It holds the package name, the
@@ -165,6 +204,7 @@ A folder fails when any of these holds:
   `README.txt`, `MANIFEST.txt`. Names are case-sensitive, and a missing
   file fails too.
 - It holds any subdirectory.
+- A file has the hidden or system attribute (hidden files are listed too).
 - A file name has a retail or BIOS extension: `.bin .cue .iso .img .chd
   .ecm .pbp .big .hwl .str .xa .xnf .vag .mcd .mcr .sav .srm .bmp .png`.
 - A file name contains `bios` or `scph` (case-insensitive).
@@ -175,8 +215,19 @@ A folder fails when any of these holds:
 dummy files under `build-msvc-x86/package_guard_test/`. It checks that:
 - the exact allowlist passes;
 - each of these fails with its reason: `ctr-u.bin`, `SCPH1001.BIN`,
-  `BIGFILE.BIG`, an unknown file, a subdirectory, an oversize `cab1.cfg`, a
-  missing `MANIFEST.txt`, and a missing folder.
+  `BIGFILE.BIG`, an unknown file, a subdirectory, an oversize `cab1.cfg`,
+  `CTR_NATIVE.EXE` in place of `ctr_native.exe`, a hidden extra file, a
+  hidden `README.txt`, an exe of 32 MiB + 1 byte (made with
+  `fsutil file createnew`, which needs no elevation; the case is skipped
+  with a status line only if fsutil fails), a missing `MANIFEST.txt`, and a
+  missing folder.
+
+## Template line ends
+
+`.gitattributes` checks out `tools/package/*.cfg` and `*.txt` with CRLF
+line ends on every machine, whatever `core.autocrlf` says, so every checkout
+packages the same template bytes and the MANIFEST hashes do not depend on
+the packager's git settings.
 
 ## Notes
 
@@ -185,5 +236,15 @@ dummy files under `build-msvc-x86/package_guard_test/`. It checks that:
   `fullscreen`.
 - A cabinet whose `arcade.cfg` sets the link group is a link cabinet. Replay
   options and `--arcade-roster-proof` are then rejected, exactly as with
-  `--arcade-link`. To run those on such a machine, pass `--config` with an
-  empty file.
+  `--arcade-link`, and the rejection message adds
+  `(link group from config file <path>)`. To run those on such a machine,
+  pass `--config` with an empty file.
+- `ctr_native_config_startup` (ctest, not live) runs the real exe with
+  fabricated config files under `build-msvc-x86/ctr_native_config_startup/`
+  and checks exit code 1 and the message for: a missing `--config` file, an
+  unknown key (with its line), a file over 16 KiB, a UTF-16 file, a config
+  link group with `--replay` and with `--arcade-roster-proof`, `--data-dir`
+  naming an empty folder, a drive-relative data directory (from the flag
+  and from the file), and `--config` twice.
+  Every case stops before the assets and `Platform_Init`, so it needs no
+  game data and no display.

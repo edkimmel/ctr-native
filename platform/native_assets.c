@@ -572,6 +572,30 @@ internal int NativeAssets_IsAbsolutePath(NativeStr8 path)
 	return (path.len >= 2u) && (path.ptr[1] == ':') && (((path.ptr[0] >= 'A') && (path.ptr[0] <= 'Z')) || ((path.ptr[0] >= 'a') && (path.ptr[0] <= 'z')));
 }
 
+int NativeAssets_IsDriveOrRootRelativePath(const char *path)
+{
+	if (path == NULL)
+	{
+		return 0;
+	}
+
+	const size_t length = strlen(path);
+
+	/* Drive-relative: "C:" or "C:dir" (anywhere; the drive form is always taken as not exe-relative). */
+	if ((length >= 2u) && (path[1] == ':') && (((path[0] >= 'A') && (path[0] <= 'Z')) || ((path[0] >= 'a') && (path[0] <= 'z'))))
+	{
+		return (length == 2u) || !NativePath_IsSeparator((u8)path[2]);
+	}
+#if defined(_WIN32)
+	/* Root-relative: "\dir" or "/dir", but not a UNC "\\server\share". */
+	if ((length >= 1u) && NativePath_IsSeparator((u8)path[0]))
+	{
+		return (length == 1u) || !NativePath_IsSeparator((u8)path[1]);
+	}
+#endif
+	return 0;
+}
+
 int NativeAssets_InitWithAssetDir(const char *executableBasePath, const char *assetDir, char *resolvedAssetDir, size_t resolvedAssetDirSize)
 {
 	char joined[NATIVE_ASSETS_PATH_MAX];
@@ -582,7 +606,7 @@ int NativeAssets_InitWithAssetDir(const char *executableBasePath, const char *as
 		resolvedAssetDir[0] = '\0';
 	}
 
-	if ((assetDir == NULL) || (assetDir[0] == '\0'))
+	if ((assetDir == NULL) || (assetDir[0] == '\0') || NativeAssets_IsDriveOrRootRelativePath(assetDir))
 	{
 		return 0;
 	}

@@ -19,9 +19,10 @@ enum NativeArcadeConfigKey
 	NATIVE_ARCADE_CONFIG_KEY_FULLSCREEN
 };
 
+/* A CR only ever ends a line (Parse removes it, or rejects a bare one), so it is not blank. */
 static int NativeArcadeConfig_IsBlank(char c)
 {
-	return (c == ' ') || (c == '\t') || (c == '\r');
+	return (c == ' ') || (c == '\t');
 }
 
 static void NativeArcadeConfig_SetStatus(struct NativeArcadeConfigStatus *status, uint32_t error, uint32_t line)
@@ -333,6 +334,13 @@ int NativeArcadeConfig_Parse(const char *text, size_t size, struct NativeArcadeC
 			NativeArcadeConfig_SetStatus(status, NATIVE_ARCADE_CONFIG_ERROR_NUL_BYTE, lineNumber);
 			return 0;
 		}
+		/* Any CR left is not a line end (CRLF, or a CR that ends the file):
+		 * old Mac line ends or a stray CR inside a line. */
+		if (memchr(text + position, '\r', length) != NULL)
+		{
+			NativeArcadeConfig_SetStatus(status, NATIVE_ARCADE_CONFIG_ERROR_SYNTAX, lineNumber);
+			return 0;
+		}
 		memcpy(line, text + position, length);
 		line[length] = '\0';
 
@@ -408,11 +416,11 @@ const char *NativeArcadeConfig_ErrorText(uint32_t error)
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_NUL_BYTE:
 	{
-		return "line contains a NUL byte";
+		return "line contains a NUL byte (save the file as UTF-8 or ANSI text)";
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_SYNTAX:
 	{
-		return "expected 'key = value'";
+		return "expected 'key = value' (a CR may appear only in a CRLF line end)";
 	}
 	case NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY:
 	{

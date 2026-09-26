@@ -356,7 +356,8 @@ int main(int argc, char *argv[])
 	 * folder or recording file is created first. */
 	if (((arcadeLinkOptions.enabled != 0u) || (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE)) && NativeArg_NamesReplayOption(argc, argv))
 	{
-		fprintf(stderr, "[CTR Native] --arcade-link and --arcade-link-preview cannot be combined with replay record or playback options.\n");
+		fprintf(stderr, "[CTR Native] --arcade-link and --arcade-link-preview cannot be combined with replay record or playback options%s%s%s.\n",
+		        linkFromConfig ? " (link group from config file " : "", linkFromConfig ? configPath : "", linkFromConfig ? ")" : "");
 		return NativeConsole_Return(1);
 	}
 
@@ -388,7 +389,8 @@ int main(int argc, char *argv[])
 	    ((arcadeLinkOptions.enabled != 0u) || (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE) || NativeArg_NamesReplayOption(argc, argv) ||
 	     NativeArcadeRosterProof_NamesExitOption(argc, argv)))
 	{
-		fprintf(stderr, "[CTR Native] --arcade-roster-proof cannot be combined with --arcade-link, --arcade-link-preview, --exit-after-frame, or replay record or playback options.\n");
+		fprintf(stderr, "[CTR Native] --arcade-roster-proof cannot be combined with --arcade-link, --arcade-link-preview, --exit-after-frame, or replay record or playback options%s%s%s.\n",
+		        linkFromConfig ? " (link group from config file " : "", linkFromConfig ? configPath : "", linkFromConfig ? ")" : "");
 		return NativeConsole_Return(1);
 	}
 
@@ -420,7 +422,8 @@ int main(int argc, char *argv[])
 	    ((arcadeLinkOptions.enabled == 0u) || NativeArg_NamesReplayOption(argc, argv) || (rosterProofOptions.enabled != 0u) ||
 	     NativeArcadeRosterProof_NamesExitOption(argc, argv)))
 	{
-		fprintf(stderr, "[CTR Native] --arcade-link-autopilot needs --arcade-link and cannot be combined with --arcade-roster-proof, --exit-after-frame, or replay record or playback options.\n");
+		fprintf(stderr, "[CTR Native] --arcade-link-autopilot needs --arcade-link and cannot be combined with --arcade-roster-proof, --exit-after-frame, or replay record or playback options%s%s%s.\n",
+		        linkFromConfig ? " (link group from config file " : "", linkFromConfig ? configPath : "", linkFromConfig ? ")" : "");
 		return NativeConsole_Return(1);
 	}
 
@@ -443,6 +446,14 @@ int main(int argc, char *argv[])
 	{
 		char resolvedDataDir[NATIVE_CONFIG_FILE_PATH_MAX];
 
+		/* "C:dir" and "\dir" would resolve against the launch directory here
+		 * and against the base directory after the chdir below: rejected. */
+		if (NativeAssets_IsDriveOrRootRelativePath(dataDir))
+		{
+			fprintf(stderr, "[CTR Native] data directory %s (from %s%s) is drive-relative (C:dir) or root-relative (\\dir); use a full path such as C:\\ctr-data or a path relative to the exe folder.\n",
+			        dataDir, (configArgs.dataDir != NULL) ? "--data-dir" : "config file ", (configArgs.dataDir != NULL) ? "" : configPath);
+			return NativeConsole_Return(1);
+		}
 		if (!NativeAssets_InitWithAssetDir(sdlBasePath, dataDir, resolvedDataDir, sizeof(resolvedDataDir)))
 		{
 			fprintf(stderr, "[CTR Native] data directory %s (resolved: %s, from %s%s) does not hold ctr-u.bin or BIGFILE.BIG.\n", dataDir,

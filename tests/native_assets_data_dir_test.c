@@ -102,6 +102,32 @@ int main(int argc, char *argv[])
 		CHECK(strcmp(NativeAssets_GetAssetDir(), before) == 0);
 	}
 
+	/* Drive-relative and (on Windows) root-relative paths would resolve against
+	 * the launch directory before the chdir and the base directory after it:
+	 * rejected before any resolution, with the asset paths unchanged. */
+	{
+		char before[1024];
+		static const char *const rejected[] = {
+			"C:", "C:data", "c:..\\abs", "Z:ctr data",
+#if defined(_WIN32)
+			"\\", "/", "\\data", "/data", "\\ctr-data\\x",
+#endif
+		};
+		static const char *const accepted[] = { "data", "..\\abs", ".\\data", "C:\\", "C:/ctr-data", "c:\\ctr data", "\\\\server\\share", "//server/share", "", NULL };
+
+		CHECK(snprintf(before, sizeof(before), "%s", NativeAssets_GetAssetDir()) < (int)sizeof(before));
+		for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++)
+		{
+			CHECK(NativeAssets_IsDriveOrRootRelativePath(rejected[i]) == 1);
+			CHECK(Expect(s_exeDir, rejected[i], 0, ""));
+			CHECK(strcmp(NativeAssets_GetAssetDir(), before) == 0);
+		}
+		for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++)
+		{
+			CHECK(NativeAssets_IsDriveOrRootRelativePath(accepted[i]) == 0);
+		}
+	}
+
 	/* No data dir. */
 	CHECK(Expect(s_exeDir, "", 0, ""));
 	CHECK(Expect(s_exeDir, NULL, 0, ""));

@@ -193,11 +193,30 @@ static int TestErrors(void)
 
 	/* NUL byte. */
 	CHECK(RejectsAt("seat = cab1\nport = 7\0001\n", 23, NATIVE_ARCADE_CONFIG_ERROR_NUL_BYTE, 2));
+	/* A UTF-16 file (BOM FF FE) is a NUL byte on line 1, and the message says how to save it. */
+	CHECK(RejectsAt("\xFF\xFE" "s\0e\0a\0t\0", 10, NATIVE_ARCADE_CONFIG_ERROR_NUL_BYTE, 1));
+	CHECK(strstr(NativeArcadeConfig_ErrorText(NATIVE_ARCADE_CONFIG_ERROR_NUL_BYTE), "(save the file as UTF-8 or ANSI text)") != NULL);
 
 	/* Syntax: no '=', or an empty key. */
 	CHECK(RejectsTextAt("# c\nseat cab1\n", NATIVE_ARCADE_CONFIG_ERROR_SYNTAX, 2));
 	CHECK(RejectsTextAt("\n\n = cab1\n", NATIVE_ARCADE_CONFIG_ERROR_SYNTAX, 3));
 	CHECK(RejectsTextAt("=\n", NATIVE_ARCADE_CONFIG_ERROR_SYNTAX, 1));
+
+	/* A bare CR (not part of a CRLF line end) is a syntax error at its line:
+	 * inside a value, before a CRLF, around the key, and old Mac line ends. */
+	CHECK(RejectsTextAt("# c\r\ndata_dir = C:\\ctr\rdata\r\n", NATIVE_ARCADE_CONFIG_ERROR_SYNTAX, 2));
+	CHECK(RejectsTextAt("fullscreen = 1\n\nfullscreen = 1\r\r\n", NATIVE_ARCADE_CONFIG_ERROR_SYNTAX, 3));
+	CHECK(RejectsTextAt("\rseat = cab1\n", NATIVE_ARCADE_CONFIG_ERROR_SYNTAX, 1));
+	CHECK(RejectsTextAt("seat = cab1\rport = 7001\rpeer = 1.2.3.4:5\r\n", NATIVE_ARCADE_CONFIG_ERROR_SYNTAX, 1));
+	CHECK(RejectsTextAt("# c\n\r\n\r\r\n", NATIVE_ARCADE_CONFIG_ERROR_SYNTAX, 3));
+	/* A comment line is checked too, and a CR that ends the file is a line end. */
+	CHECK(RejectsTextAt("# a\rb\n", NATIVE_ARCADE_CONFIG_ERROR_SYNTAX, 1));
+	{
+		struct NativeArcadeConfig config;
+
+		CHECK(ParseText("fullscreen = 1\r", &config, NULL));
+		CHECK((config.hasFullscreen == 1) && (config.fullscreen == 1));
+	}
 
 	/* Unknown keys: exact and lowercase only. */
 	CHECK(RejectsTextAt("fullscreen = 1\nSeat = cab1\n", NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY, 2));

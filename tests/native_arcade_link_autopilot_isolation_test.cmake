@@ -536,7 +536,7 @@ ctr_strip_comments("${main_source}" main_code)
 set(autopilot_reject "if ((arcadeLinkAutopilotOptions.enabled != 0u) &&\n\t    ((arcadeLinkOptions.enabled == 0u) || NativeArg_NamesReplayOption(argc, argv) || (rosterProofOptions.enabled != 0u) ||\n\t     NativeArcadeRosterProof_NamesExitOption(argc, argv)))")
 ctr_block_text("main.c" "${main_code}" "${autopilot_reject}" reject_block)
 ctr_require_order("main.c (autopilot rejection)" "${reject_block}"
-    "--arcade-link-autopilot needs --arcade-link and cannot be combined with --arcade-roster-proof, --exit-after-frame, or replay record or playback options."
+    "--arcade-link-autopilot needs --arcade-link and cannot be combined with --arcade-roster-proof, --exit-after-frame, or replay record or playback options%s%s%s."
     "return NativeConsole_Return(1);")
 set(roster_reject "if ((rosterProofOptions.enabled != 0u) &&\n\t    ((arcadeLinkOptions.enabled != 0u) || (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE) || NativeArg_NamesReplayOption(argc, argv) ||\n\t     NativeArcadeRosterProof_NamesExitOption(argc, argv)))")
 ctr_require_order("main.c" "${main_code}"

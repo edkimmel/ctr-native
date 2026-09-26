@@ -9,7 +9,10 @@
 # off; the link group has no grammar of its own and goes through
 # NativeArcadeLinkOptions_ApplyArgs; main.c is the only non-test caller, and
 # it hands the config only to the display window mode, the arcade-link
-# options (unless argv names a link option), and the assets data directory.
+# options (unless argv names a link option; before the first replay-option,
+# roster-proof, or autopilot check reads them), and the assets data
+# directory (whose local value reaches only the drive/root-relative check,
+# NativeAssets_InitWithAssetDir, and the two error messages).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade config isolation")
@@ -183,6 +186,24 @@ ctr_require_order("main.c" "${main_code}"
     "NativeAssets_InitWithAssetDir(sdlBasePath, dataDir, resolvedDataDir, sizeof(resolvedDataDir))"
     "NativeAssets_Validate()"
     "NativeArcadeLinkHost_Configure(&arcadeLinkOptions, arcadeLinkIdentityPtr)")
+# The config's link group must be in the link options before main.c looks at
+# them for any rejection: ApplyLink comes before the FIRST replay-option
+# check and before the roster-proof and autopilot option parsers (whose
+# rejections read arcadeLinkOptions), not merely before some later call.
+string(FIND "${main_code}" "NativeArcadeConfig_ApplyLink(&arcadeConfig" apply_link_at)
+if(apply_link_at EQUAL -1)
+    message(FATAL_ERROR "${prefix}: main.c must call NativeArcadeConfig_ApplyLink(&arcadeConfig, ...)")
+endif()
+foreach(later IN ITEMS "NativeArg_NamesReplayOption(argc, argv)" "NativeArcadeRosterProofOptions_ApplyArgs(argc, argv, &rosterProofOptions)"
+        "NativeArcadeLinkAutopilotOptions_ApplyArgs(")
+    string(FIND "${main_code}" "${later}" later_at)
+    if(later_at EQUAL -1)
+        message(FATAL_ERROR "${prefix}: main.c lacks '${later}'")
+    endif()
+    if(NOT apply_link_at LESS later_at)
+        message(FATAL_ERROR "${prefix}: main.c must call NativeArcadeConfig_ApplyLink before the first '${later}'")
+    endif()
+endforeach()
 # (NativeConfigFile_Load is main.c's own file reader: its definition and one call.)
 ctr_count("${main_code}" "NativeConfigFile_Load\\(" load_names)
 if(NOT load_names EQUAL 2)
@@ -216,4 +237,45 @@ string(FIND "${remaining_code}" "arcadeConfig" stray_use)
 if(NOT stray_use EQUAL -1)
     string(SUBSTRING "${remaining_code}" ${stray_use} 120 stray_context)
     message(FATAL_ERROR "${prefix}: main.c uses arcadeConfig outside the allowed display, link-options, and data-dir paths: '${stray_context}'")
+endif()
+
+# 9. main.c's local data directory value: defined once from --data-dir or the
+#    file's data_dir, and used only by the drive/root-relative check, the
+#    NativeAssets_InitWithAssetDir call, and the two stderr error messages
+#    that name it. It is never passed anywhere else.
+set(data_dir_definition
+    "const char *dataDir = (configArgs.dataDir != NULL) ? configArgs.dataDir : ((arcadeConfig.hasDataDir != 0u) ? arcadeConfig.dataDir : NULL)")
+set(data_dir_uses
+    "${data_dir_definition}"
+    "if (dataDir != NULL)"
+    "if (NativeAssets_IsDriveOrRootRelativePath(dataDir))"
+    "if (!NativeAssets_InitWithAssetDir(sdlBasePath, dataDir, resolvedDataDir, sizeof(resolvedDataDir)))")
+set(remaining_code "${main_code}")
+foreach(use IN LISTS data_dir_uses)
+    string(FIND "${remaining_code}" "${use}" use_at)
+    if(use_at EQUAL -1)
+        message(FATAL_ERROR "${prefix}: main.c lacks the data directory use '${use}'")
+    endif()
+    string(REPLACE "${use}" "" without_use "${remaining_code}")
+    string(LENGTH "${remaining_code}" before_length)
+    string(LENGTH "${without_use}" after_length)
+    string(LENGTH "${use}" use_length)
+    math(EXPR removed "(${before_length} - ${after_length}) / ${use_length}")
+    if(NOT removed EQUAL 1)
+        message(FATAL_ERROR "${prefix}: main.c must contain '${use}' exactly once (found ${removed})")
+    endif()
+    set(remaining_code "${without_use}")
+endforeach()
+set(data_dir_message_pattern "fprintf\\(stderr, \"\\[CTR Native\\] data directory %s [^\"]*\",[ \t\r\n]*dataDir,")
+# (Counted through a marker: a message may hold ';', which splits MATCHALL lists.)
+string(REGEX REPLACE "${data_dir_message_pattern}" "@CTR_DATA_DIR_MESSAGE@" remaining_code "${remaining_code}")
+ctr_count("${remaining_code}" "@CTR_DATA_DIR_MESSAGE@" data_dir_messages)
+if(NOT data_dir_messages EQUAL 2)
+    message(FATAL_ERROR "${prefix}: main.c must name dataDir in exactly two '[CTR Native] data directory %s' stderr messages (found ${data_dir_messages})")
+endif()
+string(REGEX MATCH "(^|[^A-Za-z0-9_.>])dataDir([^A-Za-z0-9_]|$)" stray_data_dir "${remaining_code}")
+if(NOT "${stray_data_dir}" STREQUAL "")
+    string(FIND "${remaining_code}" "${stray_data_dir}" stray_at)
+    string(SUBSTRING "${remaining_code}" ${stray_at} 120 stray_context)
+    message(FATAL_ERROR "${prefix}: main.c uses its data directory outside the check, NativeAssets_InitWithAssetDir, and the error messages: '${stray_context}'")
 endif()

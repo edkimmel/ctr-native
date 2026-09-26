@@ -24,10 +24,18 @@ int NativeAssets_Init(const char *executableBasePath);
  * that holds ctr-u.bin or BIGFILE.BIG; a relative assetDir is joined to the
  * exe directory. The base directory stays the exe directory and no parent
  * search runs. Returns 0, leaving the asset paths unchanged, when the folder
- * holds neither file. resolvedAssetDir (optional) receives the resolved
- * path, or "" when it could not be resolved.
+ * holds neither file or when assetDir is drive- or root-relative (see
+ * below). resolvedAssetDir (optional) receives the resolved path, or "" when
+ * it could not be resolved or was rejected.
  */
 int NativeAssets_InitWithAssetDir(const char *executableBasePath, const char *assetDir, char *resolvedAssetDir, size_t resolvedAssetDirSize);
+/*
+ * 1 when path is drive-relative ("C:" or "C:dir") or, on Windows,
+ * root-relative ("\dir" or "/dir"; a UNC "\\server\share" is not). Such a
+ * data directory would resolve against a current directory that changes when
+ * startup enters the base directory, so it is rejected. 0 for NULL.
+ */
+int NativeAssets_IsDriveOrRootRelativePath(const char *path);
 const char *NativeAssets_GetBaseDir(void);
 const char *NativeAssets_GetAssetDir(void);
 int NativeAssets_BuildPathStr8(NativeStr8 relativePath, char *dst, size_t dstSize);

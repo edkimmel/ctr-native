@@ -2505,6 +2505,15 @@ if(BUILD_TESTING)
     add_test(NAME ctr_native_version COMMAND $<TARGET_FILE:ctr_native> --version)
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Native ")
 
+    # Per-cabinet config file startup (docs/PACKAGING.md PK-2..PK-6): the real
+    # exe exits 1 with the right message for each fatal config case, all
+    # before the assets or Platform_Init (no game data, no display).
+    add_test(NAME ctr_native_config_startup
+        COMMAND "${CMAKE_COMMAND}"
+            -DCTR_EXE=$<TARGET_FILE:ctr_native>
+            -DWORK_DIR=${CMAKE_BINARY_DIR}/ctr_native_config_startup/$<CONFIG>
+            -P "${CMAKE_SOURCE_DIR}/tests/ctr_native_config_startup_test.cmake")
+
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(
         NAME ctr_match_unit

@@ -16,7 +16,8 @@ Game data
 ---------
 The package contains NO game data. Put your own ctr-u.bin (or the extracted
 BIGFILE.BIG files) in a folder on each cabinet, for example C:\ctr-data, and
-set data_dir to that folder in arcade.cfg.
+set data_dir to that folder in arcade.cfg: a full path such as C:\ctr-data,
+or a path relative to this folder (C:ctr-data and \ctr-data are refused).
 
 Set up each cabinet
 -------------------
@@ -34,9 +35,12 @@ Set up each cabinet
 
 Start
 -----
-Double-click ctr_native.exe (it reads arcade.cfg next to it), or run
+Double-click ctr_native.exe (it reads arcade.cfg next to it), or, from a
+command prompt in this folder, run
   ctr_native.exe --config cab1.cfg
-A config file with an error stops the game with a message naming the line.
+(a relative --config path is read from the current folder). A config file
+with an error stops the game with a message naming the file and, where there
+is one, the line.
 
 Both cabinets must run the same build
 -------------------------------------

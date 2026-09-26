@@ -16,9 +16,10 @@ compatible.
       1 fail. The folder is never changed.
 
 The guard fails a folder whose files are not exactly ctr_native.exe,
-cab1.cfg, cab2.cfg, README.txt, and MANIFEST.txt; that holds any
-subdirectory; that holds a file named like retail or BIOS data; whose
-non-exe files exceed 64 KiB; or whose exe is 32 MiB or larger.
+cab1.cfg, cab2.cfg, README.txt, and MANIFEST.txt (case-sensitive); that
+holds any subdirectory or any hidden or system file; that holds a file named
+like retail or BIOS data; whose non-exe files exceed 64 KiB; or whose exe is
+32 MiB or larger.
 #>
 [CmdletBinding()]
 param(
@@ -57,6 +58,9 @@ function Get-GuardViolations([string]$Folder) {
         }
         $name = $entry.Name
         $lowerName = $name.ToLowerInvariant()
+        if (($entry.Attributes -band ([System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System)) -ne 0) {
+            $violations.Add("hidden or system file: $name")
+        }
         if ($allowedFiles -cnotcontains $name) {
             $violations.Add("file not in the allowlist: $name")
         }
@@ -122,7 +126,9 @@ function Get-GitOutput([string[]]$Arguments) {
 }
 
 function Assert-CleanTree([string]$When) {
-    $status = @(Get-GitOutput @('status', '--porcelain'))
+    # Explicit flags, so no user git config (status.showUntrackedFiles,
+    # submodule.*.ignore) can hide an untracked or changed file.
+    $status = @(Get-GitOutput @('status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'))
     $status = @($status | Where-Object { $_ -ne '' })
     if ($status.Count -ne 0) {
         foreach ($line in $status) {
@@ -189,6 +195,17 @@ if (-not $destination.StartsWith($rootPrefix, [System.StringComparison]::Ordinal
 }
 if ($destination.StartsWith('C:\arcade', [System.StringComparison]::OrdinalIgnoreCase)) {
     Exit-Failed "refusing destination under C:\arcade: $destination"
+}
+
+# Never delete through a junction or symlink: a reparse point anywhere on the
+# path the script recreates could redirect Remove-Item outside the build tree.
+foreach ($guardedPath in @($buildDir, $packageRoot, $destination)) {
+    if (Test-Path -LiteralPath $guardedPath) {
+        $guardedItem = Get-Item -LiteralPath $guardedPath -Force
+        if (($guardedItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Exit-Failed "refusing to write through a junction or symbolic link: $guardedPath"
+        }
+    }
 }
 
 if (Test-Path -LiteralPath $destination) {

@@ -462,7 +462,7 @@ ctr_find_block("main.c" "${main_code}" "${replay_reject}" reject_begin reject_en
 math(EXPR reject_length "${reject_end} - ${reject_begin} + 1")
 string(SUBSTRING "${main_code}" ${reject_begin} ${reject_length} reject_block)
 ctr_require_order("main.c (replay rejection)" "${reject_block}"
-    "[CTR Native] --arcade-link and --arcade-link-preview cannot be combined with replay record or playback options."
+    "[CTR Native] --arcade-link and --arcade-link-preview cannot be combined with replay record or playback options%s%s%s."
     "return NativeConsole_Return(1);")
 # 8d. The rejection list covers every replay option the replay scheduler
 #     parses: each quoted "--..." string in the scheduler's argument parser

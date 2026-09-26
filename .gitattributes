@@ -2,3 +2,9 @@
 /externals/maspsx/** -text
 /externals/old-gcc/** -text
 /externals/psx-binutils/** -text
+
+# Package templates ship verbatim: CRLF on every checkout, whatever
+# core.autocrlf says, so the package bytes and MANIFEST hashes are the same
+# on every machine (docs/PACKAGING.md).
+/tools/package/*.cfg text eol=crlf
+/tools/package/*.txt text eol=crlf
