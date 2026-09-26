@@ -810,68 +810,57 @@ See `docs/PACKAGING.md` (decisions PK-1..PK-10).
 
 ## Next work
 
-Tasks 7 and 8 are complete. Linked races launch and run in lockstep end to
-end (`docs/RACE_LAUNCH_MILESTONE.md`, `docs/LOCKSTEP_RACE_MILESTONE.md`,
-defaults LR-1..LR-76).
-- The live ctest `arcade_link_launch` runs three races over loopback with
-  two processes and the autopilot:
-  - race 1 reaches the natural finish on the same tick on both cabinets,
-    with a 45-period freeze on cab2 held through by cab1;
-  - race 2 is a forced desync, ending DESYNC or PEER_TIMEOUT;
-  - race 3 kills cab2, ending PEER_TIMEOUT.
-  The gate takes about 235 s.
-- The suite is 157 tests and takes about 605 s. `ctest -LE live` runs 154
-  of them in about 60 s.
-- Menu sounds SND-1..11 are assumed approved until live testing. The input
-  delay (D = 2, 3 ticks) awaits a feel test on the cabinets.
+Tasks 7 and 8 and v1 packaging are complete.
+- Linked races launch and run in lockstep end to end
+  (`docs/LOCKSTEP_RACE_MILESTONE.md`, defaults LR-1..LR-76).
+- `tools/package-arcade.ps1` builds a self-contained Release package from a
+  clean tree (`docs/PACKAGING.md`, defaults PK-1..PK-10, and the Packaging
+  section above). Its smoke test, `package_arcade_smoke`, races three times
+  from the package folder, with no memcard save present.
+- The suite is 168 tests: the full run with `-j 8` takes about 280 s, and
+  `-LE live -j 8` about 35 s. Live tests carry area labels (`live-link`,
+  `live-roster`, `live-render`, `live-package`). Per-change checks use the
+  fast suite plus the affected area; the full suite runs once per
+  milestone.
+- Menu sounds SND-1..11 are assumed approved until live testing. The
+  input delay (D = 2, 3 ticks) awaits a feel test on the cabinets.
+- v1 ships the tested `CTR_INTERNAL` build; its autopilot and fault
+  options are opt-in command-line flags only. A non-internal release
+  target (a CMake switch, its own build, and a smoke test) waits for the
+  owner.
 
-1. Package and ship, as soon as possible (owner directive).
-   - A Release build, checked against the Debug suite.
-   - A package step that produces one self-contained folder:
-     - the exe, with the runtime bundled so nothing needs installing (the
-       build is fully static);
-     - a per-cabinet config file next to the exe (data path, seat, peer IP
-       and port, fullscreen). This is owner-approved as static config
-       until auto-discovery lands.
-     - No retail data: each cabinet reads its own data from the path in
-       its config.
-   - Both cabinets must run the byte-identical package, because the
-     handshake rejects different builds.
-   - Default until the owner rules: v1 ships the tested `CTR_INTERNAL`
-     build. Its autopilot and fault options are opt-in command-line flags
-     only. `ctr_native` always defines `CTR_INTERNAL` (`CMakeLists.txt`
-     target definitions, and PUBLIC on `ctr_native_canonical_runtime`),
-     so the non-internal branches have never been compiled. A
-     non-internal release target needs a CMake switch, its own build, and
-     a smoke test, because the live gates skip on a non-internal exe.
-   - The owner will guide deployment to `C:\arcade` and the sync between
-     cabinets. `C:\arcade` only ever receives packaged builds.
-   - Stale docs to fix alongside packaging:
-     - `GAME_LOOP_UI_MILESTONE.md` (~639-643 and ~1078-1084) and
-       `RACE_LAUNCH_MILESTONE.md` risk 6 still describe the rehearsal.
-     - `ROSTER_MILESTONE.md` risks 2-4 still say "Task 8 must", and
-       ~158-160 and ~445 still call the pacing "proof-only".
-     - `FAILURE_HANDLING_MILESTONE.md` and
-       `include/platform/native_lockstep_match_outcome.h` still give 60 Hz
-       stall figures.
-2. Cabinet auto-discovery (owner directive, after packaging). The
-   cabinets sit on a dumb switch and have fixed IPs.
+1. Deploy to the cabinets (owner-guided). Build the package from HEAD with
+   `tools/package-arcade.ps1`. The owner guides the copy to `C:\arcade` and
+   the sync between cabinets, following the per-cabinet setup steps in
+   `docs/PACKAGING.md` (data, `arcade.cfg`, firewall, hash check, start).
+   `C:\arcade` only ever receives packaged builds.
+2. Real two-cabinet and G29 validation: the actual wire, the LAN switch,
+   latency and loss, wheel input, and the D feel test. It is the
+   separately gated requirement for step 6 (CAB1 G29/kiosk gate) and step
+   7 (two-cabinet fleet acceptance).
+3. Cabinet auto-discovery (owner directive). The cabinets sit on a dumb
+   switch and have fixed IPs.
    - Each cabinet announces itself on the subnet. A continuous background
      poll finds peers that wake up later.
    - ONE_CAB versus TWO_CAB is not a static setting: it follows from
      whether other cabinets are found or are silent.
-   - Discovery replaces the static peer address in the config.
-3. Real two-cabinet and G29 validation (actual wire, LAN switch,
-   latency/loss, wheel input, and the D feel test) needs cabinet access.
-   It is the separately gated requirement for step 6 (CAB1 G29/kiosk
-   gate) and step 7 (two-cabinet fleet acceptance).
-4. Task 8 open items, none blocking shipping:
-   - A divergence found only by the Tick that closes the link while
-     leaving RESULTS is not logged (LR-70).
-   - The detecting cabinet logs no "drive end" line when the flow leaves
-     RACING.
-   - The race-tick cap is checked across cabinets only by the gate
-     (LR-60).
-   - Audio during a hold has not been observed.
-   - Whether RESULTS shows standings (risk 16).
-   - TOPOLOGY is not compared (risk 17).
+   - Discovery replaces the static `peer` in `arcade.cfg`.
+4. Open items, none blocking:
+   - Task 8:
+     - A divergence found only by the Tick that closes the link while
+       leaving RESULTS is not logged (LR-70).
+     - The detecting cabinet logs no "drive end" line when the flow
+       leaves RACING.
+     - The race-tick cap is checked across cabinets only by the gate
+       (LR-60).
+     - Audio during a hold has not been observed.
+     - Whether RESULTS shows standings is open (risk 16).
+     - TOPOLOGY is not compared (risk 17).
+   - Test hardening from packaging:
+     - Nothing pins the CMake registration of the roster split or its
+       `-Ticks` value.
+     - The one-cab group's run A is not byte-checked against the two-cab
+       group's.
+     - No test pins the `README.txt` content.
+   - With neGcon/Jogcon pads, a different saved `data.rwd` on the two
+     cabinets could affect steering. This predates packaging.
