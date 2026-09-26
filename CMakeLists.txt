@@ -1067,7 +1067,16 @@ if(CTR_NATIVE_MSVC_FRONTEND)
         /wd4310
         /wd5287
     )
-    target_link_options(ctr_native PRIVATE /Brepro)
+    # /OPT:NOICF: the game and the canonical driver binding identify behaviour
+    # by function-pointer identity (MainCanonicalDrivers.c TokenFor, the
+    # RegistrySelfTest, retail funcPtr/funcThDestroy comparisons).  The MSVC
+    # Release default (identical COMDAT folding) merges identical bodies into
+    # one address (e.g.
+    # VehPhysProc_SpinStop_{Update,PhysLinear,PhysAngular} into their SlamWall
+    # twins), which breaks C17 6.5.9p6 function-pointer distinctness and makes
+    # the Release live roster facts fail to extract.  /OPT:REF stays on.
+    # Enforced by tests/native_function_identity_link_isolation_test.cmake.
+    target_link_options(ctr_native PRIVATE /Brepro /OPT:NOICF)
 else()
     target_compile_options(ctr_native PRIVATE
         -msse
@@ -2090,6 +2099,11 @@ if(BUILD_TESTING)
     target_compile_definitions(main_canonical_drivers_binding_test PRIVATE CTR_NATIVE CTR_INTERNAL)
     target_link_libraries(main_canonical_drivers_binding_test PRIVATE ctr_native_canonical_drivers_roster ctr_native_canonical_pool ctr_native_canonical_fixed_array ctr_native_canonical_state_v3 ctr_native_canonical_state_v4 ctr_native_match_config ctr_native_replay_scheduler_seam)
     add_test(NAME main_canonical_drivers_binding_unit COMMAND $<TARGET_FILE:main_canonical_drivers_binding_test>)
+    # The binding above stubs the game callbacks; the shipped ctr_native link
+    # must also keep every callback at a distinct address (no identical code
+    # folding).
+    add_test(NAME native_function_identity_link_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_function_identity_link_isolation_test.cmake")
 
     # The live V4 race digest (game/MAIN/MainArcadeRaceDigest.c, Task 8 race
     # plan LR-10, slice LR-S4) over the real runtime, drivers extraction,
