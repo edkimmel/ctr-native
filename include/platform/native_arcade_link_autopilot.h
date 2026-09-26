@@ -37,6 +37,14 @@
  *                                           and is rejected together with
  *                                           --arcade-link-autopilot-freeze or
  *                                           --arcade-link-autopilot-desync
+ *   --arcade-link-autopilot-one-race        the one-race mode (below;
+ *                                           DISC-S4): the linked run cut to
+ *                                           race 1, then EXIT; a flag (no
+ *                                           value), once; needs
+ *                                           --arcade-link-autopilot and is
+ *                                           rejected together with
+ *                                           --arcade-link-autopilot-solo,
+ *                                           -freeze, or -desync
  *
  * The report path is opened as given when the report is written: a relative
  * path resolves against the base directory (main.c changes into it before
@@ -135,6 +143,19 @@
  *   RETURN_TO_TITLE (the RESULTS idle timeout's EXIT) is SESSION_LOST, and
  *   the deadline TIMEOUT, as above.
  *
+ * The one-race mode (docs/DISCOVERY_MILESTONE.md DISC-S4; autopilot.oneRace,
+ * copied from the options by the glue's Configure): the linked run above
+ * with its one race, for the arcade_discovery_link live gate
+ * (tools/arcade-discovery-link-check.ps1): START, the linked select, race 1,
+ * EXIT, then exit with the result code. Differences from the run above:
+ * - Decide: on RESULTS the wanted row is EXIT after race 1.
+ * - Observe: a second RESULTS entry, or RecordMatch beyond race 1, fails
+ *   UNEXPECTED_RACE; race 1's end must be FINISHED (EndAccepted(1, reason)),
+ *   else RACE_FAILED; RETURN_TO_TITLE passes only after exactly one
+ *   started, validated, and accepted race, no rematch, and this autopilot's
+ *   own EXIT, else SESSION_LOST.
+ * - The report adds "mode one-race" after the cab line.
+ *
  * The accepted ends (EndAccepted, the LR-16 scenario the live gate's fault
  * options produce): race 1 FINISHED (the natural finish, the finish grace, or
  * the race tick cap); race 2 DESYNC or PEER_TIMEOUT (the digest injection:
@@ -148,6 +169,7 @@
  *   arcade link autopilot v3
  *   cab <1|2>
  *   mode solo                      (the solo mode only)
+ *   mode one-race                  (the one-race mode only)
  *   result <NAME> (<code>)
  *   last screen <NAME> end reason <NAME>
  *   ticks <observed ticks>
@@ -248,6 +270,8 @@
 #define NATIVE_ARCADE_LINK_AUTOPILOT_RACES 3u
 /* Races in one solo-mode run (SOLO-S4): the one solo race, then LOBBY. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_RACES 1u
+/* Races in one one-race-mode run (DISC-S4): race 1, then EXIT. */
+#define NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES 1u
 /* A button is held on one decision in this many. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_PRESS_PERIOD 8u
 /* Observed host ticks before TIMEOUT: 450 s at 30 Hz. Holds and loads pass
@@ -299,7 +323,8 @@ struct NativeArcadeLinkAutopilotOptions
 {
 	uint8_t enabled; /* --arcade-link-autopilot given */
 	uint8_t solo;    /* --arcade-link-autopilot-solo given (SOLO-S4) */
-	uint8_t reserved[2];
+	uint8_t oneRace; /* --arcade-link-autopilot-one-race given (DISC-S4) */
+	uint8_t reserved[1];
 	char reportPath[NATIVE_ARCADE_LINK_AUTOPILOT_PATH_BYTES];
 	/* --arcade-link-autopilot-race-ticks, 1..RACE_TICKS_MAX; 0 when absent */
 	uint32_t raceTickLimit;
@@ -345,7 +370,9 @@ struct NativeArcadeLinkAutopilot
 	uint8_t solo;
 	/* solo: 1 once this autopilot's RETURN_TO_LOBBY was observed */
 	uint8_t lobbyReturned;
-	uint8_t reserved[1];
+	/* 1: the one-race mode (DISC-S4), set once before the run by the glue's
+	 * Configure from the options */
+	uint8_t oneRace;
 	/* enum NativeArcadeLinkAutopilotResult once done */
 	uint32_t result;
 	uint32_t ticks;

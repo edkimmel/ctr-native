@@ -23,6 +23,7 @@ static const char k_raceTicksOption[] = "--arcade-link-autopilot-race-ticks";
 static const char k_freezeOption[] = "--arcade-link-autopilot-freeze";
 static const char k_desyncOption[] = "--arcade-link-autopilot-desync";
 static const char k_soloOption[] = "--arcade-link-autopilot-solo";
+static const char k_oneRaceOption[] = "--arcade-link-autopilot-one-race";
 
 /* The RESULTS row a decision confirmed, stored + 1 so 0 means none. */
 #define NATIVE_ARCADE_LINK_AUTOPILOT_CONFIRMED_NONE 0u
@@ -74,6 +75,7 @@ int NativeArcadeLinkAutopilotOptions_ApplyArgs(int argc, char *argv[], struct Na
 	int seenFreeze = 0;
 	int seenDesync = 0;
 	int seenSolo = 0;
+	int seenOneRace = 0;
 
 	if ((options == NULL) || (argc < 0) || ((argc > 0) && (argv == NULL)))
 	{
@@ -126,6 +128,17 @@ int NativeArcadeLinkAutopilotOptions_ApplyArgs(int argc, char *argv[], struct Na
 			seenSolo = 1;
 			continue;
 		}
+		/* The one-race mode (DISC-S4) is a flag too: no value, once. */
+		if ((arg != NULL) && (strcmp(arg, k_oneRaceOption) == 0))
+		{
+			if (seenOneRace)
+			{
+				return 0;
+			}
+			candidate.oneRace = 1u;
+			seenOneRace = 1;
+			continue;
+		}
 		if ((arg == NULL) || (strcmp(arg, k_autopilotOption) != 0))
 		{
 			continue;
@@ -156,6 +169,13 @@ int NativeArcadeLinkAutopilotOptions_ApplyArgs(int argc, char *argv[], struct Na
 	 * the autopilot, and the fault injections belong to the linked run's
 	 * races 1 and 2 (LR-73), so it takes neither. */
 	if (seenSolo && (!seen || seenFreeze || seenDesync))
+	{
+		return 0;
+	}
+	/* The one-race mode (DISC-S4) is the linked run cut to race 1, then EXIT:
+	 * it needs the autopilot, is not the solo mode, and has no race 2 for a
+	 * desync or a scenario for a freeze. */
+	if (seenOneRace && (!seen || seenSolo || seenFreeze || seenDesync))
 	{
 		return 0;
 	}
@@ -258,6 +278,11 @@ int NativeArcadeLinkAutopilot_Decide(struct NativeArcadeLinkAutopilot *autopilot
 				 * one race, LOBBY. */
 				wantedRow = NATIVE_ARCADE_FLOW_ROW_LOBBY;
 			}
+			if (autopilot->oneRace != 0u)
+			{
+				/* The one-race mode (DISC-S4): EXIT after its one race. */
+				wantedRow = NATIVE_ARCADE_FLOW_ROW_EXIT;
+			}
 			if (view->selectedRow != wantedRow)
 			{
 				output->heldButtons = NATIVE_ARCADE_MENU_BUTTON_DOWN;
@@ -285,7 +310,8 @@ int NativeArcadeLinkAutopilot_RecordMatch(struct NativeArcadeLinkAutopilot *auto
 	}
 	/* A linked START_RACE in the solo mode (SOLO-S4) is a race the run
 	 * never wants. */
-	if ((autopilot->solo != 0u) || (autopilot->racesStarted >= NATIVE_ARCADE_LINK_AUTOPILOT_RACES))
+	if ((autopilot->solo != 0u) || (autopilot->racesStarted >= NATIVE_ARCADE_LINK_AUTOPILOT_RACES) ||
+		((autopilot->oneRace != 0u) && (autopilot->racesStarted >= NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES)))
 	{
 		NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);
 		return 0;
@@ -425,6 +451,12 @@ int NativeArcadeLinkAutopilot_Observe(struct NativeArcadeLinkAutopilot *autopilo
 				NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);
 				return 1;
 			}
+			/* The one-race run's one race is its race 1 (DISC-S4). */
+			if ((autopilot->oneRace != 0u) && (autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES))
+			{
+				NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);
+				return 1;
+			}
 			if (autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_RACES)
 			{
 				NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);
@@ -458,6 +490,13 @@ int NativeArcadeLinkAutopilot_Observe(struct NativeArcadeLinkAutopilot *autopilo
 			{
 				autopilot->exitConfirmed = 1u;
 			}
+			else if ((view->screen == NATIVE_ARCADE_FLOW_SCREEN_EXIT) &&
+				(confirmedRow == (uint8_t)(NATIVE_ARCADE_FLOW_ROW_EXIT + 1u)) && (autopilot->oneRace != 0u) &&
+				(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES))
+			{
+				/* The one-race mode's EXIT, after its one race (DISC-S4). */
+				autopilot->exitConfirmed = 1u;
+			}
 		}
 		if ((view->screen == NATIVE_ARCADE_FLOW_SCREEN_EXIT) && (view->endReason == NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT))
 		{
@@ -485,6 +524,23 @@ int NativeArcadeLinkAutopilot_Observe(struct NativeArcadeLinkAutopilot *autopilo
 
 	if (action == NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)
 	{
+		/* The one-race mode (DISC-S4): its one started, validated, and
+		 * accepted race, no rematch, and its own EXIT. */
+		if (autopilot->oneRace != 0u)
+		{
+			if ((autopilot->exitConfirmed != 0u) && (autopilot->racesStarted == NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES) &&
+				(autopilot->racesValidated == NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES) &&
+				(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES) && (autopilot->rematches == 0u))
+			{
+				autopilot->result = NATIVE_ARCADE_LINK_AUTOPILOT_PASS;
+				autopilot->done = 1u;
+			}
+			else
+			{
+				NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);
+			}
+			return 1;
+		}
 		if ((autopilot->exitConfirmed != 0u) && (autopilot->racesStarted == NATIVE_ARCADE_LINK_AUTOPILOT_RACES) &&
 			(autopilot->racesValidated == NATIVE_ARCADE_LINK_AUTOPILOT_RACES) &&
 			(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_RACES) &&
@@ -709,6 +765,11 @@ int NativeArcadeLinkAutopilot_FormatReport(const struct NativeArcadeLinkAutopilo
 	if (autopilot->solo != 0u)
 	{
 		NativeArcadeLinkAutopilot_Append(&text, "mode solo\n");
+	}
+	/* The one-race mode's one extra line (DISC-S4). */
+	if (autopilot->oneRace != 0u)
+	{
+		NativeArcadeLinkAutopilot_Append(&text, "mode one-race\n");
 	}
 	NativeArcadeLinkAutopilot_Append(&text, "result %s (%u)\n", NativeArcadeLinkAutopilot_ResultName(autopilot->result),
 		(unsigned)autopilot->result);

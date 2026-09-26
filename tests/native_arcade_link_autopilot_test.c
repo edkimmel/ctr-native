@@ -1640,6 +1640,151 @@ static int TestSoloReport(void)
 	return 0;
 }
 
+/* DISC-S4: the one-race flag. */
+static int TestOneRaceOption(void)
+{
+	struct NativeArcadeLinkAutopilotOptions options;
+
+	memset(&options, 0xA5, sizeof(options));
+	NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+	CHECK(options.oneRace == 0u);
+	{
+		char *argv[] = { "ctr_native", "--arcade-link", "auto", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-one-race",
+			"--arcade-link-autopilot-race-ticks", "900" };
+		char *before[] = { "ctr_native", "--arcade-link-autopilot-one-race", "--arcade-link-autopilot", "r.txt" };
+
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(argv), argv, &options) == 1);
+		CHECK((options.enabled == 1u) && (options.oneRace == 1u) && (options.solo == 0u) && (options.raceTickLimit == 900u));
+		CHECK((options.freezeTick == 0u) && (options.desyncTick == 0u) && (strcmp(options.reportPath, "r.txt") == 0));
+		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(before), before, &options) == 1);
+		CHECK((options.enabled == 1u) && (options.oneRace == 1u));
+	}
+	{
+		char *alone[] = { "ctr_native", "--arcade-link", "auto", "--arcade-link-autopilot-one-race" };
+		char *twice[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-one-race",
+			"--arcade-link-autopilot-one-race" };
+		char *solo[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-one-race", "--arcade-link-autopilot-solo" };
+		char *freeze[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-one-race",
+			"--arcade-link-autopilot-freeze", "600" };
+		char *desync[] = { "ctr_native", "--arcade-link-autopilot-desync", "300", "--arcade-link-autopilot", "r.txt",
+			"--arcade-link-autopilot-one-race" };
+		char *asValue[] = { "ctr_native", "--arcade-link-autopilot", "--arcade-link-autopilot-one-race" };
+
+		CHECK(RejectsUntouched(ARGC(alone), alone));
+		CHECK(RejectsUntouched(ARGC(twice), twice));
+		CHECK(RejectsUntouched(ARGC(solo), solo));
+		CHECK(RejectsUntouched(ARGC(freeze), freeze));
+		CHECK(RejectsUntouched(ARGC(desync), desync));
+		CHECK(RejectsUntouched(ARGC(asValue), asValue));
+	}
+	{
+		char *argv[] = { "ctr_native", "--arcade-link-autopilot", "r.txt", "--arcade-link-autopilot-one-race=1",
+			"--arcade-link-autopilot-one-races" };
+
+		NativeArcadeLinkAutopilotOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkAutopilotOptions_ApplyArgs(ARGC(argv), argv, &options) == 1);
+		CHECK((options.enabled == 1u) && (options.oneRace == 0u));
+	}
+	return 0;
+}
+
+/* The one-race run from the attract screen through race 1 (FINISHED). */
+static int OneRaceToResults(struct NativeArcadeLinkAutopilot *autopilot, uint32_t endReason)
+{
+	struct NativeArcadeLinkHostView view;
+	struct NativeArcadeLinkAutopilotOutput output;
+
+	NativeArcadeLinkAutopilot_Init(autopilot);
+	autopilot->oneRace = 1u;
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	CHECK(NativeArcadeLinkAutopilot_Decide(autopilot, &view, 1u, &output) == 1);
+	CHECK(output.enter == 1u);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	CHECK(NativeArcadeLinkAutopilot_Observe(autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY) == 0);
+	CHECK(RunRaceEnding(autopilot, 1u, 5u, UINT64_C(0x0123456789ABCDEF), endReason) == 0);
+	return 0;
+}
+
+/*
+ * DISC-S4: the one-race mode. Race 1 FINISHED, then EXIT (not REMATCH), and
+ * RETURN_TO_TITLE passes with one race and no rematch; the report adds
+ * "mode one-race". Failures: race 1 not FINISHED, a second START_RACE or
+ * RESULTS entry, and a return to the title without its own EXIT.
+ */
+static int TestOneRaceRun(void)
+{
+	struct NativeArcadeLinkAutopilot autopilot;
+	struct NativeArcadeLinkHostView view;
+	struct NativeArcadeLinkHostView off;
+	struct NativeArcadeLinkHostMatch match;
+	char text[NATIVE_ARCADE_LINK_AUTOPILOT_REPORT_BYTES];
+	size_t length = 0u;
+
+	View(&off, NATIVE_ARCADE_FLOW_SCREEN_OFF);
+
+	/* The pass: EXIT after race 1. */
+	CHECK(OneRaceToResults(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED) == 0);
+	CHECK(ConfirmResults(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED, NATIVE_ARCADE_FLOW_ROW_EXIT, NATIVE_ARCADE_FLOW_SCREEN_EXIT,
+			  NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK) == 0);
+	CHECK(autopilot.exitConfirmed == 1u);
+	CHECK(autopilot.rematches == 0u);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_EXIT);
+	view.endReason = NATIVE_ARCADE_FLOW_END_FINISHED;
+	CHECK(Frame(&autopilot, &view, &view, NATIVE_ARCADE_FLOW_ACTION_NONE, NULL) == 0);
+	CHECK(Frame(&autopilot, &view, &off, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE, NULL) == 1);
+	CHECK(autopilot.done == 1u);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_PASS);
+	CHECK((autopilot.racesStarted == 1u) && (autopilot.racesValidated == 1u) && (autopilot.racesEnded == 1u));
+	CHECK(NativeArcadeLinkAutopilot_FormatReport(&autopilot, text, sizeof(text), &length) == 1);
+	/* The mode line comes right after the cab line. */
+	CHECK(strncmp(text, "arcade link autopilot v3\ncab ", strlen("arcade link autopilot v3\ncab ")) == 0);
+	CHECK(strstr(text, "\nmode one-race\nresult PASS (0)\n") == strchr(strchr(text, '\n') + 1, '\n'));
+	CHECK(strstr(text, "race 1 end reason FINISHED\nend races 1\n") != NULL);
+	CHECK(strstr(text, "race 2") == NULL);
+
+	/* Race 1 must be FINISHED. */
+	NativeArcadeLinkAutopilot_Init(&autopilot);
+	autopilot.oneRace = 1u;
+	Match(&match, 3u, 1u);
+	CHECK(NativeArcadeLinkAutopilot_RecordMatch(&autopilot, &match) == 1);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(Frame(&autopilot, &view, &view, NATIVE_ARCADE_FLOW_ACTION_START_RACE, NULL) == 0);
+	ResultsView(&view, NATIVE_ARCADE_FLOW_END_PEER_TIMEOUT, 0u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_RACE_FAILED);
+
+	/* A second START_RACE is a race the run never wants. */
+	CHECK(OneRaceToResults(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED) == 0);
+	CHECK(NativeArcadeLinkAutopilot_RecordMatch(&autopilot, &match) == 0);
+	CHECK(autopilot.done == 1u);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);
+
+	/* So is a second RESULTS entry. */
+	CHECK(OneRaceToResults(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED) == 0);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 0);
+	ResultsView(&view, NATIVE_ARCADE_FLOW_END_FINISHED, 0u, NATIVE_ARCADE_FLOW_ROW_REMATCH);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_NONE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);
+
+	/* The title without this autopilot's EXIT (the RESULTS idle timeout). */
+	CHECK(OneRaceToResults(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED) == 0);
+	View(&view, NATIVE_ARCADE_FLOW_SCREEN_EXIT);
+	view.endReason = NATIVE_ARCADE_FLOW_END_FINISHED;
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &view, NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK) == 0);
+	CHECK(autopilot.exitConfirmed == 0u);
+	CHECK(NativeArcadeLinkAutopilot_Observe(&autopilot, &off, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE) == 1);
+	CHECK(autopilot.result == NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);
+
+	/* The three-race run's report of a one-race state has no mode line. */
+	CHECK(OneRaceToResults(&autopilot, NATIVE_ARCADE_FLOW_END_FINISHED) == 0);
+	autopilot.oneRace = 0u;
+	CHECK(NativeArcadeLinkAutopilot_FormatReport(&autopilot, text, sizeof(text), &length) == 1);
+	CHECK(strstr(text, "mode") == NULL);
+	return 0;
+}
+
 static int TestNames(void)
 {
 	CHECK(strcmp(NativeArcadeLinkAutopilot_ResultName(NATIVE_ARCADE_LINK_AUTOPILOT_PASS), "PASS") == 0);
@@ -2059,6 +2204,8 @@ int main(void)
 	CHECK(TestSoloRun() == 0);
 	CHECK(TestSoloFailures() == 0);
 	CHECK(TestSoloReport() == 0);
+	CHECK(TestOneRaceOption() == 0);
+	CHECK(TestOneRaceRun() == 0);
 	CHECK(TestNames() == 0);
 	CHECK(TestReport() == 0);
 	CHECK(TestSteerAngle() == 0);

@@ -77,6 +77,8 @@ void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOpt
 	state->autopilot.desyncTick = options->desyncTick;
 	/* The solo mode (SOLO-S4): one solo race instead of the linked run. */
 	state->autopilot.solo = options->solo;
+	/* The one-race mode (DISC-S4): the linked run cut to race 1, then EXIT. */
+	state->autopilot.oneRace = options->oneRace;
 	memcpy(state->reportPath, options->reportPath, sizeof(state->reportPath));
 	state->reportPath[sizeof(state->reportPath) - 1u] = '\0';
 	state->active = 1u;

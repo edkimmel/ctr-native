@@ -813,3 +813,104 @@ endforeach()
 foreach(term IN ITEMS "--arcade-link-autopilot-freeze" "--arcade-link-autopilot-desync" "--capture-frame" "--exit-after-frame")
     ctr_forbid("tools/arcade-solo-race-check.ps1" "${solo_checker}" "${term}")
 endforeach()
+
+# Since DISC-S4 (docs/DISCOVERY_MILESTONE.md): the one-race mode.
+#  1e. the module parses --arcade-link-autopilot-one-race as a flag that
+#      needs the autopilot and takes neither the solo flag nor a fault
+#      option; the one-race run is one race (ONE_RACE_RACES 1u): RecordMatch
+#      and Observe's RESULTS entry refuse a second race, Decide wants EXIT
+#      after it, and RETURN_TO_TITLE passes on one started, validated, and
+#      ended race with no rematch, checked before the three-race rule; the
+#      report's one extra line, "mode one-race", is written only in the
+#      one-race mode, between the cab and result lines;
+#  2d. the glue's Configure copies the one-race flag right after the solo
+#      flag and before activating;
+#  4d. main.c's invalid-option message names the one-race option, and
+#      main.c prints the one-race notice;
+#  7d. the discovery live gate is registered: arcade_discovery_link runs its
+#      checker on Windows with SKIP_RETURN_CODE 77 and the labels live and
+#      live-link; the checker runs both processes in discovery mode (seat
+#      auto, no peer) on link ports 7301 and 7302 with discovery ports 7303
+#      and 7304 targeting each other, with the one-race option and the
+#      900-tick cap, reads the one-race report, requires the one "paired
+#      with" line, and never passes a peer, a fixed seat, a fault option, or a
+#      frame capture.
+foreach(literal IN ITEMS "static const char k_oneRaceOption[] = \"--arcade-link-autopilot-one-race\";"
+        "if (seenOneRace && (!seen || seenSolo || seenFreeze || seenDesync))" "candidate.oneRace = 1u;"
+        "((autopilot->oneRace != 0u) && (autopilot->racesStarted >= NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES))")
+    ctr_require_literal("${module_source}" "${module_code}" "${literal}")
+endforeach()
+ctr_count("${header_code}" "#define NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES 1u\n" one_race_hits)
+if(NOT one_race_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${module_header} must define NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES as 1u (the one-race run's one race)")
+endif()
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Observe, one-race)" "${observe_block}"
+    "if ((view->screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (previous != NATIVE_ARCADE_FLOW_SCREEN_RESULTS))"
+    "if ((autopilot->oneRace != 0u) && (autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES))"
+    "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);"
+    "if (!NativeArcadeLinkAutopilot_EndAccepted(autopilot->racesEnded + 1u, view->endReason))"
+    "(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES))"
+    "autopilot->exitConfirmed = 1u;"
+    "if (action == NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)"
+    "if (autopilot->oneRace != 0u)"
+    "(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES) && (autopilot->rematches == 0u)"
+    "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);"
+    "(autopilot->exitConfirmed != 0u) && (autopilot->racesStarted == NATIVE_ARCADE_LINK_AUTOPILOT_RACES)")
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Decide, one-race)" "${decide_block}"
+    "case NATIVE_ARCADE_FLOW_SCREEN_RESULTS:" "if (autopilot->oneRace != 0u)" "wantedRow = NATIVE_ARCADE_FLOW_ROW_EXIT;")
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_FormatReport, one-race)" "${report_block}"
+    "\"cab %u\\n\"" "if (autopilot->oneRace != 0u)" "\"mode one-race\\n\"" "\"result %s (%u)\\n\"")
+string(FIND "${module_code}" "\"mode one-race\\n\"" mode_first_at)
+string(FIND "${module_code}" "\"mode one-race\\n\"" mode_last_at REVERSE)
+if(mode_first_at EQUAL -1 OR NOT mode_first_at EQUAL mode_last_at)
+    message(FATAL_ERROR "${prefix}: ${module_source} must write \"mode one-race\" exactly once")
+endif()
+
+ctr_require_order("${glue_source} (MainArcadeLinkAutopilot_Configure, one-race)" "${configure_block}"
+    "state->autopilot.solo = options->solo;" "state->autopilot.oneRace = options->oneRace;" "state->active = 1u;")
+ctr_count("${glue_code}" "options->oneRace" glue_one_race_hits)
+if(NOT glue_one_race_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${glue_source} must copy options->oneRace once, in Configure (found ${glue_one_race_hits})")
+endif()
+
+ctr_require_order("main.c (autopilot invalid option, one-race)" "${invalid_block}"
+    "[--arcade-link-autopilot-one-race (once, needs --arcade-link-autopilot, not with -solo, -freeze, or -desync)]"
+    "return NativeConsole_Return(1);")
+ctr_require_literal("main.c" "${main_code}" "printf(\"[CTR Native] arcade link autopilot: one-race mode\\n\");")
+
+string(FIND "${cmake}" "add_test(NAME arcade_discovery_link" discovery_live_at)
+if(discovery_live_at EQUAL -1)
+    message(FATAL_ERROR "${prefix}: CMakeLists.txt must register the arcade_discovery_link live test")
+endif()
+string(SUBSTRING "${cmake}" 0 ${discovery_live_at} before_discovery_live)
+string(FIND "${before_discovery_live}" "if(WIN32)" discovery_win32_at REVERSE)
+string(FIND "${before_discovery_live}" "endif()" discovery_endif_at REVERSE)
+if(discovery_win32_at EQUAL -1 OR (NOT discovery_endif_at EQUAL -1 AND discovery_endif_at GREATER discovery_win32_at))
+    message(FATAL_ERROR "${prefix}: arcade_discovery_link must be registered inside if(WIN32)")
+endif()
+string(SUBSTRING "${cmake}" ${discovery_live_at} 700 discovery_live_block)
+ctr_require_order("CMakeLists.txt (arcade_discovery_link)" "${discovery_live_block}"
+    "COMMAND powershell -NoProfile -ExecutionPolicy Bypass"
+    "tools/arcade-discovery-link-check.ps1"
+    "-Executable \"$<TARGET_FILE:ctr_native>\""
+    "-TimeoutSeconds 180)"
+    "set_tests_properties(arcade_discovery_link PROPERTIES"
+    "SKIP_RETURN_CODE 77" "TIMEOUT 240" "LABELS \"live;live-link\")")
+ctr_read_source("tools/arcade-discovery-link-check.ps1" discovery_checker)
+foreach(literal IN ITEMS "'--arcade-link', 'auto', '--arcade-link-port', \$Run.LinkPort"
+        "'--arcade-discovery-port', \$Run.DiscoveryPort, '--arcade-discovery-target', \$Run.DiscoveryTarget"
+        "'--arcade-link-autopilot', \$Run.ReportPath, '--arcade-link-autopilot-one-race', '--arcade-link-autopilot-race-ticks', \$raceTickCap"
+        "\$raceTickCap = 900\n"
+        "LinkPort = '7301'; PeerLinkPort = '7302'; DiscoveryPort = '7303'; DiscoveryTarget = '127.0.0.1:7304'"
+        "LinkPort = '7302'; PeerLinkPort = '7301'; DiscoveryPort = '7304'; DiscoveryTarget = '127.0.0.1:7303'"
+        "'arcade link autopilot v3', \"cab \$(\$Run.CabNumber)\", 'mode one-race', 'result PASS (0)'"
+        "\"[CTR Native] arcade discovery: paired with 127.0.0.1:\$(\$Run.PeerLinkPort) as cab\$(\$Run.CabNumber)\""
+        "'race 1 end reason FINISHED'" "'end races 1'" "Start-Process" "exit \$skipExitCode"
+        "--arcade-link-autopilot is available in internal builds only." "arcade link requires a known build and content identity."
+        "No displays available")
+    ctr_require_literal("tools/arcade-discovery-link-check.ps1" "${discovery_checker}" "${literal}")
+endforeach()
+foreach(term IN ITEMS "--arcade-link-peer" "'cab1', '--arcade" "'cab2', '--arcade" "--arcade-link-autopilot-freeze"
+        "--arcade-link-autopilot-desync" "--arcade-link-autopilot-solo" "--capture-frame" "--exit-after-frame")
+    ctr_forbid("tools/arcade-discovery-link-check.ps1" "${discovery_checker}" "${term}")
+endforeach()

@@ -2148,8 +2148,8 @@ if(BUILD_TESTING)
     # only under its own directory of the build tree; the link gates use
     # distinct loopback ports (arcade_link_launch 7101/7102,
     # package_arcade_smoke the package's 7001/7002, arcade_solo_race
-    # 7201-7204; the fast suite's socket tests use 48000-48600, and the
-    # discovery service test 48610-48629); each
+    # 7201-7204, arcade_discovery_link 7301-7304; the fast suite's socket
+    # tests use 48000-48600, and the discovery service test 48610-48629); each
     # capture reads the game's own window framebuffer, not the desktop.  What they still share is read-only or
     # diagnostic: every run from the build tree reads the developer's
     # memcards\ in the repository root, and writes the repository root's
@@ -2263,6 +2263,32 @@ if(BUILD_TESTING)
         set_tests_properties(arcade_solo_race PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 420
+            LABELS "live;live-link")
+
+        # The discovery live link gate (docs/DISCOVERY_MILESTONE.md DISC-12,
+        # slice DISC-S4): two internal ctr_native processes in discovery mode
+        # (--arcade-link auto, no peer, no fixed seat) on 127.0.0.1, link
+        # ports 7301 and 7302, discovery ports 7303 and 7304 each beaconing at
+        # the other (--arcade-discovery-target), each driven by
+        # --arcade-link-autopilot --arcade-link-autopilot-one-race with a
+        # 900-tick race cap: START, the LOBBY until the discovered pairing
+        # takes effect, the linked select, one lockstep race, RESULTS, EXIT,
+        # and PASS on the title. The check requires, per process, exit 0, the
+        # one-race report (race 1 FINISHED), exactly one "paired with" line
+        # naming the other's link address with the elected seat (7301 cab1,
+        # 7302 cab2), and one agreed match and RL-12 validated line matching
+        # its report; across the two, the same agreed match and digests.
+        # Needs an internal build and a known build identity too. Reports and
+        # logs are written only under the build tree.
+        add_test(NAME arcade_discovery_link
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/arcade-discovery-link-check.ps1"
+                -Executable "$<TARGET_FILE:ctr_native>"
+                -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_discovery_link/$<CONFIG>"
+                -TimeoutSeconds 180)
+        set_tests_properties(arcade_discovery_link PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 240
             LABELS "live;live-link")
 
         # The package smoke gate (docs/PACKAGING.md "Package smoke gate"):
