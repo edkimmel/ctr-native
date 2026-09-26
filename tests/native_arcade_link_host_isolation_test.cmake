@@ -55,6 +55,12 @@
 # Since SOLO-S4 part 3 the gate is on: its default is literally 1u (rule
 # 3j), with the live proof (ctest arcade_solo_race); the previews still never
 # touch it (rule 3k).
+# Since DISC-S4 (docs/DISCOVERY_MILESTONE.md DISC-12) the .c owns the
+# discovery socket service in discovery mode: it includes the discovery and
+# SHA-256 headers (rule 3), logs three discovery lines (rule 3f), and the
+# library links the service (rule 4); rule 3m pins where the service is
+# opened, ticked, and closed, the pairing hand-over, and the view's cabinet
+# from the adapter's role. The lease tokens of rule 2 still hold.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -147,6 +153,11 @@ endforeach()
 #    solo query's check, docs/SOLO_CAB_MILESTONE.md SOLO-6; the library
 #    already reaches the bot rules through the host options, so rule 4 is
 #    unchanged). The header's allowlist is unchanged by LR-S9 and SOLO-S2.
+#    Since DISC-S4 (docs/DISCOVERY_MILESTONE.md DISC-10, DISC-12) the .c also
+#    includes the discovery core and service headers (the service it owns,
+#    the group hash, the pairing and event types) and native_sha256.h (the
+#    identity digest; the library already reaches SHA-256 through the host
+#    options). The header's allowlist is unchanged by DISC-S4.
 function(ctr_check_includes relative_path text allowed_pattern)
     string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${text}")
     list(LENGTH include_lines include_count)
@@ -163,7 +174,7 @@ endfunction()
 ctr_check_includes("${host_header}" "${header}"
     "<stdint\\.h>|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"")
 ctr_check_includes("${host_source}" "${source}"
-    "<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_bot_rules\\.h\"|\"platform/native_arcade_link_host\\.h\"|\"platform/native_arcade_link_host_internal\\.h\"|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"|\"platform/native_arcade_race_drive\\.h\"|<platform\\.h>")
+    "<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_bot_rules\\.h\"|\"platform/native_arcade_discovery\\.h\"|\"platform/native_arcade_discovery_service\\.h\"|\"platform/native_sha256\\.h\"|\"platform/native_arcade_link_host\\.h\"|\"platform/native_arcade_link_host_internal\\.h\"|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"|\"platform/native_arcade_race_drive\\.h\"|<platform\\.h>")
 
 # 3b. The host-side test read-back header (MS-8): the same header-only and
 #     category rules as the public header, it includes only stdint.h, and no
@@ -316,9 +327,12 @@ endif()
 #     gates the off calls, so a pacing the host did not turn on is never
 #     touched. Since SOLO-S4 it also names the log, Platform_Log, exactly
 #     twice: its one declaration (repeated from platform/native_log.h, which
-#     the .c may not include) and Configure's one solo notice (pinned in 3j).
+#     the .c may not include) and Configure's one solo notice (pinned in 3j);
+#     since DISC-S4, see below.
 #     A solo race turns the pacing on and off on the same RaceBegin and
-#     RaceEnd path as a linked race (pinned in 3g, SOLO-7).
+#     RaceEnd path as a linked race (pinned in 3g, SOLO-7). Since DISC-S4 it
+#     names it five times: the declaration, the solo notice, and three
+#     discovery calls (pinned in 3m).
 foreach(literal IN ITEMS
         "int NativeArcadeLinkHost_RaceBegin(void);"
         "void NativeArcadeLinkHost_RaceEnd(void);")
@@ -333,10 +347,13 @@ list(SORT platform_names)
 if(NOT "${platform_names}" STREQUAL "Platform_Log;Platform_SetFixedVBlankPacing")
     message(FATAL_ERROR "arcade link host isolation: ${host_source} may name only Platform_SetFixedVBlankPacing and Platform_Log of the platform layer (found '${platform_names}')")
 endif()
+# Since DISC-S4 (DISC-15, DISC-16) three more calls log discovery: the
+# socket opened or not (two calls, both in OpenDiscovery), and one line per
+# pairing event (one call, in LogDiscoveryEvent); rule 3m pins where.
 string(REGEX MATCHALL "Platform_Log" platform_log_names "${source}")
 list(LENGTH platform_log_names platform_log_count)
-if(NOT platform_log_count EQUAL 2)
-    message(FATAL_ERROR "arcade link host isolation: ${host_source} must name Platform_Log exactly twice, its declaration and its one call (found ${platform_log_count})")
+if(NOT platform_log_count EQUAL 5)
+    message(FATAL_ERROR "arcade link host isolation: ${host_source} must name Platform_Log exactly five times, its declaration, the solo notice, and the three discovery calls (found ${platform_log_count})")
 endif()
 string(REGEX MATCH "(^|[\r\n])void Platform_Log\\(const char \\*fmt, \\.\\.\\.\\);[ \t]*[\r\n]" platform_log_declaration "${source}")
 if(platform_log_declaration STREQUAL "")
@@ -880,13 +897,81 @@ ctr_require_count("${host_source}" "${source_flat}" "view->peerHeard =" 2)
 ctr_require_in("${host_source} (Configure)" "${configure_body}"
     "g_config.soloEnabled = 1u; } else if (g_soloEnabled != 0u) { Platform_Log(\"[CTR Native] arcade link: the solo base did not build; solo stays off\\n\"); }")
 
+# 3m. Discovery (docs/DISCOVERY_MILESTONE.md DISC-2, DISC-10, DISC-12,
+#     DISC-14, DISC-15, DISC-16; slice DISC-S4). The host owns the discovery
+#     service, in discovery mode only; static mode opens no discovery socket
+#     and never hands the adapter a pairing. Judged on the code with comments
+#     removed.
+#     - Configure stores the options' discovery flag in the adapter config
+#       and, only when it is set, opens the service through OpenDiscovery
+#       after LINK is selected, and still returns 1 (a bind failure is logged
+#       and not fatal). OpenDiscovery holds the one Open call, takes the
+#       identity digest over the build then the content identity, and makes
+#       the two open-or-not log calls; it alone sets g_discoveryMode.
+#     - Tick runs TickDiscovery first in LINK mode, before the adapter's
+#       Tick; TickDiscovery returns first outside discovery mode, holds the
+#       one service Tick call, drains every event into LogDiscoveryEvent
+#       (the one event log call), then hands the pairing.
+#     - HandPairing returns first outside discovery mode and holds the only
+#       two SetPairing calls (the service's pairing, or none) and the one
+#       Pairing read; only TickDiscovery and AbortToTitle (after its Init)
+#       call it.
+#     - The one Close call is in Shutdown, which leaves discovery mode;
+#       AbortToTitle never closes the service.
+#     - The view's localCab reads the adapter's role (its view's localRole),
+#       and g_config.localRole is named only where Configure stores it.
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_Open(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_Tick(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_TakeEvent(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_Pairing(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_Close(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeNetplay_SetPairing(" 2)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_OpenDiscovery(" 2)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_TickDiscovery(" 2)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_HandPairing(" 3)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_LogDiscoveryEvent(" 2)
+ctr_require_count("${host_source}" "${source_flat}" "g_discoveryMode = 1u;" 1)
+ctr_require_count("${host_source}" "${source_flat}" "g_discoveryMode = 0u;" 1)
+ctr_require_count("${host_source}" "${source_flat}" "g_config.localRole" 1)
+ctr_require_in("${host_source} (Configure)" "${configure_body}"
+    "g_config.localRole = options->localRole; g_config.discovery = (uint8_t)((options->discovery != 0u) ? 1u : 0u);"
+    "g_mode = NATIVE_ARCADE_LINK_HOST_MODE_LINK; if (g_config.discovery != 0u) { NativeArcadeLinkHost_OpenDiscovery(options, identity); } return 1;")
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_OpenDiscovery(" open_discovery_body)
+ctr_require_in("${host_source} (OpenDiscovery)" "${open_discovery_body}"
+    "NativeSha256_Init(&sha); NativeSha256_Update(&sha, identity->build, sizeof(identity->build)); NativeSha256_Update(&sha, identity->content, sizeof(identity->content)); NativeSha256_Final(&sha, digest);"
+    "g_discoveryMode = 1u; if (NativeArcadeDiscoveryService_Open(&g_discovery, bindPort, options->discoveryNonce, NativeArcadeDiscovery_GroupHash(group), digest, options->localPort, options->seatPreference, targets, targetCount))")
+ctr_require_count("${host_source} (OpenDiscovery)" "${open_discovery_body}" "Platform_Log(" 2)
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_LogDiscoveryEvent(" log_event_body)
+ctr_require_count("${host_source} (LogDiscoveryEvent)" "${log_event_body}" "Platform_Log(" 1)
+string(FIND "${tick_body}" "if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) { return NATIVE_ARCADE_FLOW_ACTION_NONE; } NativeArcadeLinkHost_TickDiscovery();" tick_discovery_at)
+string(FIND "${tick_body}" "NativeArcadeNetplay_Tick(" tick_adapter_at)
+if(tick_discovery_at EQUAL -1 OR tick_adapter_at EQUAL -1 OR NOT tick_discovery_at LESS tick_adapter_at)
+    message(FATAL_ERROR "arcade link host isolation: NativeArcadeLinkHost_Tick must tick discovery first in LINK mode, before the adapter's Tick (DISC-12)")
+endif()
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_TickDiscovery(" tick_discovery_body)
+ctr_require_in("${host_source} (TickDiscovery)" "${tick_discovery_body}"
+    "{ struct NativeArcadeDiscoveryEvent event; if (g_discoveryMode == 0u) { return; } NativeArcadeDiscoveryService_Tick(&g_discovery); while (NativeArcadeDiscoveryService_TakeEvent(&g_discovery, &event)) { NativeArcadeLinkHost_LogDiscoveryEvent(&event); } NativeArcadeLinkHost_HandPairing();")
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_HandPairing(" hand_body)
+ctr_require_in("${host_source} (HandPairing)" "${hand_body}"
+    "{ struct NativeArcadeDiscoveryPairing pairing; struct NativeArcadeNetplayPairing handed; if (g_discoveryMode == 0u) { return; }"
+    "if (!NativeArcadeDiscoveryService_Pairing(&g_discovery, &pairing)) { (void)NativeArcadeNetplay_SetPairing(&g_netplay, NULL); return; }"
+    "(void)NativeArcadeNetplay_SetPairing(&g_netplay, &handed);")
+ctr_require_in("${host_source} (Shutdown)" "${shutdown_body}" "NativeArcadeDiscoveryService_Close(&g_discovery); g_discoveryMode = 0u;")
+ctr_forbid("${host_source} (AbortToTitle)" "${abort_body}" "NativeArcadeDiscoveryService_")
+ctr_require_in("${host_source} (AbortToTitle)" "${abort_body}" "g_idleTicks = 0u; NativeArcadeLinkHost_HandPairing();")
+ctr_body("${host_source}" "${source_code}" "int NativeArcadeLinkHost_GetView(" get_view_body)
+ctr_require_in("${host_source} (GetView)" "${get_view_body}"
+    "view->localCab = (uint8_t)((netplayView.localRole == (uint8_t)NATIVE_ARCADE_LINK_HOST_ROLE_CAB2) ? 2u : 1u);")
+
 # 4. ctr_native_arcade_link_host links exactly the adapter and the host
 #    options, in exactly one target_link_libraries call. Its one other
 #    link-time dependency (since LR-S3, LR-7) is not a library:
 #    Platform_SetFixedVBlankPacing (rule 3f), which only the ctr_native
 #    executable defines (platform/native_platform.c) and which every test
 #    that links this library stubs; since SOLO-S4 likewise Platform_Log
-#    (rule 3f), defined by platform/native_log.c in the executable.
+#    (rule 3f), defined by platform/native_log.c in the executable. Besides
+#    the adapter and the options it links the race drive core (LR-S9) and,
+#    since DISC-S4, the discovery socket service (rule 3m): four libraries.
 ctr_read_source("CMakeLists.txt" cmake)
 set(target ctr_native_arcade_link_host)
 string(REGEX MATCHALL "target_link_libraries\\([ \t\r\n]*${target}[ \t\r\n][^)]*\\)" link_calls "${cmake}")
@@ -899,7 +984,8 @@ string(REGEX REPLACE "^target_link_libraries\\([ \t\r\n]*${target}[ \t\r\n]+" ""
 string(REGEX REPLACE "\\)$" "" link_body "${link_body}")
 string(REGEX REPLACE "[ \t\r\n]+" ";" link_items "${link_body}")
 list(REMOVE_ITEM link_items "" PUBLIC PRIVATE INTERFACE)
-set(expected_link_items ctr_native_arcade_netplay ctr_native_arcade_link_options ctr_native_arcade_race_drive)
+set(expected_link_items ctr_native_arcade_netplay ctr_native_arcade_link_options ctr_native_arcade_race_drive
+    ctr_native_arcade_discovery_service)
 foreach(expected IN LISTS expected_link_items)
     list(FIND link_items "${expected}" expected_index)
     if(expected_index EQUAL -1)
@@ -909,12 +995,12 @@ endforeach()
 foreach(item IN LISTS link_items)
     list(FIND expected_link_items "${item}" item_index)
     if(item_index EQUAL -1)
-        message(FATAL_ERROR "arcade link host isolation: ${target} links unexpected item '${item}'; only ctr_native_arcade_netplay, ctr_native_arcade_link_options, and ctr_native_arcade_race_drive are allowed")
+        message(FATAL_ERROR "arcade link host isolation: ${target} links unexpected item '${item}'; only ctr_native_arcade_netplay, ctr_native_arcade_link_options, ctr_native_arcade_race_drive, and ctr_native_arcade_discovery_service are allowed")
     endif()
 endforeach()
 list(LENGTH link_items link_item_count)
-if(NOT link_item_count EQUAL 3)
-    message(FATAL_ERROR "arcade link host isolation: ${target} must link exactly three libraries, found ${link_item_count} ('${link_items}')")
+if(NOT link_item_count EQUAL 4)
+    message(FATAL_ERROR "arcade link host isolation: ${target} must link exactly four libraries, found ${link_item_count} ('${link_items}')")
 endif()
 
 # 5. C17, no extensions, in order, on the host glue target.

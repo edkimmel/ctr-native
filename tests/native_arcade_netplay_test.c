@@ -188,6 +188,21 @@
 #define TEST_SOLO_LINK_B_PORT 48547u
 #define TEST_SOLO_LINKED_A_PORT 48548u
 #define TEST_SOLO_LINKED_B_PORT 48549u
+/* Discovery (docs/DISCOVERY_MILESTONE.md DISC-12, DISC-S4): 48550-48559,
+ * next to the solo band and outside every other test file's band (the link
+ * host's discovery tests use 48570-48589, the discovery service
+ * 48610-48629). */
+#define TEST_DISC_PAIR_A_PORT 48550u
+#define TEST_DISC_PAIR_B_PORT 48551u
+#define TEST_DISC_RESULT_A_PORT 48552u
+#define TEST_DISC_RESULT_B_PORT 48553u
+#define TEST_DISC_REMATCH_A_PORT 48554u
+#define TEST_DISC_REMATCH_B_PORT 48555u
+#define TEST_DISC_SOLO_A_PORT 48556u
+#define TEST_DISC_SOLO_PEER_PORT 48557u
+#define TEST_DISC_SOLO_OTHER_PORT 48558u
+/* A pending pairing nobody listens on. */
+#define TEST_DISC_NOBODY_PORT 48559u
 
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
@@ -711,6 +726,8 @@ static int TestPure(void)
 	CHECK(config.candidateCount == 0u);
 	CHECK(config.localPort == 0u);
 	CHECK(config.reserved == 0u);
+	/* Static mode by default (DISC-12). */
+	CHECK(config.discovery == 0u);
 	NativeArcadeFlow_DefaultTimings(&timings);
 	CHECK(memcmp(&config.timings, &timings, sizeof(timings)) == 0);
 	/* The select session's defaults: 600 ticks per item (OD-1), 90 of
@@ -778,8 +795,23 @@ static int TestPure(void)
 	bad = base;
 	bad.candidateCount = NATIVE_LOBBY_STATE_MAX_CANDIDATES + 1u;
 	CHECK(InitRejectsUntouched(&bad));
+	/* Static mode still rejects an empty list. */
 	bad.candidateCount = 0u;
 	CHECK(InitRejectsUntouched(&bad));
+	/* DISC-12 (DISC-S4): discovery mode accepts it, and a placeholder role
+	 * (0, auto): the pairing supplies the candidate and the role, and the
+	 * adapter starts unpaired as CAB1 on the fixture's CAB1 slot. */
+	bad.discovery = 1u;
+	bad.localRole = 0u;
+	memset(&g_probe, 0xA5, sizeof(g_probe));
+	CHECK(NativeArcadeNetplay_Init(&g_probe, &bad) == 1);
+	CHECK(g_probe.activeRole == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN);
+	CHECK(g_probe.activeCandidateCount == 0u);
+	CHECK(g_probe.localSlot == 0u);
+	CHECK(g_probe.pendingPaired == 0u);
+	bad.discovery = 0u;
+	CHECK(InitRejectsUntouched(&bad));
+	bad.localRole = (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN;
 	bad.candidateCount = NATIVE_LOBBY_STATE_MAX_CANDIDATES;
 	CHECK(NativeArcadeNetplay_Init(&g_probe, &bad) == 1);
 
@@ -7269,6 +7301,515 @@ static int TestSoloEnabledLinkedSession(void)
 	return 0;
 }
 
+/*
+ * DISC-12 (docs/DISCOVERY_MILESTONE.md): discovery mode. The pairing is
+ * handed in as plain values through NativeArcadeNetplay_SetPairing; it is
+ * pending until a lobby Begin that opens a new session on LOBBY.
+ */
+
+/* A discovery-mode config: the placeholder role (0 auto, or a seat
+ * preference) and no candidates. The config's one candidate slot keeps a
+ * port nobody listens on, which must never be read. */
+static int MakeDiscoveryConfig(struct NativeArcadeNetplayConfig *config, const struct NativeMatchConfigV1 *fixture,
+	uint8_t role, uint32_t localPort)
+{
+	CHECK(MakeConfig(config, fixture, ROLE_CAB1, localPort, TEST_DISC_NOBODY_PORT));
+	config->localRole = role;
+	config->candidateCount = 0u;
+	config->discovery = 1u;
+	return 0;
+}
+
+/* A pairing with the loopback peer on peerPort and this cabinet's role. */
+static int MakePairing(struct NativeArcadeNetplayPairing *pairing, uint32_t peerPort, uint8_t role)
+{
+	struct NativeUdpTransportAddress address;
+
+	memset(pairing, 0, sizeof(*pairing));
+	CHECK(NativeUdpTransport_MakeAddress(&address, "127.0.0.1", (uint16_t)peerPort));
+	pairing->peerIpv4 = address.ipv4;
+	pairing->peerPort = address.port;
+	pairing->localRole = role;
+	return 0;
+}
+
+static int SetPairingTo(struct NativeArcadeNetplay *netplay, uint32_t peerPort, uint8_t role)
+{
+	struct NativeArcadeNetplayPairing pairing;
+
+	CHECK(MakePairing(&pairing, peerPort, role) == 0);
+	CHECK(NativeArcadeNetplay_SetPairing(netplay, &pairing) == 1);
+	return 0;
+}
+
+/* The session in effect: the active role, localSlot on that role's fixture
+ * slot, the view's localRole, and one loopback candidate on peerPort (0: an
+ * empty list). */
+static int SessionIs(const struct NativeArcadeNetplay *netplay, uint8_t role, uint32_t peerPort)
+{
+	struct NativeArcadeNetplayView view;
+	struct NativeUdpTransportAddress address;
+	uint8_t slot = 0u;
+
+	CHECK(netplay->activeRole == role);
+	CHECK(NativeMatchConfigV1_FindRoleSlot(&netplay->config.fixture, role, &slot));
+	CHECK(netplay->localSlot == slot);
+	CHECK(NativeArcadeNetplay_GetView(netplay, &view) == 1);
+	CHECK(view.localRole == role);
+	if (peerPort == 0u)
+	{
+		CHECK(netplay->activeCandidateCount == 0u);
+		return 0;
+	}
+	CHECK(NativeUdpTransport_MakeAddress(&address, "127.0.0.1", (uint16_t)peerPort));
+	CHECK(netplay->activeCandidateCount == 1u);
+	CHECK(netplay->activeCandidates[0].ipv4 == address.ipv4);
+	CHECK(netplay->activeCandidates[0].port == address.port);
+	return 0;
+}
+
+/* The open lobby runs on role toward the one candidate on peerPort (0: no
+ * candidate). */
+static int LobbyIs(const struct NativeArcadeNetplay *netplay, uint8_t role, uint32_t peerPort)
+{
+	CHECK(netplay->lobbyBegun == 1u);
+	CHECK(netplay->lobby.localRole == role);
+	if (peerPort == 0u)
+	{
+		CHECK(netplay->lobby.candidateCount == 0u);
+		return 0;
+	}
+	CHECK(netplay->lobby.candidateCount == 1u);
+	CHECK(netplay->lobby.candidates[0].port == (uint16_t)peerPort);
+	return 0;
+}
+
+/*
+ * DISC-12: Init and the setter. Static mode: the setter refuses (NULL or a
+ * pairing) and leaves the adapter byte-identical, so a static candidate
+ * list and role are never overwritten. Discovery mode: Init takes no
+ * candidates and auto (0) or a seat preference; the unpaired role is the
+ * preference, or CAB1 for auto; a bad pairing is refused untouched; a good
+ * one only fills the pending slot, and NULL clears it.
+ */
+static int TestDiscoveryInitAndSetter(void)
+{
+	struct NativeArcadeNetplayConfig config;
+	struct NativeMatchConfigV1 fixture;
+	struct NativeArcadeNetplayPairing pairing;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+
+	/* Static mode. */
+	CHECK(MakeConfig(&config, &fixture, ROLE_CAB2, TEST_DISC_PAIR_A_PORT, TEST_DISC_PAIR_B_PORT));
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	memcpy(&g_before, &g_a, sizeof(g_a));
+	CHECK(MakePairing(&pairing, TEST_DISC_NOBODY_PORT, ROLE_CAB1) == 0);
+	CHECK(NativeArcadeNetplay_SetPairing(&g_a, &pairing) == 0);
+	CHECK(NativeArcadeNetplay_SetPairing(&g_a, NULL) == 0);
+	CHECK(memcmp(&g_a, &g_before, sizeof(g_a)) == 0);
+	/* Enter in static mode still runs on the config's list and role. */
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(LobbyIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	NativeArcadeNetplay_Shutdown(&g_a);
+
+	/* NULL and never-initialized adapters. */
+	CHECK(NativeArcadeNetplay_SetPairing(NULL, &pairing) == 0);
+	memset(&g_probe, 0, sizeof(g_probe));
+	CHECK(NativeArcadeNetplay_SetPairing(&g_probe, &pairing) == 0);
+	CHECK(g_probe.pendingPaired == 0u);
+
+	/* Discovery mode, auto: unpaired CAB1, an empty list, nothing pending;
+	 * the config's candidate slot is not read. */
+	CHECK(MakeDiscoveryConfig(&config, &fixture, 0u, TEST_DISC_PAIR_A_PORT) == 0);
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+	CHECK(SessionIs(&g_a, ROLE_CAB1, 0u) == 0);
+	CHECK(g_a.pendingPaired == 0u);
+
+	/* Bad pairings are refused untouched. */
+	memcpy(&g_before, &g_a, sizeof(g_a));
+	CHECK(MakePairing(&pairing, TEST_DISC_PAIR_B_PORT, ROLE_CAB2) == 0);
+	pairing.peerIpv4 = 0u;
+	CHECK(NativeArcadeNetplay_SetPairing(&g_a, &pairing) == 0);
+	CHECK(MakePairing(&pairing, TEST_DISC_PAIR_B_PORT, ROLE_CAB2) == 0);
+	pairing.peerPort = 0u;
+	CHECK(NativeArcadeNetplay_SetPairing(&g_a, &pairing) == 0);
+	CHECK(MakePairing(&pairing, TEST_DISC_PAIR_B_PORT, 0u) == 0);
+	CHECK(NativeArcadeNetplay_SetPairing(&g_a, &pairing) == 0);
+	CHECK(MakePairing(&pairing, TEST_DISC_PAIR_B_PORT, (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT) == 0);
+	CHECK(NativeArcadeNetplay_SetPairing(&g_a, &pairing) == 0);
+	CHECK(memcmp(&g_a, &g_before, sizeof(g_a)) == 0);
+
+	/* A good pairing is pending only: the session is unchanged. */
+	CHECK(SetPairingTo(&g_a, TEST_DISC_PAIR_B_PORT, ROLE_CAB2) == 0);
+	CHECK(g_a.pendingPaired == 1u);
+	CHECK(g_a.pendingRole == ROLE_CAB2);
+	CHECK(g_a.pendingPeer.port == (uint16_t)TEST_DISC_PAIR_B_PORT);
+	CHECK(SessionIs(&g_a, ROLE_CAB1, 0u) == 0);
+	CHECK(memcmp(&g_a.config, &g_before.config, sizeof(g_a.config)) == 0);
+	CHECK(NativeArcadeNetplay_SetPairing(&g_a, NULL) == 1);
+	CHECK(g_a.pendingPaired == 0u);
+	CHECK(SessionIs(&g_a, ROLE_CAB1, 0u) == 0);
+
+	/* Discovery mode with a seat preference: unpaired, that seat. */
+	CHECK(MakeDiscoveryConfig(&config, &fixture, ROLE_CAB2, TEST_DISC_PAIR_A_PORT) == 0);
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+	CHECK(SessionIs(&g_a, ROLE_CAB2, 0u) == 0);
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(SessionIs(&g_a, ROLE_CAB2, 0u) == 0);
+	CHECK(LobbyIs(&g_a, ROLE_CAB2, 0u) == 0);
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_WAITING);
+	NativeArcadeNetplay_Shutdown(&g_a);
+	return 0;
+}
+
+/*
+ * DISC-12: the pending pairing takes effect at each lobby Begin that opens
+ * a new session on LOBBY, and never during a session. Enter applies it (A
+ * elected CAB2, so its localSlot is the CAB2 slot); a new pending pairing
+ * handed during the session changes nothing through the lobby, select,
+ * RELINK, the race, and a rematch. After Shutdown, Enter applies the
+ * unpaired state (WAITING), and a pairing handed then takes effect at the
+ * LOBBY retry, which closes and begins on it; the pair then links.
+ */
+static int TestDiscoveryPairingAtLobbyBegin(void)
+{
+	struct NativeArcadeNetplayConfig config;
+	struct NativeMatchConfigV1 fixture;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	enum NativeArcadeFlowAction action;
+	uint32_t tick;
+	int restarted = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(MakeDiscoveryConfig(&config, &fixture, 0u, TEST_DISC_PAIR_A_PORT) == 0);
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+	CHECK(MakeDiscoveryConfig(&config, &fixture, 0u, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(NativeArcadeNetplay_Init(&g_b, &config) == 1);
+
+	/* Elected: A cab2, B cab1; pending until Enter. */
+	CHECK(SetPairingTo(&g_a, TEST_DISC_PAIR_B_PORT, ROLE_CAB2) == 0);
+	CHECK(SetPairingTo(&g_b, TEST_DISC_PAIR_A_PORT, ROLE_CAB1) == 0);
+	CHECK(SessionIs(&g_a, ROLE_CAB1, 0u) == 0);
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(SessionIs(&g_b, ROLE_CAB1, TEST_DISC_PAIR_A_PORT) == 0);
+	CHECK(LobbyIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(LobbyIs(&g_b, ROLE_CAB1, TEST_DISC_PAIR_A_PORT) == 0);
+
+	/* New pairings during the session stay pending. */
+	CHECK(SetPairingTo(&g_a, TEST_DISC_NOBODY_PORT, ROLE_CAB1) == 0);
+	CHECK(SetPairingTo(&g_b, TEST_DISC_NOBODY_PORT, ROLE_CAB2) == 0);
+	CHECK(DriveBothUntil(ACT_START_RACE));
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(SessionIs(&g_b, ROLE_CAB1, TEST_DISC_PAIR_A_PORT) == 0);
+	CHECK(LobbyIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(LobbyIs(&g_b, ROLE_CAB1, TEST_DISC_PAIR_A_PORT) == 0);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) != NULL);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_b) != NULL);
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), NativeArcadeNetplay_AgreedConfig(&g_b),
+			  sizeof(struct NativeMatchConfigV1)) == 0);
+
+	/* A rematch keeps the session's pairing too. */
+	CHECK(FinishAndDwell());
+	TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
+	CHECK(actionA == ACT_BEGIN_REMATCH);
+	CHECK(actionB == ACT_BEGIN_REMATCH);
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(LobbyIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(LobbyIs(&g_b, ROLE_CAB1, TEST_DISC_PAIR_A_PORT) == 0);
+	CHECK(DriveBothUntil(ACT_START_RACE));
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(SessionIs(&g_b, ROLE_CAB1, TEST_DISC_PAIR_A_PORT) == 0);
+	ShutdownBoth();
+
+	/* Unpaired at Enter: an empty list, auto's CAB1, WAITING. */
+	CHECK(NativeArcadeNetplay_SetPairing(&g_a, NULL) == 1);
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(SessionIs(&g_a, ROLE_CAB1, 0u) == 0);
+	CHECK(LobbyIs(&g_a, ROLE_CAB1, 0u) == 0);
+	CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_WAITING);
+
+	/* Paired while waiting: pending until the LOBBY retry, which closes and
+	 * begins on it. */
+	CHECK(SetPairingTo(&g_a, TEST_DISC_PAIR_B_PORT, ROLE_CAB2) == 0);
+	CHECK(SessionIs(&g_a, ROLE_CAB1, 0u) == 0);
+	for (tick = 0u; (tick < DRIVE_BUDGET) && !restarted; tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK((action == ACT_NONE) || (action == ACT_RESTART_LOBBY));
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+		restarted = (action == ACT_RESTART_LOBBY);
+		if (!restarted)
+		{
+			CHECK(SessionIs(&g_a, ROLE_CAB1, 0u) == 0);
+		}
+	}
+	CHECK(restarted);
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(LobbyIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(NativeLobbyState_Mode(&g_a.lobby) == NATIVE_LOBBY_STATE_HANDSHAKING);
+
+	/* B enters paired toward A, and the pair links on the elected seats. */
+	CHECK(SetPairingTo(&g_b, TEST_DISC_PAIR_A_PORT, ROLE_CAB1) == 0);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+	CHECK(SessionIs(&g_b, ROLE_CAB1, TEST_DISC_PAIR_A_PORT) == 0);
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * DISC-12: RESTART_LOBBY off LOBBY keeps the session's role and slot, even
+ * with a different pending pairing. SELECT_RESULT: B stops ticking, A's
+ * relink handshake goes unanswered and its retry restarts the lobby on the
+ * session's candidate and role; B resumes and both race. REMATCH_WAIT: after
+ * a pre-race LINK ERROR closed A's link, A chooses REMATCH with its port
+ * held, so the rematch lobby fails to begin and each retry closes and begins
+ * again (the fallback, not RestartCycle); once the port is free the lobby
+ * begins on the session's candidate and role.
+ */
+static int TestDiscoveryRestartOffLobbyKeepsPairing(void)
+{
+	struct NativeArcadeNetplayConfig config;
+	struct NativeMatchConfigV1 fixture;
+	struct NativeUdpTransport blocker;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	enum NativeArcadeFlowAction action;
+	uint32_t tick;
+	uint32_t blockedRestarts = 0u;
+	int relinked = 0;
+	int restarted = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+
+	/* SELECT_RESULT. */
+	CHECK(MakeDiscoveryConfig(&config, &fixture, 0u, TEST_DISC_RESULT_A_PORT) == 0);
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+	CHECK(MakeDiscoveryConfig(&config, &fixture, 0u, TEST_DISC_RESULT_B_PORT) == 0);
+	CHECK(NativeArcadeNetplay_Init(&g_b, &config) == 1);
+	CHECK(SetPairingTo(&g_a, TEST_DISC_RESULT_B_PORT, ROLE_CAB2) == 0);
+	CHECK(SetPairingTo(&g_b, TEST_DISC_RESULT_A_PORT, ROLE_CAB1) == 0);
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	CHECK(DriveBothToSelectResult());
+	CHECK(SetPairingTo(&g_a, TEST_DISC_NOBODY_PORT, ROLE_CAB1) == 0);
+	for (tick = 0u; (tick < DRIVE_BUDGET) && !restarted; tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK((action == ACT_NONE) || (action == ACT_RELINK) || (action == ACT_RESTART_LOBBY));
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+		relinked = relinked || (action == ACT_RELINK);
+		restarted = (action == ACT_RESTART_LOBBY);
+		CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_RESULT_B_PORT) == 0);
+	}
+	CHECK(relinked);
+	CHECK(restarted);
+	CHECK(LobbyIs(&g_a, ROLE_CAB2, TEST_DISC_RESULT_B_PORT) == 0);
+	CHECK(DriveBothUntil(ACT_START_RACE));
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_RESULT_B_PORT) == 0);
+	CHECK(SessionIs(&g_b, ROLE_CAB1, TEST_DISC_RESULT_A_PORT) == 0);
+	ShutdownBoth();
+
+	/* REMATCH_WAIT. */
+	CHECK(MakeDiscoveryConfig(&config, &fixture, 0u, TEST_DISC_REMATCH_A_PORT) == 0);
+	config.timings.resultsIdleTimeoutTicks = DRIVE_BUDGET;
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+	CHECK(MakeDiscoveryConfig(&config, &fixture, 0u, TEST_DISC_REMATCH_B_PORT) == 0);
+	CHECK(NativeArcadeNetplay_Init(&g_b, &config) == 1);
+	CHECK(SetPairingTo(&g_a, TEST_DISC_REMATCH_B_PORT, ROLE_CAB2) == 0);
+	CHECK(SetPairingTo(&g_b, TEST_DISC_REMATCH_A_PORT, ROLE_CAB1) == 0);
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(DriveBothIntoSelect());
+	for (tick = 0u; tick < 5u; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(actionB == ACT_NONE);
+	}
+	NativeArcadeNetplay_Shutdown(&g_b);
+	for (tick = 0u; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK((action == ACT_NONE) || (action == ACT_CLOSE_LINK));
+	}
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(g_a.lobbyBegun == 0u);
+	CHECK(SetPairingTo(&g_a, TEST_DISC_NOBODY_PORT, ROLE_CAB1) == 0);
+	for (tick = 0u; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	}
+
+	memset(&blocker, 0, sizeof(blocker));
+	CHECK(NativeUdpTransport_GlobalInit() == 1);
+	CHECK(NativeUdpTransport_Open(&blocker, (uint16_t)TEST_DISC_REMATCH_A_PORT) == 1);
+	CHECK(NativeArcadeNetplay_Tick(&g_a, BTN_CROSS, 0u) == ACT_BEGIN_REMATCH);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+	CHECK(g_a.lobbyBegun == 0u);
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_REMATCH_B_PORT) == 0);
+	for (tick = 0u; (tick < DRIVE_BUDGET) && (blockedRestarts < 2u); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK((action == ACT_NONE) || (action == ACT_RESTART_LOBBY));
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+		CHECK(g_a.lobbyBegun == 0u);
+		CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_REMATCH_B_PORT) == 0);
+		blockedRestarts += (action == ACT_RESTART_LOBBY) ? 1u : 0u;
+	}
+	CHECK(blockedRestarts == 2u);
+	NativeUdpTransport_Close(&blocker);
+	NativeUdpTransport_GlobalShutdown();
+	for (tick = 0u; (tick < DRIVE_BUDGET) && (g_a.lobbyBegun == 0u); tick++)
+	{
+		action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+		CHECK((action == ACT_NONE) || (action == ACT_RESTART_LOBBY));
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
+	}
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_REMATCH_B_PORT) == 0);
+	CHECK(LobbyIs(&g_a, ROLE_CAB2, TEST_DISC_REMATCH_B_PORT) == 0);
+	ShutdownBoth();
+	return 0;
+}
+
+/*
+ * DISC-12 with solo: unpaired, the lobby is WAITING on an empty list and
+ * retries, and solo is offered after the offer delay; CROSS begins it. The
+ * listen-only link's filter follows the pending pairing: empty while
+ * unpaired (a HELLO is not heard), the pending peer once paired (its HELLO
+ * is heard), and a changed peer clears peerHeard and hears only the new
+ * one. Nothing is ever sent, the solo screens do not move, and the role
+ * stays the unpaired one until RETURN_TO_LOBBY applies the pending pairing.
+ */
+static int TestDiscoveryUnpairedSolo(void)
+{
+	struct NativeArcadeNetplayConfig config;
+	struct NativeMatchConfigV1 fixture;
+	struct NativeUdpTransport probe;
+	struct NativeUdpTransport other;
+	struct NativeUdpTransportAddress soloAddress;
+	struct NativeLockstepHandshake handshake;
+	uint8_t hello[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
+	size_t helloSize = 0u;
+	enum NativeArcadeFlowAction action;
+	uint32_t serial;
+	uint32_t tick;
+	uint32_t restarts = 0u;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(MakeSoloConfig(&config, &fixture, ROLE_CAB1, TEST_DISC_SOLO_A_PORT, TEST_DISC_NOBODY_PORT) == 0);
+	config.localRole = 0u;
+	config.candidateCount = 0u;
+	config.discovery = 1u;
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+
+	CHECK(NativeUdpTransport_GlobalInit());
+	memset(&probe, 0, sizeof(probe));
+	memset(&other, 0, sizeof(other));
+	CHECK(NativeUdpTransport_Open(&probe, (uint16_t)TEST_DISC_SOLO_PEER_PORT));
+	CHECK(NativeUdpTransport_Open(&other, (uint16_t)TEST_DISC_SOLO_OTHER_PORT));
+	CHECK(NativeUdpTransport_MakeAddress(&soloAddress, "127.0.0.1", (uint16_t)TEST_DISC_SOLO_A_PORT));
+	NativeLockstepHandshake_Init(&handshake);
+	CHECK(NativeLockstepHandshake_Begin(&handshake, &fixture, ROLE_CAB2));
+	CHECK(NativeLockstepHandshake_ComposeMessage(&handshake, hello, sizeof(hello), &helloSize));
+
+	/* Unpaired: WAITING on an empty list, retrying, then the offer. */
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(SessionIs(&g_a, ROLE_CAB1, 0u) == 0);
+	CHECK(LobbyIs(&g_a, ROLE_CAB1, 0u) == 0);
+	for (tick = 0u; (tick < DRIVE_BUDGET) && ((SoloFlagsOf(&g_a) & NATIVE_ARCADE_NETPLAY_VIEW_SOLO_OFFERED) == 0u); tick++)
+	{
+		CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+		CHECK((action == ACT_NONE) || (action == ACT_RESTART_LOBBY));
+		restarts += (action == ACT_RESTART_LOBBY) ? 1u : 0u;
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+		CHECK(LobbyStatusOf(&g_a) == (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_WAITING);
+		CHECK(SessionIs(&g_a, ROLE_CAB1, 0u) == 0);
+	}
+	CHECK(tick == SOLO_OFFER_DELAY_TICKS);
+	CHECK(restarts == SOLO_OFFER_DELAY_TICKS / LOBBY_RETRY_PAUSE_TICKS);
+	CHECK(SoloTick(&g_a, BTN_CROSS, 0u, &probe, &action) == 0);
+	CHECK(action == NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(g_a.lobbyBegun == 0u);
+	CHECK(g_a.listening == 1u);
+	CHECK(g_a.listenPaired == 0u);
+	serial = g_a.flow.screenSerial;
+
+	/* The empty filter hears nobody. */
+	CHECK(NativeUdpTransport_Send(&probe, &soloAddress, hello, helloSize));
+	CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+	CHECK(action == ACT_NONE);
+	CHECK(SoloFlagsOf(&g_a) == NATIVE_ARCADE_NETPLAY_VIEW_SOLO);
+
+	/* Paired with the probe: the next Tick reopens on it, and its HELLO is
+	 * heard. The role stays the unpaired one. */
+	CHECK(SetPairingTo(&g_a, TEST_DISC_SOLO_PEER_PORT, ROLE_CAB2) == 0);
+	CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+	CHECK(action == ACT_NONE);
+	CHECK(g_a.listening == 1u);
+	CHECK(g_a.listenPaired == 1u);
+	CHECK(g_a.listenPeer.port == (uint16_t)TEST_DISC_SOLO_PEER_PORT);
+	CHECK(NativeUdpTransport_Send(&probe, &soloAddress, hello, helloSize));
+	CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+	CHECK(action == ACT_NONE);
+	CHECK(SoloFlagsOf(&g_a) == (NATIVE_ARCADE_NETPLAY_VIEW_SOLO | NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD));
+	CHECK(SessionIs(&g_a, ROLE_CAB1, 0u) == 0);
+
+	/* A different peer: peerHeard clears, the old peer is not heard, the
+	 * new one is. */
+	CHECK(SetPairingTo(&g_a, TEST_DISC_SOLO_OTHER_PORT, ROLE_CAB2) == 0);
+	CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+	CHECK(action == ACT_NONE);
+	CHECK(g_a.listenPeer.port == (uint16_t)TEST_DISC_SOLO_OTHER_PORT);
+	CHECK(SoloFlagsOf(&g_a) == NATIVE_ARCADE_NETPLAY_VIEW_SOLO);
+	CHECK(NativeUdpTransport_Send(&probe, &soloAddress, hello, helloSize));
+	CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+	CHECK(SoloFlagsOf(&g_a) == NATIVE_ARCADE_NETPLAY_VIEW_SOLO);
+	CHECK(NativeUdpTransport_Send(&other, &soloAddress, hello, helloSize));
+	CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+	CHECK(SoloFlagsOf(&g_a) == (NATIVE_ARCADE_NETPLAY_VIEW_SOLO | NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD));
+	CHECK(DrainProbe(&other) == 0u);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(g_a.flow.screenSerial == serial);
+
+	/* Race solo on the unpaired role, then LOBBY: the pending pairing takes
+	 * effect at that Begin. */
+	CHECK(SoloPickAndStart(&g_a, 0u, &probe) == 0);
+	CHECK(SessionIs(&g_a, ROLE_CAB1, 0u) == 0);
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 1u) == ACT_NONE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	for (tick = 0u; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	}
+	CHECK(NativeArcadeNetplay_Tick(&g_a, BTN_DOWN, 0u) == ACT_NONE);
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(g_a.flow.selectedRow == NATIVE_ARCADE_FLOW_ROW_LOBBY);
+	CHECK(NativeArcadeNetplay_Tick(&g_a, BTN_CROSS, 0u) == NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	CHECK(g_a.listening == 0u);
+	CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_SOLO_OTHER_PORT) == 0);
+	CHECK(LobbyIs(&g_a, ROLE_CAB2, TEST_DISC_SOLO_OTHER_PORT) == 0);
+
+	NativeArcadeNetplay_Shutdown(&g_a);
+	NativeUdpTransport_Close(&other);
+	NativeUdpTransport_Close(&probe);
+	NativeUdpTransport_GlobalShutdown();
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestPure() == 0);
@@ -7328,6 +7869,10 @@ int main(void)
 	CHECK(TestSoloCab2RaceAgain() == 0);
 	CHECK(TestSoloThenLobbyLinks() == 0);
 	CHECK(TestSoloEnabledLinkedSession() == 0);
+	CHECK(TestDiscoveryInitAndSetter() == 0);
+	CHECK(TestDiscoveryPairingAtLobbyBegin() == 0);
+	CHECK(TestDiscoveryRestartOffLobbyKeepsPairing() == 0);
+	CHECK(TestDiscoveryUnpairedSolo() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }

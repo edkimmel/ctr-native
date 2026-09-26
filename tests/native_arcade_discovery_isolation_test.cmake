@@ -20,8 +20,9 @@
 #    glob must match files, so the scan cannot pass vacuously, and the scan
 #    is first proven against planted hits.
 # 6. Only the consumers allowed so far name the module in game/, platform/,
-#    include/, or main.c: the link options (the group name check, DISC-S3)
-#    and the discovery service (DISC-S3). S4 adds the link host.
+#    include/, or main.c: the link options (the group name check, DISC-S3),
+#    the discovery service (DISC-S3), and the link host's .c (DISC-S4),
+#    which owns the service.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade discovery isolation")
@@ -239,7 +240,8 @@ endforeach()
 set(module_names native_arcade_discovery nativearcadediscovery)
 set(allowed_consumers "${core_header}" "${core_source}"
     "include/platform/native_arcade_link_options.h" "platform/native_arcade_link_options.c"
-    "include/platform/native_arcade_discovery_service.h" "platform/native_arcade_discovery_service.c")
+    "include/platform/native_arcade_discovery_service.h" "platform/native_arcade_discovery_service.c"
+    "platform/native_arcade_link_host.c")
 file(GLOB_RECURSE scan_files LIST_DIRECTORIES false
     "${repo}/game/*.c" "${repo}/game/*.h"
     "${repo}/platform/*.c" "${repo}/platform/*.h"

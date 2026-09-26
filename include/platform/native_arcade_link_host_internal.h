@@ -47,6 +47,22 @@ uint32_t NativeArcadeLinkHost_InternalDriveRaceTickLimit(void);
  * docs/SOLO_CAB_MILESTONE.md SOLO-7), else 0; 0 unless the mode is LINK. */
 uint8_t NativeArcadeLinkHost_InternalDriveLocal(void);
 
+/* Discovery (docs/DISCOVERY_MILESTONE.md DISC-12): 1 while the host's
+ * discovery socket is open (a discovery-mode LINK Configure until Shutdown),
+ * else 0; and its bound port, 0 while closed. */
+uint8_t NativeArcadeLinkHost_InternalDiscoveryOpen(void);
+uint16_t NativeArcadeLinkHost_InternalDiscoveryPort(void);
+
+/* Discovery: the pairings (or none) the host handed the link since the last
+ * Configure or Shutdown; always 0 in static mode, where it hands none. */
+uint32_t NativeArcadeLinkHost_InternalPairingsHanded(void);
+
+/* Discovery: when the mode is LINK and the link's pending pairing slot
+ * holds a pairing, writes its peer address and elected role (1 cabinet 1, 2
+ * cabinet 2) and returns 1; otherwise returns 0 with the outputs untouched
+ * (a NULL output included). */
+int NativeArcadeLinkHost_InternalPendingPairing(uint32_t *peerIpv4, uint16_t *peerPort, uint8_t *localRole);
+
 /* Forward-declared only, as in the public header. */
 struct NativeMatchConfigV1;
 

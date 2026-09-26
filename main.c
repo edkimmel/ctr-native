@@ -170,6 +170,39 @@ static int NativeArg_NamesReplayOption(int argc, char *argv[])
 	return 0;
 }
 
+/* The discovery instance nonce (docs/DISCOVERY_MILESTONE.md DISC-13): the
+ * first 8 bytes, little-endian, of SHA-256 over the ASCII domain string
+ * "CTRN discovery nonce v1" (no NUL) and its own draw of the wall clock and
+ * the high-resolution counter (8 bytes each, little-endian), zero mapped to
+ * one. Drawn once, for a discovery-mode run only; the hash keeps the raw
+ * draw, which the select entropy draw resembles, off the wire. Host-local:
+ * never match identity. */
+static uint64_t NativeMain_DrawDiscoveryNonce(void)
+{
+	static const char domain[] = "CTRN discovery nonce v1";
+	struct NativeSha256 sha;
+	uint8_t digest[NATIVE_SHA256_DIGEST_BYTES];
+	uint8_t draw[16];
+	const uint64_t wallClock = (uint64_t)time(NULL);
+	const uint64_t counter = (uint64_t)SDL_GetPerformanceCounter();
+	uint64_t nonce = 0u;
+
+	for (uint32_t i = 0u; i < 8u; i++)
+	{
+		draw[i] = (uint8_t)(wallClock >> (8u * i));
+		draw[8u + i] = (uint8_t)(counter >> (8u * i));
+	}
+	NativeSha256_Init(&sha);
+	NativeSha256_Update(&sha, domain, sizeof(domain) - 1u);
+	NativeSha256_Update(&sha, draw, sizeof(draw));
+	NativeSha256_Final(&sha, digest);
+	for (uint32_t i = 0u; i < 8u; i++)
+	{
+		nonce |= (uint64_t)digest[i] << (8u * i);
+	}
+	return (nonce != 0u) ? nonce : 1u;
+}
+
 #define NATIVE_CONFIG_FILE_PATH_MAX 1024
 
 /* Per-cabinet config file (docs/PACKAGING.md PK-2): reads the --config file
@@ -336,13 +369,6 @@ int main(int argc, char *argv[])
 	{
 		fprintf(stderr, "[CTR Native] invalid arcade-link option; --arcade-discovery-port and --arcade-discovery-target need discovery mode (--arcade-link or seat without a peer), "
 		                "and in discovery mode the link port may not equal the discovery port (default 7000).\n");
-		return NativeConsole_Return(1);
-	}
-	/* Discovery mode parses and validates, but the link host does not run it
-	 * until DISC-S4: refuse it rather than come up without a peer. */
-	if (arcadeLinkOptions.discovery != 0u)
-	{
-		fprintf(stderr, "[CTR Native] arcade link: discovery mode (no peer) is not wired yet (DISC-S4).\n");
 		return NativeConsole_Return(1);
 	}
 
@@ -612,6 +638,12 @@ int main(int argc, char *argv[])
 		 * the exchanged select nonces and so the agreed masterSeed. Preview
 		 * and default runs never read it; it stays 0 there. */
 		arcadeLinkOptions.selectEntropy = ((uint64_t)time(NULL) << 32) ^ (uint64_t)SDL_GetPerformanceCounter();
+		/* Discovery mode only (DISC-13): the instance nonce the beacon
+		 * carries, from its own draw. Static mode draws nothing here. */
+		if (arcadeLinkOptions.discovery != 0u)
+		{
+			arcadeLinkOptions.discoveryNonce = NativeMain_DrawDiscoveryNonce();
+		}
 	}
 	if (!NativeArcadeLinkHost_Configure(&arcadeLinkOptions, arcadeLinkIdentityPtr))
 	{

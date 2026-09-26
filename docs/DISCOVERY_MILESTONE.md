@@ -649,4 +649,25 @@ leave room.
   table; an entry heard at tick T expires on the Tick reaching T + 300).
 - DISC-S3, options, config, transport, interfaces, service: done (main.c
   refuses discovery mode until S4; SIO_UDP_CONNRESET not set, risk 9).
-- DISC-S4 to DISC-S6: not started.
+- DISC-S4, host and adapter integration: integration, unit, and isolation
+  tests done; the live proof `arcade_discovery_link` follows in its own
+  commit. main.c draws the DISC-13 nonce in discovery mode only (the S3
+  refusal is gone). The host opens the service at a discovery-mode
+  Configure (a bind failure is one log line, not fatal), ticks it and
+  hands the pairing to the adapter at the top of every LINK Tick, re-hands
+  it right after AbortToTitle's re-Init, logs one line per event, and
+  closes it only in Shutdown; `localCab` reads the adapter's active role.
+  Deviations and notes:
+  - The adapter keeps the session's list and role in separate active
+    fields (`activeRole`, `activeCandidates`) set at Init and at the
+    DISC-12 Begin points; `config` is never written, so static mode runs
+    byte-identically (the setter refuses and TakePairing is a no-op there).
+  - Test-only host read-backs in native_arcade_link_host_internal.h
+    (discovery open and port, pairings handed, the adapter's pending
+    pairing). The host test also covers a discovery bind failure.
+  - The log line for a pairing reads "paired with <ip>:<link port> as
+    cabN" (the checker's "pair found" line).
+  - Risk 10 (interface refresh on the game thread during races) is not
+    addressed: still open. Risk 6 (demo-time beacon gap) is not covered by
+    the loopback proof: still open.
+- DISC-S5 and DISC-S6: not started.

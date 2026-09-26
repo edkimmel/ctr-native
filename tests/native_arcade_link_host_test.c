@@ -1,5 +1,7 @@
 #include "platform/native_arcade_link_host.h"
 #include "platform/native_arcade_bot_rules.h"
+#include "platform/native_arcade_discovery.h"
+#include "platform/native_arcade_discovery_service.h"
 #include "platform/native_arcade_flow.h"
 #include "platform/native_arcade_link_host_internal.h"
 #include "platform/native_arcade_netplay.h"
@@ -7,10 +9,12 @@
 #include "platform/native_canonical_state_v4.h"
 #include "platform/native_lockstep_handshake.h"
 #include "platform/native_match_select_rules.h"
+#include "platform/native_sha256.h"
 
 #include "native_arcade_link_loopback_test_fixture.h"
 
 #include <platform.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,9 +33,10 @@
  * (NativeArcadeLinkHost_Tick call count), never wall-clock, so the test is
  * not flaky by construction.
  *
- * Fixed loopback test ports, in the 48500-48519 band, distinct from every
- * other test file's own bands (tests/native_arcade_netplay_test.c uses
- * 48400-48499, tests/native_lobby_state_test.c 48300-48399).
+ * Fixed loopback test ports, in the 48500-48519 band (and 48570-48589 for
+ * discovery), distinct from every other test file's own bands
+ * (tests/native_arcade_netplay_test.c uses 48400-48499,
+ * tests/native_lobby_state_test.c 48300-48399).
  */
 #define TEST_LINK_LOCAL_PORT 48500u
 #define TEST_LINK_DEAD_PEER_PORT 48501u
@@ -71,6 +76,22 @@
 #define TEST_SOLO_RACE_HOST_PORT TEST_DRIVE_HOST_PORT
 #define TEST_SOLO_RACE_PEER_PORT TEST_DRIVE_PEER_PORT
 
+/* Discovery (docs/DISCOVERY_MILESTONE.md DISC-12, slice DISC-S4): a band of
+ * its own, 48570-48589. The fake peer is a test-owned discovery service
+ * (auto seat) on the lower link port, so the host (auto) is elected cab2. */
+#define TEST_DISC_STATIC_LOCAL_PORT 48570u
+#define TEST_DISC_STATIC_PEER_PORT 48571u
+#define TEST_DISC_PEER_LINK_PORT 48572u
+#define TEST_DISC_HOST_LINK_PORT 48573u
+#define TEST_DISC_HOST_PORT 48574u
+#define TEST_DISC_PEER_PORT 48575u
+#define TEST_DISC_BLOCKED_LINK_PORT 48576u
+#define TEST_DISC_BLOCKED_PORT 48577u
+#define TEST_DISC_HOST_NONCE UINT64_C(0x5EED00000000C0DE)
+#define TEST_DISC_PEER_NONCE UINT64_C(0x5EED00000000BEEF)
+/* Beacons go out every 30 ticks; both sides must hear each other's echo. */
+#define TEST_DISC_PAIR_BUDGET 400u
+
 /* Bounds every loop that waits for the loopback pair; generous, not tuned. */
 #define PAIR_BUDGET 4000u
 
@@ -104,14 +125,20 @@ void Platform_SetFixedVBlankPacing(int enabled)
 }
 
 /*
- * The platform log (platform/native_log.c), stubbed: the host glue's one log
- * call is Configure's solo notice (SOLO-S4). It counts every call.
+ * The platform log (platform/native_log.c), stubbed: the host glue's log
+ * calls are Configure's solo notice (SOLO-S4) and the discovery lines
+ * (DISC-15, DISC-16). It counts every call and keeps the last line's text.
  */
 static uint32_t g_logCalls;
+static char g_lastLog[256];
 
 void Platform_Log(const char *fmt, ...)
 {
-	(void)fmt;
+	va_list args;
+
+	va_start(args, fmt);
+	(void)vsnprintf(g_lastLog, sizeof(g_lastLog), fmt, args);
+	va_end(args);
 	g_logCalls++;
 }
 
@@ -5201,6 +5228,276 @@ static int TestSoloRace(void)
 	return failed;
 }
 
+/* ---- Discovery (docs/DISCOVERY_MILESTONE.md DISC-12, slice DISC-S4) ---- */
+
+static struct NativeArcadeDiscoveryService g_fakePeer;
+
+/* Discovery-mode options as ParseArgs and main.c leave them: no peer, the
+ * seat (auto, cab1, or cab2; the unpaired role is the same number), the
+ * link port, the discovery port, one explicit discovery target on loopback,
+ * and a drawn nonce. */
+static void DiscoveryOptions(struct NativeArcadeLinkOptions *options, uint8_t seat, uint32_t linkPort, uint32_t discoveryPort,
+	uint32_t targetPort)
+{
+	NativeArcadeLinkOptions_SetDefaults(options);
+	options->enabled = 1u;
+	options->localRole = seat;
+	options->seatPreference = seat;
+	options->discovery = 1u;
+	options->localPort = (uint16_t)linkPort;
+	options->discoveryPort = (uint16_t)discoveryPort;
+	options->discoveryTargets[0].ipv4 = NATIVE_ARCADE_LINK_LOOPBACK_IPV4;
+	options->discoveryTargets[0].port = (uint16_t)targetPort;
+	options->discoveryTargetCount = 1u;
+	options->discoveryNonce = TEST_DISC_HOST_NONCE;
+}
+
+/* The fake other cabinet: a discovery service on the peer discovery port,
+ * auto seat, the peer link port, the default group, and the identity digest
+ * computed as the host computes it (DISC-10), beaconing at the host. */
+static int OpenFakePeer(const struct NativeIdentityV1 *identity)
+{
+	struct NativeSha256 sha;
+	struct NativeUdpTransportAddress target;
+	uint8_t digest[NATIVE_SHA256_DIGEST_BYTES];
+
+	NativeSha256_Init(&sha);
+	NativeSha256_Update(&sha, identity->build, sizeof(identity->build));
+	NativeSha256_Update(&sha, identity->content, sizeof(identity->content));
+	NativeSha256_Final(&sha, digest);
+	target.ipv4 = NATIVE_ARCADE_LINK_LOOPBACK_IPV4;
+	target.port = (uint16_t)TEST_DISC_HOST_PORT;
+	CHECK(NativeArcadeDiscoveryService_Open(&g_fakePeer, (uint16_t)TEST_DISC_PEER_PORT, TEST_DISC_PEER_NONCE,
+		NativeArcadeDiscovery_GroupHash(NATIVE_ARCADE_DISCOVERY_DEFAULT_GROUP), digest, (uint16_t)TEST_DISC_PEER_LINK_PORT,
+		(uint8_t)NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &target, 1u));
+	return 0;
+}
+
+static uint8_t LocalCab(void)
+{
+	struct NativeArcadeLinkHostView view;
+
+	memset(&view, 0xA5, sizeof(view));
+	if (NativeArcadeLinkHost_GetView(&view) != 1)
+	{
+		return 0xFFu;
+	}
+	return view.localCab;
+}
+
+/* The adapter's pending pairing is the fake peer's link address, as cab2. */
+static int PendingIsFakePeer(void)
+{
+	uint32_t ipv4 = 0u;
+	uint16_t port = 0u;
+	uint8_t role = 0u;
+
+	CHECK(NativeArcadeLinkHost_InternalPendingPairing(&ipv4, &port, &role) == 1);
+	CHECK(ipv4 == NATIVE_ARCADE_LINK_LOOPBACK_IPV4);
+	CHECK(port == (uint16_t)TEST_DISC_PEER_LINK_PORT);
+	CHECK(role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN);
+	return 0;
+}
+
+/*
+ * DISC-12: static mode (a peer given) opens no discovery socket and never
+ * calls the adapter's pairing setter, through Configure, the attract ticks,
+ * the lobby, AbortToTitle, and Shutdown; it logs nothing; and the view's
+ * localCab is the configured seat.
+ */
+static int TestDiscoveryStaticModeOpensNothing(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	uint32_t ipv4 = 0u;
+	uint16_t port = 0u;
+	uint8_t role = 0u;
+	uint32_t i;
+
+	NativeArcadeLinkHost_Shutdown();
+	g_logCalls = 0u;
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, TEST_DISC_STATIC_LOCAL_PORT,
+		TEST_DISC_STATIC_PEER_PORT);
+	CHECK(options.discovery == 0u);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryOpen() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryPort() == 0u);
+	for (i = 0u; i < 3u; i++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	}
+	CHECK(LocalCab() == 2u);
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	for (i = 0u; i < LOBBY_TICKS; i++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	}
+	CHECK(LocalCab() == 2u);
+	NativeArcadeLinkHost_AbortToTitle();
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryOpen() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalPairingsHanded() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalPendingPairing(&ipv4, &port, &role) == 0);
+	CHECK(g_logCalls == 0u);
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
+/*
+ * DISC-12, DISC-15, DISC-16 on the host: a discovery-mode Configure opens
+ * the discovery socket (one log line) with the link dormant; every LINK
+ * Tick services it and hands the pairing to the adapter, and the pairing is
+ * logged once as "paired with <peer link address> as cab2". The view's
+ * localCab is the adapter's active role: cab1 (auto, unpaired) until Enter
+ * applies the pairing, then cab2. AbortToTitle re-initialises the adapter,
+ * keeps the socket, and re-pairs at once (localCab back to the unpaired
+ * cab1 on the title, cab2 again at the next Enter). Shutdown closes the
+ * socket and frees its port.
+ */
+static int TestDiscoveryPairsAndLocalCab(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	struct NativeUdpTransport reopen;
+	uint32_t ipv4 = 0u;
+	uint16_t port = 0u;
+	uint8_t role = 0u;
+	uint32_t ticks = 0u;
+	uint32_t logsBefore;
+	uint32_t pairedLines = 0u;
+	uint32_t handed;
+	uint32_t i;
+
+	NativeArcadeLinkHost_Shutdown();
+	g_logCalls = 0u;
+	memset(&g_fakePeer, 0, sizeof(g_fakePeer));
+	NativeArcadeLinkLoopback_Identity(&identity);
+	DiscoveryOptions(&options, (uint8_t)NATIVE_ARCADE_LINK_SEAT_AUTO, TEST_DISC_HOST_LINK_PORT, TEST_DISC_HOST_PORT,
+		TEST_DISC_PEER_PORT);
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options) == 1);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK);
+	CHECK(NativeArcadeLinkHost_ScreenActive() == 0);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryOpen() == 1u);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryPort() == (uint16_t)TEST_DISC_HOST_PORT);
+	CHECK(g_logCalls == 1u);
+	CHECK(strcmp(g_lastLog, "[CTR Native] arcade discovery: listening on port 48574, group ctr-native, link port 48573, "
+							"explicit targets\n") == 0);
+	CHECK(NativeArcadeLinkHost_InternalPairingsHanded() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalPendingPairing(&ipv4, &port, &role) == 0);
+	CHECK(LocalCab() == 1u);
+
+	/* The fake peer wakes: both beacon until each has the other's echo. */
+	CHECK(OpenFakePeer(&identity) == 0);
+	while ((ticks < TEST_DISC_PAIR_BUDGET) && (NativeArcadeLinkHost_InternalPendingPairing(&ipv4, &port, &role) == 0))
+	{
+		logsBefore = g_logCalls;
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+		NativeArcadeDiscoveryService_Tick(&g_fakePeer);
+		ticks++;
+		CHECK(NativeArcadeLinkHost_InternalPairingsHanded() == ticks);
+		if (g_logCalls != logsBefore)
+		{
+			CHECK(g_logCalls == logsBefore + 1u);
+			CHECK(strcmp(g_lastLog, "[CTR Native] arcade discovery: paired with 127.0.0.1:48572 as cab2\n") == 0);
+			pairedLines++;
+		}
+	}
+	CHECK(PendingIsFakePeer() == 0);
+	CHECK(pairedLines == 1u);
+	/* Pending only: the title still shows the unpaired seat. */
+	CHECK(LocalCab() == 1u);
+
+	/* Enter applies it: cab2 while the lobby handshakes toward the peer's
+	 * link port (nobody listens there). */
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(LocalCab() == 2u);
+	for (i = 0u; i < LOBBY_TICKS; i++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+		NativeArcadeDiscoveryService_Tick(&g_fakePeer);
+		CHECK(LocalCab() == 2u);
+	}
+	CHECK(g_logCalls == 2u);
+
+	/* AbortToTitle: re-initialised (the unpaired seat on the title), the
+	 * socket kept, and the pairing handed again at once. */
+	handed = NativeArcadeLinkHost_InternalPairingsHanded();
+	NativeArcadeLinkHost_AbortToTitle();
+	CHECK(NativeArcadeLinkHost_ScreenActive() == 0);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryOpen() == 1u);
+	CHECK(NativeArcadeLinkHost_InternalPairingsHanded() == handed + 1u);
+	CHECK(PendingIsFakePeer() == 0);
+	CHECK(LocalCab() == 1u);
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(LocalCab() == 2u);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	CHECK(LocalCab() == 2u);
+	CHECK(g_logCalls == 2u);
+
+	/* Shutdown closes the socket: its port is free again. */
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryOpen() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalPairingsHanded() == 0u);
+	NativeArcadeDiscoveryService_Close(&g_fakePeer);
+	CHECK(NativeUdpTransport_GlobalInit());
+	memset(&reopen, 0, sizeof(reopen));
+	CHECK(NativeUdpTransport_Open(&reopen, (uint16_t)TEST_DISC_HOST_PORT));
+	NativeUdpTransport_Close(&reopen);
+	NativeUdpTransport_GlobalShutdown();
+	return 0;
+}
+
+/*
+ * DISC-15: a discovery port in use is logged once and is not fatal:
+ * Configure still succeeds, discovery stays off (no pairing, ever), and the
+ * lobby waits on the unpaired seat.
+ */
+static int TestDiscoveryBindFailureNotFatal(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	struct NativeUdpTransport blocker;
+	uint32_t ipv4 = 0u;
+	uint16_t port = 0u;
+	uint8_t role = 0u;
+	uint32_t i;
+
+	NativeArcadeLinkHost_Shutdown();
+	g_logCalls = 0u;
+	CHECK(NativeUdpTransport_GlobalInit());
+	memset(&blocker, 0, sizeof(blocker));
+	CHECK(NativeUdpTransport_Open(&blocker, (uint16_t)TEST_DISC_BLOCKED_PORT));
+	NativeArcadeLinkLoopback_Identity(&identity);
+	DiscoveryOptions(&options, (uint8_t)NATIVE_ARCADE_LINK_SEAT_CAB2, TEST_DISC_BLOCKED_LINK_PORT, TEST_DISC_BLOCKED_PORT,
+		TEST_DISC_PEER_PORT);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_LINK);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryOpen() == 0u);
+	CHECK(g_logCalls == 1u);
+	CHECK(strcmp(g_lastLog, "[CTR Native] arcade discovery: could not open the discovery socket on port 48577; discovery "
+							"stays off, the lobby waits and solo is offered\n") == 0);
+	/* The seat preference is the unpaired seat. */
+	CHECK(LocalCab() == 2u);
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	for (i = 0u; i < LOBBY_TICKS; i++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	}
+	CHECK(LocalCab() == 2u);
+	CHECK(NativeArcadeLinkHost_InternalPendingPairing(&ipv4, &port, &role) == 0);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryOpen() == 0u);
+	CHECK(g_logCalls == 1u);
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	NativeUdpTransport_Close(&blocker);
+	NativeUdpTransport_GlobalShutdown();
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestInertBeforeConfigure() == 0);
@@ -5237,6 +5534,9 @@ int main(void)
 	CHECK(TestSoloConfigEveryCharacter() == 0);
 	CHECK(TestSoloConfigFailsClosed() == 0);
 	CHECK(TestSoloRace() == 0);
+	CHECK(TestDiscoveryStaticModeOpensNothing() == 0);
+	CHECK(TestDiscoveryPairsAndLocalCab() == 0);
+	CHECK(TestDiscoveryBindFailureNotFatal() == 0);
 	puts("native_arcade_link_host_test: passed");
 	return 0;
 }

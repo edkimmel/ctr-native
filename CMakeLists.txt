@@ -561,6 +561,9 @@ target_link_libraries(ctr_native_arcade_race_drive PUBLIC ctr_native_lockstep_se
 # (ctr_native_arcade_race_drive), whose drive it runs over the adapter. Since
 # SOLO-S4 it also calls Platform_Log (platform/native_log.c, likewise only in
 # the executable) for one solo notice; a test that links it stubs that too.
+# Since DISC-S4 (docs/DISCOVERY_MILESTONE.md DISC-12) it also links the
+# discovery socket service (ctr_native_arcade_discovery_service), which it
+# owns in discovery mode, and logs the discovery lines through Platform_Log.
 add_library(ctr_native_arcade_link_host STATIC platform/native_arcade_link_host.c)
 set_target_properties(ctr_native_arcade_link_host PROPERTIES
     C_STANDARD 17
@@ -569,7 +572,7 @@ set_target_properties(ctr_native_arcade_link_host PROPERTIES
 )
 target_include_directories(ctr_native_arcade_link_host PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_arcade_link_host PUBLIC ctr_native_arcade_netplay ctr_native_arcade_link_options
-    ctr_native_arcade_race_drive)
+    ctr_native_arcade_race_drive ctr_native_arcade_discovery_service)
 
 # Internal two-process gate autopilot (docs/RACE_LAUNCH_MILESTONE.md RL-15,
 # RL-S10): the --arcade-link-autopilot option parser, the pure menu decision

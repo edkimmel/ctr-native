@@ -239,8 +239,14 @@ struct NativeArcadeLinkHostRaceDivergence
  * a preview leave the mode OFF and return 1. A preview (without the link)
  * selects PREVIEW mode and returns 1; identity is not needed. An enabled link
  * needs a non-NULL identity that builds the fixed fixture, and a valid port
- * and peer list; it selects LINK mode, dormant on screen OFF with no socket
- * open, and returns 1. On any failure the mode is OFF and 0 is returned.
+ * and peer list; it selects LINK mode, dormant on screen OFF with no link
+ * socket open, and returns 1. In static mode (a peer given) no socket at all
+ * is open. In discovery mode (no peer; docs/DISCOVERY_MILESTONE.md DISC-2,
+ * DISC-12) it also opens the discovery socket, on the options' discovery
+ * port (7000 when not given), which stays open until Shutdown (AbortToTitle
+ * keeps it); a discovery socket that cannot be opened is logged once and is
+ * not a failure (DISC-15): the link runs unpaired, its lobby waits, and solo
+ * is offered. On any failure the mode is OFF and 0 is returned.
  */
 int NativeArcadeLinkHost_Configure(const struct NativeArcadeLinkOptions *options,
 	const struct NativeIdentityV1 *identity);
@@ -258,7 +264,10 @@ int NativeArcadeLinkHost_Enter(void);
  * bits; raceFinished is nonzero once the local race has finished. Returns an
  * enum NativeArcadeFlowAction: START_RACE and RETURN_TO_TITLE are the
  * caller's cue; every other action has already been executed. OFF and
- * PREVIEW return NONE. In LINK mode, after the adapter's tick, it runs one
+ * PREVIEW return NONE. In LINK mode in discovery mode it first ticks the
+ * discovery service, logs its pairing events, and hands its current pairing
+ * (or none) to the link, which takes it at its next lobby Begin on LOBBY
+ * (DISC-12). In LINK mode, after the adapter's tick, it runs one
  * tick of the drive's finish linger while the drive has a finish end, and
  * re-initializes the drive once the linger is done or stopped, and on every
  * tick whose flow is neither on RACING nor on RESULTS; then it latches the
@@ -328,7 +337,9 @@ uint8_t NativeArcadeLinkHost_Racing(void);
 /* LINK only: closes the link and returns the flow to screen OFF, ready for a
  * new Enter. For when the game cannot honour START_RACE yet. The link is
  * re-initialized with a new select entropy (see
- * NativeArcadeLinkHost_MixSelectEntropy), and so is the race drive. */
+ * NativeArcadeLinkHost_MixSelectEntropy), and so is the race drive. The
+ * discovery socket of discovery mode stays open, and the current pairing is
+ * handed to the re-initialized link at once. */
 void NativeArcadeLinkHost_AbortToTitle(void);
 
 /* Pure: the select entropy handed to the link for one host epoch,
@@ -514,7 +525,8 @@ int NativeArcadeLinkHost_GetDriveState(struct NativeArcadeLinkHostDriveState *ou
 const char *NativeArcadeLinkHost_DriveEndKindName(uint32_t endKind);
 const char *NativeArcadeLinkHost_DriveFailureName(uint32_t failureReason);
 
-/* Closes any open link and returns to mode OFF. First, as RaceEnd does, it
+/* Closes any open link (and the discovery socket) and returns to mode OFF.
+ * First, as RaceEnd does, it
  * turns off a fixed pacing that RaceBegin turned on (before a process exit,
  * LR-7). Shutdown is also reached mid-race, where it turns that pacing off
  * too: from a replacing Configure, and from AbortToTitle's defensive branch

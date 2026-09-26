@@ -65,6 +65,8 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 	struct NativeArcadeFlow flow;
 	uint8_t localSlot = 0u;
 	uint8_t soloSlot = 0u;
+	uint8_t activeRole;
+	uint32_t i;
 
 	if ((netplay == NULL) || (config == NULL))
 	{
@@ -74,12 +76,23 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 	{
 		return 0;
 	}
-	if ((config->localRole != (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN) &&
-		(config->localRole != (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN))
+	if (config->discovery > 1u)
 	{
 		return 0;
 	}
-	if (!NativeMatchConfigV1_FindRoleSlot(&config->fixture, config->localRole, &localSlot))
+	/* Discovery mode (DISC-12): the role is the unpaired placeholder, auto
+	 * (0) or a seat preference; the session's role comes from the pairing. */
+	activeRole = config->localRole;
+	if ((config->discovery != 0u) && (activeRole == 0u))
+	{
+		activeRole = (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN;
+	}
+	if ((activeRole != (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN) &&
+		(activeRole != (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN))
+	{
+		return 0;
+	}
+	if (!NativeMatchConfigV1_FindRoleSlot(&config->fixture, activeRole, &localSlot))
 	{
 		return 0;
 	}
@@ -87,7 +100,14 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 	{
 		return 0;
 	}
-	if ((config->candidateCount == 0u) || (config->candidateCount > NATIVE_LOBBY_STATE_MAX_CANDIDATES))
+	/* Static mode needs 1..8 candidates; discovery mode takes none (the
+	 * pairing supplies the one candidate, DISC-12). */
+	if ((config->discovery == 0u) &&
+		((config->candidateCount == 0u) || (config->candidateCount > NATIVE_LOBBY_STATE_MAX_CANDIDATES)))
+	{
+		return 0;
+	}
+	if ((config->discovery != 0u) && (config->candidateCount != 0u))
 	{
 		return 0;
 	}
@@ -144,8 +164,102 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 	netplay->localRaceFailure = 0u;
 	netplay->lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE;
 	netplay->localSlot = localSlot;
+	/* The session's role and candidates: the config's in static mode; in
+	 * discovery mode the unpaired role and an empty list until a pairing
+	 * takes effect (DISC-12). */
+	netplay->activeRole = activeRole;
+	netplay->activeCandidateCount = config->candidateCount;
+	for (i = 0u; i < config->candidateCount; i++)
+	{
+		netplay->activeCandidates[i] = config->candidates[i];
+	}
 	netplay->initialized = 1u;
 	return 1;
+}
+
+/* Discovery mode (DISC-12): the role while unpaired, the seat preference or
+ * CAB1 for auto. */
+static uint8_t NativeArcadeNetplay_UnpairedRole(const struct NativeArcadeNetplay *netplay)
+{
+	return (netplay->config.localRole == 0u) ? (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN : netplay->config.localRole;
+}
+
+int NativeArcadeNetplay_SetPairing(struct NativeArcadeNetplay *netplay, const struct NativeArcadeNetplayPairing *pairing)
+{
+	uint8_t slot = 0u;
+
+	if ((netplay == NULL) || (netplay->initialized == 0u) || (netplay->config.discovery == 0u))
+	{
+		return 0;
+	}
+	if (pairing == NULL)
+	{
+		netplay->pendingPaired = 0u;
+		netplay->pendingRole = 0u;
+		memset(&netplay->pendingPeer, 0, sizeof(netplay->pendingPeer));
+		return 1;
+	}
+	if ((pairing->peerIpv4 == 0u) || (pairing->peerPort == 0u) ||
+		((pairing->localRole != (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN) &&
+			(pairing->localRole != (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN)) ||
+		!NativeMatchConfigV1_FindRoleSlot(&netplay->config.fixture, pairing->localRole, &slot))
+	{
+		return 0;
+	}
+	netplay->pendingPaired = 1u;
+	netplay->pendingRole = pairing->localRole;
+	netplay->pendingPeer.ipv4 = pairing->peerIpv4;
+	netplay->pendingPeer.port = pairing->peerPort;
+	return 1;
+}
+
+/* Discovery mode (DISC-12): 1 when the pending pairing differs from the
+ * active candidates and role; always 0 in static mode. */
+static int NativeArcadeNetplay_PairingChanged(const struct NativeArcadeNetplay *netplay)
+{
+	if (netplay->config.discovery == 0u)
+	{
+		return 0;
+	}
+	if (netplay->pendingPaired == 0u)
+	{
+		return (netplay->activeCandidateCount != 0u) || (netplay->activeRole != NativeArcadeNetplay_UnpairedRole(netplay));
+	}
+	return (netplay->activeCandidateCount != 1u) || (netplay->activeCandidates[0].ipv4 != netplay->pendingPeer.ipv4) ||
+		(netplay->activeCandidates[0].port != netplay->pendingPeer.port) || (netplay->activeRole != netplay->pendingRole);
+}
+
+/*
+ * Discovery mode (DISC-12): the pending pairing takes effect, right before a
+ * lobby Begin that opens a new session on LOBBY (Enter, EndSolo, and
+ * RESTART_LOBBY on LOBBY) and nowhere else: candidates = [peer] and the
+ * elected role, or an empty list and the unpaired role, and localSlot
+ * follows the role. A no-op in static mode.
+ */
+static void NativeArcadeNetplay_TakePairing(struct NativeArcadeNetplay *netplay)
+{
+	uint8_t slot = 0u;
+
+	if (netplay->config.discovery == 0u)
+	{
+		return;
+	}
+	memset(netplay->activeCandidates, 0, sizeof(netplay->activeCandidates));
+	if (netplay->pendingPaired != 0u)
+	{
+		netplay->activeCandidates[0] = netplay->pendingPeer;
+		netplay->activeCandidateCount = 1u;
+		netplay->activeRole = netplay->pendingRole;
+	}
+	else
+	{
+		netplay->activeCandidateCount = 0u;
+		netplay->activeRole = NativeArcadeNetplay_UnpairedRole(netplay);
+	}
+	if (NativeMatchConfigV1_FindRoleSlot(&netplay->config.fixture, netplay->activeRole, &slot))
+	{
+		netplay->localSlot = slot;
+	}
 }
 
 /*
@@ -193,16 +307,18 @@ static void NativeArcadeNetplay_PollLobby(struct NativeArcadeNetplay *netplay)
 	NativeArcadeNetplay_ReadForeignDrops(netplay);
 }
 
-/* Opens a lobby on the current proposal. A failed open leaves lobbyBegun 0,
- * which reads as WAITING, so the flow's retry pause tries again. */
+/* Opens a lobby on the current proposal, the active candidates, and the
+ * active role (DISC-12: the config's in static mode). A failed open leaves
+ * lobbyBegun 0, which reads as WAITING, so the flow's retry pause tries
+ * again. */
 static void NativeArcadeNetplay_BeginLobby(struct NativeArcadeNetplay *netplay)
 {
 	/* Every lobby begins on a fresh link. */
 	netplay->linkForeignDropsSeen = 0u;
 	netplay->lobbyReadySeen = 0u;
 	netplay->lobbyBegun = (uint8_t)(NativeLobbyState_Begin(&netplay->lobby, netplay->config.localPort,
-										netplay->config.candidates, netplay->config.candidateCount,
-										&netplay->currentConfig, netplay->config.localRole,
+										netplay->activeCandidates, netplay->activeCandidateCount,
+										&netplay->currentConfig, netplay->activeRole,
 										netplay->config.inputDelay, netplay->config.attemptTicksPerCandidate,
 										netplay->config.retransmitIntervalTicks) != 0);
 }
@@ -224,9 +340,15 @@ static void NativeArcadeNetplay_CloseLobby(struct NativeArcadeNetplay *netplay)
  * open or the restart is refused. While a rematch is blocked nothing is
  * begun, so REMATCH_WAIT keeps reading WAITING and times out to OPPONENT
  * LEFT; while a relink is blocked likewise, so SELECT_RESULT times out to
- * LINK ERROR. */
+ * LINK ERROR. Discovery mode (DISC-12): on LOBBY the restart opens a new
+ * session, so the pending pairing takes effect, and a pairing that changed
+ * since the last Begin closes and begins (RestartCycle would reuse the
+ * stored list and role); from SELECT_RESULT and REMATCH_WAIT the session's
+ * list, role, and slot are kept. */
 static void NativeArcadeNetplay_RestartLobby(struct NativeArcadeNetplay *netplay)
 {
+	const int onLobby = (NativeArcadeFlow_Screen(&netplay->flow) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+
 	if ((netplay->rematchBlocked != 0u) || (netplay->relinkBlocked != 0u))
 	{
 		NativeArcadeNetplay_CloseLobby(netplay);
@@ -234,13 +356,18 @@ static void NativeArcadeNetplay_RestartLobby(struct NativeArcadeNetplay *netplay
 	}
 	/* The restart closes the lobby's link: its drops are read first. */
 	NativeArcadeNetplay_ReadForeignDrops(netplay);
-	if ((netplay->lobbyBegun != 0u) && NativeLobbyState_RestartCycle(&netplay->lobby))
+	if ((netplay->lobbyBegun != 0u) && !(onLobby && NativeArcadeNetplay_PairingChanged(netplay)) &&
+		NativeLobbyState_RestartCycle(&netplay->lobby))
 	{
 		netplay->linkForeignDropsSeen = 0u;
 		netplay->lobbyReadySeen = 0u;
 		return;
 	}
 	NativeArcadeNetplay_CloseLobby(netplay);
+	if (onLobby)
+	{
+		NativeArcadeNetplay_TakePairing(netplay);
+	}
 	NativeArcadeNetplay_BeginLobby(netplay);
 }
 
@@ -297,6 +424,9 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
 		netplay->soloRaceArmed = 0u;
 		NativeArcadeNetplay_ClearSelect(netplay);
 		NativeArcadeLaunch_Reset(&netplay->launch);
+		/* A new session on LOBBY: the pending pairing takes effect
+		 * (DISC-12; a no-op in static mode). */
+		NativeArcadeNetplay_TakePairing(netplay);
 		NativeArcadeNetplay_BeginLobby(netplay);
 	}
 	return action;
@@ -427,15 +557,15 @@ static void NativeArcadeNetplay_BeginSelect(struct NativeArcadeNetplay *netplay)
 			humanCount += 1u;
 		}
 	}
-	if (NativeMatchConfigV1_FindRoleSlot(base, netplay->config.localRole, &localSlot))
+	if (NativeMatchConfigV1_FindRoleSlot(base, netplay->activeRole, &localSlot))
 	{
 		character = NativeArcadeNetplay_CharacterOrFirst(base->slots[localSlot].characterID);
 	}
-	(void)NativeArcadeNetplay_DeriveSelectNonce(netplay->config.selectEntropy, netplay->config.localRole,
+	(void)NativeArcadeNetplay_DeriveSelectNonce(netplay->config.selectEntropy, netplay->activeRole,
 		netplay->selectSerial, &nonce);
 
 	netplay->selectActive = (uint8_t)(NativeMatchSelectSession_Init(&netplay->select, base, humanCount,
-											(uint32_t)netplay->config.localRole - 1u, nonce, character,
+											(uint32_t)netplay->activeRole - 1u, nonce, character,
 											NativeArcadeNetplay_TrackOrFirst(base->trackID),
 											NativeArcadeNetplay_LapsOrFirst(base->lapCount),
 											&netplay->config.selectTimings) != 0);
@@ -509,7 +639,7 @@ static void NativeArcadeNetplay_BeginSoloSelect(struct NativeArcadeNetplay *netp
 	/* The cab2 seat's own default (SOLO-S4): a fresh solo select there starts
 	 * the character on the TWO_CAB fixture's CAB2_HUMAN character. The human
 	 * is still CAB1_HUMAN in slot 0 of the config (SOLO-6). */
-	if ((netplay->soloConfigValid == 0u) && (netplay->config.localRole == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN) &&
+	if ((netplay->soloConfigValid == 0u) && (netplay->activeRole == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN) &&
 		NativeMatchConfigV1_FindRoleSlot(&netplay->config.fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &slot))
 	{
 		character = NativeArcadeNetplay_CharacterOrFirst(netplay->config.fixture.slots[slot].characterID);
@@ -524,10 +654,29 @@ static void NativeArcadeNetplay_BeginSoloSelect(struct NativeArcadeNetplay *netp
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 	netplay->localRaceFailure = 0u;
 	netplay->selectSerial += 1u;
-	(void)NativeArcadeNetplay_DeriveSelectNonce(netplay->config.selectEntropy, netplay->config.localRole,
+	(void)NativeArcadeNetplay_DeriveSelectNonce(netplay->config.selectEntropy, netplay->activeRole,
 		netplay->selectSerial, &nonce);
 	netplay->selectActive = (uint8_t)(NativeMatchSelectSession_Init(&netplay->select, base, 1u, 0u, nonce, character,
 											track, laps, &netplay->config.selectTimings) != 0);
+}
+
+/* Opens the listen-only link on the local port (SOLO-4), peerHeard cleared.
+ * Its filter is the config's candidates in static mode; in discovery mode
+ * the pending peer, or none (DISC-12), which is recorded as the filter the
+ * link was opened on. */
+static void NativeArcadeNetplay_BeginListen(struct NativeArcadeNetplay *netplay)
+{
+	netplay->peerHeard = 0u;
+	if (netplay->config.discovery == 0u)
+	{
+		netplay->listening = (uint8_t)(NativeLobbyState_BeginListen(&netplay->lobby, netplay->config.localPort,
+											 netplay->config.candidates, netplay->config.candidateCount) != 0);
+		return;
+	}
+	netplay->listenPaired = netplay->pendingPaired;
+	netplay->listenPeer = netplay->pendingPeer;
+	netplay->listening = (uint8_t)(NativeLobbyState_BeginListen(&netplay->lobby, netplay->config.localPort,
+										 &netplay->listenPeer, (netplay->listenPaired != 0u) ? 1u : 0u) != 0);
 }
 
 /*
@@ -547,11 +696,31 @@ static void NativeArcadeNetplay_BeginSolo(struct NativeArcadeNetplay *netplay, i
 	}
 	if (netplay->listening == 0u)
 	{
-		netplay->peerHeard = 0u;
-		netplay->listening = (uint8_t)(NativeLobbyState_BeginListen(&netplay->lobby, netplay->config.localPort,
-											 netplay->config.candidates, netplay->config.candidateCount) != 0);
+		NativeArcadeNetplay_BeginListen(netplay);
 	}
 	NativeArcadeNetplay_BeginSoloSelect(netplay);
+}
+
+/* Discovery mode (DISC-12), at the start of every Tick: while the
+ * listen-only link is open, a pending pairing that no longer matches the
+ * filter it was opened on closes it and opens it again on the new filter
+ * (Close then BeginListen), so peerHeard only ever means a HELLO from the
+ * paired peer's LOBBY. A failed reopen leaves solo without the peer notice,
+ * as a failed open at BEGIN_SOLO_SELECT does. A no-op in static mode. */
+static void NativeArcadeNetplay_RefreshListenFilter(struct NativeArcadeNetplay *netplay)
+{
+	if ((netplay->config.discovery == 0u) || (netplay->listening == 0u))
+	{
+		return;
+	}
+	if ((netplay->listenPaired == netplay->pendingPaired) &&
+		((netplay->pendingPaired == 0u) ||
+			((netplay->listenPeer.ipv4 == netplay->pendingPeer.ipv4) && (netplay->listenPeer.port == netplay->pendingPeer.port))))
+	{
+		return;
+	}
+	NativeArcadeNetplay_CloseLobby(netplay);
+	NativeArcadeNetplay_BeginListen(netplay);
 }
 
 /*
@@ -604,6 +773,9 @@ static void NativeArcadeNetplay_EndSolo(struct NativeArcadeNetplay *netplay)
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 	netplay->localRaceFailure = 0u;
 	netplay->currentConfig = netplay->config.fixture;
+	/* A new session on LOBBY: the pending pairing takes effect (DISC-12; a
+	 * no-op in static mode). */
+	NativeArcadeNetplay_TakePairing(netplay);
 	NativeArcadeNetplay_BeginLobby(netplay);
 }
 
@@ -730,7 +902,7 @@ static void NativeArcadeNetplay_BeginLaunch(struct NativeArcadeNetplay *netplay)
 	NativeArcadeNetplay_DiscardAux(netplay);
 	if (NativeMatchConfigV1_Digest(&netplay->currentConfig, digest))
 	{
-		(void)NativeArcadeLaunch_Begin(&netplay->launch, netplay->config.localRole, digest,
+		(void)NativeArcadeLaunch_Begin(&netplay->launch, netplay->activeRole, digest,
 			NATIVE_ARCADE_NETPLAY_LAUNCH_LINGER_TICKS);
 	}
 }
@@ -851,6 +1023,10 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	{
 		return NATIVE_ARCADE_FLOW_ACTION_NONE;
 	}
+
+	/* 1b. Discovery mode (DISC-12): while solo, the listen-only link's
+	 * filter follows the pending pairing. */
+	NativeArcadeNetplay_RefreshListenFilter(netplay);
 
 	/* 2. Service the lobby, then read the link's foreign-identity drops
 	 * (LR-14): the poll is where the link drops them. */
@@ -1178,7 +1354,7 @@ int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struc
 	view->selectedRow = NativeArcadeFlow_SelectedRow(&netplay->flow);
 	view->ticksInScreen = NativeArcadeFlow_TicksInScreen(&netplay->flow);
 	view->matchCount = netplay->matchCount;
-	view->localRole = netplay->config.localRole;
+	view->localRole = netplay->activeRole;
 	view->menuArmed = (uint8_t)((NativeArcadeMenuInput_IsArmed(&netplay->menuInput) != 0) ? 1u : 0u);
 	view->localMenuEvent = netplay->lastMenuEvent;
 	view->soloFlags = (uint8_t)(((NativeArcadeFlow_Solo(&netplay->flow) != 0u) ? NATIVE_ARCADE_NETPLAY_VIEW_SOLO : 0u) |

@@ -238,10 +238,12 @@ endforeach()
 
 # 8. main.c: the order of the wiring, and where the config may go. The
 #    discovery checks (DISC-18) run on the merged options: the file's link
-#    group is applied, then NativeArcadeLinkOptions_ValidateMerged, then the
-#    discovery-mode refusal, all before the link host is configured. DISC-S4
-#    replaces the refusal pin ("arcadeLinkOptions.discovery != 0u" ...
-#    "not wired yet") with the discovery host wiring.
+#    group is applied, then NativeArcadeLinkOptions_ValidateMerged, all
+#    before the link host is configured. Since DISC-S4 discovery mode is
+#    wired (the S3 refusal is gone): right after the select entropy draw of
+#    an enabled link, and only in discovery mode, main.c draws the discovery
+#    instance nonce (DISC-13) once, and then configures the host; static mode
+#    draws nothing more.
 ctr_read_source("main.c" main_source)
 ctr_strip_comments("${main_source}" main_code)
 ctr_require("main.c" "${main_code}" "#include \"platform/native_arcade_config.h\"")
@@ -256,12 +258,23 @@ ctr_require_order("main.c" "${main_code}"
     "if ((configArgs.namesLinkOption == 0u) && NativeArcadeConfig_HasLink(&arcadeConfig))"
     "NativeArcadeConfig_ApplyLink(&arcadeConfig, &arcadeLinkOptions)"
     "NativeArcadeLinkOptions_ValidateMerged(&arcadeLinkOptions)"
-    "arcadeLinkOptions.discovery != 0u"
-    "not wired yet"
     "NativeArg_NamesReplayOption(argc, argv)"
     "NativeAssets_InitWithAssetDir(sdlBasePath, dataDir, resolvedDataDir, sizeof(resolvedDataDir))"
     "NativeAssets_Validate()"
+    "arcadeLinkOptions.selectEntropy = "
+    "if (arcadeLinkOptions.discovery != 0u)"
+    "arcadeLinkOptions.discoveryNonce = NativeMain_DrawDiscoveryNonce();"
     "NativeArcadeLinkHost_Configure(&arcadeLinkOptions, arcadeLinkIdentityPtr)")
+foreach(gone IN ITEMS "not wired yet" "DISC-S4).")
+    string(FIND "${main_source}" "${gone}" gone_at)
+    if(NOT gone_at EQUAL -1)
+        message(FATAL_ERROR "${prefix}: main.c still holds the S3 discovery-mode refusal ('${gone}'); DISC-S4 wires discovery mode")
+    endif()
+endforeach()
+ctr_count("${main_code}" "discoveryNonce =" nonce_draws)
+if(NOT nonce_draws EQUAL 1)
+    message(FATAL_ERROR "${prefix}: main.c must set arcadeLinkOptions.discoveryNonce exactly once, in discovery mode (DISC-13; found ${nonce_draws})")
+endif()
 # The config's link group must be in the link options before main.c looks at
 # them for any rejection: ApplyLink comes before the FIRST replay-option
 # check and before the roster-proof and autopilot option parsers (whose

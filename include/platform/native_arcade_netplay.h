@@ -221,6 +221,34 @@
  *   saved state, or canonical state beyond the ONE_CAB profile of the solo
  *   config itself.
  *
+ * Discovery mode (docs/DISCOVERY_MILESTONE.md DISC-12, config.discovery 1):
+ * the candidate list and the role come from the caller's pairing, plain
+ * values handed to NativeArcadeNetplay_SetPairing (a peer address and this
+ * cabinet's elected role, or none), not from the config. With 0 (the
+ * default, static mode) nothing below runs: the setter refuses, and the
+ * config's candidates and role are the session's for the adapter's life.
+ * - The setter writes a pending slot only. The pending pairing takes effect
+ *   (becomes the active candidate list and role, and localSlot follows the
+ *   role) only at a lobby Begin that opens a new session on LOBBY: Enter,
+ *   RETURN_TO_LOBBY (EndSolo), and RESTART_LOBBY while the flow is on LOBBY
+ *   (the retry pause, the REJECTED CONFIRM, the MATCH_FOUND fall-back). A
+ *   paired pending slot gives candidates = [peer] and its role; none gives
+ *   an empty list (WAITING, then solo after the offer delay) and the
+ *   unpaired role: config.localRole when it is a seat, CAB1 for auto (0).
+ * - RELINK, BEGIN_REMATCH, and RESTART_LOBBY from SELECT_RESULT or
+ *   REMATCH_WAIT keep the active list, role, and slot: the role never
+ *   changes while a lobby attempt or a session is open.
+ * - On LOBBY, a RESTART_LOBBY whose pending pairing differs from the active
+ *   one closes and begins (RestartCycle would reuse the stored list and
+ *   role).
+ * - While solo, the listen-only link's filter is the pending peer (none: an
+ *   empty filter); a pending pairing that changes it closes the listen link
+ *   and opens it again on the new filter at the start of the next Tick, so
+ *   peerHeard keeps its meaning: a HELLO from the paired peer's LOBBY.
+ * - Every read of this session's role (the lobby Begin, the select nonce
+ *   and local human, the solo cursor default, the launch agreement, and the
+ *   view's localRole) reads the active role.
+ *
  * Caller-owned state, no heap use, no hidden state, no wall clock: every
  * duration is counted in caller ticks. A never-entered adapter opens nothing.
  */
@@ -267,6 +295,24 @@ struct NativeArcadeNetplayConfig
 	struct NativeMatchConfigV1 soloBase;
 	/* Solo (SOLO-11): 0 (the default) or 1; feeds the flow's soloAvailable. */
 	uint8_t soloEnabled;
+	/* Discovery mode (DISC-12): 0 (the default, static mode) or 1. With 1,
+	 * candidateCount must be 0 (the pairing supplies the candidate) and
+	 * localRole is the unpaired placeholder: 0 for auto, or the seat
+	 * preference CAB1_HUMAN or CAB2_HUMAN. */
+	uint8_t discovery;
+};
+
+/* One pairing for NativeArcadeNetplay_SetPairing (DISC-12): plain values,
+ * never a discovery type. ipv4 and port are host order, as struct
+ * NativeUdpTransportAddress. */
+struct NativeArcadeNetplayPairing
+{
+	uint32_t peerIpv4;
+	uint16_t peerPort;
+	/* NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN or _CAB2_HUMAN: this cabinet's
+	 * elected role */
+	uint8_t localRole;
+	uint8_t reserved;
 };
 
 /* The select view's per-human and bot capacities. */
@@ -499,28 +545,66 @@ struct NativeArcadeNetplay
 	uint8_t soloConfigValid;
 	uint8_t soloRaceArmed;
 	struct NativeMatchConfigV1 soloConfig;
+	/* Discovery (DISC-12; see the Discovery mode block above). activeRole
+	 * and the active candidates are the session's: in static mode the
+	 * config's, set once at Init; in discovery mode set from the pending
+	 * slot at each lobby Begin that opens a new session on LOBBY.
+	 * pendingPaired, pendingPeer, and pendingRole are the setter's pending
+	 * slot (discovery mode only). listenPaired and listenPeer are the filter
+	 * the open listen-only link was opened on (discovery mode only).
+	 * Host-local: never sent, and never part of the match config, seeds, or
+	 * simulation identity. */
+	uint8_t activeRole;
+	uint8_t pendingPaired;
+	uint8_t pendingRole;
+	uint8_t listenPaired;
+	uint32_t activeCandidateCount;
+	struct NativeUdpTransportAddress activeCandidates[NATIVE_LOBBY_STATE_MAX_CANDIDATES];
+	struct NativeUdpTransportAddress pendingPeer;
+	struct NativeUdpTransportAddress listenPeer;
 };
 
 /* memset 0, then the four NATIVE_ARCADE_NETPLAY_DEFAULT_* values, the flow's
  * default timings, the select session's default timings
- * (NativeMatchSelectSession_DefaultTimings), selectEntropy 0, and localRole
- * CAB1_HUMAN. fixture, candidates, candidateCount, and localPort stay zero
- * for the caller to fill. NULL is a no-op. */
+ * (NativeMatchSelectSession_DefaultTimings), selectEntropy 0, localRole
+ * CAB1_HUMAN, and discovery 0 (static mode). fixture, candidates,
+ * candidateCount, and localPort stay zero for the caller to fill. NULL is a
+ * no-op. */
 void NativeArcadeNetplay_DefaultConfig(struct NativeArcadeNetplayConfig *config);
 
 /* Validates and stores the config and leaves the adapter dormant on screen
  * OFF. Opens no link. Returns 1 on success; returns 0 with *netplay untouched
- * on a NULL argument, an invalid fixture, a local role that is not CAB1_HUMAN
- * or CAB2_HUMAN or is absent from the fixture, a zero local port, zero or
- * more than NATIVE_LOBBY_STATE_MAX_CANDIDATES candidates, a zero attempt
- * budget, a retransmit interval other than 1, an input delay or stall timeout
- * outside the ranges the lower layers accept, timings the flow rejects,
- * select timings with any zero field, a soloEnabled above 1, or, with
- * soloEnabled 1, a soloBase that fails NativeMatchConfigV1_Validate, is not
- * ARCADE_ONE_CAB, or has no CAB1_HUMAN slot.
+ * on a NULL argument, an invalid fixture, a discovery above 1, a local role
+ * that is not CAB1_HUMAN or CAB2_HUMAN (in discovery mode also 0, auto) or is
+ * absent from the fixture (for auto: CAB1_HUMAN, the unpaired role), a zero
+ * local port, in static mode zero or more than
+ * NATIVE_LOBBY_STATE_MAX_CANDIDATES candidates, in discovery mode any
+ * candidate (DISC-12: the pairing supplies it), a zero attempt budget, a
+ * retransmit interval other than 1, an input delay or stall timeout outside
+ * the ranges the lower layers accept, timings the flow rejects, select
+ * timings with any zero field, a soloEnabled above 1, or, with soloEnabled
+ * 1, a soloBase that fails NativeMatchConfigV1_Validate, is not
+ * ARCADE_ONE_CAB, or has no CAB1_HUMAN slot. The active role and candidates
+ * start as the config's (static mode), or as the unpaired role and an empty
+ * list with no pending pairing (discovery mode).
  * Must not be called on an adapter with an open lobby (it would be
  * overwritten without being closed): call Shutdown first. */
 int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct NativeArcadeNetplayConfig *config);
+
+/*
+ * Discovery mode only (DISC-12): writes the pending pairing, a peer address
+ * and this cabinet's elected role (NULL: none), and returns 1. It never
+ * touches the config, the active candidates and role, or any link: the
+ * pending pairing takes effect at the next lobby Begin that opens a new
+ * session on LOBBY, and a solo listen-only link picks up its filter at the
+ * start of the next Tick (the Discovery mode block above). Returns 0 and
+ * changes nothing for a NULL or uninitialized adapter, in static mode (so a
+ * static candidate list is never overwritten), and for a pairing with
+ * peerIpv4 0, peerPort 0, or a localRole that is not CAB1_HUMAN or
+ * CAB2_HUMAN or is absent from the fixture. The caller hands the current
+ * pairing on every tick, before Tick.
+ */
+int NativeArcadeNetplay_SetPairing(struct NativeArcadeNetplay *netplay, const struct NativeArcadeNetplayPairing *pairing);
 
 /* From screen OFF only: enters LOBBY on the fixture and opens the lobby.
  * Returns BEGIN_LOBBY then, else NONE (also for NULL or an uninitialized

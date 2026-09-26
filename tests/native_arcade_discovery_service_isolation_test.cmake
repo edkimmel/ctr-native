@@ -14,7 +14,7 @@
 #    interface list, and the core; C17 with extensions off; its unit test and
 #    this test are registered, without a live label.
 # 5. No other game/, platform/, include/, or main.c file names the service
-#    yet (the link host joins in DISC-S4).
+#    but the link host's .c, its one consumer since DISC-S4.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade discovery service isolation")
@@ -151,7 +151,9 @@ ctr_require("CMakeLists.txt" "${cmake}" "add_test(NAME native_arcade_discovery_s
 ctr_require("CMakeLists.txt" "${cmake}" "tests/native_arcade_discovery_service_isolation_test.cmake")
 ctr_forbid("CMakeLists.txt" "${cmake}" "set_tests_properties(native_arcade_discovery_service")
 
-# 5. No other source names the service yet.
+# 5. No other source names the service but its one consumer since DISC-S4,
+#    the link host's .c (platform/native_arcade_link_host.c), which owns it.
+list(APPEND service_files "platform/native_arcade_link_host.c")
 file(GLOB_RECURSE scan_files LIST_DIRECTORIES false
     "${repo}/game/*.c" "${repo}/game/*.h"
     "${repo}/platform/*.c" "${repo}/platform/*.h"
@@ -172,7 +174,7 @@ foreach(path IN LISTS scan_files)
     foreach(term IN ITEMS native_arcade_discovery_service nativearcadediscoveryservice)
         string(FIND "${lower}" "${term}" hit)
         if(NOT hit EQUAL -1)
-            message(FATAL_ERROR "${prefix}: ${relative_path} names '${term}'; no module may use the discovery service before DISC-S4")
+            message(FATAL_ERROR "${prefix}: ${relative_path} names '${term}'; only the link host may use the discovery service (DISC-S4)")
         endif()
     endforeach()
 endforeach()

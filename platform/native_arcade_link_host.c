@@ -6,6 +6,8 @@
 #include <string.h>
 
 #include "platform/native_arcade_bot_rules.h"
+#include "platform/native_arcade_discovery.h"
+#include "platform/native_arcade_discovery_service.h"
 #include "platform/native_arcade_flow.h"
 #include "platform/native_arcade_link_host_internal.h"
 #include "platform/native_arcade_link_options.h"
@@ -13,6 +15,7 @@
 #include "platform/native_arcade_netplay.h"
 #include "platform/native_arcade_race_drive.h"
 #include "platform/native_identity.h"
+#include "platform/native_sha256.h"
 
 /*
  * Arcade-link host glue (docs/GAME_LOOP_UI_MILESTONE.md section 2.6). Host
@@ -146,9 +149,23 @@ NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostRaceFacts, NativeArcadeR
 NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostRaceFacts, NativeArcadeRaceDriveFacts, finishedHumans);
 NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostRaceFacts, NativeArcadeRaceDriveFacts, humans);
 
-/* The host's one log call, Configure's solo notice (platform/native_log.c,
- * which only the ctr_native executable links: a test that links this
- * library defines its own stub, as for the pacing switch). Its header,
+/* Discovery (docs/DISCOVERY_MILESTONE.md DISC-11, DISC-12): the options' seat
+ * preference is the beacon's, and an elected seat maps onto the cabinet
+ * role of the same number. */
+_Static_assert(NATIVE_ARCADE_LINK_SEAT_AUTO == NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, "seat AUTO");
+_Static_assert(NATIVE_ARCADE_LINK_SEAT_CAB1 == NATIVE_ARCADE_DISCOVERY_SEAT_CAB1, "seat CAB1");
+_Static_assert(NATIVE_ARCADE_LINK_SEAT_CAB2 == NATIVE_ARCADE_DISCOVERY_SEAT_CAB2, "seat CAB2");
+_Static_assert(NATIVE_ARCADE_DISCOVERY_SEAT_CAB1 == (unsigned)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, "elected CAB1 is the CAB1 role");
+_Static_assert(NATIVE_ARCADE_DISCOVERY_SEAT_CAB2 == (unsigned)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, "elected CAB2 is the CAB2 role");
+_Static_assert(NATIVE_ARCADE_LINK_OPTIONS_MAX_DISCOVERY_TARGETS == NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_OVERRIDES,
+	"every discovery target option fits the service's override list");
+_Static_assert(NATIVE_ARCADE_DISCOVERY_IDENTITY_BYTES <= NATIVE_SHA256_DIGEST_BYTES, "the identity digest is a SHA-256 prefix");
+
+/* The host's log (platform/native_log.c, which only the ctr_native
+ * executable links: a test that links this library defines its own stub, as
+ * for the pacing switch): Configure's solo notice, and the discovery lines
+ * (DISC-15, DISC-16: the socket opened or not, and each pairing event). Its
+ * header,
  * platform/native_log.h, also brings in the engine's macros.h, so the
  * declaration is repeated here (without the printf format attribute). */
 void Platform_Log(const char *fmt, ...);
@@ -228,6 +245,19 @@ static uint32_t g_raceDivergenceRace;
  * Configure reads it. Host-local. */
 #define NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT 1u
 static uint8_t g_soloEnabled = NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT;
+/* Discovery (docs/DISCOVERY_MILESTONE.md DISC-2, DISC-12): g_discoveryMode is
+ * 1 from a discovery-mode LINK Configure (no static peer) until Shutdown; the
+ * service owns the discovery socket, open from that Configure (unless its
+ * bind failed, DISC-15) to Shutdown, and AbortToTitle keeps it. Static mode
+ * leaves both zero: no discovery socket, and the adapter's pairing setter is
+ * never called. The host keeps no pending pairing of its own: the service's
+ * current pairing is handed to the adapter on every tick. g_pairingsHanded
+ * counts those hand-overs since Configure (a test read-back). Host-local:
+ * never a saved state, a recording, canonical state, or the wire (the
+ * beacon is the service's). */
+static uint8_t g_discoveryMode;
+static struct NativeArcadeDiscoveryService g_discovery;
+static uint32_t g_pairingsHanded;
 
 uint64_t NativeArcadeLinkHost_MixSelectEntropy(uint64_t entropy, uint64_t epoch)
 {
@@ -714,6 +744,197 @@ void NativeArcadeLinkHost_RaceEnd(void)
 	g_racePacing = 0u;
 }
 
+/* ---- Discovery (docs/DISCOVERY_MILESTONE.md DISC-12, DISC-15, DISC-16) ---- */
+
+/* The dotted IPv4 of a host-order address, into text (16 bytes). */
+static void NativeArcadeLinkHost_FormatIpv4(uint32_t ipv4, char text[16])
+{
+	uint32_t length = 0u;
+	uint32_t octet;
+
+	for (octet = 0u; octet < 4u; octet++)
+	{
+		uint32_t value = (ipv4 >> (24u - (8u * octet))) & 0xFFu;
+
+		if (value >= 100u)
+		{
+			text[length++] = (char)('0' + (value / 100u));
+		}
+		if (value >= 10u)
+		{
+			text[length++] = (char)('0' + ((value / 10u) % 10u));
+		}
+		text[length++] = (char)('0' + (value % 10u));
+		if (octet < 3u)
+		{
+			text[length++] = '.';
+		}
+	}
+	text[length] = '\0';
+}
+
+/*
+ * Opens the discovery service in a discovery-mode Configure (DISC-2): bound
+ * on the options' discovery port (7000 when not given), with the options'
+ * nonce (main.c's DISC-13 draw), the group hash of the options' group (the
+ * default group when not given, DISC-9), the identity digest (DISC-10: the
+ * first 8 bytes of SHA-256 over the build identity then the content
+ * identity), the link port, the seat preference, and the options' explicit
+ * targets (DISC-18; none: the broadcast targets). A failure (the port in
+ * use) is logged once and is not fatal (DISC-15): discovery stays off, the
+ * adapter is never paired, its lobby waits, and solo is offered.
+ */
+static void NativeArcadeLinkHost_OpenDiscovery(const struct NativeArcadeLinkOptions *options, const struct NativeIdentityV1 *identity)
+{
+	struct NativeSha256 sha;
+	struct NativeUdpTransportAddress targets[NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_OVERRIDES];
+	uint8_t digest[NATIVE_SHA256_DIGEST_BYTES];
+	const char *group = (options->hasGroup != 0u) ? options->group : NATIVE_ARCADE_DISCOVERY_DEFAULT_GROUP;
+	const uint16_t bindPort = (options->discoveryPort != 0u) ? options->discoveryPort
+															 : (uint16_t)NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_DISCOVERY_PORT;
+	uint32_t targetCount = 0u;
+	uint32_t i;
+
+	NativeSha256_Init(&sha);
+	NativeSha256_Update(&sha, identity->build, sizeof(identity->build));
+	NativeSha256_Update(&sha, identity->content, sizeof(identity->content));
+	NativeSha256_Final(&sha, digest);
+	memset(targets, 0, sizeof(targets));
+	for (i = 0u; (i < options->discoveryTargetCount) && (i < NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_OVERRIDES); i++)
+	{
+		targets[i].ipv4 = options->discoveryTargets[i].ipv4;
+		targets[i].port = options->discoveryTargets[i].port;
+		targetCount++;
+	}
+	g_discoveryMode = 1u;
+	if (NativeArcadeDiscoveryService_Open(&g_discovery, bindPort, options->discoveryNonce, NativeArcadeDiscovery_GroupHash(group),
+			digest, options->localPort, options->seatPreference, targets, targetCount))
+	{
+		Platform_Log("[CTR Native] arcade discovery: listening on port %u, group %s, link port %u, %s\n", (unsigned)bindPort, group,
+			(unsigned)options->localPort, (targetCount != 0u) ? "explicit targets" : "broadcast");
+	}
+	else
+	{
+		Platform_Log("[CTR Native] arcade discovery: could not open the discovery socket on port %u; discovery stays off, the lobby waits and solo is offered\n",
+			(unsigned)bindPort);
+	}
+}
+
+/* One log line per discovery event (DISC-16): a pairing found or lost, with
+ * the peer's link address and the elected seat, and a group, identity, or
+ * seat conflict, once per peer nonce (the core reports each once). */
+static void NativeArcadeLinkHost_LogDiscoveryEvent(const struct NativeArcadeDiscoveryEvent *event)
+{
+	char address[16];
+	const char *what;
+	const char *seat = (event->localSeat == NATIVE_ARCADE_DISCOVERY_SEAT_CAB2) ? "cab2" : "cab1";
+
+	switch (event->type)
+	{
+	case NATIVE_ARCADE_DISCOVERY_EVENT_PAIR_FOUND:
+		what = "paired with";
+		break;
+	case NATIVE_ARCADE_DISCOVERY_EVENT_PAIR_LOST:
+		what = "pair lost with";
+		break;
+	case NATIVE_ARCADE_DISCOVERY_EVENT_GROUP_MISMATCH:
+		what = "another group at";
+		seat = "";
+		break;
+	case NATIVE_ARCADE_DISCOVERY_EVENT_IDENTITY_MISMATCH:
+		what = "another build or disc at";
+		seat = "";
+		break;
+	case NATIVE_ARCADE_DISCOVERY_EVENT_SEAT_CONFLICT:
+		what = "seat conflict (both prefer one seat) with";
+		seat = "";
+		break;
+	default:
+		return;
+	}
+	NativeArcadeLinkHost_FormatIpv4(event->peerIpv4, address);
+	Platform_Log("[CTR Native] arcade discovery: %s %s:%u%s%s\n", what, address, (unsigned)event->peerLinkPort,
+		(seat[0] != '\0') ? " as " : "; not paired", seat);
+}
+
+/* Discovery mode only: hands the service's current pairing, or none, to
+ * the adapter's pending slot (DISC-12), as plain values. */
+static void NativeArcadeLinkHost_HandPairing(void)
+{
+	struct NativeArcadeDiscoveryPairing pairing;
+	struct NativeArcadeNetplayPairing handed;
+
+	if (g_discoveryMode == 0u)
+	{
+		return;
+	}
+	g_pairingsHanded = NativeArcadeLinkHost_SaturatingIncrement(g_pairingsHanded);
+	if (!NativeArcadeDiscoveryService_Pairing(&g_discovery, &pairing))
+	{
+		(void)NativeArcadeNetplay_SetPairing(&g_netplay, NULL);
+		return;
+	}
+	memset(&handed, 0, sizeof(handed));
+	handed.peerIpv4 = pairing.peerIpv4;
+	handed.peerPort = pairing.peerLinkPort;
+	handed.localRole = (uint8_t)((pairing.localSeat == NATIVE_ARCADE_DISCOVERY_SEAT_CAB2) ? NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN
+																						  : NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN);
+	(void)NativeArcadeNetplay_SetPairing(&g_netplay, &handed);
+}
+
+/* Discovery mode only, at the top of every LINK host Tick, before the
+ * adapter's (DISC-12): one service tick (drain, beacon), its events to the
+ * log, and the current pairing to the adapter. */
+static void NativeArcadeLinkHost_TickDiscovery(void)
+{
+	struct NativeArcadeDiscoveryEvent event;
+
+	if (g_discoveryMode == 0u)
+	{
+		return;
+	}
+	NativeArcadeDiscoveryService_Tick(&g_discovery);
+	while (NativeArcadeDiscoveryService_TakeEvent(&g_discovery, &event))
+	{
+		NativeArcadeLinkHost_LogDiscoveryEvent(&event);
+	}
+	NativeArcadeLinkHost_HandPairing();
+}
+
+uint8_t NativeArcadeLinkHost_InternalDiscoveryOpen(void)
+{
+	struct NativeArcadeDiscoveryServiceStatus status;
+
+	(void)NativeArcadeDiscoveryService_GetStatus(&g_discovery, &status);
+	return status.open;
+}
+
+uint16_t NativeArcadeLinkHost_InternalDiscoveryPort(void)
+{
+	struct NativeArcadeDiscoveryServiceStatus status;
+
+	(void)NativeArcadeDiscoveryService_GetStatus(&g_discovery, &status);
+	return status.bindPort;
+}
+
+uint32_t NativeArcadeLinkHost_InternalPairingsHanded(void)
+{
+	return g_pairingsHanded;
+}
+
+int NativeArcadeLinkHost_InternalPendingPairing(uint32_t *peerIpv4, uint16_t *peerPort, uint8_t *localRole)
+{
+	if ((peerIpv4 == NULL) || (peerPort == NULL) || (localRole == NULL) || (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) ||
+		(g_netplay.pendingPaired == 0u))
+	{
+		return 0;
+	}
+	*peerIpv4 = g_netplay.pendingPeer.ipv4;
+	*peerPort = g_netplay.pendingPeer.port;
+	*localRole = g_netplay.pendingRole;
+	return 1;
+}
+
 void NativeArcadeLinkHost_Shutdown(void)
 {
 	/* Before a process exit (main.c, and its atexit registration in LINK
@@ -731,6 +952,11 @@ void NativeArcadeLinkHost_Shutdown(void)
 	{
 		NativeArcadeNetplay_Shutdown(&g_netplay);
 	}
+	/* The discovery socket lives until Shutdown (DISC-2); safe when it was
+	 * never opened. */
+	NativeArcadeDiscoveryService_Close(&g_discovery);
+	g_discoveryMode = 0u;
+	g_pairingsHanded = 0u;
 	memset(&g_options, 0, sizeof(g_options));
 	memset(&g_netplay, 0, sizeof(g_netplay));
 	memset(&g_config, 0, sizeof(g_config));
@@ -862,7 +1088,11 @@ int NativeArcadeLinkHost_Configure(const struct NativeArcadeLinkOptions *options
 	}
 	g_config.candidateCount = options->peerCount;
 	g_config.localPort = options->localPort;
+	/* Discovery mode (DISC-11, DISC-12): no peer, and the role is the
+	 * adapter's unpaired placeholder (0 for auto, else the seat preference);
+	 * the pairing supplies the peer and the elected role. */
 	g_config.localRole = options->localRole;
+	g_config.discovery = (uint8_t)((options->discovery != 0u) ? 1u : 0u);
 	/* SOLO-11: solo only through the gate, and only on a solo base that
 	 * builds; otherwise the link runs exactly as without solo. */
 	g_config.soloEnabled = 0u;
@@ -884,6 +1114,12 @@ int NativeArcadeLinkHost_Configure(const struct NativeArcadeLinkOptions *options
 	g_options = *options;
 	g_idleTicks = 0u;
 	g_mode = NATIVE_ARCADE_LINK_HOST_MODE_LINK;
+	/* Discovery mode only: the discovery socket opens now (DISC-2, DISC-12),
+	 * while the link itself stays dormant on screen OFF. */
+	if (g_config.discovery != 0u)
+	{
+		NativeArcadeLinkHost_OpenDiscovery(options, identity);
+	}
 	return 1;
 }
 
@@ -927,6 +1163,9 @@ uint32_t NativeArcadeLinkHost_Tick(uint32_t heldMenuButtons, uint8_t raceFinishe
 	{
 		return NATIVE_ARCADE_FLOW_ACTION_NONE;
 	}
+	/* Discovery mode: the service's tick and the pairing hand-over come
+	 * first, on every LINK tick, solo included (DISC-12). */
+	NativeArcadeLinkHost_TickDiscovery();
 	if (NativeArcadeLinkHost_LinkScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF)
 	{
 		g_idleTicks = NativeArcadeLinkHost_SaturatingIncrement(g_idleTicks);
@@ -1222,7 +1461,9 @@ int NativeArcadeLinkHost_GetView(struct NativeArcadeLinkHostView *view)
 	view->selectedRow = netplayView.selectedRow;
 	view->ticksInScreen = (netplayView.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF) ? g_idleTicks
 																						 : netplayView.ticksInScreen;
-	view->localCab = (uint8_t)((g_config.localRole == (uint8_t)NATIVE_ARCADE_LINK_HOST_ROLE_CAB2) ? 2u : 1u);
+	/* The session's role, as the adapter holds it (DISC-12): in discovery
+	 * mode the elected seat once a pairing took effect. */
+	view->localCab = (uint8_t)((netplayView.localRole == (uint8_t)NATIVE_ARCADE_LINK_HOST_ROLE_CAB2) ? 2u : 1u);
 	view->rowsEnabled = (uint8_t)(((netplayView.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS) &&
 									  (netplayView.menuArmed != 0u) &&
 									  (netplayView.ticksInScreen > g_config.timings.resultsDwellTicks))
@@ -1382,4 +1623,8 @@ void NativeArcadeLinkHost_AbortToTitle(void)
 		return;
 	}
 	g_idleTicks = 0u;
+	/* Init emptied the adapter's pending pairing; the discovery socket stays
+	 * open (only Shutdown closes it), and the current pairing is handed
+	 * again at once, as every Tick does (DISC-12). */
+	NativeArcadeLinkHost_HandPairing();
 }
