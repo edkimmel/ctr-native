@@ -422,6 +422,18 @@ set_target_properties(ctr_native_arcade_config PROPERTIES
 target_include_directories(ctr_native_arcade_config PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(ctr_native_arcade_config PUBLIC ctr_native_arcade_link_options ctr_native_display_config)
 
+# Arcade-link peer discovery, pure core (docs/DISCOVERY_MILESTONE.md
+# DISC-S2): the 96-byte beacon codec, the group name check and FNV-1a hash,
+# the seat election, and a caller-owned, tick-driven peer table. No heap,
+# clock, or socket; links nothing (DISC-14). Not yet linked by any target.
+add_library(ctr_native_arcade_discovery STATIC platform/native_arcade_discovery.c)
+set_target_properties(ctr_native_arcade_discovery PROPERTIES
+    C_STANDARD 17
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(ctr_native_arcade_discovery PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 # Match-select resolution rules (docs/MATCH_SELECT_MILESTONE.md section 2.1,
 # MS-2): pure tables mirrored from retail, seed derivation, tie draws, vote,
 # character, and bot resolution, the outcome digest, and the resolved config
@@ -1567,6 +1579,22 @@ if(BUILD_TESTING)
 
     add_test(NAME native_arcade_config_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_config_isolation_test.cmake")
+
+    # Arcade-link discovery pure core (docs/DISCOVERY_MILESTONE.md DISC-S2):
+    # the codec and every reject, FNV-1a known answers, the election from
+    # both sides, and the peer table (pairing, expiry, echo, mismatches,
+    # restart replacement, full table, lowest key).
+    add_executable(native_arcade_discovery_test tests/native_arcade_discovery_test.c)
+    set_target_properties(native_arcade_discovery_test PROPERTIES
+        C_STANDARD 17
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+    )
+    target_link_libraries(native_arcade_discovery_test PRIVATE ctr_native_arcade_discovery)
+    add_test(NAME native_arcade_discovery_unit COMMAND $<TARGET_FILE:native_arcade_discovery_test>)
+
+    add_test(NAME native_arcade_discovery_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_arcade_discovery_isolation_test.cmake")
 
     # The explicit data directory (PK-6): NativeAssets_InitWithAssetDir over
     # fabricated folders with tiny dummy files under the build tree.

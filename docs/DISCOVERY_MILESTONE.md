@@ -624,4 +624,6 @@ leave room.
 ## 6. Status
 
 - DISC-S1, this plan: the commit that adds this file.
-- DISC-S2 to DISC-S6: not started.
+- DISC-S2, pure core: done (beacon codec, group hash, election, peer
+  table; an entry heard at tick T expires on the Tick reaching T + 300).
+- DISC-S3 to DISC-S6: not started.
