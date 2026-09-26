@@ -46,7 +46,12 @@
 # only through a fail-closed bot-rules check; the header appends the solo
 # view group and declares the solo query; and solo stays dark (rules 3 and
 # 3j). Since SOLO-S3 the four solo previews set the solo view fields from a
-# script, and only there, without touching the gate (rule 3k).
+# script, and only there, without touching the gate (rule 3k). Since SOLO-S4
+# part 1 a solo race begins the drive's local mode on the solo query's
+# checked config, with the linked race's pacing path (rules 3f and 3g), no
+# divergence is latched in solo (rule 3i), and Configure logs through
+# Platform_Log, declared in the .c, when the gate is on but the solo base
+# does not build (rules 3f and 3l). The gate stays dark (rule 3j unchanged).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -303,9 +308,14 @@ endif()
 
 # 3f. The race pacing switch (docs/LOCKSTEP_RACE_MILESTONE.md LR-7, LR-S3):
 #     the header declares RaceBegin and RaceEnd. The .c names exactly one
-#     platform function, Platform_SetFixedVBlankPacing (so platform.h brings
-#     in nothing else), and only its own g_racePacing flag gates the off
-#     calls, so a pacing the host did not turn on is never touched.
+#     platform function of platform.h, Platform_SetFixedVBlankPacing (so
+#     platform.h brings in nothing else), and only its own g_racePacing flag
+#     gates the off calls, so a pacing the host did not turn on is never
+#     touched. Since SOLO-S4 it also names the log, Platform_Log, exactly
+#     twice: its one declaration (repeated from platform/native_log.h, which
+#     the .c may not include) and Configure's one solo notice (pinned in 3j).
+#     A solo race turns the pacing on and off on the same RaceBegin and
+#     RaceEnd path as a linked race (pinned in 3g, SOLO-7).
 foreach(literal IN ITEMS
         "int NativeArcadeLinkHost_RaceBegin(void);"
         "void NativeArcadeLinkHost_RaceEnd(void);")
@@ -316,8 +326,18 @@ foreach(literal IN ITEMS
 endforeach()
 string(REGEX MATCHALL "Platform_[A-Za-z0-9_]*" platform_names "${source}")
 list(REMOVE_DUPLICATES platform_names)
-if(NOT "${platform_names}" STREQUAL "Platform_SetFixedVBlankPacing")
-    message(FATAL_ERROR "arcade link host isolation: ${host_source} may name only Platform_SetFixedVBlankPacing of the platform layer (found '${platform_names}')")
+list(SORT platform_names)
+if(NOT "${platform_names}" STREQUAL "Platform_Log;Platform_SetFixedVBlankPacing")
+    message(FATAL_ERROR "arcade link host isolation: ${host_source} may name only Platform_SetFixedVBlankPacing and Platform_Log of the platform layer (found '${platform_names}')")
+endif()
+string(REGEX MATCHALL "Platform_Log" platform_log_names "${source}")
+list(LENGTH platform_log_names platform_log_count)
+if(NOT platform_log_count EQUAL 2)
+    message(FATAL_ERROR "arcade link host isolation: ${host_source} must name Platform_Log exactly twice, its declaration and its one call (found ${platform_log_count})")
+endif()
+string(REGEX MATCH "(^|[\r\n])void Platform_Log\\(const char \\*fmt, \\.\\.\\.\\);[ \t]*[\r\n]" platform_log_declaration "${source}")
+if(platform_log_declaration STREQUAL "")
+    message(FATAL_ERROR "arcade link host isolation: ${host_source} must declare 'void Platform_Log(const char *fmt, ...);' on its own line")
 endif()
 foreach(literal IN ITEMS
         "static uint8_t g_racePacing;"
@@ -467,10 +487,37 @@ ctr_require_in("${host_source} (BeginDrive)" "${begin_body}"
     "callbacks.servicePeriod = NativeArcadeLinkHost_DriveServicePeriod;"
     "NativeArcadeRaceDrive_Begin(&g_drive, NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay)), &g_driveKept, &callbacks, g_raceTickLimit)"
     "NativeArcadeLinkHost_ReportDriveFailure();")
+# SOLO-S4 (docs/SOLO_CAB_MILESTONE.md SOLO-7): on RACING in solo the drive
+# begins its local mode, and only there: after the reset and the RACING
+# check, before any linked callback is set, on the solo query's checked
+# config (NULL when there is none) with the same stored limit, a refusal
+# reported on the one failure path, and nothing else. The local begin names
+# no callback, link, or session, so a solo race never sends, polls, or
+# takes. LinkSolo reads only the view's solo flag.
+string(FIND "${begin_body}" "if (NativeArcadeLinkHost_LinkSolo()) { g_driveBegun = 1u; if (!NativeArcadeRaceDrive_BeginLocal(&g_drive, NativeArcadeLinkHost_GetSoloConfig(&solo) ? &solo : NULL, g_raceTickLimit)) { NativeArcadeLinkHost_ReportDriveFailure(); } return; } memset(&callbacks, 0, sizeof(callbacks));" begin_solo_at)
+string(FIND "${begin_body}" "if (NativeArcadeLinkHost_LinkScreen() != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) { return; }" begin_racing_at)
+string(FIND "${begin_body}" "NativeArcadeLinkHost_ResetDrive();" begin_reset_at)
+if(begin_solo_at EQUAL -1 OR begin_racing_at EQUAL -1 OR NOT (begin_reset_at LESS begin_racing_at AND begin_racing_at LESS begin_solo_at))
+    message(FATAL_ERROR "arcade link host isolation: ${host_source} (BeginDrive) must reset, check RACING, then begin a solo race's local drive before any linked callback is set")
+endif()
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeRaceDrive_BeginLocal(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_LinkSolo(" 3)
+ctr_body("${host_source}" "${source_code}" "static int NativeArcadeLinkHost_LinkSolo(" link_solo_body)
+ctr_require_in("${host_source} (LinkSolo)" "${link_solo_body}"
+    "{ struct NativeArcadeNetplayView view; if (!NativeArcadeNetplay_GetView(&g_netplay, &view)) { return 0; } return (view.soloFlags & NATIVE_ARCADE_NETPLAY_VIEW_SOLO) != 0u;")
+# The pacing (rule 3f) is the linked race's, on the same path for solo:
+# RaceBegin turns it on before the drive begins, whatever the drive's mode,
+# and RaceEnd turns it off after the drive's end part.
+ctr_body("${host_source}" "${source_code}" "int NativeArcadeLinkHost_RaceBegin(" race_begin_body)
+ctr_require_in("${host_source} (RaceBegin)" "${race_begin_body}"
+    "{ if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) { return 0; } Platform_SetFixedVBlankPacing(1); g_racePacing = 1u; NativeArcadeLinkHost_BeginDrive(); return 1;")
+ctr_body("${host_source}" "${source_code}" "void NativeArcadeLinkHost_RaceEnd(" race_end_body)
+ctr_require_in("${host_source} (RaceEnd)" "${race_end_body}"
+    "{ NativeArcadeLinkHost_RaceEndDrive(); if (g_racePacing == 0u) { return; } Platform_SetFixedVBlankPacing(0); g_racePacing = 0u;")
 
-# The one failure-report path.
+# The one failure-report path (a refused solo begin included).
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeNetplay_ReportLocalRaceFailure(" 2)
-ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_ReportDriveFailure(" 3)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_ReportDriveFailure(" 4)
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_ReportDriveFailure(" report_body)
 ctr_require_in("${host_source} (ReportDriveFailure)" "${report_body}"
     "if ((g_driveFailureReported != 0u) || (NativeArcadeRaceDrive_EndKind(&g_drive) != NATIVE_ARCADE_RACE_DRIVE_END_LOCAL_FAILURE)) { return; }"
@@ -589,7 +636,7 @@ ctr_require_in("${host_source} (SetRaceTickLimit)" "${limit_body}"
 ctr_require_in("${host_source} (Shutdown)" "${shutdown_body}" "g_raceTickLimit = 0u;")
 ctr_body("${host_source}" "${source_code}" "uint32_t NativeArcadeLinkHost_InternalRaceTickLimit(" limit_readback_body)
 ctr_require_in("${host_source} (InternalRaceTickLimit)" "${limit_readback_body}" "{ return g_raceTickLimit;")
-ctr_require_count("${host_source}" "${source_flat}" "g_raceTickLimit" 5)
+ctr_require_count("${host_source}" "${source_flat}" "g_raceTickLimit" 6)
 ctr_require_count("${host_source}" "${source_flat}" "g_raceTickLimit =" 2)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_SetRaceTickLimit(" 1)
 
@@ -703,7 +750,10 @@ endif()
 #     domain's, else the combined ones; the whole body is pinned) with the
 #     link's match count; it is called exactly three times: in Tick right after
 #     the drive's tick (pinned with the Tick order above), and in RaceStep and
-#     RaceHold right after the drive's call, before the status. The take
+#     RaceHold right after the drive's call, before the status. Since SOLO-S4
+#     it latches nothing while the flow is in solo (a solo race has no
+#     session, SOLO-7), so no earlier linked race's divergence is ever
+#     latched for a solo race. The take
 #     copies the record field by field, zeroes reserved, and clears the
 #     pending flag, which only the helper sets. Shutdown and AbortToTitle drop
 #     it. Of game/ and main.c only the hook, game/MAIN/MainArcadeLink.c, names
@@ -714,7 +764,7 @@ ctr_require_in("${host_header}" "${header_flat}"
     "struct NativeArcadeLinkHostRaceDivergence { uint32_t raceNumber; uint32_t raceTick; uint32_t domainMask; uint32_t reserved; uint64_t localDigest; uint64_t remoteDigest; };")
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_LatchDivergence(" latch_body)
 ctr_require_in("${host_source} (LatchDivergence)" "${latch_body}"
-    "{ const struct NativeLockstepDivergenceReport *report; uint32_t domain; if ((g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) || (g_netplay.matchCount == 0u) || (g_raceDivergenceRace == g_netplay.matchCount)) { return; } report = NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay))); if (report == NULL) { return; } memset(&g_raceDivergence, 0, sizeof(g_raceDivergence)); g_raceDivergence.raceNumber = g_netplay.matchCount; g_raceDivergence.raceTick = report->frameIndex; g_raceDivergence.domainMask = report->canonicalDomainMask; g_raceDivergence.localDigest = report->localCombinedDigest; g_raceDivergence.remoteDigest = report->remoteCombinedDigest; for (domain = 0u; domain < NATIVE_CANONICAL_DOMAIN_COUNT; domain++) { if ((report->canonicalDomainMask & (UINT32_C(1) << domain)) != 0u) { g_raceDivergence.localDigest = report->localDomainDigests[domain]; g_raceDivergence.remoteDigest = report->remoteDomainDigests[domain]; break; } } g_raceDivergencePending = 1u; g_raceDivergenceRace = g_netplay.matchCount;")
+    "{ const struct NativeLockstepDivergenceReport *report; uint32_t domain; if ((g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) || (g_netplay.matchCount == 0u) || (g_raceDivergenceRace == g_netplay.matchCount) || NativeArcadeLinkHost_LinkSolo()) { return; } report = NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay))); if (report == NULL) { return; } memset(&g_raceDivergence, 0, sizeof(g_raceDivergence)); g_raceDivergence.raceNumber = g_netplay.matchCount; g_raceDivergence.raceTick = report->frameIndex; g_raceDivergence.domainMask = report->canonicalDomainMask; g_raceDivergence.localDigest = report->localCombinedDigest; g_raceDivergence.remoteDigest = report->remoteCombinedDigest; for (domain = 0u; domain < NATIVE_CANONICAL_DOMAIN_COUNT; domain++) { if ((report->canonicalDomainMask & (UINT32_C(1) << domain)) != 0u) { g_raceDivergence.localDigest = report->localDomainDigests[domain]; g_raceDivergence.remoteDigest = report->remoteDomainDigests[domain]; break; } } g_raceDivergencePending = 1u; g_raceDivergenceRace = g_netplay.matchCount;")
 ctr_require_count("${host_source}" "${source_flat}" "NativeLockstepSession_FirstDivergence(" 1)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_LatchDivergence(" 4)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_LatchDivergence(); return NativeArcadeLinkHost_DriveStatus(status, pads, padsOut);" 2)
@@ -818,12 +868,20 @@ ctr_require_count("${host_source}" "${source_flat}" "view->solo =" 3)
 ctr_require_count("${host_source}" "${source_flat}" "view->soloOffered =" 2)
 ctr_require_count("${host_source}" "${source_flat}" "view->peerHeard =" 2)
 
+# 3l. The solo notice (docs/SOLO_CAB_MILESTONE.md SOLO-S4). When the gate is
+#     on but the solo base does not build, Configure logs one line and leaves
+#     solo off; the log's one call (rule 3f) is that notice, right after the
+#     gate branch of rule 3j, and names no config or identity bytes.
+ctr_require_in("${host_source} (Configure)" "${configure_body}"
+    "g_config.soloEnabled = 1u; } else if (g_soloEnabled != 0u) { Platform_Log(\"[CTR Native] arcade link: the solo base did not build; solo stays off\\n\"); }")
+
 # 4. ctr_native_arcade_link_host links exactly the adapter and the host
 #    options, in exactly one target_link_libraries call. Its one other
 #    link-time dependency (since LR-S3, LR-7) is not a library:
 #    Platform_SetFixedVBlankPacing (rule 3f), which only the ctr_native
 #    executable defines (platform/native_platform.c) and which every test
-#    that links this library stubs.
+#    that links this library stubs; since SOLO-S4 likewise Platform_Log
+#    (rule 3f), defined by platform/native_log.c in the executable.
 ctr_read_source("CMakeLists.txt" cmake)
 set(target ctr_native_arcade_link_host)
 string(REGEX MATCHALL "target_link_libraries\\([ \t\r\n]*${target}[ \t\r\n][^)]*\\)" link_calls "${cmake}")

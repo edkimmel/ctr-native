@@ -14,6 +14,13 @@
  * poll, the adapter's OnTakeResult, and the hold's once-per-period service.
  * It holds no pointer to anything else and reads no clock: the hold's wall
  * time arrives as the hold loop's periods count and newPeriod flag.
+ *
+ * The local mode (docs/SOLO_CAB_MILESTONE.md SOLO-7, slice SOLO-S4) drives a
+ * solo race: BeginLocal takes a ONE_CAB config and no session, kept ring, or
+ * callbacks. Its Step keeps the argument checks and the end checks, but
+ * records, submits, composes, sends, resends, polls, and takes nothing and
+ * calls no callback: the local sample drives retail pad 0 on the same race
+ * tick. It never holds and arms no linger.
  */
 
 #include "platform/native_canonical_state.h"
@@ -105,7 +112,8 @@ enum NativeArcadeRaceDriveFailure
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_TAKE = 16,           /* a non-OK, non-STALL take while RUNNING */
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_ROLE_PAD = 17,       /* the committed inputs lack a role's pad */
 	NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_SLOT = 18,     /* Begin: the session's localSlot is neither role slot */
-	NATIVE_ARCADE_RACE_DRIVE_FAILURE_PERIODS = 19         /* Hold: periods went backwards or disagrees with newPeriod (LR-44) */
+	NATIVE_ARCADE_RACE_DRIVE_FAILURE_PERIODS = 19,        /* Hold: periods went backwards or disagrees with newPeriod (LR-44) */
+	NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_CONFIG = 20    /* BeginLocal: not a ONE_CAB config with CAB1_HUMAN in slot 0 */
 };
 
 /*
@@ -182,7 +190,7 @@ struct NativeArcadeRaceDrive
 	uint8_t cab1Slot;
 	uint8_t cab2Slot;
 	uint8_t lingerSawResults; /* the linger has seen onResults nonzero (LR-46) */
-	uint8_t reserved;
+	uint8_t local;            /* 1: begun by BeginLocal (SOLO-7); session, kept, and callbacks unset */
 };
 
 /* Writes the neutral connected pad (connected 1, status 0, id 0x41, buttons
@@ -224,6 +232,19 @@ int NativeArcadeRaceDrive_Begin(struct NativeArcadeRaceDrive *drive, struct Nati
                                 const struct NativeArcadeRaceDriveCallbacks *callbacks, uint32_t raceTickLimit);
 
 /*
+ * Begins a solo race's drive in the local mode (SOLO-7): no session, no kept
+ * ring, and no callbacks, so no call of the drive ever reaches one. config is
+ * the solo race's ARCADE_ONE_CAB config, its CAB1_HUMAN in slot 0 (SOLO-6);
+ * the drive reads it only here. raceTickLimit is as in Begin. Always
+ * reinitializes the whole drive first. Returns 1 when the drive runs; 0 on a
+ * refusal, which ends the drive as LOCAL_FAILURE: a NULL config is
+ * FAILURE_ARGUMENT, another profile or CAB1_HUMAN missing or not in slot 0 is
+ * FAILURE_LOCAL_CONFIG, and a limit above 18000 is FAILURE_TICK_LIMIT. NULL
+ * drive: returns 0.
+ */
+int NativeArcadeRaceDrive_BeginLocal(struct NativeArcadeRaceDrive *drive, const struct NativeMatchConfigV1 *config, uint32_t raceTickLimit);
+
+/*
  * One race tick k (LR-2, LR-9, LR-13, LR-18). raceTick must be the next race
  * tick (0 first, then one more after each GO) and state->frameNumber must
  * equal it; localSample is the raw local sample (normalized here). Once those
@@ -254,6 +275,13 @@ int NativeArcadeRaceDrive_Begin(struct NativeArcadeRaceDrive *drive, struct Nati
  * padsOut is written only on GO: [0] the CAB1_HUMAN pad, [1] the CAB2_HUMAN
  * pad, each normalized again, [2] and [3] disconnected. NULL drive: END.
  * After END every call returns END and does nothing.
+ *
+ * In the local mode the same argument checks come first, then step 2 (the
+ * same end checks, in the same order) without step 1, and steps 3 to 7 are
+ * replaced by a GO on race tick k itself (no input delay): padsOut [0] the
+ * normalized local sample, [1] the neutral connected pad (as the roster
+ * proof's ONE_CAB pads), [2] and [3] disconnected. It never returns HOLD and
+ * calls no callback.
  */
 enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step(struct NativeArcadeRaceDrive *drive, uint32_t raceTick, const struct NativeCanonicalStateV4 *state,
                                                             const struct NativeCanonicalInputPadV1 *localSample, const struct NativeArcadeRaceDriveFacts *facts,
@@ -274,7 +302,9 @@ enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step(struct NativeArcadeR
  * once per newly elapsed period outside the start grace (race tick 0 and
  * period <= 810), and stops at the first latched return (END as OUTCOME).
  * Other iterations only retry the take. A non-STALL take is classified as in
- * Step. Returns GO (padsOut mapped), HOLD, or END.
+ * Step. Returns GO (padsOut mapped), HOLD, or END. A local-mode drive is
+ * never held, so Hold there is FAILURE_SEQUENCE (END once ended) and calls
+ * nothing.
  */
 enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Hold(struct NativeArcadeRaceDrive *drive, uint32_t periods, int newPeriod,
                                                             struct NativeCanonicalInputPadV1 padsOut[NATIVE_ARCADE_RACE_DRIVE_PAD_COUNT]);
@@ -289,7 +319,8 @@ enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Hold(struct NativeArcadeR
  * F), onResults 0 does nothing: no send, no count, no stop. It stops for good
  * when the count reaches 0, the session is not RUNNING, or onResults is 0
  * after RESULTS was seen. Never sends after an OUTCOME or LOCAL_FAILURE end.
- * Returns the bundles the link accepted in this call.
+ * A local-mode finish arms no linger (LingerTicksLeft 0), so there it does
+ * nothing. Returns the bundles the link accepted in this call.
  */
 uint32_t NativeArcadeRaceDrive_LingerTick(struct NativeArcadeRaceDrive *drive, int onResults);
 
@@ -315,8 +346,11 @@ uint32_t NativeArcadeRaceDrive_HeldPeriods(const struct NativeArcadeRaceDrive *d
 uint32_t NativeArcadeRaceDrive_LingerTicksLeft(const struct NativeArcadeRaceDrive *drive);
 /* The race tick limit in force (18000 unless lowered). */
 uint32_t NativeArcadeRaceDrive_RaceTickLimit(const struct NativeArcadeRaceDrive *drive);
-/* Bundles composed into the kept ring so far (each frame exactly once). */
+/* Bundles composed into the kept ring so far (each frame exactly once);
+ * always 0 in the local mode. */
 uint32_t NativeArcadeRaceDrive_ComposedCount(const struct NativeArcadeRaceDrive *drive);
+/* Nonzero from a successful BeginLocal until the drive is reinitialized. */
+int NativeArcadeRaceDrive_IsLocal(const struct NativeArcadeRaceDrive *drive);
 
 /* Fixed log names: "none", "end of race", "finish grace", "race tick
  * limit", "outcome", "local failure"; "unknown" otherwise. */

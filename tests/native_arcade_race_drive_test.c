@@ -1018,7 +1018,7 @@ static void TestDriveConstants(void)
 	CHECK(strcmp(NativeArcadeRaceDrive_EndKindName(NATIVE_ARCADE_RACE_DRIVE_END_OUTCOME), "outcome") == 0);
 	CHECK(strcmp(NativeArcadeRaceDrive_EndKindName(NATIVE_ARCADE_RACE_DRIVE_END_LOCAL_FAILURE), "local failure") == 0);
 	CHECK(strcmp(NativeArcadeRaceDrive_EndKindName((enum NativeArcadeRaceDriveEndKind)99), "unknown") == 0);
-	for (uint32_t reason = 0; reason <= (uint32_t)NATIVE_ARCADE_RACE_DRIVE_FAILURE_PERIODS; reason++)
+	for (uint32_t reason = 0; reason <= (uint32_t)NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_CONFIG; reason++)
 	{
 		const char *name = NativeArcadeRaceDrive_FailureName((enum NativeArcadeRaceDriveFailure)reason);
 
@@ -1029,7 +1029,9 @@ static void TestDriveConstants(void)
 			CHECK(strcmp(name, NativeArcadeRaceDrive_FailureName((enum NativeArcadeRaceDriveFailure)other)) != 0);
 		}
 	}
-	CHECK(strcmp(NativeArcadeRaceDrive_FailureName((enum NativeArcadeRaceDriveFailure)20), "unknown") == 0);
+	CHECK(NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_CONFIG == 20);
+	CHECK(strcmp(NativeArcadeRaceDrive_FailureName((enum NativeArcadeRaceDriveFailure)21), "unknown") == 0);
+	CHECK(strcmp(NativeArcadeRaceDrive_FailureName(NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_CONFIG), "local race config not one-cabinet") == 0);
 	CHECK(strcmp(NativeArcadeRaceDrive_FailureName(NATIVE_ARCADE_RACE_DRIVE_FAILURE_INPUT_DELAY), "input delay outside 1..3") == 0);
 	CHECK(strcmp(NativeArcadeRaceDrive_FailureName(NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_SLOT), "local slot not a cabinet role") == 0);
 	CHECK(strcmp(NativeArcadeRaceDrive_FailureName(NATIVE_ARCADE_RACE_DRIVE_FAILURE_PERIODS), "held periods inconsistent") == 0);
@@ -2323,6 +2325,319 @@ static void TestDriveLingerStops(void)
 	CHECK(g_a.sendCalls == 0u);
 }
 
+/* ------------------------------------------------------------------------
+ * SOLO-S4: the local mode (docs/SOLO_CAB_MILESTONE.md SOLO-7). A solo race
+ * over no session, kept ring, or callback: the local sample drives retail
+ * pad 0 on the same race tick, the end rules are the linked race's, and
+ * nothing is recorded, composed, sent, polled, or taken.
+ * ------------------------------------------------------------------------ */
+
+/* A ONE_CAB config (its CAB1_HUMAN in slot 0), as FillConfig builds it. */
+static int FillSoloConfig(struct NativeMatchConfigV1 *config)
+{
+	uint8_t slot = 0xffu;
+
+	FillConfig(config, 0);
+	REQUIRE(config->profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB);
+	REQUIRE(NativeMatchConfigV1_FindRoleSlot(config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &slot) == 1);
+	REQUIRE(slot == 0u);
+	return 1;
+}
+
+/* The race's facts with no finish and no END_OF_RACE, humans 1 (a solo
+ * race). */
+static void SoloRace(void)
+{
+	memset(&g_race, 0, sizeof(g_race));
+	g_race.humans = 1u;
+	for (uint32_t i = 0; i < 4u; i++)
+	{
+		g_race.finishTick[i] = NO_TICK;
+	}
+	g_race.endOfRaceTick = NO_TICK;
+}
+
+/* A local GO's pads for race tick k: [0] the normalized sample of k itself
+ * (no input delay), [1] the neutral connected pad, [2] and [3]
+ * disconnected. */
+static int LocalPadsOk(uint32_t k, const struct NativeCanonicalInputPadV1 pads[4])
+{
+	struct NativeCanonicalInputPadV1 raw;
+	struct NativeCanonicalInputPadV1 expected;
+
+	Sample(0u, k, &raw);
+	NativeArcadeRaceDrive_NormalizePad(&raw, &expected);
+	REQUIRE(memcmp(&pads[0], &expected, sizeof(expected)) == 0);
+	REQUIRE(IsNormalized(&pads[0]));
+	NativeArcadeRaceDrive_NeutralPad(&expected);
+	REQUIRE(memcmp(&pads[1], &expected, sizeof(expected)) == 0);
+	REQUIRE(pads[1].connected == 1u);
+	REQUIRE(IsDisconnected(&pads[2]));
+	REQUIRE(IsDisconnected(&pads[3]));
+	return 1;
+}
+
+/* BeginLocal's refusals end the drive as a named local failure; nothing
+ * runs after. */
+static int LocalRefused(struct NativeArcadeRaceDrive *drive, const struct NativeMatchConfigV1 *config, uint32_t limit,
+                        enum NativeArcadeRaceDriveFailure reason)
+{
+	struct NativeCanonicalInputPadV1 pads[4];
+	struct NativeCanonicalInputPadV1 sample;
+	struct NativeArcadeRaceDriveFacts facts;
+
+	SoloRace();
+	facts = FactsFor(0u);
+	Sample(0u, 0u, &sample);
+	REQUIRE(NativeArcadeRaceDrive_BeginLocal(drive, config, limit) == 0);
+	REQUIRE(NativeArcadeRaceDrive_EndKind(drive) == NATIVE_ARCADE_RACE_DRIVE_END_LOCAL_FAILURE);
+	REQUIRE(NativeArcadeRaceDrive_FailureReason(drive) == reason);
+	REQUIRE(NativeArcadeRaceDrive_EndIsFinish(drive) == 0);
+	REQUIRE(NativeArcadeRaceDrive_IsLocal(drive) == 0);
+	memset(pads, 0xa5, sizeof(pads));
+	REQUIRE(NativeArcadeRaceDrive_Step(drive, 0u, StateFor(0u, 0u), &sample, &facts, pads) == DRIVE_END);
+	REQUIRE(NativeArcadeRaceDrive_Hold(drive, 1u, 1, pads) == DRIVE_END);
+	REQUIRE(NativeArcadeRaceDrive_LingerTick(drive, 1) == 0u);
+	REQUIRE(PadsUntouched(pads));
+	return 1;
+}
+
+/* BeginLocal: the refusals (NULL, TWO_CAB, CAB1_HUMAN not in slot 0 or
+ * missing, a limit above 18000), the limit rule, and the reinitialization. */
+static void TestDriveLocalBegin(void)
+{
+	static struct NativeArcadeRaceDrive drive;
+	struct NativeMatchConfigV1 solo;
+	struct NativeMatchConfigV1 bad;
+
+	CHECK(FillSoloConfig(&solo));
+	CHECK(NativeArcadeRaceDrive_BeginLocal(NULL, &solo, 0u) == 0);
+	CHECK(NativeArcadeRaceDrive_IsLocal(NULL) == 0);
+
+	CHECK(LocalRefused(&drive, NULL, 0u, NATIVE_ARCADE_RACE_DRIVE_FAILURE_ARGUMENT));
+	/* TWO_CAB: the linked race's config. */
+	FillConfig(&bad, 1);
+	CHECK(LocalRefused(&drive, &bad, 0u, NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_CONFIG));
+	/* The profile byte alone. */
+	bad = solo;
+	bad.profile = NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB;
+	CHECK(LocalRefused(&drive, &bad, 0u, NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_CONFIG));
+	/* CAB1_HUMAN in slot 1, not slot 0. */
+	bad = solo;
+	bad.slots[0].role = (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT;
+	bad.slots[1].role = (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN;
+	CHECK(LocalRefused(&drive, &bad, 0u, NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_CONFIG));
+	/* No CAB1_HUMAN at all. */
+	bad = solo;
+	bad.slots[0].role = (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT;
+	CHECK(LocalRefused(&drive, &bad, 0u, NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_CONFIG));
+	/* The limit may only lower the bound. */
+	CHECK(LocalRefused(&drive, &solo, 18001u, NATIVE_ARCADE_RACE_DRIVE_FAILURE_TICK_LIMIT));
+	CHECK(LocalRefused(&drive, &solo, UINT32_MAX, NATIVE_ARCADE_RACE_DRIVE_FAILURE_TICK_LIMIT));
+
+	CHECK(NativeArcadeRaceDrive_BeginLocal(&drive, &solo, 0u) == 1);
+	CHECK(NativeArcadeRaceDrive_RaceTickLimit(&drive) == 18000u);
+	CHECK(NativeArcadeRaceDrive_IsLocal(&drive) != 0);
+	CHECK(NativeArcadeRaceDrive_EndKind(&drive) == NATIVE_ARCADE_RACE_DRIVE_END_NONE);
+	CHECK(NativeArcadeRaceDrive_FailureReason(&drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_NONE);
+	CHECK(NativeArcadeRaceDrive_RaceTick(&drive) == NO_TICK);
+	CHECK(NativeArcadeRaceDrive_EndTick(&drive) == NO_TICK);
+	CHECK(NativeArcadeRaceDrive_GraceStartTick(&drive) == NO_TICK);
+	CHECK(NativeArcadeRaceDrive_ComposedCount(&drive) == 0u);
+	CHECK(drive.session == NULL && drive.kept == NULL);
+	CHECK(drive.callbacks.context == NULL && drive.callbacks.sendBundle == NULL && drive.callbacks.poll == NULL &&
+	      drive.callbacks.onTakeResult == NULL && drive.callbacks.servicePeriod == NULL);
+	CHECK(NativeArcadeRaceDrive_BeginLocal(&drive, &solo, 18000u) == 1);
+	CHECK(NativeArcadeRaceDrive_RaceTickLimit(&drive) == 18000u);
+	CHECK(NativeArcadeRaceDrive_BeginLocal(&drive, &solo, 1u) == 1);
+	CHECK(NativeArcadeRaceDrive_RaceTickLimit(&drive) == 1u);
+
+	/* A refusal after a local begin reinitializes: no longer local. */
+	CHECK(LocalRefused(&drive, &bad, 0u, NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_CONFIG));
+	/* Init clears the mode. */
+	CHECK(NativeArcadeRaceDrive_BeginLocal(&drive, &solo, 0u) == 1);
+	NativeArcadeRaceDrive_Init(&drive);
+	CHECK(NativeArcadeRaceDrive_IsLocal(&drive) == 0);
+}
+
+/*
+ * The local GO and the callbacks: a linked drive with counting callbacks is
+ * begun first, then BeginLocal over the same drive. Every step GOes on its
+ * own race tick with the local pads, and across the whole race (the argument
+ * checks, a Hold, the end, and the linger) no callback is called, the
+ * session records nothing, nothing reaches the peer, and nothing is
+ * composed.
+ */
+static void TestDriveLocalGo(void)
+{
+	struct NativeMatchConfigV1 solo;
+	struct NativeCanonicalInputPadV1 pads[4];
+	struct NativeCanonicalInputPadV1 sample;
+	struct NativeArcadeRaceDriveFacts facts;
+	enum NativeArcadeRaceDriveStatus status = DRIVE_GO;
+	const uint32_t endAt = 150u;
+	uint32_t tick;
+
+	CHECK(Setup(2u, 0u));
+	CHECK(FillSoloConfig(&solo));
+	CHECK(NativeArcadeRaceDrive_BeginLocal(&g_a.drive, &solo, 0u) == 1);
+	SoloRace();
+	g_race.endOfRaceTick = endAt;
+
+	/* Hold is never legitimately reached: while running it is a sequence
+	 * failure. On a fresh local drive. */
+	memset(pads, 0xa5, sizeof(pads));
+	CHECK(NativeArcadeRaceDrive_Hold(&g_a.drive, 0u, 0, pads) == DRIVE_END);
+	CHECK(NativeArcadeRaceDrive_FailureReason(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_SEQUENCE);
+	CHECK(PadsUntouched(pads));
+
+	/* The argument checks are the linked ones. */
+	CHECK(NativeArcadeRaceDrive_BeginLocal(&g_a.drive, &solo, 0u) == 1);
+	facts = FactsFor(0u);
+	Sample(0u, 0u, &sample);
+	CHECK(NativeArcadeRaceDrive_Step(&g_a.drive, 1u, StateFor(1u, 0u), &sample, &facts, pads) == DRIVE_END);
+	CHECK(NativeArcadeRaceDrive_FailureReason(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_RACE_TICK);
+	CHECK(NativeArcadeRaceDrive_BeginLocal(&g_a.drive, &solo, 0u) == 1);
+	CHECK(NativeArcadeRaceDrive_Step(&g_a.drive, 0u, StateFor(1u, 0u), &sample, &facts, pads) == DRIVE_END);
+	CHECK(NativeArcadeRaceDrive_FailureReason(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_STATE_FRAME);
+	CHECK(NativeArcadeRaceDrive_BeginLocal(&g_a.drive, &solo, 0u) == 1);
+	facts.humans = 0u;
+	CHECK(NativeArcadeRaceDrive_Step(&g_a.drive, 0u, StateFor(0u, 0u), &sample, &facts, pads) == DRIVE_END);
+	CHECK(NativeArcadeRaceDrive_FailureReason(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_FACTS);
+	facts = FactsFor(0u);
+	CHECK(NativeArcadeRaceDrive_BeginLocal(&g_a.drive, &solo, 0u) == 1);
+	CHECK(NativeArcadeRaceDrive_Step(&g_a.drive, 0u, StateFor(0u, 0u), NULL, &facts, pads) == DRIVE_END);
+	CHECK(NativeArcadeRaceDrive_FailureReason(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_ARGUMENT);
+	CHECK(PadsUntouched(pads));
+
+	/* The race: GO on every tick up to END_OF_RACE. */
+	CHECK(NativeArcadeRaceDrive_BeginLocal(&g_a.drive, &solo, 0u) == 1);
+	for (tick = 0u; tick <= endAt; tick++)
+	{
+		facts = FactsFor(tick);
+		Sample(0u, tick, &sample);
+		memset(pads, 0xa5, sizeof(pads));
+		status = NativeArcadeRaceDrive_Step(&g_a.drive, tick, StateFor(tick, 0u), &sample, &facts, pads);
+		if (status != DRIVE_GO)
+		{
+			break;
+		}
+		CHECK(LocalPadsOk(tick, pads));
+		CHECK(NativeArcadeRaceDrive_RaceTick(&g_a.drive) == tick);
+		CHECK(NativeArcadeRaceDrive_HeldPeriods(&g_a.drive) == 0u);
+		CHECK(NativeArcadeRaceDrive_ComposedCount(&g_a.drive) == 0u);
+	}
+	CHECK(status == DRIVE_END);
+	CHECK(tick == endAt);
+	CHECK(PadsUntouched(pads));
+	CHECK(NativeArcadeRaceDrive_EndKind(&g_a.drive) == NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE);
+	CHECK(NativeArcadeRaceDrive_EndIsFinish(&g_a.drive) != 0);
+	CHECK(NativeArcadeRaceDrive_EndTick(&g_a.drive) == endAt);
+	/* No linger: nothing was kept or sent. */
+	CHECK(NativeArcadeRaceDrive_LingerTicksLeft(&g_a.drive) == 0u);
+	for (tick = 0u; tick < 20u; tick++)
+	{
+		CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 1) == 0u);
+		CHECK(NativeArcadeRaceDrive_LingerTick(&g_a.drive, 0) == 0u);
+	}
+	CHECK(NativeArcadeRaceDrive_Hold(&g_a.drive, 1u, 1, pads) == DRIVE_END);
+	CHECK(NativeArcadeRaceDrive_Step(&g_a.drive, endAt + 1u, StateFor(endAt + 1u, 0u), &sample, &facts, pads) == DRIVE_END);
+	CHECK(PadsUntouched(pads));
+	CHECK(NativeArcadeRaceDrive_ComposedCount(&g_a.drive) == 0u);
+
+	/* No callback ever: the counting callbacks the linked begin installed
+	 * saw nothing, the session is as opened, and the peer got nothing. */
+	CHECK(g_a.sendCalls == 0u);
+	CHECK(g_a.pollCalls == 0u);
+	CHECK(g_a.serviceCalls == 0u);
+	CHECK(g_a.takeCallsTotal == 0u);
+	CHECK(g_a.session.recordedAny == 0u);
+	CHECK(g_a.session.consumedFrame == 0u);
+	CHECK(NativeLockstepSession_Mode(&g_a.session) == NATIVE_LOCKSTEP_RUNNING);
+	CHECK(g_b.inboxCount == 0u);
+}
+
+/* One local race to its end: GO on every tick before endTick with the local
+ * pads, then END of kind on endTick with the grace start graceStart, no
+ * linger, and nothing composed: the linked race's end rules (RunRace). */
+static int LocalRunRace(uint32_t limit, uint32_t humans, const uint32_t finishTicks[4], uint32_t endOfRaceTick, enum NativeArcadeRaceDriveEndKind kind,
+                        uint32_t endTick, uint32_t graceStart)
+{
+	static struct NativeArcadeRaceDrive drive;
+	struct NativeMatchConfigV1 solo;
+	struct NativeCanonicalInputPadV1 pads[4];
+	struct NativeCanonicalInputPadV1 sample;
+	struct NativeArcadeRaceDriveFacts facts;
+	enum NativeArcadeRaceDriveStatus status = DRIVE_GO;
+	uint32_t tick;
+
+	REQUIRE(FillSoloConfig(&solo));
+	SoloRace();
+	g_race.humans = humans;
+	for (uint32_t i = 0; i < 4u; i++)
+	{
+		g_race.finishTick[i] = finishTicks[i];
+	}
+	g_race.endOfRaceTick = endOfRaceTick;
+	REQUIRE(NativeArcadeRaceDrive_BeginLocal(&drive, &solo, limit) == 1);
+	for (tick = 0u; tick <= endTick; tick++)
+	{
+		facts = FactsFor(tick);
+		Sample(0u, tick, &sample);
+		memset(pads, 0xa5, sizeof(pads));
+		status = NativeArcadeRaceDrive_Step(&drive, tick, StateFor(tick, 0u), &sample, &facts, pads);
+		if (status != DRIVE_GO)
+		{
+			break;
+		}
+		REQUIRE(LocalPadsOk(tick, pads));
+	}
+	REQUIRE(status == DRIVE_END);
+	REQUIRE(tick == endTick);
+	REQUIRE(PadsUntouched(pads));
+	REQUIRE(NativeArcadeRaceDrive_EndKind(&drive) == kind);
+	REQUIRE(NativeArcadeRaceDrive_EndIsFinish(&drive) != 0);
+	REQUIRE(NativeArcadeRaceDrive_FailureReason(&drive) == NATIVE_ARCADE_RACE_DRIVE_FAILURE_NONE);
+	REQUIRE(NativeArcadeRaceDrive_EndTick(&drive) == endTick);
+	REQUIRE(NativeArcadeRaceDrive_RaceTick(&drive) == endTick);
+	REQUIRE(NativeArcadeRaceDrive_GraceStartTick(&drive) == graceStart);
+	REQUIRE(NativeArcadeRaceDrive_LingerTicksLeft(&drive) == 0u);
+	REQUIRE(NativeArcadeRaceDrive_LingerTick(&drive, 1) == 0u);
+	REQUIRE(NativeArcadeRaceDrive_ComposedCount(&drive) == 0u);
+	return 1;
+}
+
+/* The end rules of the local mode: TestDriveFinish's table, case for case,
+ * with the same kinds, end ticks, and grace starts. */
+static void TestDriveLocalFinish(void)
+{
+	const uint32_t none[4] = {NO_TICK, NO_TICK, NO_TICK, NO_TICK};
+	const uint32_t first100[4] = {100u, NO_TICK, NO_TICK, NO_TICK};
+	const uint32_t two[4] = {100u, 200u, NO_TICK, NO_TICK};
+	const uint32_t three[4] = {100u, 200u, 300u, NO_TICK};
+	const uint32_t second100[4] = {NO_TICK, 100u, NO_TICK, NO_TICK};
+
+	CHECK(LocalRunRace(0u, 2u, first100, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_FINISH_GRACE, 1000u, 100u));
+	CHECK(LocalRunRace(0u, 2u, second100, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_FINISH_GRACE, 1000u, 100u));
+	CHECK(LocalRunRace(0u, 3u, two, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_FINISH_GRACE, 1100u, 200u));
+	CHECK(LocalRunRace(0u, 4u, three, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_FINISH_GRACE, 1200u, 300u));
+	/* The solo race's own shape: 1 human, max(1, 0) = 1. */
+	CHECK(LocalRunRace(0u, 1u, first100, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_FINISH_GRACE, 1000u, 100u));
+	CHECK(LocalRunRace(0u, 2u, first100, 500u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 500u, 100u));
+	CHECK(LocalRunRace(0u, 2u, first100, 1000u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 1000u, 100u));
+	CHECK(LocalRunRace(0u, 2u, first100, 100u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 100u, 100u));
+	CHECK(LocalRunRace(0u, 2u, none, 77u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 77u, NO_TICK));
+	CHECK(LocalRunRace(1000u, 2u, first100, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_FINISH_GRACE, 1000u, 100u));
+	CHECK(LocalRunRace(1000u, 2u, first100, 1000u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 1000u, 100u));
+	CHECK(LocalRunRace(50u, 2u, none, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_RACE_TICK_LIMIT, 50u, NO_TICK));
+	CHECK(LocalRunRace(50u, 2u, none, 50u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 50u, NO_TICK));
+	CHECK(LocalRunRace(1u, 2u, none, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_RACE_TICK_LIMIT, 1u, NO_TICK));
+	CHECK(LocalRunRace(600u, 2u, first100, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_RACE_TICK_LIMIT, 600u, 100u));
+	CHECK(LocalRunRace(0u, 1u, none, NO_TICK, NATIVE_ARCADE_RACE_DRIVE_END_RACE_TICK_LIMIT, 18000u, NO_TICK));
+	/* An END_OF_RACE on race tick 0 ends before any GO. */
+	CHECK(LocalRunRace(0u, 1u, none, 0u, NATIVE_ARCADE_RACE_DRIVE_END_OF_RACE, 0u, NO_TICK));
+}
+
 int main(void)
 {
 	if (!LoadRl10Disconnected())
@@ -2365,6 +2680,9 @@ int main(void)
 	TestDrivePadMapping();
 	TestDriveFinish();
 	TestDriveLingerStops();
+	TestDriveLocalBegin();
+	TestDriveLocalGo();
+	TestDriveLocalFinish();
 
 	if (s_failures != 0)
 	{

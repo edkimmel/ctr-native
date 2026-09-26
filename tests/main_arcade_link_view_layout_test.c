@@ -78,6 +78,13 @@ void Platform_SetFixedVBlankPacing(int enabled)
 	(void)enabled;
 }
 
+/* The platform log (platform/native_log.c), which the host glue also links
+ * against for its one solo notice (SOLO-S4); a stub keeps the link whole. */
+void Platform_Log(const char *fmt, ...)
+{
+	(void)fmt;
+}
+
 static int IsSelectScreen(uint32_t screen)
 {
 	return (screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT) ||

@@ -31,6 +31,11 @@
 # LR-S9 added the host glue (ctr_native_arcade_link_host) to
 # drive_allowed_linkers: it runs the drive over the adapter (LR-1). LR-S11
 # added the hold core's unit test (the BannerDue equality).
+#
+# SOLO-S4 (docs/SOLO_CAB_MILESTONE.md SOLO-7) added the local mode of a solo
+# race (rule 1d): BeginLocal and the local GO name no session, kept ring, or
+# callback, so the local path never sends, polls, takes, or services; the
+# single compose and send of rule 1c are unchanged. No new linker.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade race drive isolation")
@@ -123,6 +128,7 @@ set(drive_required_code_header
     "void NativeArcadeRaceDrive_NeutralPad(struct NativeCanonicalInputPadV1 *out);"
     "void NativeArcadeRaceDrive_DisconnectedPad(struct NativeCanonicalInputPadV1 *out);"
     "int NativeArcadeRaceDrive_Begin("
+    "int NativeArcadeRaceDrive_BeginLocal(struct NativeArcadeRaceDrive *drive, const struct NativeMatchConfigV1 *config, uint32_t raceTickLimit)"
     "enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step("
     "const struct NativeCanonicalStateV4 *state,"
     "enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Hold("
@@ -145,6 +151,7 @@ set(drive_required_code_source
     "void NativeArcadeRaceDrive_NormalizePad(const struct NativeCanonicalInputPadV1 *in, struct NativeCanonicalInputPadV1 *out)"
     "void NativeArcadeRaceDrive_NeutralPad(struct NativeCanonicalInputPadV1 *out)"
     "int NativeArcadeRaceDrive_Begin("
+    "int NativeArcadeRaceDrive_BeginLocal(struct NativeArcadeRaceDrive *drive, const struct NativeMatchConfigV1 *config, uint32_t raceTickLimit)"
     "enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step("
     "enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Hold("
     "uint32_t NativeArcadeRaceDrive_LingerTick(struct NativeArcadeRaceDrive *drive, int onResults)"
@@ -281,6 +288,72 @@ string(SUBSTRING "${guard_tail}" 0 ${guard_end} guard_body)
 foreach(term IN ITEMS "NATIVE_LOCKSTEP_RUNNING" "recordedAny" "recordedFrame" "drive->inputDelay" "<=")
     ctr_require("${drive_source} (NativeArcadeRaceDrive_MaySend)" "${guard_body}" "${term}")
 endforeach()
+
+# 1d. The local mode (docs/SOLO_CAB_MILESTONE.md SOLO-7, SOLO-S4) reaches no
+#     session, kept ring, or callback. BeginLocal and the local GO name none
+#     of them (so neither ever sends, polls, takes, or services); the local
+#     flag is set only in BeginLocal; Step records only outside the local
+#     mode and returns the local GO right after the end checks, before the
+#     submit, the compose, the send, the poll, and the take; and a local
+#     finish arms no linger.
+string(REGEX REPLACE "[ \t\r\n]+" " " source_flat "${source_code}")
+# The comment-free body of the function whose definition starts with opener,
+# up to its closing brace at the start of a line; whitespace collapsed.
+function(ctr_flat_body opener out_var)
+    string(FIND "${source_code}" "${opener}" raw_at)
+    if(raw_at EQUAL -1)
+        message(FATAL_ERROR "${prefix}: ${drive_source} must define '${opener}'")
+    endif()
+    string(SUBSTRING "${source_code}" ${raw_at} -1 raw_tail)
+    string(FIND "${raw_tail}" "\n}" raw_end)
+    if(raw_end EQUAL -1)
+        message(FATAL_ERROR "${prefix}: cannot find the end of '${opener}' in ${drive_source}")
+    endif()
+    string(SUBSTRING "${raw_tail}" 0 ${raw_end} raw_body)
+    string(REGEX REPLACE "[ \t\r\n]+" " " raw_body "${raw_body}")
+    set(${out_var} "${raw_body}" PARENT_SCOPE)
+endfunction()
+ctr_flat_body("int NativeArcadeRaceDrive_BeginLocal(" begin_local_body)
+ctr_flat_body("static enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_GoLocal(" go_local_body)
+foreach(body_name begin_local_body go_local_body)
+    foreach(term IN ITEMS callbacks sendBundle poll onTakeResult servicePeriod session kept NativeLockstepSession_ NativeArcadeRaceDrive_SendKept
+                          NativeArcadeRaceDrive_ComposeKept NativeArcadeRaceDrive_Resend NativeArcadeRaceDrive_Take)
+        ctr_forbid("${drive_source} (${body_name})" "${${body_name}}" "${term}" "the local mode")
+    endforeach()
+endforeach()
+ctr_require("${drive_source} (BeginLocal)" "${begin_local_body}" "NativeArcadeRaceDrive_Init(drive);")
+ctr_require("${drive_source} (BeginLocal)" "${begin_local_body}" "drive->local = 1u;")
+string(REGEX MATCHALL "drive->local = " local_writes "${source_flat}")
+list(LENGTH local_writes local_write_count)
+if(NOT local_write_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${drive_source} must set drive->local exactly once, in BeginLocal (found ${local_write_count})")
+endif()
+string(REGEX MATCHALL "NativeArcadeRaceDrive_GoLocal\\(" go_local_names "${source_flat}")
+list(LENGTH go_local_names go_local_count)
+if(NOT go_local_count EQUAL 2)
+    message(FATAL_ERROR "${prefix}: ${drive_source} must define NativeArcadeRaceDrive_GoLocal and call it exactly once, from Step (found ${go_local_count})")
+endif()
+ctr_flat_body("enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step(" step_body)
+foreach(term IN ITEMS
+        "if (drive->local == 0u) { recorded = NativeLockstepSession_RecordLocalDigests(drive->session, state);"
+        "if (drive->local != 0u) { return NativeArcadeRaceDrive_GoLocal(drive, localSample, padsOut); }")
+    ctr_require("${drive_source} (Step)" "${step_body}" "${term}")
+endforeach()
+string(FIND "${step_body}" "if (drive->local != 0u) { return NativeArcadeRaceDrive_GoLocal(" local_go_at)
+string(FIND "${step_body}" "if (raceTick >= drive->raceTickLimit)" local_limit_at)
+if(local_go_at LESS local_limit_at)
+    message(FATAL_ERROR "${prefix}: Step must return the local GO only after the end checks")
+endif()
+foreach(term IN ITEMS "NativeLockstepSession_SubmitLocalInput(" "NativeArcadeRaceDrive_ComposeKept(" "NativeArcadeRaceDrive_SendKept(" "NativeArcadeRaceDrive_Resend("
+                      "callbacks.poll(" "NativeArcadeRaceDrive_Take(")
+    string(FIND "${step_body}" "${term}" linked_at)
+    if(linked_at EQUAL -1 OR linked_at LESS local_go_at)
+        message(FATAL_ERROR "${prefix}: Step must return the local GO before '${term}'")
+    endif()
+endforeach()
+ctr_flat_body("static enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_End(" end_body)
+ctr_require("${drive_source} (End)" "${end_body}"
+    "(NativeArcadeRaceDrive_KindIsFinish(kind) && (drive->local == 0u)) ? NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS : 0u;")
 
 ctr_read_source("CMakeLists.txt" cmake)
 

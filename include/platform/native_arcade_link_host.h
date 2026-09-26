@@ -348,6 +348,11 @@ uint64_t NativeArcadeLinkHost_MixSelectEntropy(uint64_t entropy, uint64_t epoch)
  * NativeArcadeLinkHost_SetRaceTickLimit left (0, the default 18000, unless
  * an internal caller lowered it); a refused begin ends the drive as a local
  * failure and is reported as a local race failure, and the return stays 1.
+ * A solo race (docs/SOLO_CAB_MILESTONE.md SOLO-7: flow on RACING in solo)
+ * turns the same pacing on and begins the drive's local mode instead, on
+ * the solo race config (NativeArcadeLinkHost_GetSoloConfig; none is a
+ * refused begin, reported as above) with the same limit: the local pad
+ * drives retail pad 0 on every race tick and nothing is sent or received.
  * Otherwise (OFF, PREVIEW, or before any Configure) returns 0 with nothing
  * done. */
 int NativeArcadeLinkHost_RaceBegin(void);
@@ -476,7 +481,11 @@ struct NativeArcadeLinkHostDriveState
  * cut the linger short. After END the caller must not call RaceStep or
  * RaceHold again until the next RaceBegin (LR-54; LR-S10 pins the caller).
  * After the drive's step it latches the race's divergence record if the
- * link found one, as Tick does (TakeRaceDivergence, LR-70).
+ * link found one, as Tick does (TakeRaceDivergence, LR-70). In a solo race
+ * (SOLO-7) it never returns HOLD: GO commits on the race tick itself, with
+ * padsOut[0] the local sample (normalized), padsOut[1] the neutral connected
+ * pad, and padsOut[2..3] disconnected; the end rules are the linked race's;
+ * nothing is sent, and no divergence record is latched.
  */
 uint32_t NativeArcadeLinkHost_RaceStep(uint32_t raceTick, const struct NativeCanonicalStateV4 *state,
 	const struct NativeArcadeLinkHostPad *localSample, const struct NativeArcadeLinkHostRaceFacts *facts,

@@ -485,8 +485,9 @@ static void NativeArcadeNetplay_Relink(struct NativeArcadeNetplay *netplay)
 /*
  * Solo select (SOLO-5): a fresh one-human select on the ONE_CAB solo base,
  * humanCount 1 and localHuman 0 whichever seat this cabinet is. The cursors
- * start on the base's CAB1_HUMAN character, track, and laps, or, after a solo
- * race built soloConfig, on that race's picks (OD-3), each replaced by the
+ * start on the base's CAB1_HUMAN character (on the cab2 seat, the fixture's
+ * CAB2_HUMAN character), track, and laps, or, after a solo race built
+ * soloConfig, on that race's picks (OD-3), each replaced by the
  * first table entry when it is not a table value. The nonce is derived as
  * for every select, so the resolved masterSeed is new each time. If the
  * session cannot start, selectActive stays 0 and the flow reads FAILED.
@@ -504,6 +505,14 @@ static void NativeArcadeNetplay_BeginSoloSelect(struct NativeArcadeNetplay *netp
 	if (NativeMatchConfigV1_FindRoleSlot(cursors, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &slot))
 	{
 		character = NativeArcadeNetplay_CharacterOrFirst(cursors->slots[slot].characterID);
+	}
+	/* The cab2 seat's own default (SOLO-S4): a fresh solo select there starts
+	 * the character on the TWO_CAB fixture's CAB2_HUMAN character. The human
+	 * is still CAB1_HUMAN in slot 0 of the config (SOLO-6). */
+	if ((netplay->soloConfigValid == 0u) && (netplay->config.localRole == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN) &&
+		NativeMatchConfigV1_FindRoleSlot(&netplay->config.fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &slot))
+	{
+		character = NativeArcadeNetplay_CharacterOrFirst(netplay->config.fixture.slots[slot].characterID);
 	}
 	track = NativeArcadeNetplay_TrackOrFirst(cursors->trackID);
 	laps = NativeArcadeNetplay_LapsOrFirst(cursors->lapCount);

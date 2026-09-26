@@ -146,6 +146,13 @@ NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostRaceFacts, NativeArcadeR
 NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostRaceFacts, NativeArcadeRaceDriveFacts, finishedHumans);
 NATIVE_ARCADE_LINK_HOST_SAME_OFFSET(NativeArcadeLinkHostRaceFacts, NativeArcadeRaceDriveFacts, humans);
 
+/* The host's one log call, Configure's solo notice (platform/native_log.c,
+ * which only the ctr_native executable links: a test that links this
+ * library defines its own stub, as for the pacing switch). Its header,
+ * platform/native_log.h, also brings in the engine's macros.h, so the
+ * declaration is repeated here (without the printf format attribute). */
+void Platform_Log(const char *fmt, ...);
+
 /* The select entropy mix constant: 2^64 divided by the golden ratio. */
 #define NATIVE_ARCADE_LINK_HOST_ENTROPY_STEP UINT64_C(0x9E3779B97F4A7C15)
 
@@ -254,6 +261,18 @@ static uint32_t NativeArcadeLinkHost_LinkScreen(void)
 	return view.screen;
 }
 
+/* Nonzero while the link's flow is in solo (docs/SOLO_CAB_MILESTONE.md). */
+static int NativeArcadeLinkHost_LinkSolo(void)
+{
+	struct NativeArcadeNetplayView view;
+
+	if (!NativeArcadeNetplay_GetView(&g_netplay, &view))
+	{
+		return 0;
+	}
+	return (view.soloFlags & NATIVE_ARCADE_NETPLAY_VIEW_SOLO) != 0u;
+}
+
 /* ---- The race drive glue (docs/LOCKSTEP_RACE_MILESTONE.md LR-S9) ---- */
 
 /* Re-initializes the drive (not begun, end kind NONE) and clears the ring
@@ -328,14 +347,28 @@ static void NativeArcadeLinkHost_ReportDriveFailure(void)
  * 1..18000: the internal override, LR-60), when the flow is on RACING. A
  * refused begin has
  * ended the drive as a local failure, which is reported. Off RACING the
- * race is already over and the drive stays re-initialized. */
+ * race is already over and the drive stays re-initialized. A solo race
+ * (docs/SOLO_CAB_MILESTONE.md SOLO-7) begins the drive's local mode instead,
+ * on the solo query's checked config (NULL when there is none, so the drive
+ * refuses it as a local failure), with the same limit and no callbacks:
+ * nothing is sent, polled, or taken. */
 static void NativeArcadeLinkHost_BeginDrive(void)
 {
 	struct NativeArcadeRaceDriveCallbacks callbacks;
+	struct NativeMatchConfigV1 solo;
 
 	NativeArcadeLinkHost_ResetDrive();
 	if (NativeArcadeLinkHost_LinkScreen() != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING)
 	{
+		return;
+	}
+	if (NativeArcadeLinkHost_LinkSolo())
+	{
+		g_driveBegun = 1u;
+		if (!NativeArcadeRaceDrive_BeginLocal(&g_drive, NativeArcadeLinkHost_GetSoloConfig(&solo) ? &solo : NULL, g_raceTickLimit))
+		{
+			NativeArcadeLinkHost_ReportDriveFailure();
+		}
 		return;
 	}
 	memset(&callbacks, 0, sizeof(callbacks));
@@ -495,7 +528,10 @@ static void NativeArcadeLinkHost_ResetDivergence(void)
  * two sides' digests of the lowest differing domain, so a divergence that
  * leaves the whole-state digest alone (LR-16's CONTROL-only injection)
  * still logs two different values; with no differing domain (only the
- * whole-state digest differs) they are the whole-state digests.
+ * whole-state digest differs) they are the whole-state digests. A solo race
+ * has no session of its own (SOLO-7), so nothing is latched while the flow
+ * is in solo: a divergence left in an earlier linked race's session never
+ * becomes a solo race's record.
  */
 static void NativeArcadeLinkHost_LatchDivergence(void)
 {
@@ -503,7 +539,7 @@ static void NativeArcadeLinkHost_LatchDivergence(void)
 	uint32_t domain;
 
 	if ((g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) || (g_netplay.matchCount == 0u) ||
-		(g_raceDivergenceRace == g_netplay.matchCount))
+		(g_raceDivergenceRace == g_netplay.matchCount) || NativeArcadeLinkHost_LinkSolo())
 	{
 		return;
 	}
@@ -635,6 +671,11 @@ uint32_t NativeArcadeLinkHost_InternalRaceTickLimit(void)
 uint32_t NativeArcadeLinkHost_InternalDriveRaceTickLimit(void)
 {
 	return (g_mode == NATIVE_ARCADE_LINK_HOST_MODE_LINK) ? NativeArcadeRaceDrive_RaceTickLimit(&g_drive) : 0u;
+}
+
+uint8_t NativeArcadeLinkHost_InternalDriveLocal(void)
+{
+	return (uint8_t)(((g_mode == NATIVE_ARCADE_LINK_HOST_MODE_LINK) && NativeArcadeRaceDrive_IsLocal(&g_drive)) ? 1u : 0u);
 }
 
 int NativeArcadeLinkHost_SetRaceTickLimit(uint32_t limit)
@@ -826,6 +867,11 @@ int NativeArcadeLinkHost_Configure(const struct NativeArcadeLinkOptions *options
 	if ((g_soloEnabled != 0u) && NativeArcadeLinkHost_BuildSoloBase(&fixture, &g_config.soloBase))
 	{
 		g_config.soloEnabled = 1u;
+	}
+	else if (g_soloEnabled != 0u)
+	{
+		/* Not silent: solo was asked for and is left off. */
+		Platform_Log("[CTR Native] arcade link: the solo base did not build; solo stays off\n");
 	}
 	NativeArcadeLinkHost_NextEpoch(options->selectEntropy);
 	if (!NativeArcadeNetplay_Init(&g_netplay, &g_config))

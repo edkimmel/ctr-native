@@ -43,6 +43,10 @@ uint32_t NativeArcadeLinkHost_InternalRaceTickLimit(void);
  * for a default begin), 0 for a drive not begun; 0 unless the mode is LINK. */
 uint32_t NativeArcadeLinkHost_InternalDriveRaceTickLimit(void);
 
+/* 1 while the race drive is in its local mode (a solo race's drive,
+ * docs/SOLO_CAB_MILESTONE.md SOLO-7), else 0; 0 unless the mode is LINK. */
+uint8_t NativeArcadeLinkHost_InternalDriveLocal(void);
+
 /* Forward-declared only, as in the public header. */
 struct NativeMatchConfigV1;
 

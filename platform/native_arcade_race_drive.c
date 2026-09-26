@@ -11,7 +11,8 @@
 /*
  * Linked-race drive core (docs/LOCKSTEP_RACE_MILESTONE.md LR-1). LR-S7: pad
  * normalization. LR-S8: the per-tick drive over a caller-owned session, kept
- * ring, and callbacks (LR-41..LR-48).
+ * ring, and callbacks (LR-41..LR-48). SOLO-S4: the local mode of a solo race
+ * (docs/SOLO_CAB_MILESTONE.md SOLO-7), over no session, ring, or callback.
  */
 
 /* The drive's phases. IDLE: not begun. RUNNING: the next call is Step.
@@ -120,7 +121,9 @@ static enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_End(struct NativeA
 		drive->endKind = kind;
 		drive->failure = failure;
 		drive->endTick = drive->raceTick;
-		drive->lingerTicksLeft = NativeArcadeRaceDrive_KindIsFinish(kind) ? NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS : 0u;
+		/* The local mode kept and sent nothing, so it has nothing to resend. */
+		drive->lingerTicksLeft =
+		    (NativeArcadeRaceDrive_KindIsFinish(kind) && (drive->local == 0u)) ? NATIVE_ARCADE_RACE_DRIVE_FINISH_LINGER_TICKS : 0u;
 	}
 	return NATIVE_ARCADE_RACE_DRIVE_END;
 }
@@ -398,6 +401,64 @@ int NativeArcadeRaceDrive_Begin(struct NativeArcadeRaceDrive *drive, struct Nati
 	return 1;
 }
 
+int NativeArcadeRaceDrive_BeginLocal(struct NativeArcadeRaceDrive *drive, const struct NativeMatchConfigV1 *config, uint32_t raceTickLimit)
+{
+	uint8_t cab1Slot = 0u;
+
+	if (drive == NULL)
+	{
+		return 0;
+	}
+	NativeArcadeRaceDrive_Init(drive);
+
+	if (config == NULL)
+	{
+		(void)NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_ARGUMENT);
+		return 0;
+	}
+	/* SOLO-6: the one human is CAB1_HUMAN in slot 0 of a ONE_CAB config, the
+	 * slot the local sample drives through retail pad 0. */
+	if ((config->profile != NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB) ||
+	    !NativeMatchConfigV1_FindRoleSlot(config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &cab1Slot) || (cab1Slot != 0u))
+	{
+		(void)NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_CONFIG);
+		return 0;
+	}
+	/* LR-42: the internal override may only lower the bound. */
+	if (raceTickLimit > NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT)
+	{
+		(void)NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_TICK_LIMIT);
+		return 0;
+	}
+
+	/* No session, kept ring, or callbacks: Init left them NULL and zero. */
+	drive->local = 1u;
+	drive->raceTickLimit = (raceTickLimit == 0u) ? NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT : raceTickLimit;
+	drive->cab1Slot = cab1Slot;
+	drive->nextTick = 0u;
+	drive->phase = NATIVE_ARCADE_RACE_DRIVE_PHASE_RUNNING;
+	return 1;
+}
+
+/* The local mode's GO on race tick k itself (SOLO-7): the normalized local
+ * sample to retail pad 0, the neutral connected pad to pad 1 (the roster
+ * proof's ONE_CAB pads), pads 2 and 3 disconnected. Nothing else is read,
+ * written, or called. */
+static enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_GoLocal(struct NativeArcadeRaceDrive *drive, const struct NativeCanonicalInputPadV1 *localSample,
+                                                                      struct NativeCanonicalInputPadV1 padsOut[NATIVE_ARCADE_RACE_DRIVE_PAD_COUNT])
+{
+	struct NativeCanonicalInputPadV1 pads[NATIVE_ARCADE_RACE_DRIVE_PAD_COUNT];
+
+	NativeArcadeRaceDrive_NormalizePad(localSample, &pads[0]);
+	NativeArcadeRaceDrive_NeutralPad(&pads[1]);
+	NativeArcadeRaceDrive_DisconnectedPad(&pads[2]);
+	NativeArcadeRaceDrive_DisconnectedPad(&pads[3]);
+	memcpy(padsOut, pads, sizeof(pads));
+	drive->phase = NATIVE_ARCADE_RACE_DRIVE_PHASE_RUNNING;
+	drive->nextTick = drive->raceTick + 1u;
+	return NATIVE_ARCADE_RACE_DRIVE_GO;
+}
+
 enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step(struct NativeArcadeRaceDrive *drive, uint32_t raceTick, const struct NativeCanonicalStateV4 *state,
                                                             const struct NativeCanonicalInputPadV1 *localSample, const struct NativeArcadeRaceDriveFacts *facts,
                                                             struct NativeCanonicalInputPadV1 padsOut[NATIVE_ARCADE_RACE_DRIVE_PAD_COUNT])
@@ -445,15 +506,19 @@ enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step(struct NativeArcadeR
 
 	/* 1. Record frame k. A session that is not RUNNING afterwards (a parked
 	 *    digest diverged inside the record, or an earlier drain latched)
-	 *    ends the drive as the outcome at once (LR-9). */
-	recorded = NativeLockstepSession_RecordLocalDigests(drive->session, state);
-	if (!NativeArcadeRaceDrive_SessionRunning(drive))
+	 *    ends the drive as the outcome at once (LR-9). The local mode has no
+	 *    session and records nothing. */
+	if (drive->local == 0u)
 	{
-		return NativeArcadeRaceDrive_OutcomeNow(drive);
-	}
-	if (!recorded)
-	{
-		return NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_RECORD);
+		recorded = NativeLockstepSession_RecordLocalDigests(drive->session, state);
+		if (!NativeArcadeRaceDrive_SessionRunning(drive))
+		{
+			return NativeArcadeRaceDrive_OutcomeNow(drive);
+		}
+		if (!recorded)
+		{
+			return NativeArcadeRaceDrive_Fail(drive, NATIVE_ARCADE_RACE_DRIVE_FAILURE_RECORD);
+		}
 	}
 
 	/* 2. The end checks in LR-18's tie order. A finish-kind end has recorded
@@ -477,6 +542,13 @@ enum NativeArcadeRaceDriveStatus NativeArcadeRaceDrive_Step(struct NativeArcadeR
 	if (raceTick >= drive->raceTickLimit)
 	{
 		return NativeArcadeRaceDrive_End(drive, NATIVE_ARCADE_RACE_DRIVE_END_RACE_TICK_LIMIT, NATIVE_ARCADE_RACE_DRIVE_FAILURE_NONE);
+	}
+
+	/* The local mode (SOLO-7): GO on this tick, nothing submitted, composed,
+	 * sent, polled, or taken. */
+	if (drive->local != 0u)
+	{
+		return NativeArcadeRaceDrive_GoLocal(drive, localSample, padsOut);
 	}
 
 	/* 3. Submit the normalized sample of frame k, consumed at k + D. */
@@ -672,6 +744,11 @@ uint32_t NativeArcadeRaceDrive_ComposedCount(const struct NativeArcadeRaceDrive 
 	return (drive == NULL) ? 0u : drive->composedCount;
 }
 
+int NativeArcadeRaceDrive_IsLocal(const struct NativeArcadeRaceDrive *drive)
+{
+	return (drive != NULL) && (drive->local != 0u);
+}
+
 const char *NativeArcadeRaceDrive_EndKindName(enum NativeArcadeRaceDriveEndKind kind)
 {
 	switch (kind)
@@ -737,6 +814,8 @@ const char *NativeArcadeRaceDrive_FailureName(enum NativeArcadeRaceDriveFailure 
 		return "local slot not a cabinet role";
 	case NATIVE_ARCADE_RACE_DRIVE_FAILURE_PERIODS:
 		return "held periods inconsistent";
+	case NATIVE_ARCADE_RACE_DRIVE_FAILURE_LOCAL_CONFIG:
+		return "local race config not one-cabinet";
 	default:
 		return "unknown";
 	}

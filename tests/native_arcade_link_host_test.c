@@ -64,6 +64,11 @@
  * against the first test's dead peer (the tests run in turn). */
 #define TEST_SOLO_LOCAL_PORT 48519u
 #define TEST_SOLO_DEAD_PEER_PORT 48501u
+/* The solo race (SOLO-S4): the first drive pair again (the tests run in
+ * turn). A probe socket holds the peer port through the solo race; the
+ * test-owned peer adapter takes it over for the linked race after it. */
+#define TEST_SOLO_RACE_HOST_PORT TEST_DRIVE_HOST_PORT
+#define TEST_SOLO_RACE_PEER_PORT TEST_DRIVE_PEER_PORT
 
 /* Bounds every loop that waits for the loopback pair; generous, not tuned. */
 #define PAIR_BUDGET 4000u
@@ -95,6 +100,18 @@ void Platform_SetFixedVBlankPacing(int enabled)
 {
 	g_pacing = (enabled != 0) ? 1 : 0;
 	g_pacingCalls++;
+}
+
+/*
+ * The platform log (platform/native_log.c), stubbed: the host glue's one log
+ * call is Configure's solo notice (SOLO-S4). It counts every call.
+ */
+static uint32_t g_logCalls;
+
+void Platform_Log(const char *fmt, ...)
+{
+	(void)fmt;
+	g_logCalls++;
 }
 
 /* The switch is `pacing` and the host made no call since `calls`. */
@@ -4856,6 +4873,266 @@ static int TestSoloConfigFailsClosed(void)
 	return 0;
 }
 
+/* ---- SOLO-S4 part 1: the solo race through the host race API ---- */
+
+/* The solo race ends on END_OF_RACE on this race tick. */
+#define SOLO_RACE_FINISH_TICK 40u
+
+/* Takes every datagram waiting on probe and discards it; returns how many. */
+static uint32_t DrainSoloProbe(struct NativeUdpTransport *probe)
+{
+	uint8_t bytes[DRIVE_RECEIVE_BYTES];
+	size_t byteCount = 0u;
+	uint32_t count = 0u;
+	uint32_t spins;
+	enum NativeUdpTransportReceiveResult result;
+
+	for (spins = 0u; spins < DRIVE_SPIN_BUDGET; spins++)
+	{
+		result = NativeUdpTransport_Receive(probe, bytes, sizeof(bytes), &byteCount, NULL);
+		if ((result == NATIVE_UDP_TRANSPORT_RECEIVE_OK) || (result == NATIVE_UDP_TRANSPORT_RECEIVE_TOO_SMALL))
+		{
+			count++;
+		}
+		else
+		{
+			break;
+		}
+	}
+	return count;
+}
+
+/* Off RACING (or before it) the drive does not run: RaceBegin still turns
+ * the pacing on (the caller's Launch frame) but begins no drive, RaceStep is
+ * END with padsOut untouched, and RaceEnd turns the pacing off; nothing is
+ * reported. */
+static int SoloDriveRefused(void)
+{
+	struct NativeArcadeLinkHostDriveState state;
+	struct NativeArcadeLinkHostPad sample;
+	struct NativeArcadeLinkHostRaceFacts facts;
+	struct NativeArcadeLinkHostPad pads[NATIVE_ARCADE_LINK_HOST_RACE_PADS];
+	const uint32_t calls = g_pacingCalls;
+
+	CHECK(g_pacing == 0);
+	CHECK(NativeArcadeLinkHost_RaceBegin() == 1);
+	CHECK(CheckPacingUntouched(1, calls + 1u) == 0);
+	CHECK(CheckDriveReset() == 0);
+	CHECK(NativeArcadeLinkHost_InternalDriveLocal() == 0u);
+	HostSample(0u, &sample);
+	facts.endOfRace = 0u;
+	facts.finishedHumans = 0u;
+	facts.humans = 1u;
+	memset(pads, 0xA5, sizeof(pads));
+	CHECK(NativeArcadeLinkHost_RaceStep(0u, DriveState(0u, 0u), &sample, &facts, pads) == RACE_END);
+	CHECK(HostPadsUntouched(pads));
+	CHECK(NativeArcadeLinkHost_RaceHold(1u, 1, pads) == RACE_END);
+	CHECK(HostPadsUntouched(pads));
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.begun == 0u);
+	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalLocalRaceFailure() == 0u);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(CheckPacingUntouched(0, calls + 2u) == 0);
+	return 0;
+}
+
+/*
+ * SOLO-7 through the host race API, with the gate on by the internal setter.
+ * Configure builds the solo base without a log line. Off RACING (the title
+ * and solo SELECT) RaceBegin begins no drive and RaceStep is refused. On solo
+ * RACING, RaceBegin turns the pacing on and begins the drive's local mode;
+ * every RaceStep GOes on its own race tick with pad 0 the host's sample
+ * (normalized), pad 1 the neutral connected pad, and pads 2 and 3
+ * disconnected; a probe socket on the configured peer address receives
+ * nothing from solo SELECT on, through the race and its end; no divergence
+ * is latched. END_OF_RACE ends it as a finish with no linger; the next Tick
+ * with raceFinished moves the flow to solo RESULTS (FINISHED) and resets the
+ * drive; RaceEnd turns the pacing off, and off RACING the drive is refused
+ * again. Then, back at the title, a linked race against a real peer begins
+ * the linked drive (not the local mode) and commits the peer's pads.
+ */
+static int RunSoloRace(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	struct NativeArcadeLinkHostView view;
+	struct NativeArcadeLinkHostDriveState state;
+	struct NativeArcadeLinkHostRaceEnd raceEnd;
+	struct NativeArcadeLinkHostPad sample;
+	struct NativeArcadeLinkHostRaceFacts facts;
+	struct NativeArcadeLinkHostPad pads[NATIVE_ARCADE_LINK_HOST_RACE_PADS];
+	struct NativeCanonicalInputPadV1 raw;
+	struct NativeCanonicalInputPadV1 expected;
+	struct NativeUdpTransport probe;
+	uint32_t action = ACT_NONE;
+	uint32_t status;
+	uint32_t tick;
+	uint32_t k;
+
+	NativeArcadeLinkHost_Shutdown();
+	g_pacing = 0;
+	g_pacingCalls = 0u;
+	g_logCalls = 0u;
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SOLO_RACE_HOST_PORT,
+		TEST_SOLO_RACE_PEER_PORT);
+	CHECK(NativeUdpTransport_GlobalInit());
+	memset(&probe, 0, sizeof(probe));
+	CHECK(NativeUdpTransport_Open(&probe, (uint16_t)TEST_SOLO_RACE_PEER_PORT));
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	/* The solo base built: no notice. */
+	CHECK(g_logCalls == 0u);
+	CHECK(CheckPacingUntouched(0, 0u) == 0);
+
+	/* At the title (flow OFF): no drive. */
+	CHECK(SoloDriveRefused() == 0);
+
+	/* LOBBY (the probe hears HELLOs and never answers), the offer, CROSS. */
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(HostTicksToSoloOffer() == NATIVE_ARCADE_FLOW_DEFAULT_SOLO_OFFER_DELAY_TICKS);
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT);
+	CHECK(DrainSoloProbe(&probe) > 0u);
+	view = HostView();
+	CHECK((view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT) && (view.solo == 1u));
+
+	/* Solo SELECT: no drive either. */
+	CHECK(SoloDriveRefused() == 0);
+	CHECK(DrainSoloProbe(&probe) == 0u);
+
+	/* Pick and confirm; SELECT_RESULT to START_SOLO_RACE. */
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	for (tick = 0u; (tick < 3u) && (HostView().screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT); tick++)
+	{
+		CHECK(HostPress(NATIVE_ARCADE_MENU_BUTTON_CROSS) == 0);
+	}
+	CHECK(HostView().screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+	for (tick = 0u; (tick < PAIR_BUDGET) && (HostView().screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT); tick++)
+	{
+		action = NativeArcadeLinkHost_Tick(0u, 0u);
+	}
+	CHECK(action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE);
+	view = HostView();
+	CHECK((view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) && (view.solo == 1u));
+	CHECK(NativeArcadeLinkHost_Racing() == 1u);
+	CHECK(DrainSoloProbe(&probe) == 0u);
+
+	/* The Launch frame: the linked race's pacing, and the local drive. */
+	CHECK(CheckDriveReset() == 0);
+	CHECK(NativeArcadeLinkHost_RaceBegin() == 1);
+	CHECK(CheckPacingUntouched(1, 5u) == 0);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.begun == 1u);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_NONE);
+	CHECK(state.raceTick == NATIVE_ARCADE_LINK_HOST_NO_TICK);
+	CHECK(NativeArcadeLinkHost_InternalDriveLocal() == 1u);
+	CHECK(NativeArcadeLinkHost_InternalDriveRaceTickLimit() == NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT);
+
+	/* The race: a host pass per race tick (Tick, then the step), GO on the
+	 * race tick itself with the local pads, never HOLD, nothing sent. */
+	for (k = 0u; k <= SOLO_RACE_FINISH_TICK; k++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+		HostSample(k, &sample);
+		facts.endOfRace = (k == SOLO_RACE_FINISH_TICK) ? 1u : 0u;
+		facts.finishedHumans = 0u;
+		facts.humans = 1u;
+		memset(pads, 0xA5, sizeof(pads));
+		status = NativeArcadeLinkHost_RaceStep(k, DriveState(k, 0u), &sample, &facts, pads);
+		CHECK(DrainSoloProbe(&probe) == 0u);
+		if (k == SOLO_RACE_FINISH_TICK)
+		{
+			CHECK(status == RACE_END);
+			CHECK(HostPadsUntouched(pads));
+			break;
+		}
+		CHECK(status == RACE_GO);
+		HostToDrivePad(&sample, &raw);
+		NativeArcadeRaceDrive_NormalizePad(&raw, &expected);
+		CHECK(HostPadIs(&pads[0], &expected) == 0);
+		NativeArcadeRaceDrive_NeutralPad(&expected);
+		CHECK(HostPadIs(&pads[1], &expected) == 0);
+		NativeArcadeRaceDrive_DisconnectedPad(&expected);
+		CHECK(HostPadIs(&pads[2], &expected) == 0);
+		CHECK(HostPadIs(&pads[3], &expected) == 0);
+		CHECK(GetDriveState(&state) == 0);
+		CHECK((state.raceTick == k) && (state.heldPeriods == 0u) && (state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_NONE));
+	}
+
+	/* The finish: END_OF_RACE on its tick, no linger, nothing reported. */
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_OF_RACE);
+	CHECK(state.endTick == SOLO_RACE_FINISH_TICK);
+	CHECK(state.lingerTicksLeft == 0u);
+	CHECK(state.failureReported == 0u);
+	CHECK(NativeArcadeLinkHost_InternalDriveFailureReports() == 0u);
+	CHECK(CheckNoDivergence() == 0);
+
+	/* The caller's raceFinished: solo RESULTS, FINISHED; the drive is reset
+	 * (nothing to linger with) and still nothing is sent. */
+	CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == ACT_NONE);
+	view = HostView();
+	CHECK((view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (view.solo == 1u));
+	CHECK(view.endReason == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+	CHECK(CheckDriveReset() == 0);
+	CHECK(NativeArcadeLinkHost_TakeRaceEnd(&raceEnd) == 1);
+	CHECK((raceEnd.raceNumber == 1u) && (raceEnd.endReason == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED));
+	CHECK(CheckNoDivergence() == 0);
+	for (tick = 0u; tick < 20u; tick++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+		CHECK(DrainSoloProbe(&probe) == 0u);
+	}
+
+	/* The Disarm frame: the pacing goes off. */
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(CheckPacingUntouched(0, 6u) == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(CheckPacingUntouched(0, 6u) == 0);
+
+	/* Solo RESULTS: no drive. */
+	CHECK(SoloDriveRefused() == 0);
+	CHECK(DrainSoloProbe(&probe) == 0u);
+	CHECK(g_logCalls == 0u);
+
+	/* Back at the title, the probe gives the peer port to a real peer: a
+	 * linked race begins the linked drive, not the local mode, and commits
+	 * the peer's pads through the lockstep exchange. */
+	NativeArcadeLinkHost_AbortToTitle();
+	NativeUdpTransport_Close(&probe);
+	CHECK(NativeArcadeLinkLoopback_PeerInit(&g_peer, &identity, TEST_SOLO_RACE_HOST_PORT, TEST_SOLO_RACE_PEER_PORT,
+		UINT64_C(0x5010) ^ UINT64_C(0x5A5A)) == 1);
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(NativeArcadeNetplay_Enter(&g_peer) == NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY);
+	CHECK(DrivePairToRace() == 0);
+	CHECK(HostView().solo == 0u);
+	CHECK(BeginRaceDrives() == 0);
+	CHECK(NativeArcadeLinkHost_InternalDriveLocal() == 0u);
+	CHECK(RoundsBoth(8u) == 0);
+	CHECK(NativeArcadeLinkHost_InternalDriveLocal() == 0u);
+	StopDriveRace();
+	NativeUdpTransport_GlobalShutdown();
+	CHECK(g_pacing == 0);
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
+static int TestSoloRace(void)
+{
+	int failed;
+
+	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
+	failed = RunSoloRace();
+	/* Unconditional: a failed CHECK must not leave the gate on for later tests. */
+	NativeArcadeLinkHost_InternalSetSoloEnabled(0u);
+	if (failed != 0)
+	{
+		NativeArcadeNetplay_Shutdown(&g_peer);
+		NativeArcadeLinkHost_Shutdown();
+	}
+	return failed;
+}
+
 int main(void)
 {
 	CHECK(TestInertBeforeConfigure() == 0);
@@ -4891,6 +5168,7 @@ int main(void)
 	CHECK(TestSoloDarkByDefault() == 0);
 	CHECK(TestSoloConfigEveryCharacter() == 0);
 	CHECK(TestSoloConfigFailsClosed() == 0);
+	CHECK(TestSoloRace() == 0);
 	puts("native_arcade_link_host_test: passed");
 	return 0;
 }

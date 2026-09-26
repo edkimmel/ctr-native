@@ -6926,9 +6926,11 @@ static int TestSoloListenOnly(void)
 
 /*
  * SOLO-5, SOLO-7, SOLO-8 on the CAB2 seat: localHuman 0 there too, the
- * cursor from the base's CAB1_HUMAN slot; a local race failure ends the solo
- * race with LINK_ERROR; RACE AGAIN starts a new select on the previous picks
- * with a new seed.
+ * character cursor on the cabinet's own seat default, the TWO_CAB fixture's
+ * CAB2_HUMAN character (SOLO-S4; the track and laps from the base as on the
+ * CAB1 seat, and the human still CAB1_HUMAN in the config); a local race
+ * failure ends the solo race with LINK_ERROR; RACE AGAIN starts a new select
+ * on the previous picks with a new seed.
  */
 static int TestSoloCab2RaceAgain(void)
 {
@@ -6939,9 +6941,17 @@ static int TestSoloCab2RaceAgain(void)
 	enum NativeArcadeFlowAction action;
 	uint32_t tick;
 	uint32_t baseIndex = 0u;
+	uint8_t cab2Slot = 0u;
+	uint8_t seatCharacter;
 	uint8_t human;
 
 	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(NativeMatchConfigV1_FindRoleSlot(&fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &cab2Slot));
+	seatCharacter = fixture.slots[cab2Slot].characterID;
+	/* The seat default differs from the base's, so the cursor shows which
+	 * one it started on. */
+	CHECK(seatCharacter != SOLO_BASE_CHARACTER);
+	CHECK(NativeMatchSelect_CharacterIndex(seatCharacter, &baseIndex));
 	CHECK(MakeSoloConfig(&config, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, TEST_SOLO_CAB2_PORT,
 		TEST_SOLO_PEER_PORT) == 0);
 	CHECK(NativeArcadeNetplay_Init(&g_b, &config) == 1);
@@ -6951,11 +6961,12 @@ static int TestSoloCab2RaceAgain(void)
 	CHECK(view.localRole == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN);
 	CHECK(view.select.humanCount == 1u);
 	CHECK(view.select.localHuman == 0u);
-	CHECK(view.select.humans[0].characterID == SOLO_BASE_CHARACTER);
+	CHECK(view.select.humans[0].characterID == seatCharacter);
+	CHECK(view.select.humans[0].trackID == FIXTURE_TRACK_CURSOR);
+	CHECK(view.select.humans[0].lapCount == FIXTURE_LAP_CURSOR);
 
-	/* Two NEXT presses from the base character. */
+	/* Two NEXT presses from the seat's character. */
 	CHECK(SoloPickAndStart(&g_b, 2u, NULL) == 0);
-	CHECK(NativeMatchSelect_CharacterIndex(SOLO_BASE_CHARACTER, &baseIndex));
 	human = NativeMatchSelect_CharacterAt(baseIndex + 2u);
 	CHECK(CheckSoloConfig(&g_b, human, (uint8_t)FIXTURE_TRACK_CURSOR, (uint8_t)FIXTURE_LAP_CURSOR) == 0);
 	first = *NativeArcadeNetplay_SoloConfig(&g_b);

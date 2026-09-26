@@ -517,7 +517,9 @@ target_link_libraries(ctr_native_arcade_race_drive PUBLIC ctr_native_lockstep_se
 # on Platform_SetFixedVBlankPacing, which only the ctr_native executable
 # defines (platform/native_platform.c): a test that links this library
 # defines its own stub. Since LR-S9 it also links the linked-race drive core
-# (ctr_native_arcade_race_drive), whose drive it runs over the adapter.
+# (ctr_native_arcade_race_drive), whose drive it runs over the adapter. Since
+# SOLO-S4 it also calls Platform_Log (platform/native_log.c, likewise only in
+# the executable) for one solo notice; a test that links it stubs that too.
 add_library(ctr_native_arcade_link_host STATIC platform/native_arcade_link_host.c)
 set_target_properties(ctr_native_arcade_link_host PROPERTIES
     C_STANDARD 17
