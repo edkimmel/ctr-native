@@ -366,6 +366,15 @@ static void NativeArcadeNetplay_RestartLobby(struct NativeArcadeNetplay *netplay
 	NativeArcadeNetplay_CloseLobby(netplay);
 	if (onLobby)
 	{
+		/* A changed pairing opens a session with a new peer, so it starts on
+		 * the fixture as Enter does, not on a proposal left from the last
+		 * session (a rematch config after a MATCH_FOUND fall-back). An
+		 * unchanged pairing keeps the current proposal. Never in static mode
+		 * (PairingChanged reads 0 there). */
+		if (NativeArcadeNetplay_PairingChanged(netplay))
+		{
+			netplay->currentConfig = netplay->config.fixture;
+		}
 		NativeArcadeNetplay_TakePairing(netplay);
 	}
 	NativeArcadeNetplay_BeginLobby(netplay);

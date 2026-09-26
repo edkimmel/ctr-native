@@ -11,8 +11,9 @@
 # libraries and never the transport directly, static-asserts that a select
 # record and a launch record each fill exactly one peer-link aux datagram,
 # stays portable C17 with extensions off, keeps its four defaults and its
-# launch linger cap frozen, and keeps the race hold service to its slice of
-# Tick (docs/LOCKSTEP_RACE_MILESTONE.md LR-50).
+# launch linger cap frozen, keeps the race hold service to its slice of
+# Tick (docs/LOCKSTEP_RACE_MILESTONE.md LR-50), and keeps the discovery
+# pairing to its DISC-12 Begin points (docs/DISCOVERY_MILESTONE.md).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -325,4 +326,135 @@ endif()
 string(FIND "${netplay_flat}" "wantsToSend = (startWait != 0) ? NativeArcadeLaunch_ShouldSendUncapped(&netplay->launch) : NativeArcadeLaunch_ShouldSend(&netplay->launch); if ((wantsToSend != 0) && (NativeLockstepPeerLink_Mode(link) == NATIVE_LOCKSTEP_PEER_LINK_RUNNING) && NativeArcadeLaunch_Compose(&netplay->launch, bytes, sizeof(bytes), &size)) { (void)NativeLockstepPeerLink_SendAux(link, bytes, size); } NativeArcadeLaunch_Tick(&netplay->launch); }" send_launch_body_at)
 if(send_launch_body_at EQUAL -1)
     message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_SendLaunch must pick the uncapped rule only on startWait, then send and tick the linger exactly as before (LR-69)")
+endif()
+
+# 9. Discovery pairing (docs/DISCOVERY_MILESTONE.md DISC-12). The pending
+#    pairing takes effect only at a lobby Begin that opens a new session on
+#    LOBBY: NativeArcadeNetplay_TakePairing is called exactly three times, in
+#    Enter, EndSolo, and RestartLobby, the last only inside its
+#    `if (onLobby)` branch, and never in Relink or BeginRematch. The config's
+#    role and candidates are never the session's in discovery mode:
+#    `config.localRole` is read only in UnpairedRole and `config->localRole`
+#    only in DefaultConfig (its default) and Init; `config.candidate*` is read
+#    only in the static branch of BeginListen and `config->candidate*` only in
+#    Init. SetPairing writes only the pending slot: no `config` write and no
+#    `active*` name in its body. RestartLobby's RestartCycle bypass stays
+#    gated on onLobby and PairingChanged.
+function(ctr_netplay_body source signature out_var)
+    string(FIND "${source}" "\n${signature}" body_at)
+    if(body_at EQUAL -1)
+        message(FATAL_ERROR "arcade netplay isolation: platform/native_arcade_netplay.c must define '${signature}'")
+    endif()
+    string(SUBSTRING "${source}" "${body_at}" -1 body_tail)
+    string(FIND "${body_tail}" "\n}" body_end)
+    if(body_end EQUAL -1)
+        message(FATAL_ERROR "arcade netplay isolation: cannot find the end of '${signature}'")
+    endif()
+    string(SUBSTRING "${body_tail}" 0 "${body_end}" body)
+    set(${out_var} "${body}" PARENT_SCOPE)
+endfunction()
+
+function(ctr_netplay_count text pattern out_var)
+    string(REGEX MATCHALL "${pattern}" matches "${text}")
+    list(LENGTH matches count)
+    set(${out_var} "${count}" PARENT_SCOPE)
+endfunction()
+
+ctr_netplay_body("${netplay_source}" "static void NativeArcadeNetplay_RestartLobby(" restart_lobby_body)
+ctr_netplay_body("${netplay_source}" "enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(" enter_body)
+ctr_netplay_body("${netplay_source}" "static void NativeArcadeNetplay_EndSolo(" end_solo_body)
+ctr_netplay_body("${netplay_source}" "static void NativeArcadeNetplay_Relink(" relink_body)
+ctr_netplay_body("${netplay_source}" "static void NativeArcadeNetplay_BeginRematch(" begin_rematch_body)
+ctr_netplay_body("${netplay_source}" "static uint8_t NativeArcadeNetplay_UnpairedRole(" unpaired_role_body)
+ctr_netplay_body("${netplay_source}" "int NativeArcadeNetplay_SetPairing(" set_pairing_body)
+ctr_netplay_body("${netplay_source}" "void NativeArcadeNetplay_DefaultConfig(" default_config_body)
+ctr_netplay_body("${netplay_source}" "int NativeArcadeNetplay_Init(" init_body)
+ctr_netplay_body("${netplay_source}" "static void NativeArcadeNetplay_BeginListen(" begin_listen_body)
+
+# TakePairing: one definition and exactly three calls, one each in Enter,
+# EndSolo, and RestartLobby's onLobby branch; none in Relink or BeginRematch.
+set(take_pairing_call "NativeArcadeNetplay_TakePairing[(]netplay[)]")
+ctr_netplay_count("${netplay_source}" "NativeArcadeNetplay_TakePairing[(]" take_pairing_names)
+ctr_netplay_count("${netplay_source}" "${take_pairing_call}" take_pairing_calls)
+if(NOT take_pairing_names EQUAL 4 OR NOT take_pairing_calls EQUAL 3)
+    message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_TakePairing must be defined once and called exactly three times (found ${take_pairing_names} names, ${take_pairing_calls} calls; DISC-12)")
+endif()
+foreach(body_name IN ITEMS enter_body end_solo_body restart_lobby_body)
+    ctr_netplay_count("${${body_name}}" "${take_pairing_call}" body_calls)
+    if(NOT body_calls EQUAL 1)
+        message(FATAL_ERROR "arcade netplay isolation: ${body_name} must call NativeArcadeNetplay_TakePairing exactly once (found ${body_calls}; DISC-12)")
+    endif()
+endforeach()
+foreach(body_name IN ITEMS relink_body begin_rematch_body)
+    string(FIND "${${body_name}}" "TakePairing" found_at)
+    if(NOT found_at EQUAL -1)
+        message(FATAL_ERROR "arcade netplay isolation: ${body_name} must not take the pending pairing (DISC-12: a relink or rematch keeps the session's peer, role, and slot)")
+    endif()
+endforeach()
+string(REGEX MATCH "\n\tif \\(onLobby\\)\r?\n\t{.*" on_lobby_tail "${restart_lobby_body}")
+if("${on_lobby_tail}" STREQUAL "")
+    message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_RestartLobby must keep its `if (onLobby)` branch (DISC-12)")
+endif()
+string(FIND "${on_lobby_tail}" "\n\t}" on_lobby_end)
+if(on_lobby_end EQUAL -1)
+    message(FATAL_ERROR "arcade netplay isolation: cannot find the end of RestartLobby's `if (onLobby)` branch")
+endif()
+string(SUBSTRING "${on_lobby_tail}" 0 "${on_lobby_end}" on_lobby_branch)
+ctr_netplay_count("${on_lobby_branch}" "${take_pairing_call}" on_lobby_calls)
+if(NOT on_lobby_calls EQUAL 1)
+    message(FATAL_ERROR "arcade netplay isolation: RestartLobby must take the pending pairing only inside its `if (onLobby)` branch (DISC-12)")
+endif()
+
+# The config's role: `config.localRole` only in UnpairedRole, and
+# `config->localRole` only in DefaultConfig and Init.
+ctr_netplay_count("${netplay_source}" "config[.]localRole" role_reads_all)
+ctr_netplay_count("${unpaired_role_body}" "config[.]localRole" role_reads_unpaired)
+if(role_reads_all EQUAL 0 OR NOT role_reads_all EQUAL role_reads_unpaired)
+    message(FATAL_ERROR "arcade netplay isolation: config.localRole may be read only in NativeArcadeNetplay_UnpairedRole (found ${role_reads_all}, ${role_reads_unpaired} there; DISC-12)")
+endif()
+ctr_netplay_count("${netplay_source}" "config->localRole" role_arrow_all)
+ctr_netplay_count("${default_config_body}" "config->localRole" role_arrow_default)
+ctr_netplay_count("${init_body}" "config->localRole" role_arrow_init)
+math(EXPR role_arrow_allowed "${role_arrow_default} + ${role_arrow_init}")
+if(NOT role_arrow_all EQUAL role_arrow_allowed)
+    message(FATAL_ERROR "arcade netplay isolation: config->localRole may be named only in NativeArcadeNetplay_DefaultConfig and NativeArcadeNetplay_Init (DISC-12)")
+endif()
+
+# The config's candidates: `config.candidate*` only in BeginListen's static
+# branch, and `config->candidate*` only in Init.
+string(REGEX MATCH "if \\(netplay->config[.]discovery == 0u\\)\r?\n\t{[^}]*}" listen_static_branch "${begin_listen_body}")
+if("${listen_static_branch}" STREQUAL "")
+    message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_BeginListen must keep its static-mode branch (DISC-12)")
+endif()
+ctr_netplay_count("${netplay_source}" "config[.]candidate" candidate_reads_all)
+ctr_netplay_count("${listen_static_branch}" "config[.]candidate" candidate_reads_static)
+if(candidate_reads_all EQUAL 0 OR NOT candidate_reads_all EQUAL candidate_reads_static)
+    message(FATAL_ERROR "arcade netplay isolation: config.candidates may be read only in the static branch of NativeArcadeNetplay_BeginListen (found ${candidate_reads_all}, ${candidate_reads_static} there; DISC-12)")
+endif()
+ctr_netplay_count("${netplay_source}" "config->candidate" candidate_arrow_all)
+ctr_netplay_count("${init_body}" "config->candidate" candidate_arrow_init)
+if(NOT candidate_arrow_all EQUAL candidate_arrow_init)
+    message(FATAL_ERROR "arcade netplay isolation: config->candidates may be named only in NativeArcadeNetplay_Init (DISC-12)")
+endif()
+
+# SetPairing writes the pending slot only.
+string(REGEX MATCH "config([.][A-Za-z0-9_.]*)?[ \t]*([-+*/|&^]?=[^=]|[+][+]|--)" set_pairing_config_write "${set_pairing_body}")
+string(REGEX MATCH "(memset|memcpy|memmove)[(][ \t]*&?[ \t]*netplay->config" set_pairing_config_copy "${set_pairing_body}")
+string(FIND "${set_pairing_body}" "active" set_pairing_active)
+if(NOT "${set_pairing_config_write}" STREQUAL "" OR NOT "${set_pairing_config_copy}" STREQUAL "" OR
+        NOT set_pairing_active EQUAL -1)
+    message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_SetPairing must write only the pending pairing: no config write and no active field (DISC-12)")
+endif()
+
+# RestartLobby's RestartCycle bypass: on LOBBY with a changed pairing, close
+# and begin; RestartCycle is called nowhere else.
+string(REGEX REPLACE "[ \t\r\n]+" " " restart_lobby_flat "${restart_lobby_body}")
+string(FIND "${restart_lobby_flat}" "const int onLobby = (NativeArcadeFlow_Screen(&netplay->flow) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);" on_lobby_def_at)
+string(FIND "${restart_lobby_flat}" "if ((netplay->lobbyBegun != 0u) && !(onLobby && NativeArcadeNetplay_PairingChanged(netplay)) && NativeLobbyState_RestartCycle(&netplay->lobby))" bypass_at)
+if(on_lobby_def_at EQUAL -1 OR bypass_at EQUAL -1)
+    message(FATAL_ERROR "arcade netplay isolation: RestartLobby must bypass RestartCycle exactly when on LOBBY with a changed pairing (DISC-12)")
+endif()
+ctr_netplay_count("${netplay_source}" "NativeLobbyState_RestartCycle[(]" restart_cycle_calls)
+if(NOT restart_cycle_calls EQUAL 1)
+    message(FATAL_ERROR "arcade netplay isolation: expected exactly one NativeLobbyState_RestartCycle call (in RestartLobby), found ${restart_cycle_calls}")
 endif()

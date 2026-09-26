@@ -7683,6 +7683,111 @@ static int TestDiscoveryRestartOffLobbyKeepsPairing(void)
 	return 0;
 }
 
+/* A MATCH_FOUND hold long enough that a fault read on the next tick always
+ * lands there, not on SELECT (the fall-back test below). */
+#define DISC_MATCH_FOUND_HOLD_TICKS 50u
+
+/*
+ * DISC-12 review: the MATCH_FOUND fall-back from a rematch lobby lands on
+ * LOBBY while the current proposal is still the rematch config. A pair on
+ * the elected seats races and rematches; both reach MATCH_FOUND on the
+ * rematch config; a corrupted bundle from B faults A's link, so A falls back
+ * to LOBBY with RESTART_LOBBY. With a changed pending pairing that Begin
+ * opens a session with a new peer, so it proposes the fixture, as Enter
+ * does; with the pairing unchanged the proposal stays the rematch config
+ * (the behaviour before the fix). The pair reuses the PAIR ports, closed by
+ * then.
+ */
+static int TestDiscoveryFreshProposalOnChangedPairing(void)
+{
+	struct NativeArcadeNetplayConfig config;
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 rematch;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	enum NativeArcadeFlowAction action;
+	uint32_t tick;
+	uint32_t changed;
+	int restarted;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	for (changed = 0u; changed < 2u; changed++)
+	{
+		CHECK(MakeDiscoveryConfig(&config, &fixture, 0u, TEST_DISC_PAIR_A_PORT) == 0);
+		config.timings.matchFoundHoldTicks = DISC_MATCH_FOUND_HOLD_TICKS;
+		CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+		CHECK(MakeDiscoveryConfig(&config, &fixture, 0u, TEST_DISC_PAIR_B_PORT) == 0);
+		config.timings.matchFoundHoldTicks = DISC_MATCH_FOUND_HOLD_TICKS;
+		CHECK(NativeArcadeNetplay_Init(&g_b, &config) == 1);
+		CHECK(SetPairingTo(&g_a, TEST_DISC_PAIR_B_PORT, ROLE_CAB2) == 0);
+		CHECK(SetPairingTo(&g_b, TEST_DISC_PAIR_A_PORT, ROLE_CAB1) == 0);
+		CHECK(EnterAndRaceInitialized());
+
+		/* The rematch lobby proposes the rematch config, not the fixture. */
+		CHECK(FinishAndDwell());
+		TickBoth(BTN_CROSS, BTN_CROSS, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_BEGIN_REMATCH);
+		CHECK(actionB == ACT_BEGIN_REMATCH);
+		rematch = g_a.currentConfig;
+		CHECK(memcmp(&rematch, &fixture, sizeof(rematch)) != 0);
+		for (tick = 0u; (tick < DRIVE_BUDGET) && ((ScreenOf(&g_a) != NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND) ||
+											   (ScreenOf(&g_b) != NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND));
+			tick++)
+		{
+			TickBoth(0u, 0u, 0u, &actionA, &actionB);
+			CHECK(actionA == ACT_NONE);
+			CHECK(actionB == ACT_NONE);
+		}
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND);
+		CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND);
+		CHECK(memcmp(&g_a.currentConfig, &rematch, sizeof(rematch)) == 0);
+		CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+
+		/* Changed: a new pending peer and seat. Unchanged: the same. */
+		if (changed != 0u)
+		{
+			CHECK(SetPairingTo(&g_a, TEST_DISC_NOBODY_PORT, ROLE_CAB1) == 0);
+		}
+		else
+		{
+			CHECK(SetPairingTo(&g_a, TEST_DISC_PAIR_B_PORT, ROLE_CAB2) == 0);
+		}
+
+		/* B faults A's link: A falls back from MATCH_FOUND to LOBBY. */
+		CHECK(SendCorruptBundle(&g_b, TEST_DISC_PAIR_A_PORT));
+		restarted = 0;
+		for (tick = 0u; (tick < DRIVE_BUDGET) && !restarted; tick++)
+		{
+			action = NativeArcadeNetplay_Tick(&g_a, 0u, 0u);
+			CHECK((action == ACT_NONE) || (action == ACT_RESTART_LOBBY));
+			restarted = (action == ACT_RESTART_LOBBY);
+			if (!restarted)
+			{
+				CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND);
+			}
+		}
+		CHECK(restarted);
+		CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+		CHECK(g_a.lobbyBegun == 1u);
+		if (changed != 0u)
+		{
+			CHECK(SessionIs(&g_a, ROLE_CAB1, TEST_DISC_NOBODY_PORT) == 0);
+			CHECK(LobbyIs(&g_a, ROLE_CAB1, TEST_DISC_NOBODY_PORT) == 0);
+			CHECK(memcmp(&g_a.currentConfig, &fixture, sizeof(fixture)) == 0);
+			CHECK(memcmp(&g_a.lobby.proposedConfig, &fixture, sizeof(fixture)) == 0);
+		}
+		else
+		{
+			CHECK(SessionIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+			CHECK(LobbyIs(&g_a, ROLE_CAB2, TEST_DISC_PAIR_B_PORT) == 0);
+			CHECK(memcmp(&g_a.currentConfig, &rematch, sizeof(rematch)) == 0);
+			CHECK(memcmp(&g_a.lobby.proposedConfig, &rematch, sizeof(rematch)) == 0);
+		}
+		ShutdownBoth();
+	}
+	return 0;
+}
+
 /*
  * DISC-12 with solo: unpaired, the lobby is WAITING on an empty list and
  * retries, and solo is offered after the offer delay; CROSS begins it. The
@@ -7872,6 +7977,7 @@ int main(void)
 	CHECK(TestDiscoveryInitAndSetter() == 0);
 	CHECK(TestDiscoveryPairingAtLobbyBegin() == 0);
 	CHECK(TestDiscoveryRestartOffLobbyKeepsPairing() == 0);
+	CHECK(TestDiscoveryFreshProposalOnChangedPairing() == 0);
 	CHECK(TestDiscoveryUnpairedSolo() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;

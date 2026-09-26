@@ -641,6 +641,12 @@ leave room.
     `NativeArcadeLinkOptions_ApplyArgs` incrementally (a later static-mode
     pass would accept it as the required port). main.c applies argv and
     the file's group exclusively (PK-4), so it cannot reach this.
+13. The netplay tests do not exercise the REJECTED-CONFIRM Begin point.
+14. The netplay tests do not exercise a pending pairing change while the lobby is CONNECTING.
+15. The netplay tests do not exercise the SELECT_RESULT Close-then-Begin fallback (only its RestartCycle path).
+16. The DISC-13 nonce domain string and its independence from `selectEntropy` are not pinned (a static function in main.c).
+17. The live checker does not assert main.c's "auto port 730x, 0 peers" startup line.
+18. HandPairing's fail-closed branch (the adapter refuses a pairing) is pinned structurally only; the service never reports such a pairing, so no host unit test reaches it.
 
 ## 6. Status
 
@@ -676,4 +682,26 @@ leave room.
   - Risk 10 (interface refresh on the game thread during races) is not
     addressed: still open. Risk 6 (demo-time beacon gap) is not covered by
     the loopback proof: still open.
+  S4 review fixes:
+  - tests/native_arcade_netplay_isolation_test.cmake section 9 pins the
+    DISC-12 structure: TakePairing called exactly three times (Enter,
+    EndSolo, RestartLobby's `if (onLobby)` branch) and never in Relink or
+    BeginRematch; `config.localRole` read only in UnpairedRole
+    (`config->localRole` only in DefaultConfig and Init); `config.candidate*`
+    read only in BeginListen's static branch (`config->candidate*` only in
+    Init); SetPairing writes no `config` field and names no `active` field;
+    the RestartCycle bypass gated on onLobby and PairingChanged. The include
+    allow-list and nine-library pin are unchanged.
+  - A LOBBY retry whose pairing changed since the last Begin also resets the
+    current proposal to the fixture, as Enter does, so the MATCH_FOUND
+    fall-back from a rematch lobby no longer proposes the old session's
+    rematch config to a new peer; an unchanged pairing keeps the current
+    proposal. Discovery mode only (PairingChanged reads 0 in static mode).
+    The netplay test TestDiscoveryFreshProposalOnChangedPairing covers both
+    cases, and with them the MATCH_FOUND fall-back Begin point and the
+    unchanged-pairing RestartCycle branch on LOBBY.
+  - The host's HandPairing fails closed: a pairing the adapter refuses is
+    followed by SetPairing(NULL), so no stale pending pairing stays (host
+    isolation rule 3m now pins three SetPairing calls).
+  - Section 5 items 13 to 18 list what the tests still do not cover.
 - DISC-S5 and DISC-S6: not started.

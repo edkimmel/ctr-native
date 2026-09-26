@@ -913,9 +913,10 @@ ctr_require_in("${host_source} (Configure)" "${configure_body}"
 #       one service Tick call, drains every event into LogDiscoveryEvent
 #       (the one event log call), then hands the pairing.
 #     - HandPairing returns first outside discovery mode and holds the only
-#       two SetPairing calls (the service's pairing, or none) and the one
-#       Pairing read; only TickDiscovery and AbortToTitle (after its Init)
-#       call it.
+#       three SetPairing calls (the service's pairing, or none, and none
+#       again when the adapter refuses the pairing: it fails closed) and the
+#       one Pairing read; only TickDiscovery and AbortToTitle (after its
+#       Init) call it.
 #     - The one Close call is in Shutdown, which leaves discovery mode;
 #       AbortToTitle never closes the service.
 #     - The view's localCab reads the adapter's role (its view's localRole),
@@ -925,7 +926,7 @@ ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryServic
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_TakeEvent(" 1)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_Pairing(" 1)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_Close(" 1)
-ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeNetplay_SetPairing(" 2)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeNetplay_SetPairing(" 3)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_OpenDiscovery(" 2)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_TickDiscovery(" 2)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_HandPairing(" 3)
@@ -955,7 +956,7 @@ ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_Han
 ctr_require_in("${host_source} (HandPairing)" "${hand_body}"
     "{ struct NativeArcadeDiscoveryPairing pairing; struct NativeArcadeNetplayPairing handed; if (g_discoveryMode == 0u) { return; }"
     "if (!NativeArcadeDiscoveryService_Pairing(&g_discovery, &pairing)) { (void)NativeArcadeNetplay_SetPairing(&g_netplay, NULL); return; }"
-    "(void)NativeArcadeNetplay_SetPairing(&g_netplay, &handed);")
+    "if (!NativeArcadeNetplay_SetPairing(&g_netplay, &handed)) { (void)NativeArcadeNetplay_SetPairing(&g_netplay, NULL); }")
 ctr_require_in("${host_source} (Shutdown)" "${shutdown_body}" "NativeArcadeDiscoveryService_Close(&g_discovery); g_discoveryMode = 0u;")
 ctr_forbid("${host_source} (AbortToTitle)" "${abort_body}" "NativeArcadeDiscoveryService_")
 ctr_require_in("${host_source} (AbortToTitle)" "${abort_body}" "g_idleTicks = 0u; NativeArcadeLinkHost_HandPairing();")

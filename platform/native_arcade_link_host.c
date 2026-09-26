@@ -879,7 +879,12 @@ static void NativeArcadeLinkHost_HandPairing(void)
 	handed.peerPort = pairing.peerLinkPort;
 	handed.localRole = (uint8_t)((pairing.localSeat == NATIVE_ARCADE_DISCOVERY_SEAT_CAB2) ? NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN
 																						  : NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN);
-	(void)NativeArcadeNetplay_SetPairing(&g_netplay, &handed);
+	/* Fail closed: a pairing the adapter refuses leaves no stale pending
+	 * pairing behind; the adapter then holds none. */
+	if (!NativeArcadeNetplay_SetPairing(&g_netplay, &handed))
+	{
+		(void)NativeArcadeNetplay_SetPairing(&g_netplay, NULL);
+	}
 }
 
 /* Discovery mode only, at the top of every LINK host Tick, before the
