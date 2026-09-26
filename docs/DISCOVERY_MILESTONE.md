@@ -634,8 +634,8 @@ leave room.
     (GetAdaptersAddresses) every 300 ticks on the game thread, linked race
     frames included. S4 should measure that cost or refresh only outside
     races.
-11. docs/PACKAGING.md PK-5 and its error table still describe the old
-    all-or-none link group rule; S5 updates them to DISC-11.
+11. Resolved in S5: docs/PACKAGING.md PK-5 and its error table describe
+    DISC-11's rules as ApplyLink, ApplyArgs, and ValidateMerged enforce them.
 12. In discovery mode a defaulted link port (7001) is stored in
     `localPort` and then looks given, a trap for a caller that applies
     `NativeArcadeLinkOptions_ApplyArgs` incrementally (a later static-mode
@@ -704,4 +704,34 @@ leave room.
     followed by SetPairing(NULL), so no stale pending pairing stays (host
     isolation rule 3m now pins three SetPairing calls).
   - Section 5 items 13 to 18 list what the tests still do not cover.
-- DISC-S5 and DISC-S6: not started.
+- DISC-S5, package: done. The two per-cabinet templates are gone;
+  the package ships one arcade.cfg with `seat = auto`, no active port,
+  peer, or group line (commented-out examples for `port = 7001`,
+  `group`, and the static override on both cabinets), and the display
+  keys and `data_dir` unchanged. The package file set is ctr_native.exe,
+  arcade.cfg, README.txt, MANIFEST.txt. The operator card and
+  docs/PACKAGING.md (PK-3, PK-4, PK-5 and its error table, PK-8, PK-9 with
+  the DISC-17 rule, PK-10, the smoke section, and the per-cabinet setup)
+  follow. Risk 11 is resolved. Deviations and notes:
+  - The smoke gate: package_arcade_smoke now runs
+    tools/arcade-discovery-link-check.ps1 (one linked race), not
+    tools/arcade-link-launch-check.ps1 (the static LR-16 three-race
+    scenario), because the package's one file is a discovery-mode file.
+    The checker gained a config mode (`-ConfigA`/`-ConfigB`, both or
+    neither, each run `--config <file>` plus the discovery flags) and
+    port parameters (`-LinkPortA`/`-LinkPortB`/`-DiscoveryPortA`/
+    `-DiscoveryPortB`, default 7301-7304); without them it runs exactly
+    as before (arcade_discovery_link is unchanged). In config mode it also
+    requires the file loaded once, the link group from it, nothing
+    overridden, and main.c's `auto port <p>, 0 peers` line (risk 17 stays
+    open for the default mode). arcade_link_launch still covers LR-16 on
+    the build-tree exe.
+  - Loopback ports: the smoke's two copies of the one arcade.cfg add
+    `port = 7001` (a) and `port = 7002` (b); the discovery ports 7003
+    and 7004 go on the command line (DISC-18). 7001 is elected cab1. The
+    CMakeLists live-port comment lists them. The smoke's gate timeout is
+    now 240 s (ctest TIMEOUT 360), since it runs one race, not three.
+  - The smoke refuses a package arcade.cfg that sets a port, a peer, a
+    group, or a seat other than auto; package_arcade_stage covers that and
+    the checker's new argument checks with a dummy exe.
+- DISC-S6: not started.

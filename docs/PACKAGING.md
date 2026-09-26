@@ -24,22 +24,28 @@ file; a relative path resolves against the launch directory.
   exits 1 through `NativeConsole_Return`. A cabinet must not come up silently
   unlinked.
 
-**PK-3 Keys.** `data_dir`, `seat` (`cab1`|`cab2`), `port` (1-65535), `peer`
-(`a.b.c.d:port`, repeatable up to 8), `fullscreen`
-(`0`|`1`|`yes`|`no`|`true`|`false`), `render_scale` (`1`|`2`|`3`|`4`|`6`|`8`,
-as `--render-scale`), `texture_filter` (`nearest`|`bilinear`, as
-`--texture-filter`). Keys and values are case-sensitive, as on the command
-line. The grammar and the error classes are listed below. The link group
-(`seat`, `port`, `peer`) is all-or-none, with exactly the command line's
-rules. `render_scale` and `texture_filter` are host-local presentation of
-one cabinet: the two cabinets may differ in them, and they never reach the
-match config, simulation identity, replay, checkpoints, the link, or
-canonical state.
+**PK-3 Keys.** `data_dir`, `seat` (`cab1`|`cab2`|`auto`), `port`
+(1-65535, optional), `peer` (`a.b.c.d:port`, repeatable up to 8, optional),
+`group` (1-32 letters, digits, `.`, `_`, or `-`, not starting with `-`;
+optional), `fullscreen` (`0`|`1`|`yes`|`no`|`true`|`false`), `render_scale`
+(`1`|`2`|`3`|`4`|`6`|`8`, as `--render-scale`), `texture_filter`
+(`nearest`|`bilinear`, as `--texture-filter`). Keys and values are
+case-sensitive, as on the command line. The grammar and the error classes
+are listed below. The link group (`seat`, `port`, `peer`, `group`) follows
+exactly the command line's rules (PK-5, docs/DISCOVERY_MILESTONE.md
+DISC-11): `seat` turns the link on; with a `peer` it is static mode, without
+one discovery mode. `render_scale` and `texture_filter` are host-local
+presentation of one cabinet: the two cabinets may differ in them, and they
+never reach the match config, simulation identity, replay, checkpoints, the
+link, or canonical state.
 
 **PK-4 Command-line overrides, per group.**
 - Link: if argv names `--arcade-link`, `--arcade-link-port`,
-  `--arcade-link-peer`, or `--arcade-link-preview`, the file's whole link
-  group is ignored.
+  `--arcade-link-peer`, `--arcade-link-group`, or `--arcade-link-preview`,
+  the file's whole link group is ignored. The discovery test flags
+  `--arcade-discovery-port` and `--arcade-discovery-target` are not link
+  group options (DISC-18): argv naming them keeps the file's group, so a
+  test can run a shipped `arcade.cfg` with them.
 - Window mode: `--fullscreen` or `--windowed` overrides `fullscreen`.
 - Display, per key: `--render-scale` overrides `render_scale`, and
   `--texture-filter` overrides `texture_filter`. A bad value in the file is
@@ -50,13 +56,38 @@ canonical state.
 Startup prints the loaded file (or `none (<default path> not found)`), the
 groups taken from it, and the groups the command line overrode.
 
-**PK-5 One link grammar.** The config module has no port or peer grammar of
-its own.
-- Each `seat`, `port`, and `peer` value is checked, at its line, by
-  `NativeArcadeLinkOptions_ApplyArgs` itself. The parser runs over a
-  synthetic argv in which the other two members are fixed good samples.
-- The whole group is then checked the same way:
-  `--arcade-link <seat> --arcade-link-port <port> --arcade-link-peer <peer>...`.
+**PK-5 One link grammar.** The config module has no seat, port, peer, or
+group grammar of its own.
+- Each `seat`, `port`, `peer`, and `group` value is checked, at its line, by
+  `NativeArcadeLinkOptions_ApplyArgs` itself, over a synthetic argv that is
+  a valid group for every good value: `seat` and `group` in a discovery-mode
+  sample (a sample seat, no peer), `port` and `peer` in a static-mode sample
+  (a sample seat, port, and peer).
+- The whole group is then checked the same way, as
+  `--arcade-link <seat> --arcade-link-port <port> --arcade-link-group <group> --arcade-link-peer <peer>...`
+  with only the keys the file sets. `ApplyArgs` applies the DISC-11 rules to
+  the file and to argv alike:
+  - `seat` is the one key that turns the link on. `port`, `peer`, or
+    `group` without `seat` is an incomplete link group.
+  - Static mode: at least one `peer`. It needs `seat` `cab1` or `cab2` and
+    a `port`, and takes no `group`. Discovery is off: no discovery socket,
+    no beacon.
+  - Discovery mode: no `peer`. `seat` is `auto`, `cab1`, or `cab2` (`cab1`
+    and `cab2` become the seat preference of the election; two cabinets
+    that prefer the same seat never pair). `port` is optional (default
+    7001), and so is `group` (default `ctr-native`).
+  - So a `peer` with `seat = auto`, a `peer` without `port`, and a `peer`
+    with `group` are incomplete link groups too.
+- After the file's group is applied (or argv's, PK-4), `main.c` checks the
+  merged options with `NativeArcadeLinkOptions_ValidateMerged`:
+  `--arcade-discovery-port` or `--arcade-discovery-target` without
+  discovery mode is an error, and in discovery mode the link port may not
+  equal the discovery port (7000 unless `--arcade-discovery-port` sets
+  another: the discovery socket holds it for the whole run). Either stops
+  the game (exit 1) with `invalid arcade-link option; ...`, with no config
+  line: `port = 7000` passes the file check and is refused here.
+- A static cabinet and a discovery cabinet never link (the static one does
+  not beacon): both cabinets of a pair use the same mode.
 - The group reaches the link only through `NativeArcadeConfig_ApplyLink`. It
   fills `struct NativeArcadeLinkOptions` through the same parser, exactly as
   the flags do. Every later check in `main.c` then applies unchanged: it is
@@ -116,52 +147,68 @@ The entry point is `NativeAssets_InitWithAssetDir(exeBase, assetDir, resolved, s
 **PK-7 Package script.** `tools/package-arcade.ps1` (Windows PowerShell 5.1).
 See "Running the package script" below.
 
-**PK-8 Templates.** `tools/package/cab1.cfg` and `cab2.cfg`:
+**PK-8 Template.** One file, `tools/package/arcade.cfg`, for every cabinet
+(DISC-11, DISC-S5):
+- `seat = auto` (discovery mode: the cabinets find each other and elect
+  their seats) and no active `port`, `peer`, or `group` line. Comments show
+  the optional overrides: `# port = 7001` (the default link port; it must
+  differ from the discovery port 7000), `# group = <name>` (keeps two
+  installations on one LAN apart; both cabinets need the same one),
+  `seat = cab1` or `cab2` as a fixed-seat override, and a static override
+  (`seat = cab1|cab2`, `port`, and `peer = a.b.c.d:port`, on BOTH cabinets:
+  a pair of one static and one discovery cabinet never links).
+- `data_dir = C:\ctr-data`, `fullscreen = 1`, `render_scale = 8`, and
+  `texture_filter = bilinear`.
+- It ships under the name the exe reads by default (PK-2), so a fresh
+  install needs no copy step and no per-cabinet network edit.
+- `tools/package/README.txt` is the operator card: data, per-cabinet setup
+  (with the optional overrides), the PK-9 firewall rule, starting, the
+  same-build and same-disc hash checks, and the solo race. It follows
+  "Per-cabinet setup" and "Solo race" below.
+- `native_arcade_config_unit` parses it with the real parser and checks the
+  resulting link options (on, discovery mode, seat auto, link port 7001, no
+  peer, no group, and the post-merge check passes) and display config. The
+  package smoke gate checks the packaged copy's keys and runs the packaged
+  exe with it.
 
-| Template | seat | port | peer |
-| --- | --- | --- | --- |
-| `cab1.cfg` | `cab1` | 7001 | `192.168.1.102:7002` |
-| `cab2.cfg` | `cab2` | 7002 | `192.168.1.101:7001` |
+**PK-9 Firewall rule.** A default the owner may change (DISC-17). Every
+cabinet has the same one inbound rule: UDP on the discovery port 7000 and
+the link port 7001, only for the packaged `ctr_native.exe` (`-Program`),
+only from the local subnet (`-RemoteAddress LocalSubnet`), on every network
+profile (`-Profile Any`):
 
-- The ports are the default ports of the loopback gate
-  `tools/arcade-link-launch-check.ps1` and the ports the package smoke gate
-  runs on. The ctest `arcade_link_launch` passes 7101 and 7102 instead, so
-  the two live gates never share a port.
-- The IPs are placeholders. A comment says to edit each to the other
-  cabinet's fixed IP.
-- Both templates set `data_dir = C:\ctr-data`, `fullscreen = 1`,
-  `render_scale = 8`, and `texture_filter = bilinear`.
-- `tools/package/README.txt` is the operator card: data, per-cabinet setup,
-  the PK-9 firewall rule, starting, the same-build and same-disc hash
-  checks, and the solo race. It follows "Per-cabinet setup" and "Solo
-  race" below.
-- `native_arcade_config_unit` parses both templates with the real parser and
-  checks the resulting link options and display config.
+```powershell
+New-NetFirewallRule -DisplayName 'CTR arcade link' -Direction Inbound -Protocol UDP -LocalPort 7000,7001 -RemoteAddress LocalSubnet -Program "$pkg\ctr_native.exe" -Profile Any -Action Allow
+```
 
-**PK-9 Firewall rule.** A default the owner may change. Each cabinet
-allows inbound UDP on its own link port only, only for the packaged
-`ctr_native.exe` (`-Program`), and only from the other cabinet's fixed IP
-(`-RemoteAddress`). The link's only partner is the configured `peer`, so
-this is the narrowest rule the link needs. A port-only rule also works, but
-it admits any program and any sender on any network profile. The rule leaves
-`-Profile` at its default (all profiles), since a cabinet LAN on a dumb
-switch may not be classified as a private network. The exact commands are
-in "Per-cabinet setup", step 4.
+- The peer's address is found at run time, so the rule cannot name it;
+  `LocalSubnet` keeps every other network out.
+- `-Profile Any`: a cabinet LAN on a dumb switch may be classified Public,
+  and a rule scoped to Private would drop every beacon.
+- Outbound broadcast needs no rule.
+- A cabinet with a `port` override puts that port in place of 7001. A
+  static pair (PK-5) needs only its link port; the same rule covers it.
+- The exact steps are in "Per-cabinet setup", step 4.
 
 **PK-10 Per-cabinet files.** A default the owner may change. `arcade.cfg`,
 `memcards\`, and `Crash Team Racing.log` in the package folder belong to
-one cabinet. Any sync of the folder between cabinets (docs/HANDOFF.md: CAB2
-receives the bundle through the fleet rsync path) excludes them. If a sync
-copied them anyway, the receiving cabinet deletes the copied `memcards\`
-and log and redoes "Per-cabinet setup" step 3, since it would otherwise run
-the other cabinet's seat and peer. A `memcards\` save is never copied to a
-cabinet.
+one cabinet. The shipped `arcade.cfg` is the same on every cabinet, but an
+edited one (`data_dir`, a `seat`, `group`, or `port` override, a static
+peer, or the display keys) is that cabinet's alone. Any sync of the folder
+between cabinets (docs/HANDOFF.md: CAB2 receives the bundle through the
+fleet rsync path) excludes them. If a sync copied them anyway, the receiving
+cabinet deletes the copied `memcards\` and log and redoes "Per-cabinet
+setup" step 3, since it would otherwise run the other cabinet's settings
+(with a fixed seat or a static peer, the other cabinet's seat). A
+`memcards\` save is never copied to a cabinet. Extracting a new package
+over an installed folder overwrites `arcade.cfg` with the shipped one: keep
+a copy of an edited one and put it back.
 
 ## Config grammar
 
 - One `key = value` per line. Keys are exactly `data_dir`, `seat`, `port`,
-  `peer`, `fullscreen`, `render_scale`, `texture_filter` (lowercase). Only
-  `peer` may repeat.
+  `peer`, `group`, `fullscreen`, `render_scale`, `texture_filter`
+  (lowercase). Only `peer` may repeat.
 - Whitespace (space, tab) around the key and the value is trimmed.
 - The value is the rest of the line after the first `=`. It may contain
   spaces and `=`, and it takes no quotes. A trailing `# comment` is part of
@@ -189,7 +236,11 @@ file-size error, which has no line: `config file <path>: <reason>`.
 | empty value | that line |
 | bad value | that line |
 | a ninth `peer` | that line |
-| incomplete link group | the first link line |
+| incomplete link group (PK-5: `port`, `peer`, or `group` without `seat`; a `peer` with `seat = auto`, without `port`, or with `group`) | the first link line |
+
+A discovery-mode link port equal to the discovery port (`port = 7000`)
+passes the file check; `main.c` refuses it after the merge (PK-5), with no
+line.
 
 Code: `platform/native_arcade_config.c` and
 `include/platform/native_arcade_config.h`. This is the pure library
@@ -241,8 +292,8 @@ The script:
    `build-msvc-x86\package\`, and anything under `C:\arcade`. Before any
    delete it refuses if `build-msvc-x86`, `build-msvc-x86\package`, or the
    destination is a junction or symbolic link (a reparse point).
-5. Copies the Release `ctr_native.exe` and the templates `cab1.cfg`,
-   `cab2.cfg`, and `README.txt` verbatim.
+5. Copies the Release `ctr_native.exe`, the template `arcade.cfg`, and
+   `README.txt` verbatim.
 6. Writes `MANIFEST.txt` (ASCII, CRLF). It holds the package name, the
    version, the full and short commit hash, the configuration `Release`, and
    the size in bytes and SHA-256 (uppercase hex, as `Get-FileHash` prints)
@@ -261,7 +312,7 @@ written to `C:\arcade`: the owner deploys packages there.
 existing folder (exit 0 pass, 1 fail) and never changes the folder.
 
 A folder fails when any of these holds:
-- Its file set is not exactly `ctr_native.exe`, `cab1.cfg`, `cab2.cfg`,
+- Its file set is not exactly `ctr_native.exe`, `arcade.cfg`,
   `README.txt`, `MANIFEST.txt`. Names are case-sensitive, and a missing
   file fails too.
 - It holds any subdirectory.
@@ -276,7 +327,7 @@ A folder fails when any of these holds:
 dummy files under `build-msvc-x86/package_guard_test/`. It checks that:
 - the exact allowlist passes;
 - each of these fails with its reason: `ctr-u.bin`, `SCPH1001.BIN`,
-  `BIGFILE.BIG`, an unknown file, a subdirectory, an oversize `cab1.cfg`,
+  `BIGFILE.BIG`, an unknown file, a subdirectory, an oversize `arcade.cfg`,
   `CTR_NATIVE.EXE` in place of `ctr_native.exe`, a hidden extra file, a
   hidden `README.txt`, an exe of 32 MiB + 1 byte (made with
   `fsutil file createnew`, which needs no elevation; the case is skipped
@@ -286,12 +337,20 @@ dummy files under `build-msvc-x86/package_guard_test/`. It checks that:
 ## Package smoke gate
 
 `tools/package-arcade-smoke.ps1` proves that a packaged `ctr_native.exe`
-runs a two-process loopback lockstep race driven by the package's own config
-files. It runs the `arcade_link_launch` gate
-(`tools/arcade-link-launch-check.ps1`) on the packaged exe, with
-`-Cab1Config` and `-Cab2Config`: each run gets `--config <file>` in place of
-the three link options, and its stdout must show that file loaded, the link
-group taken from it, and no group overridden.
+runs a two-process loopback lockstep race driven by the package's own
+`arcade.cfg`, in discovery mode (DISC-S5). It runs the
+`arcade_discovery_link` gate (`tools/arcade-discovery-link-check.ps1`) on
+the packaged exe in its config mode, with `-ConfigA` and `-ConfigB`: each
+run gets `--config <file>` in place of `--arcade-link auto` and the link
+port, and its stdout must show that file loaded, the link group taken from
+it, no group overridden, and `arcade link: auto port <its port>, 0 peers`.
+
+Why this gate: the package ships one `arcade.cfg` for every cabinet, with
+`seat = auto`, so the smoke proves the packaged exe plus that file to one
+linked race: the two runs find each other, elect their seats, select, race,
+and exit. The static-seat LR-16 scenario (three races: the finish, the
+desync, the peer drop) stays covered by `arcade_link_launch`
+(`tools/arcade-link-launch-check.ps1`) on the build-tree exe.
 
 Steps:
 1. Runs the retail-data guard (`-CheckFolder`) on the package folder, and
@@ -301,20 +360,30 @@ Steps:
    exe, so the package folder itself is never run. The copy must hold no
    `memcards\` before the gate starts: it runs as a fresh cabinet with no
    memcard save, so no game options were ever loaded from one.
-3. Derives `<output>\cab1.loopback.cfg` and `cab2.loopback.cfg` from the
-   package's `cab1.cfg` and `cab2.cfg`. Only four values change: the peer
-   IP (to `127.0.0.1`, ports kept), `data_dir` (to the folder holding the
-   disc image), `fullscreen` (to `0`), and `render_scale` (to `1`: two
-   cabinets at 8x on one test PC is needless load). Every other line must
-   be unchanged (`texture_filter` stays `bilinear`), and seat, port, and
-   peer port must equal the gate's (cab1 7001 peer :7002, cab2 7002 peer
-   :7001).
-4. Runs the gate in `<output>\gate\`. After a pass it also requires both
-   stdouts to show the groups
+3. Checks the package's `arcade.cfg`: `data_dir`, `seat`, `fullscreen`,
+   `render_scale`, and `texture_filter` set exactly once each, `seat = auto`,
+   `texture_filter = bilinear`, and no other key set (`port`, `peer`, and
+   `group` are commented-out examples only).
+4. Derives `<output>\a.loopback.cfg` and `b.loopback.cfg` from it. Only
+   three values change: `data_dir` (to the folder holding the disc image),
+   `fullscreen` (to `0`), and `render_scale` (to `1`: two cabinets at 8x on
+   one test PC is needless load). One line is added after the seat line,
+   `port = 7001` (a) or `port = 7002` (b): two processes on one host need
+   distinct link ports. Every other line must be unchanged (`seat` stays
+   `auto`, `texture_filter` stays `bilinear`, no peer).
+5. Runs the gate in `<output>\gate\` with `-LinkPortA 7001 -LinkPortB 7002
+   -DiscoveryPortA 7003 -DiscoveryPortB 7004`. The discovery flags are
+   test flags, not `arcade.cfg` keys (DISC-18), so they go on the command
+   line: a `--arcade-discovery-port 7003 --arcade-discovery-target
+   127.0.0.1:7004`, b `--arcade-discovery-port 7004
+   --arcade-discovery-target 127.0.0.1:7003`. The election makes a (the
+   lower link port, 7001) cab1 and b cab2; each run must log exactly one
+   `paired with 127.0.0.1:<the other's link port> as cab<n>` line. After a
+   pass the smoke also requires both stdouts to show the groups
    `link fullscreen render_scale texture_filter data_dir` from the file, a
    1x render scale, a windowed window mode, and a bilinear texture filter,
    and re-checks the run copy and the package against the MANIFEST.
-5. Prints the exe SHA-256 and size and `package smoke: PASS`.
+6. Prints the exe SHA-256 and size and `package smoke: PASS`.
 
 Two modes:
 - `-PackageDirectory <dir>` tests an existing package folder, which is only
@@ -337,12 +406,15 @@ is not a pass.
 The ctest `package_arcade_smoke` (labels `live` and `live-package`; not
 `RUN_SERIAL`, so it may run in parallel with the other live tests) runs the
 stage mode on each configuration's own `ctr_native.exe`, writing under
-`build-msvc-x86\package_smoke\<config>`. It runs on the package's ports,
-7001 and 7002; `arcade_link_launch` uses 7101 and 7102, so the two never
-share a port. Run it alone with
+`build-msvc-x86\package_smoke\<config>`. It runs on link ports 7001 and 7002
+and discovery ports 7003 and 7004; `arcade_link_launch` uses 7101 and 7102
+and `arcade_discovery_link` 7301-7304, so they never share a port. Run it
+alone with
 `ctest --test-dir build-msvc-x86 -C Debug -L live-package --output-on-failure`.
-`package_arcade_stage` (not live) checks the stage mode and the argument
-checks of both scripts with a dummy exe.
+`package_arcade_stage` (not live) checks the stage mode, the argument checks
+of the smoke and of both gate scripts with a dummy exe, and the smoke's
+refusal of a package `arcade.cfg` that sets a port, a peer, a group, or a
+seat other than `auto`.
 
 To smoke-test a real package folder, with a clean tree:
 
@@ -379,19 +451,20 @@ See docs/ROSTER_MILESTONE.md (the MainArcadeRaceSetup_Arm seam).
 ## Per-cabinet setup
 
 The complete steps for one cabinet, from a package folder to a running
-linked cabinet. Do them on both cabinets. Only the template, the port,
-and the peer differ:
+linked cabinet. Do them on both cabinets: they are the same on both. The
+package's `arcade.cfg` works on every cabinet as shipped (PK-8): the
+cabinets find each other on the local network and elect their seats.
 
-| | Cabinet 1 | Cabinet 2 |
+| | Every cabinet (as shipped) | Optional override (edit `arcade.cfg`) |
 | --- | --- | --- |
-| template | `cab1.cfg` | `cab2.cfg` |
-| `seat` | `cab1` | `cab2` |
-| `port` (this cabinet's inbound UDP port) | `7001` | `7002` |
-| `peer` | `<cabinet 2 IP>:7002` | `<cabinet 1 IP>:7001` |
+| `seat` | `auto`: elected; the lower IP address is cab1 | `cab1` or `cab2`: a fixed seat, the other cabinet takes the other one (never the same seat on both) |
+| `port` (this cabinet's link port) | none: 7001 | another port, never 7000 (change the firewall rule to match) |
+| `group` | none: `ctr-native` | a name, the same on both cabinets, to keep two installations on one LAN apart |
+| `peer` | none: discovery | static mode on BOTH cabinets: `seat` `cab1`/`cab2`, `port`, `peer = <other cabinet IP>:<its port>`, no `group` |
 
-`<cabinet 1 IP>` and `<cabinet 2 IP>` stand for that cabinet's fixed IP
-address. Replace the whole placeholder, angle brackets included: for
-example `192.168.1.102:7002`, and `-RemoteAddress 192.168.1.102` in step 4.
+A static cabinet does not beacon, so a pair of one static and one discovery
+cabinet never links (PK-5). `<other cabinet IP>` stands for that cabinet's
+fixed IP address; replace the whole placeholder, angle brackets included.
 
 The commands are PowerShell. They use `$pkg` for the folder the package
 was copied to; `C:\Arcade\games\ctr-native` is the example (the fleet
@@ -416,9 +489,11 @@ cabinet.
    `$pkg\ctr-arcade-<short12>\` folder). The folder must be writable: the
    game writes `Crash Team Racing.log` (recreated at each start) and
    `memcards\` next to `ctr_native.exe`. No `memcards\` is needed ("Fresh
-   cabinet: game options").
+   cabinet: game options"). Copying a new package over an installed
+   folder overwrites `arcade.cfg` with the shipped one: keep a copy of an
+   edited one and put it back (PK-10).
 2. **Game data.** Put your own raw NTSC-U disc image (MODE2/2352), named
-   `ctr-u.bin`, in `C:\ctr-data`, the folder both templates name in
+   `ctr-u.bin`, in `C:\ctr-data`, the folder `arcade.cfg` names in
    `data_dir`. A linked cabinet requires `ctr-u.bin`: the link identifies
    the game content by the disc image's SHA-256, so with only the extracted
    files (`BIGFILE.BIG` and the rest) it stops at startup with
@@ -429,56 +504,38 @@ cabinet.
    being part of its hash, so the link checks pass and the cabinets can
    desync (PK-6). Both cabinets need the same disc image (step 5). The
    package holds no game data (PK-6).
-3. **Config file.** Copy the cabinet's template to `arcade.cfg` next to
-   the exe. Cabinet 1:
-
-   ```powershell
-   Copy-Item "$pkg\cab1.cfg" "$pkg\arcade.cfg"
-   ```
-
-   Cabinet 2:
-
-   ```powershell
-   Copy-Item "$pkg\cab2.cfg" "$pkg\arcade.cfg"
-   ```
-
-   Then edit `$pkg\arcade.cfg` (save it as UTF-8 or ANSI text, not
-   UTF-16):
-   - `peer`: always. Replace the placeholder IP with the other cabinet's
-     fixed IP and keep the port: cabinet 1
-     `peer = <cabinet 2 IP>:7002`, cabinet 2 `peer = <cabinet 1 IP>:7001`.
+3. **Config file.** `$pkg\arcade.cfg` ships ready; there is no copy step.
+   Edit it (save it as UTF-8 or ANSI text, not UTF-16) only for these:
    - `data_dir`: only if the data is not in `C:\ctr-data`. Use a full path,
      or a path relative to `$pkg`; `C:ctr-data` and `\ctr-data` are
      refused (PK-6).
-   - `seat` and `port`: keep the template's values. The two cabinets need
-     different seats, and each `peer` port must be the other cabinet's
-     `port`.
+   - `seat`: keep `auto`. `cab1` or `cab2` is an optional fixed-seat
+     override (see the table above).
+   - `port`, `group`, `peer`: none by default. The file shows each as a
+     comment; uncomment one only for an override from the table above.
    - `fullscreen`: keep `1` on a cabinet (`0` is windowed, for testing).
-   - `render_scale` (template `8`) and `texture_filter` (template
+   - `render_scale` (shipped `8`) and `texture_filter` (shipped
      `bilinear`): this cabinet's picture only; the two cabinets may differ.
      Lower `render_scale` (`1`, `2`, `3`, `4`, or `6`) if the cabinet's GPU
      cannot keep up; `nearest` is the blocky PS1 look.
 
    There are no other keys (PK-3). A comment goes on its own line: a
    `# comment` after a value becomes part of the value. After `seat`,
-   `port`, `peer`, `fullscreen`, `render_scale`, or `texture_filter` that
-   is a bad value, and the game stops
+   `port`, `peer`, `group`, `fullscreen`, `render_scale`, or
+   `texture_filter` that is a bad value, and the game stops
    with the file and line. After `data_dir` it becomes part of the path, and
    the game stops with `data directory ... does not hold ctr-u.bin or
    BIGFILE.BIG.` Either way the cabinet does not start.
 4. **Firewall (PK-9).** In an elevated PowerShell (Run as administrator),
-   after setting `$pkg`, allow inbound UDP on this cabinet's port for the
-   packaged exe, from the other cabinet only. Cabinet 1:
+   after setting `$pkg`, allow inbound UDP on the discovery port 7000 and
+   the link port 7001 for the packaged exe, from the local subnet. The rule
+   is the same on both cabinets:
 
    ```powershell
-   New-NetFirewallRule -DisplayName 'CTR arcade link' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 7001 -RemoteAddress <cabinet 2 IP> -Program "$pkg\ctr_native.exe"
+   New-NetFirewallRule -DisplayName 'CTR arcade link' -Direction Inbound -Protocol UDP -LocalPort 7000,7001 -RemoteAddress LocalSubnet -Program "$pkg\ctr_native.exe" -Profile Any -Action Allow
    ```
 
-   Cabinet 2:
-
-   ```powershell
-   New-NetFirewallRule -DisplayName 'CTR arcade link' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 7002 -RemoteAddress <cabinet 1 IP> -Program "$pkg\ctr_native.exe"
-   ```
+   With a `port` override, put that port in place of 7001.
 
    A Block rule beats every Allow rule. Windows may have added one for
    this exe (for example when its firewall prompt was cancelled). List the
@@ -492,9 +549,9 @@ cabinet.
    command. Check again after the first start if Windows showed a firewall
    prompt.
 
-   If the package folder or the other cabinet's IP changes, remove the
-   rule (`Remove-NetFirewallRule -DisplayName 'CTR arcade link'`) and add
-   it again.
+   If the package folder or the port changes, remove the rule
+   (`Remove-NetFirewallRule -DisplayName 'CTR arcade link'`) and add it
+   again.
 5. **Same build and same disc.** On both cabinets:
 
    ```powershell
@@ -533,9 +590,16 @@ cabinet.
    [CTR Native] Local texture filter: bilinear
    ```
 
-   These lines are printed before the log file opens, so they are on the
-   console only, not in `Crash Team Racing.log`. The fullscreen window may
-   hide the console; switch to it (Alt+Tab) to read them.
+   and, a little later, `[CTR Native] arcade link: auto port 7001, 0 peers`
+   (with a fixed seat `cab1` or `cab2` in place of `auto`; a static cabinet
+   shows its seat, port, and peer count). These lines are on the console
+   only, not in `Crash Team Racing.log` (the config lines are printed
+   before the log file opens). The fullscreen window may hide the console;
+   switch to it (Alt+Tab) to read them. When the two cabinets have found
+   each other (shortly after both show the title), each logs, on the
+   console and in the log,
+   `[CTR Native] arcade discovery: paired with <other cabinet IP>:7001 as cab1`
+   (`as cab2` on the other cabinet).
    `Config file: none (... not found)` means there is no `arcade.cfg` next
    to the exe (check for a hidden `.txt` extension), and the cabinet would
    start unlinked. An error in the file stops the game with a message
@@ -557,9 +621,11 @@ offers `RACE AGAIN` and `LOBBY`; left alone for 30 s it returns to the
 attract title. `OTHER CABINET IS READY` on RESULTS means a player
 started the other cabinet (pressed START) during this solo session.
 Choose `LOBBY`: if that player is still in their LOBBY, the two cabinets
-link as before. During solo the cabinet only listens on its link port and
-sends nothing, so the PK-9 firewall rule is unchanged. No `arcade.cfg` key is
-needed for solo, and none exists (PK-3).
+link as before. During solo the link only listens on its link port and
+sends nothing; in discovery mode the cabinet keeps sending its discovery
+beacons, so a cabinet that starts later still finds it. The PK-9 firewall
+rule covers both. No `arcade.cfg` key is needed for solo, and none exists
+(PK-3).
 
 ## Template line ends
 
