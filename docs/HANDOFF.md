@@ -37,7 +37,8 @@ Integration order:
    machine: both profiles over 900 race ticks, covering same-seed
    identity, seed divergence, and menu-history independence (demo-race
    launch and odd-timer-offset runs). See `docs/ROSTER_MILESTONE.md`.
-   Linked races launch through its seam (Task 7, done).
+   Linked races launch through its seam (Task 7) and run on it in
+   lockstep (Task 8).
 4. Native lockstep protocol and virtual-network fault tests — protocol design
    and fault-tolerant session logic complete; a real socket transport,
    connect/handshake protocol, and a lobby data/state layer exist and are
@@ -47,22 +48,23 @@ Integration order:
    exist and are tested. Match select lets each player pick a character
    and vote on the track and laps; a disagreement is a seeded draw, and
    the resolved config is re-validated by a relink handshake
-   (`docs/MATCH_SELECT_MILESTONE.md`). Networked race launch (Task 7) is
-   done (`docs/RACE_LAUNCH_MILESTONE.md`): both cabinets agree on a launch
-   commit, then arm and launch the step-3 race setup seam with the agreed
-   config, and a rematch launches a second race in the same process,
-   proven live on one machine by the two-process gate
-   (`arcade_link_launch`). Until Task 8 a linked race is an undriven
-   launch rehearsal. In-race lockstep driving (Task 8) is gated on live V4
-   projection; physical two-cabinet validation remains open before steps
-   6-7.
+   (`docs/MATCH_SELECT_MILESTONE.md`). Networked race launch (Task 7,
+   `docs/RACE_LAUNCH_MILESTONE.md`) and in-race lockstep driving (Task 8,
+   `docs/LOCKSTEP_RACE_MILESTONE.md`) are done: both cabinets agree on a
+   launch commit, arm and launch the step-3 race setup seam with the
+   agreed config, and drive the race in lockstep to its end, exchanging
+   and comparing live V4 digests every race tick; a rematch launches the next race in the
+   same process. The two-process gate (`arcade_link_launch`) proves three
+   linked races live on one machine over loopback. Physical two-cabinet
+   validation remains open before steps 6-7.
 5. Failure handling, results, and rematch — stall-timeout policy, peer-drop
    roster, and rematch config builder complete and fault-tested against
    `native_virtual_datagram`; wired to the results/rematch screens through
    the arcade-link adapter, and every rematch goes back through match
-   select. A local race-setup failure ends a linked race as RESULTS LINK
-   ERROR (RL-11). The in-race driver that feeds it race results is gated
-   (`docs/GAME_LOOP_UI_MILESTONE.md` Task 8).
+   select. In a race the lockstep drive feeds every take's result to the
+   outcome tracker, so a stall timeout, a peer drop, a desync, a protocol
+   fault, a local failure (RL-11), and the finish each end the race on
+   RESULTS (`docs/LOCKSTEP_RACE_MILESTONE.md` LR-12).
 6. CAB1 G29/kiosk gate.
 7. Two-cabinet fleet acceptance.
 8. Stretch goal: automatic LAN discovery for up to 4 cabinets (Mario Kart
@@ -155,13 +157,13 @@ Integration order:
   canonical). deadcoed keeps its retail per-race reset. The per-bot setup
   draws follow on the same stream, so the post-setup bank has drawn
   MATCH_SETUP 9 times in a two-cabinet race and 12 in a single-cabinet
-  race, and `MainArcadeRaceSetup_Bank()` is the post-setup bank Task 8 must
-  project.
+  race. The live V4 projection (below) projects that post-setup bank,
+  `MainArcadeRaceSetup_Bank()`, on every race tick.
 - **Live race setup.** `game/MAIN/MainArcadeRaceSetup` is the race setup
   seam (`_Arm`, `_Launch`, `_Status`, `_Digests`, `_Bank`, `_Disarm`)
-  through which the live race caller (Task 7) and the roster proof launch
-  races; nothing reads `_Bank` yet (Task 8). It turns a validated TWO_CAB config into a retail 2P arcade race and a
-  validated ONE_CAB config into a retail 1P arcade race (one human, seven
+  through which the live race caller and the roster proof launch races;
+  `MainArcadeRaceDigest` reads `_Bank`. It turns a validated TWO_CAB
+  config into a retail 2P arcade race and a validated ONE_CAB config into a retail 1P arcade race (one human, seven
   bots, eight drivers) through the pure plan (encoding v2, the same for
   both profiles), facts, and decision-core libraries, with two hooks in
   `MainInit_FinalizeInit` (at its very start, and right after
@@ -173,23 +175,41 @@ Integration order:
   canonical. The init of the main-menu level while VALIDATED (the return
   load after a linked race) is a no-op, and the owner Disarms on the first
   idle main-menu frame, which restores the saved vibration bits.
-- **Race counter pins (RS-17).** The same race-init hook pins the
+- **Race counter pins (RS-17, LR-8).** The same race-init hook pins the
   boot-relative counters that feed the race simulation or its RNG,
-  `gGT->timer` and `gGT->frameTimer_Confetti`, to 0.
-  `sdata->frameCounter` and `gGT->frameTimer_VsyncCallback` stay
-  boot-relative (presentation and platform only), so cross-cabinet
-  comparison must use race-relative control.
+  `gGT->timer` and `gGT->frameTimer_Confetti`, to 0, and the root counter
+  that elapsed time is computed from, `sdata->rcntTotalUnits` to 0 and
+  `gGT->clockFrameStart` to -200: the elapsed-time arithmetic wraps on the
+  absolute counter, so both cabinets must start the race on the same
+  counter phase. `sdata->frameCounter` and `gGT->frameTimer_VsyncCallback`
+  stay boot-relative (presentation and platform only), so cross-cabinet
+  comparison uses race-relative control: the live V4 control domain
+  projects both relative to race tick 0.
+- **Live V4 projection (LR-10).** `game/MAIN/MainArcadeRaceDigest` is the
+  one live caller of the V4 runtime (`MainCanonicalRuntime`). On every
+  race tick of a linked race it projects race-relative control, the
+  retail RNGs, the post-setup bank, the four pads the tick read, the
+  complete drivers (Physics included), and WORLD (the world-counter and mine-registry extractors, compiled into
+  `ctr_native` through the unity chain). The roster proof projects every
+  logged race tick through it too. TOPOLOGY carries the unavailable
+  summary, the same constant on both cabinets, so it is not compared;
+  live topology waits for a lease-activation milestone. The drivers
+  extraction reads each bot's `NavHeader.last` check-only (owner ruling
+  LR-17; see Topology lease). The module is read-only, lease-free, and
+  never serialized; it resets the runtime on race tick 0. Debug cost: a
+  mean of about 1.3 ms per tick.
 - **Live roster proof.** In internal builds `--arcade-roster-proof` launches
   the configured race from the title or the attract demo race with
   scripted pads and logs per-tick V1 control, race-relative control, RNG,
-  input, and topology-free drivers digests.
+  input, and topology-free drivers digests, and the V4 combined and domain
+  digests through `MainArcadeRaceDigest`.
   `--arcade-roster-proof-profile two-cab|one-cab` (default `two-cab`)
   picks the race: two-cab resolves the fixture through match select;
   one-cab builds a single-cabinet config from the fixture's track, laps,
   CAB1 character, and bot difficulty, with the retail 1P bots and the seed
-  as its masterSeed (match select is not used). The report (format v8)
+  as its masterSeed (match select is not used). The report (format v11)
   names the profile. `tools/arcade-roster-proof-check.ps1` (ctest
-  `arcade_roster_determinism`) runs ten proofs. Two-cab, 900 race ticks
+  `arcade_roster_determinism`) runs eleven proofs. Two-cab, 900 race ticks
   each: A and B (one seed, from the title) must be byte-identical; C (from
   the attract demo race) and E (37 ticks late; its launch timer offset
   from A must be odd) must equal A in the setup digests, the seeded and
@@ -203,21 +223,31 @@ Integration order:
   must equal A's at race tick 0, differ from A's at every later tick, and
   equal H's at every tick; I (from the attract demo race) and J (37 ticks
   late, an odd launch timer offset from F) must equal F as C and E equal
-  A. The one-cab runs go through the green light, bot driving, and 1P race
+  A. K is A with `--arcade-roster-proof-hold`, a stall hold of 45 tick
+  periods at race tick 300 in the race hold loop, and must equal A in
+  every line but its hold line. Wherever the checker requires rng, input,
+  and drivers equal, it also requires the V4 digests equal, and every
+  tick's V4 topology digest must be the unavailable summary's. The
+  one-cab runs go through the green light, bot driving, and 1P race
   physics, digested through the rng, rcontrol, and topology-free drivers
-  digests (the Physics group itself is not digested, RS-13); the retail
-  1P HUD's uninitialized `pos.y` read (`game/UI/UI_Rank.c`), which once
-  stopped Debug 1P races, was fixed in place (a98dccbe8).
-- **Proof-only VBlank pacing (RS-18).** The proof runs with host-local
-  fixed VBlank pacing (`Platform_SetFixedVBlankPacing`), so a late host
-  frame emits no catch-up VBlanks. Every other run keeps the default
-  catch-up pacing, in which a late frame raises `elapsedTimeMS` and so
-  changes the race. Each extra VBlank also increments
-  `gGT->frameTimer_Confetti` (`game/MAIN/MainDrawCb.c:25`, while not
-  paused), which feeds the particle oscillators and through them MixRNG
-  draws; RS-17 pins it only at race start, so a mid-race host hitch still
-  moves a simulation input. Task 8 must make VBlanks per tick
-  deterministic.
+  digests (whose drivers candidate leaves the Physics group out, RS-13)
+  and the V4 digests (whose drivers domain includes it); the retail
+  1P HUD's uninitialized `pos.y` read (`game/UI/UI_Rank.c`), which stops
+  a Debug 1P race unfixed, is fixed in place (a98dccbe8).
+- **Fixed VBlank pacing (RS-18, LR-7).** The roster proof and a linked
+  race run with host-local fixed VBlank pacing
+  (`Platform_SetFixedVBlankPacing`), so a late host frame emits no
+  catch-up VBlanks and every race tick emits exactly 2. `main.c` turns it
+  on for the proof; the arcade-link host turns it on for a linked race on
+  the Launch frame (`NativeArcadeLinkHost_RaceBegin`) and off on the
+  Disarm frame and at shutdown, touching only a pacing it turned on. Every
+  other run keeps the default catch-up pacing, in which a late frame
+  raises `elapsedTimeMS` and so changes the race. Each extra VBlank also
+  increments `gGT->frameTimer_Confetti` (`game/MAIN/MainDrawCb.c:25`,
+  while not paused), which feeds the particle oscillators and through them
+  MixRNG draws. In a linked race under fixed pacing, a host hitch instead
+  puts that cabinet behind for good: the other cabinet leads by up to
+  `D + 1` ticks, then holds.
 - **Input replay.** Replay schedulers with record and playback, per-domain
   canonical verification, and first-divergence masks for observation, VBlank
   parity, pad, canonical domain, and combined digest. Invalid submissions
@@ -263,7 +293,12 @@ the arcade-link screens and host adapter exist and are tested on top of it
   (per-domain and combined digest mismatch, at the frame that actually
   diverged) and a separate first-fault report (malformed bundle, identity or
   delay mismatch, window overrun) with `const`-or-`NULL` accessors, mirroring
-  `NativeReplaySchedulerV4`'s latch-once mismatch report.
+  `NativeReplaySchedulerV4`'s latch-once mismatch report. A peer digest for
+  a frame not yet recorded locally is parked, at most `D` per peer, and
+  compared when that frame is recorded, so a cabinet that leads by up to
+  `D + 1` ticks is not a desync; a digest further ahead is the
+  session-local fault `VERIFY_AHEAD`, never on the wire
+  (`docs/LOCKSTEP_RACE_MILESTONE.md` LR-11).
 - The whole protocol/window/session stack is fully covered by unit tests, a
   fault-injection integration test that drives loss, delay, reorder, and
   duplication over `native_virtual_datagram`, and a structural isolation test.
@@ -292,9 +327,9 @@ the arcade-link screens and host adapter exist and are tested on top of it
   recording. This layer is fault-tested against `native_virtual_datagram` the
   same way the protocol/window/session stack is. Only the arcade-link
   adapter composes it, driving the results and rematch screens (see
-  Arcade-link wiring); the in-race driver that feeds it race results is
-  gated. It makes no change to the topology lease, canonical state, or
-  replay wire formats.
+  Arcade-link wiring); in a race the lockstep drive feeds it every take's
+  result through `NativeArcadeNetplay_OnTakeResult`. It makes no change to
+  the topology lease, canonical state, or replay wire formats.
 - **Real transport, handshake, and lobby** (`native_udp_transport.c`/`.h`,
   `native_lockstep_handshake.c`/`.h`, `native_lockstep_peer_link.c`/`.h`,
   `native_lobby_state.c`/`.h`) add a real socket underneath the stack above.
@@ -314,7 +349,13 @@ the arcade-link screens and host adapter exist and are tested on top of it
   two-OS-process test that opens real sockets, completes a real handshake,
   opens a real session, and exchanges real lockstep bundles for dozens of
   frames with both sides reaching session mode `RUNNING` and no divergence
-  or fault. A lobby/waiting-flow policy layer cycles through a
+  or fault. The peer link drops and counts any bundle of another match
+  identity instead of handing it to the session, both while staged and
+  while RUNNING, so a stale bundle from a finished match never faults a
+  rematch's session (a corrupt record still faults); and it has a verbatim
+  128-byte bundle send for the race drive's resends
+  (`NativeLockstepPeerLink_SendBundleVerbatim`). A lobby/waiting-flow
+  policy layer cycles through a
   caller-supplied candidate peer-address list with a bounded per-candidate
   attempt budget, exposing a small state (`WAITING_FOR_PEER` /
   `HANDSHAKING` / `READY` / `REJECTED` / `PEER_LOST`) that the arcade-link
@@ -373,30 +414,75 @@ the arcade-link screens and host adapter exist and are tested on top of it
   bot setup plan, and bank digests, reports an Arm, Launch, setup, or
   bounded-wait failure as a local race failure, returns to the main-menu
   level after the race, and Disarms there (at once after an Arm or Launch
-  failure at the title; nothing to Disarm after a window timeout). Until
-  Task 8 the race is the launch rehearsal: it runs on installed neutral pads, nobody drives it,
-  and 150 ticks after race tick 0 the caller reports it finished (RESULTS,
-  RACE COMPLETE). While a race setup is not IDLE the pause-menu vibration
-  toggle does nothing, and sound IDs stay out of cross-cabinet identity
-  (isolation-tested).
+  failure at the title; nothing to Disarm after a window timeout). From
+  race tick 0 it drives the race in lockstep (below). While a race setup
+  is not IDLE the pause-menu vibration toggle does nothing, and sound IDs
+  stay out of cross-cabinet identity (isolation-tested).
   Game code names none of the lockstep, failure-handling, or match-select
   modules, and isolation tests enforce it. Everything is dormant unless
   `--arcade-link` or `--arcade-link-preview` is given; both are rejected
   with any replay
   option, and quick states are disabled while either is active. See
-  `docs/GAME_LOOP_UI_MILESTONE.md`, `docs/MATCH_SELECT_MILESTONE.md`, and
-  `docs/RACE_LAUNCH_MILESTONE.md`.
+  `docs/GAME_LOOP_UI_MILESTONE.md`, `docs/MATCH_SELECT_MILESTONE.md`,
+  `docs/RACE_LAUNCH_MILESTONE.md`, and `docs/LOCKSTEP_RACE_MILESTONE.md`.
+- **In-race lockstep drive** (Task 8, `docs/LOCKSTEP_RACE_MILESTONE.md`,
+  defaults LR-1..LR-76). One lockstep frame is one race tick at 30 Hz,
+  with input delay `D` = 2 (the drive refuses `D` above 3). The pure drive
+  core (`native_arcade_race_drive`) and its glue in
+  `native_arcade_link_host` hold the per-tick decisions and the I/O; the
+  race caller reaches them only through `NativeArcadeLinkHost_RaceBegin`,
+  `_RaceStep`, `_RaceHold`, and `_RaceEnd`, and game code names no
+  lockstep token. On each race tick, right after the arcade-link hook, the
+  caller projects the live V4 state, and the drive records its digests, submits the cabinet's
+  own sample (host controller slot 0: wheel, pad, or keyboard, read by
+  `Platform_InputSampleLocalPad` without touching the installed pads),
+  sends the new bundle and resends the kept ones verbatim, polls, and
+  takes the frame. Both cabinets then install the same committed pads:
+  CAB1's player on pad 0, CAB2's on pad 1, every pad normalized to a
+  connected pad with START released, so a linked race cannot pause.
+  - A stalled take holds the simulation in `MainArcadeRaceHold` with no
+    VBlank, pumping host events and servicing the link and the launch
+    linger; after 10 periods it shows WAITING FOR OPPONENT in the game
+    font (read-only from the host's VRAM copy; a 5x7 block font is the
+    fallback). The race resumes when input arrives.
+  - The race ends on END_OF_RACE, or 900 ticks after the first human
+    finish (the finish grace), with an 18000-tick backstop, each as RACE
+    COMPLETE on both cabinets. A stall of 90 periods (3 s) or a dropped
+    peer ends as OPPONENT DISCONNECTED (the start wait allows 900 periods
+    for the other cabinet's load); a desync as RACE OUT OF SYNC, logged
+    at most once per race by a detecting cabinet with the race tick, the
+    domain mask, and both digests (a cabinet that does not detect it may
+    time out instead); a protocol fault or a local drive failure as LINK
+    ERROR. Every end reaches RESULTS, then the return load, with neutral
+    pads from the end frame until the clear.
+  - The drive state, kept bundles, parked digests, pacing flag, hold, and
+    banner are host-local: never in a checkpoint, replay, or canonical
+    state.
 - **Two-process launch gate (internal builds).**
   `--arcade-link-autopilot <report path>` (needs `--arcade-link`; rejected
   with replay options, `--arcade-roster-proof`, `--exit-after-frame`, and in
   non-internal builds) drives one link cabinet through START, the select,
-  race 1, REMATCH, race 2, and EXIT by replacing the hook's enter decision
-  and held menu buttons on owned LINK frames; it never touches a pad.
+  race 1, REMATCH, race 2, REMATCH, race 3, and EXIT by replacing the
+  hook's enter decision and held menu buttons on owned LINK frames. In a
+  race it supplies the cabinet's sample: CROSS held and steering toward
+  the next restart point, closed-loop. Its internal options also set a
+  race tick cap (`--arcade-link-autopilot-race-ticks`) and inject faults
+  (`--arcade-link-autopilot-freeze <t>`, `--arcade-link-autopilot-desync
+  <t>`); while it runs, every race tick logs its V4 digest line.
   `tools/arcade-link-launch-check.ps1` (ctest `arcade_link_launch`) runs
-  cab1 and cab2 over 127.0.0.1 ports 7001 and 7002 and requires both to
-  exit 0 with a `result PASS (0)` report, two validated races each, the
-  k-th race's agreed match and digests equal across the two, and race 2's
-  config digest different from race 1's.
+  cab1 and cab2 over 127.0.0.1 ports 7001 and 7002 with a 6000-tick cap:
+  race 1 is a natural finish in which cab2 freezes for 45 periods at race
+  tick 600 and cab1 must hold and resume; in race 2 cab2 flips a CONTROL
+  digest at race tick 300 and a cabinet must report RACE OUT OF SYNC for
+  that tick; in race 3 cab2 is killed and cab1 must reach OPPONENT
+  DISCONNECTED within the stall timeout plus a 25% margin, then EXIT with
+  a `result PASS (0)` report. It requires every per-tick digest line both
+  cabinets logged to be equal, race 1 to end the same way on the same
+  tick on both (END_OF_RACE or the finish grace), race 1's hold banners
+  to be in the game font, each race's agreed match and digests equal
+  across the two, and each race's config different from the one before.
+  Each cabinet writes one frame capture in race 1 (retail imagery, never
+  committed).
 - None of this has been exercised over real two-cabinet LAN hardware or with
   a real G29 (only two real OS processes on one machine over loopback); that
   remains open before step 6.
@@ -410,7 +496,14 @@ load entry, on `LOAD_Hub_SwapNow`, and on a validated checkpoint restore before
 overlay reset). The inactive `LOAD_Hub_ReadFile` preload is intentionally not
 hooked. No game path acquires, observes, captures, activates, publishes,
 serializes, or networks a lease, and the owner is excluded from checkpoint
-regions.
+regions. The live V4 drivers extraction reads each bot's nav-path pointer
+`NavHeader.last` in `MainCanonicalDrivers_BotNavIndex`, check-only, to
+prove the bot's nav frame lies in its own path (owner ruling LR-17). That
+read is not a lease operation: it is never written and never used to
+acquire, activate, capture, or publish the lease, and an isolation pin
+(`main_arcade_race_digest_isolation`) allows a `NavHeader` `last` read in
+the first-party canonical and arcade game sources only there and in
+`MainCanonicalTopologyLease_ObservePostInit`.
 
 ## Build and test
 
@@ -423,11 +516,12 @@ ctest --test-dir build-msvc-x86 -C Debug --output-on-failure
 ```
 
 Use `build-msvc-x86`; other `build-msvc-x86-*` directories are from earlier
-milestones. The full suite is 144 tests and passes; it takes about 450 s.
-Three tests carry the ctest label `live` (`arcade_link_preview_render`,
-`arcade_roster_determinism`, and `arcade_link_launch`); `ctest -LE live`
-excludes them, and the default full run includes them. LF-to-CRLF
-warnings are benign. The
+milestones. The full suite is 157 tests and passes; it takes about 605 s
+of wall time. Three tests carry the ctest label `live`
+(`arcade_link_preview_render`, about 45 s; `arcade_roster_determinism`,
+about 266 s; and `arcade_link_launch`, about 233 s); `ctest -LE live`
+excludes them and runs the other 154 in about 62 s, and the default full
+run includes them. LF-to-CRLF warnings are benign. The
 `arcade_link_preview_render` test (Windows only) renders all 17
 arcade-link previews with `ctr_native.exe` and checks each capture; it skips
 when `assets/ctr-u.bin` is absent, no display is available, or the build
@@ -438,13 +532,16 @@ under `build-msvc-x86\arcade_link_preview_captures\<config>`. The
 3.4); it skips on the same three conditions and writes its reports and
 logs under `build-msvc-x86\arcade_roster_proof\<config>`. The
 `arcade_link_launch` test (Windows only) runs
-`tools/arcade-link-launch-check.ps1`, the two-process race launch gate
-(`docs/RACE_LAUNCH_MILESTONE.md` RL-15); it skips on the same three
-conditions and also without a known build identity (a build from a tree
-with uncommitted or untracked changes), because `--arcade-link` needs
-one. A skip (77) is not a pass. It uses the fixed ports 7001 and 7002 and
-writes its reports and logs under
-`build-msvc-x86\arcade_link_launch\<config>`. All three live tests run
+`tools/arcade-link-launch-check.ps1`, the two-process three-race lockstep
+gate (`docs/RACE_LAUNCH_MILESTONE.md` RL-15,
+`docs/LOCKSTEP_RACE_MILESTONE.md` LR-16 and LR-76); it skips on the same
+three conditions and also without a known build identity (a build from a
+tree with uncommitted or untracked changes), because `--arcade-link`
+needs one. A skip (77) is not a pass. It uses the fixed ports 7001 and
+7002 and writes its reports, logs, and the two race-1 frame captures
+(`cab1.race1.bmp`, `cab2.race1.bmp`, retail imagery, never committed)
+under `build-msvc-x86\arcade_link_launch\<config>`; the checker's own
+limit is 780 s and ctest's TIMEOUT 900 s. All three live tests run
 serially (RUN_SERIAL).
 
 `ctr_native.exe` needs a connected desktop session with a display. Without
@@ -472,7 +569,7 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `include/platform/native_lockstep_input_window.h` (delay/reorder window);
   `platform/native_lockstep_session.c`,
   `include/platform/native_lockstep_session.h` (session, first-divergence and
-  first-fault reports).
+  first-fault reports, parked early peer digests).
 - Failure handling: `platform/native_lockstep_match_outcome.c`,
   `include/platform/native_lockstep_match_outcome.h` (stall-timeout policy
   and outcome latch); `platform/native_lockstep_match_roster.c`,
@@ -485,8 +582,9 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `include/platform/native_lockstep_handshake.h` (connect/handshake
   protocol); `platform/native_lockstep_peer_link.c`,
   `include/platform/native_lockstep_peer_link.h` (real-transport session
-  integration, and the 64-byte aux route: `NativeLockstepPeerLink_SendAux`,
-  `_TakeAux`); `platform/native_lobby_state.c`,
+  integration, the foreign-identity drop, the verbatim bundle send, and the
+  64-byte aux route: `NativeLockstepPeerLink_SendAux`, `_TakeAux`);
+  `platform/native_lobby_state.c`,
   `include/platform/native_lobby_state.h` (candidate-cycling lobby policy
   layer).
 - Arcade-link wiring: `platform/native_arcade_menu_input.c`,
@@ -512,9 +610,31 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `game/MAIN/MainFrame_RenderFrame.c`); the RL-13 vibration guard in
   `game/MAIN/MainFreeze.c`. Internal two-process gate:
   `platform/native_arcade_link_autopilot.c`,
-  `include/platform/native_arcade_link_autopilot.h` (option, pure
-  decision, report); `game/MAIN/MainArcadeLinkAutopilot.{c,h}` (glue);
+  `include/platform/native_arcade_link_autopilot.h` (options, steering,
+  fault injections, three-race decisions, report);
+  `game/MAIN/MainArcadeLinkAutopilot.{c,h}` (glue);
   `tools/arcade-link-launch-check.ps1` (checker).
+- In-race lockstep drive (Task 8): `platform/native_arcade_race_drive.c`,
+  `include/platform/native_arcade_race_drive.h` (pure drive core, library
+  `ctr_native_arcade_race_drive`); the drive glue and `RaceBegin`,
+  `RaceStep`, `RaceHold`, `RaceEnd` in `platform/native_arcade_link_host.c`;
+  `NativeArcadeNetplay_OnTakeResult` and the race hold service in
+  `platform/native_arcade_netplay.c`; `Platform_InputSampleLocalPad` in
+  `platform/native_input.c` (local sample seam);
+  `game/MAIN/MainArcadeRaceDigest.{c,h}` (live V4 projection);
+  `game/MAIN/MainArcadeRaceHold.{c,h}` (stall hold loop and banner) and
+  `game/MAIN/MainArcadeRaceHoldCore.{c,h}` (its pure period core, library
+  `ctr_native_arcade_race_hold_core`); `platform/native_hold_banner.c`,
+  `include/platform/native_hold_banner.h` (game-font banner decode and
+  layout, library `ctr_native_hold_banner`); `Platform_HostWaitMs`,
+  `Platform_HostClockUs`, and `Platform_PresentVRAMDisplayBanner{,Glyphs}`
+  in `include/platform.h` (host-local wait, clock, and banner present,
+  called only by the hold module). Isolation tests:
+  `tests/native_arcade_race_drive_isolation_test.cmake`,
+  `tests/main_arcade_race_hold_isolation_test.cmake`,
+  `tests/native_host_wait_isolation_test.cmake`,
+  `tests/main_arcade_race_digest_isolation_test.cmake`, and
+  `tests/arcade_roster_proof_autopilot_isolation_test.cmake`.
 - Match select: `platform/native_match_select_rules.c`,
   `include/platform/native_match_select_rules.h` (tables, seed, draws,
   resolution, resolved-config builder);
@@ -537,9 +657,10 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   scripted pads, report format, exit codes);
   `game/MAIN/MainArcadeRosterProof.{c,h}` (game hook);
   `platform/native_vblank_pacing.c`, `include/platform/native_vblank_pacing.h`
-  (the pure pacing decision behind proof-only fixed VBlank pacing);
-  `tools/arcade-roster-proof-check.ps1` (the ten-run checker, five
-  two-cab and five one-cab runs).
+  (the pure pacing decision behind fixed VBlank pacing, used by the proof
+  and by linked races);
+  `tools/arcade-roster-proof-check.ps1` (the eleven-run checker, five
+  two-cab and five one-cab runs and the two-cab hold run K).
 - Presentation options (host-local): `platform/native_display_config.c`,
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
@@ -560,7 +681,8 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
 - Related docs: `docs/ARCADE_FORK.md`, `docs/TOPOLOGY_LEASE_AUTHORITY.md`,
   `docs/REPLAYS.md`, `docs/MEMORY_MODEL.md`, `docs/G29_INPUT.md`,
   `docs/GAME_LOOP_UI_MILESTONE.md`, `docs/MATCH_SELECT_MILESTONE.md`,
-  `docs/ROSTER_MILESTONE.md`, `docs/RACE_LAUNCH_MILESTONE.md`.
+  `docs/ROSTER_MILESTONE.md`, `docs/RACE_LAUNCH_MILESTONE.md`,
+  `docs/LOCKSTEP_MILESTONE.md`, `docs/LOCKSTEP_RACE_MILESTONE.md`.
 
 ## Rules and constraints
 
@@ -569,9 +691,16 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
 - Do not add the lease owner to checkpoints, replay, or canonical state.
   Isolation tests enforce this.
 - Do not add a retire hook to `LOAD_Hub_ReadFile`.
+- Owner ruling LR-17: the live lockstep digest may read the bot nav-path
+  pointer `NavHeader.last`, check-only. That does not permit writing it or
+  any lease acquire, activate, capture, or publish.
+- Game code names no lockstep, failure-handling, or match-select module;
+  the race caller reaches the drive only through the host's calls.
+  Isolation tests enforce this.
 - The repository must never contain retail game data, BIOS files, or extracted
   retail assets. The operator supplies `assets/ctr-u.bin` (gitignored, raw
-  MODE2/2352 layout).
+  MODE2/2352 layout). Frame captures of a race or a hold banner are retail
+  imagery: they stay under `build-msvc-x86` and are never committed.
 - Source and build output stay in `C:\re-tools\ctr-native`. Only a tested,
   versioned bundle is promoted to `C:\Arcade\games\ctr-native`, and CAB2
   receives it through the fleet rsync path. The canonical fleet plan lives on

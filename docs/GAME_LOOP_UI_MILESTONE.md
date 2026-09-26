@@ -1085,19 +1085,31 @@ Task 8.
 
 ### Task 8 -- in-race lockstep drive and failure handling
 
-Status: planned in docs/LOCKSTEP_RACE_MILESTONE.md; live V4 projection is
-its slice LR-S4 (Task 7 is done). The sketch below is superseded, including
-its per-tick order (digests recorded after the install) and the standings
-on RESULTS: docs/LOCKSTEP_RACE_MILESTONE.md section 4 is the design. The
-race driver lives under platform/, because it calls the platform-only
-NativeArcadeNetplay_OnTakeResult and NativeArcadeNetplay_Link hooks and the
-lockstep session API, none of which game code may name. Per tick:
-submit the local pad, compose and send, poll, take frame inputs, install
-the committed pads with Platform_InputInstallPadSnapshots, record local V4
-digests, feed the result to the outcome tracker and roster, hold the
-simulation and show the WAITING FOR OPPONENT overlay on a stall, and hand a
-latched outcome or the race finish to the flow's RESULTS screen, reusing the
-retail standings drawing. Review required.
+Status: done (LR-S1..LR-S14). Design, slices, and evidence:
+docs/LOCKSTEP_RACE_MILESTONE.md (defaults LR-1..LR-76; section 3 records
+how each done criterion is proven). The sketch this task first carried
+(digests recorded after the install, and standings on RESULTS) was
+superseded by that design. A linked race is now driven in lockstep: the
+pure drive core (platform/native_arcade_race_drive.c) and its glue in
+platform/native_arcade_link_host.c sit under platform/, because they call
+the platform-only NativeArcadeNetplay_OnTakeResult and
+NativeArcadeNetplay_Link hooks and the lockstep session API, none of which
+game code may name. The race caller reaches them only through
+NativeArcadeLinkHost_RaceBegin, _RaceStep, _RaceHold, and _RaceEnd. On
+each race tick the caller projects a live V4 state
+(game/MAIN/MainArcadeRaceDigest.c) and the drive records its digests,
+submits the cabinet's own normalized sample, sends and resends the
+bundles, polls, and takes the frame; the caller installs the committed
+pads. A stall holds the simulation with no VBlank
+(game/MAIN/MainArcadeRaceHold.c) and shows WAITING FOR OPPONENT in the
+game font after 10 periods (a 5x7 block font is the fallback). The finish
+(END_OF_RACE, or the finish grace 900 ticks after the first human finish)
+ends as RACE COMPLETE; a stall timeout or peer drop as OPPONENT
+DISCONNECTED; a desync as RACE OUT OF SYNC, logged at most once per race;
+a protocol fault or local failure as LINK ERROR. RESULTS shows no standings (docs/LOCKSTEP_RACE_MILESTONE.md risk
+16). The live gate arcade_link_launch runs three linked races (the
+finish with a freeze, a forced desync, and a peer kill) and has a
+recorded, non-skipped PASS (LR-S13, LR-S14).
 
 ### Task 9 -- docs close-out
 
@@ -1105,19 +1117,30 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
 
 ## 6. Risks and open questions
 
-1. Task 7 is done (docs/RACE_LAUNCH_MILESTONE.md): the live hook reaches
-   LOBBY, MATCH_FOUND, the match-select screens, a launched and VALIDATED
-   linked race, RESULTS, and a rematch. The race is the undriven launch
-   rehearsal (RL-10) until Task 8, which is gated on live V4 projection,
-   so there is no real networked race yet: no input exchange and no
-   in-race stall or desync detection beyond the adapter's lobby poll.
-2. Stale bundles from a just-finished session that arrive after a rematch
-   link has opened on the same port would be staged by the peer link and
-   fault the new session on its match identity. Both peers stop sending
-   bundles when they leave RACING and the results dwell is 1 s, so this
-   needs a peer still racing more than 1 s after the other finished, which
-   lockstep should prevent; task 8 must still test it explicitly.
-3. All tick counts assume the retail 30 Hz loop. A future 60 Hz native mode
+1. Tasks 7 and 8 are done (docs/RACE_LAUNCH_MILESTONE.md,
+   docs/LOCKSTEP_RACE_MILESTONE.md): the live hook reaches LOBBY,
+   MATCH_FOUND, the match-select screens, a launched and VALIDATED linked
+   race driven in lockstep, RESULTS, and a rematch, with in-race stall,
+   desync, fault, and peer-drop handling. It is proven on one machine
+   over loopback (arcade_link_launch); a real two-cabinet run is the
+   step 6/7 requirement (risk 9).
+2. Resolved by Task 8 (docs/LOCKSTEP_RACE_MILESTONE.md LR-14, LR-S6).
+   A just-finished match's bundles can reach a rematch link on the same
+   port: the two cabinets can end a race differently, and a held one
+   keeps resending. The peer link now drops and counts every record
+   whose match identity is not the current session's, both when it
+   replays staged records and while RUNNING, so a stale bundle never
+   faults the new session; a corrupt record still faults. Unit-tested in
+   native_lockstep_peer_link_unit and native_arcade_netplay_unit (the
+   rematch after a desync, after a pre-race failure, and during the
+   finish linger). The gate's two rematches pass live with no fault; in
+   the run LR-S14 records no stale record reached a rematch link (every
+   race logged "foreign bundles dropped 0"), so the drop path itself is
+   proven by the unit tests.
+3. All tick counts assume the retail 30 Hz loop, which the race setup
+   enforces (a 30/1 tick rate, docs/ROSTER_MILESTONE.md RS-14), and the
+   linked race's bounds are in the same ticks
+   (docs/LOCKSTEP_RACE_MILESTONE.md LR-12). A future 60 Hz native mode
    would halve every duration and needs these defaults revisited.
 4. The G29 menu feel (UX-1 to UX-4) is only unit tested; it is a CAB1
    live-hardware acceptance item at step 6.
@@ -1145,9 +1168,9 @@ Status: done. Updates this document and docs/HANDOFF.md for Tasks 1-6b-6.
 9. The two-instance loopback run was driven by script on one machine with
    the G29 hidden from SDL. No real two-cabinet or real-wheel run has
    happened; that is the step 6/7 requirement.
-10. Stale bundles from a just-finished race arriving after a rematch opens
-    could fault the new session (detail in risk 2); Task 8 must test for
-    this.
+10. Resolved: stale bundles from a just-finished race arriving after a
+    rematch opens are dropped and counted, not handed to the new session
+    (risk 2).
 11. Every tick count assumes the 30 Hz game loop (see risk 3).
 12. Startup needs a display. With no display in the Windows session (e.g. a
     console session disconnected by fast user switching), SDL video init

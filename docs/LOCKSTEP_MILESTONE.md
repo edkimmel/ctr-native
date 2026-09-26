@@ -294,8 +294,14 @@ added by it.** A later milestone may revisit them only with a new brief.
 peers are configured with the same `D` and a mismatch is a protocol error
 detected on the first received bundle. Bounds:
 `NATIVE_LOCKSTEP_MIN_INPUT_DELAY 1`, `NATIVE_LOCKSTEP_MAX_INPUT_DELAY 6`.
-Default 2 (33 ms of buffered input at 60 Hz, comfortably above wired-LAN
-round trip on a two-cabinet switch).
+Default 2, the arcade-link adapter's
+(`NATIVE_ARCADE_NETPLAY_DEFAULT_INPUT_DELAY`). A frame is one retail game
+tick at 30 Hz: a linked race requires a 30/1 tick rate
+(`docs/ROSTER_MILESTONE.md` RS-14). So `D = 2` buffers about 67 ms of
+input, and sample to simulation is `D + 1` = 3 ticks, 100 ms, comfortably
+above wired-LAN round trip on a two-cabinet switch. The linked-race drive
+accepts only `D` up to 3, because of the window lead
+(`docs/LOCKSTEP_RACE_MILESTONE.md` LR-3).
 
 ### 2.2 Delay / reorder buffer
 
@@ -401,8 +407,8 @@ Field justifications:
   `NativeReplaySchedulerV4MismatchReport.canonicalDomainMask`
   (`native_replay_scheduler_v4.c:24`), naming the domain that diverged
   (control, RNG, input, drivers, world, topology). 48 bytes per frame per peer
-  is 2.9 KiB/s at 60 Hz, which is nothing on a wired LAN and is the single most
-  valuable diagnostic in the whole milestone.
+  is about 1.4 KiB/s at the 30 Hz tick, which is nothing on a wired LAN and is
+  the single most valuable diagnostic in the whole milestone.
 
 **Verification lags simulation, necessarily.** Timeline for a peer at
 simulation frame `S`:
@@ -420,8 +426,9 @@ simulated when it is consumed. It cannot be the same frame: a frame's digest
 does not exist until that frame has been simulated, and the bundle must arrive
 before that frame can be simulated at all, because it carries the input that
 frame needs. A divergence at frame `F` is therefore detectable no earlier than
-frame `F + D + 1` (50 ms at `D = 2`, 60 Hz). For the first `D + 1` frames of a
-session `verifiedPresent` is 0 and the digest fields are zero.
+frame `F + D + 1` (3 ticks, 100 ms, at `D = 2` and the 30 Hz tick). For the
+first `D + 1` frames of a session `verifiedPresent` is 0 and the digest
+fields are zero.
 
 Maximum encoded size versus the transport: 128 bytes. There is no maximum
 payload constant in `native_virtual_datagram` (section 1.4) - `payloadCapacity`
@@ -460,10 +467,29 @@ struct NativeLockstepDivergenceReport {
 - `frameIndex` is the `verifiedFrameIndex` from the peer's bundle: the frame
   that actually diverged, not the frame on which the disagreement was noticed.
   `senderSlot` names which peer reported it.
-- `FRAME_UNAVAILABLE` covers the case where the peer reports a digest for a
-  frame the local side cannot compare (never simulated, or already retired from
-  the local digest history). It is a divergence, not a protocol error: the
-  bundle is well formed but the two simulations are no longer comparable.
+- A peer digest is classified against `r`, the last locally recorded frame
+  (`docs/LOCKSTEP_RACE_MILESTONE.md` LR-11, LR-28..LR-32;
+  `NativeLockstepSession_Verify` in `platform/native_lockstep_session.c`).
+  Only a record the window ACCEPTED is classified, and a bundle with
+  `verifiedPresent` 0 carries no digest:
+  - a frame at or below `r` is compared on arrival against the local digest
+    history;
+  - a frame from `r + 1` to `r + D`, one the local side has not recorded
+    yet, is parked, at most `D` per peer, and `RecordLocalDigests` compares
+    it when it records that frame. One cabinet leading the other by up to
+    `D + 1` ticks is the normal state of a linked race, not a divergence.
+    A mismatch found there latches the same report the on-arrival
+    comparison would;
+  - a frame after `r + D`, or any digest before the first local record, is
+    a protocol fault with the session-local cause
+    `NATIVE_LOCKSTEP_FAULT_VERIFY_AHEAD` (15, never on the wire): a
+    conforming peer cannot send it.
+- `FRAME_UNAVAILABLE` covers a peer digest for a frame the local side cannot
+  compare: one already retired from the local digest history, or one at or
+  below `r` that recording skipped (on arrival, or a parked frame settled
+  when a later frame is recorded). No local digest of such a frame exists.
+  It is a divergence, not a protocol error: the bundle is well formed but the
+  two simulations are no longer comparable.
 - The latch, in the shape of `Match()`
   (`platform/native_replay_scheduler_v4.c:16`): the entire body guarded by
   `if (session->mode != NATIVE_LOCKSTEP_DIVERGED)`, zero the report, fill it,
@@ -481,7 +507,9 @@ struct NativeLockstepDivergenceReport {
   `BAD_MAGIC`, `BAD_VERSION`, `BAD_SIZE`, `BAD_DIGEST`, `BAD_RESERVED`,
   `MATCH_IDENTITY`, `PROTOCOL_VERSION`, `INPUT_DELAY`, `BAD_SLOT`,
   `BAD_PAD_COUNT`, `CONFLICTING_INPUT`, `WINDOW_OVERRUN`, `VERIFY_LAG`,
-  `VERIFY_SHAPE`. `VERIFY_LAG` is the lag invariant
+  `VERIFY_SHAPE`, and the session-local `VERIFY_AHEAD` (appended by
+  `docs/LOCKSTEP_RACE_MILESTONE.md` LR-S5; never decoded, never on the
+  wire). `VERIFY_LAG` is the lag invariant
   `verifiedFrameIndex + D + 1 == frameIndex` alone; a malformed verified block
   (`verifiedPresent > 1`, or `verifiedPresent == 0` with a nonzero digest
   field) is `VERIFY_SHAPE`.
@@ -696,7 +724,10 @@ Acceptance test `native_lockstep_session_unit` must:
 - assert a protocol fault arriving after a divergence leaves
   `_FirstDivergence()` intact and `mode == DIVERGED`;
 - assert `FRAME_UNAVAILABLE` when a peer reports a `verifiedFrameIndex` the
-  local side never simulated;
+  local side can no longer compare (retired, or skipped by recording); since
+  `docs/LOCKSTEP_RACE_MILESTONE.md` LR-S5 it also asserts that a digest up to
+  `D` frames past the last recorded frame is parked and compared when that
+  frame is recorded, and that one further ahead is the `VERIFY_AHEAD` fault;
 - assert a mismatched `inputDelay` or match identity at the very first bundle
   produces the right fault and no divergence.
 
@@ -836,11 +867,16 @@ Acceptance: docs-only; the full suite must still pass, because
    milestone will want a handshake.
 2. Stall handling is the caller's problem in this milestone. The session
    reports a stall; it does not decide how long to wait, whether to drop the
-   peer, or what to show on screen. That is integration step 5.
+   peer, or what to show on screen. That is integration step 5, whose
+   outcome tracker ends a stall after a configured number of consecutive
+   stalled polls: its own default is 180 frames (6 s at the 30 Hz tick; its
+   header still calls it 3 s at 60 Hz), and the arcade-link adapter passes
+   90, 3 s at 30 Hz (`docs/GAME_LOOP_UI_MILESTONE.md` UX-9).
 3. The local digest history is `D + 2` frames deep. A peer whose verification
    falls further behind than that produces `FRAME_UNAVAILABLE` rather than a
    digest comparison. The depth is a constant and can be raised without a wire
-   change.
+   change. A peer whose verification runs ahead, by up to `D` frames, is
+   parked, not compared early (section 2.4).
 4. The bundle has no sequence number distinct from `frameIndex`, so a
    transport that both duplicates and delays can only be diagnosed by frame,
    not by send attempt. The virtual harness already exposes

@@ -3,9 +3,15 @@
 Design-and-status record for docs/GAME_LOOP_UI_MILESTONE.md Task 8,
 "in-race lockstep drive and failure handling" (docs/HANDOFF.md "Next work"
 item 1), on branch `arcade`. Read AGENTS.md and docs/HANDOFF.md first. This
-document follows the pattern of docs/RACE_LAUNCH_MILESTONE.md: a
-prospective plan with a task list, updated to record status as slices
-land.
+document follows the pattern of docs/RACE_LAUNCH_MILESTONE.md: the plan
+with its task list, and each slice's recorded result.
+
+Status: done. LR-S1..LR-S14 are done, and a linked race runs in lockstep
+end to end. Every criterion of section 3 is met, and section 3 names the
+evidence for each. The gate's recorded run is in LR-S13's result, and the
+full suite's in LR-S14's. Section 2 records the code as it was when the
+plan was written (eb382038e), and section 7 lists the risks and open
+items that remain.
 
 ## 1. Scope
 
@@ -499,24 +505,31 @@ order:
    (section 2.6). Task 8 adds no presentation code for this. The owner
    ruled on 2026-09-25 that this split screen is what ships.
 
-How each will be proven:
+How each is proven (the gate's numbers are from the full-suite run on
+0c08fb0cc in LR-S14's result; LR-S13's recorded run gave the same
+outcomes, with a race 1 end at race tick 3710):
 
-1. The drive core unit test (LR-S8) and the extended live gate: both
-   processes log equal per-tick input digests and reach the finish on the
-   same tick.
+1. The drive core unit test (LR-S8) and the extended live gate: the two
+   processes log equal per-tick digest lines, the input domain included,
+   for every one of race 1's 3702 race ticks (0..3701), and both reach the
+   finish, END_OF_RACE, on race tick 3701.
 2. Two pieces:
    - arcade_roster_determinism: its runs still agree tick by tick with the
      root-counter pin and V4 in place (LR-S3, LR-S4).
    - The live gate: it compares every per-tick V4 digest across the two
-     processes, including the race-relative control.
+     processes, including the race-relative control, and requires LR-8's
+     elapsedTimeMS, rcntTotalUnits, and clockFrameStart of race ticks 0..2
+     equal on both in every race.
 3. The live gate's forced-desync race ends in RACE OUT OF SYNC with the
-   divergence frame named. The per-tick V4 lines are equal in the races
-   without a fault, and race 1's freeze leaves one cabinet leading without
-   a desync (LR-S5's lead cases prove every lead up to the bound, for D
-   from 1 to 3).
-4. The live gate's injected freeze, the peer kill, and the drive core
-   tests of every bound. The hold spike (LR-S2) shows no extra VBlank
-   across a hold.
+   divergence frame named ("race 2 out of sync at race tick 300 domains
+   0x1" on cab2). The per-tick V4 lines are equal in the races without a
+   fault, and race 1's freeze leaves cab1 leading and held at race tick
+   602 without a desync (LR-S5's lead cases prove every lead up to the
+   bound, for D from 1 to 3).
+4. The live gate's injected freeze (cab1 held 43 periods and resumed), the
+   peer kill (cab1 held 90 periods, then OPPONENT DISCONNECTED), and the
+   drive core and host tests of every bound (LR-71). The hold spike
+   (LR-S2) shows no extra VBlank across a hold.
 5. The live gate's race 1, and the drive core tests of the finish grace
    (LR-S8).
 6. The drive core test of the START mask and of pad normalization, and an
@@ -525,11 +538,12 @@ How each will be proven:
 7. Isolation tests (section 5), the unchanged default-boot pins
    (main_arcade_link_hook_isolation), and the stale-bundle rematch tests
    (LR-S6).
-8. The gate's recorded run in LR-S13.
+8. The gate's recorded run in LR-S13, and the full suite's PASS in LR-S14.
 9. By construction: the setup plan's TWO_CAB shape and the retail split
-   screen (section 2.6), unchanged by any slice; LR-S13 records one frame
-   capture per cabinet in race 1, kept under build-msvc-x86 and never
-   committed (retail imagery).
+   screen (section 2.6), unchanged by any slice. The gate writes one
+   frame capture per cabinet in race 1, kept under build-msvc-x86 and
+   never committed (retail imagery). LR-S13 viewed the recorded run's
+   pair: the split screen, cab1's player on top and cab2's below.
 
 ## 4. Decided design (defaults LR-1..LR-76; LR-17 is the owner's ruling)
 
@@ -5941,7 +5955,44 @@ changes):
 
 ### LR-S14 -- docs close-out
 
-Status: planned. Run 6.
+Status: done. Run 6. Docs only.
+
+Result:
+
+- The full suite on 0c08fb0cc (the LR-S13 review follow-ups), from a
+  clean tree: 157 of 157 passed, non-skipped, in 604.9 s of wall time.
+  The live tests took 45.4 s (arcade_link_preview_render), 265.8 s
+  (arcade_roster_determinism), and 232.6 s (arcade_link_launch); the 154
+  tests of `ctest -LE live` take about 62 s. The gate's three races, read
+  from its checker output and the logs under
+  build-msvc-x86/arcade_link_launch/Debug:
+  - race 1: "end of race" at race tick 3701 on both cabinets, ended
+    (reason 1) on both; all 3702 per-tick digest lines equal. cab2 froze
+    45 tick periods (1505369 us) at race tick 600; cab1 held 43 tick
+    periods (1447162 us) at race tick 602 and presented 34 hold banners,
+    all in the game font and none in the block font.
+  - race 2: cab2 logged "race 2 out of sync at race tick 300 domains 0x1"
+    and ended (reason 3) with no drive end line; cab1 held 90 periods at
+    race tick 303 and ended (reason 2). The 301 common per-tick lines
+    (0..300) are equal.
+  - race 3: cab2 was killed after its race tick 311 was seen; cab1 held
+    90 tick periods (3010751 us) at race tick 325 and ended (reason 2).
+  - both race-1 captures were written (cab1.race1.bmp, cab2.race1.bmp,
+    under build-msvc-x86, never committed).
+- This document: the status at the top, section 3's evidence list (now in
+  the present tense, with the gate's numbers), this result, and section
+  7's risks 1, 2, 3, 4, 12, 13, and 14 brought to their present state,
+  with a new risk 20 listing the open items LR-S13 recorded.
+- docs/GAME_LOOP_UI_MILESTONE.md: Task 8 marked done, pointing here;
+  risks 1, 2, 3, and 10.
+- docs/RACE_LAUNCH_MILESTONE.md: risks 3, 4, 5, and 8.
+- docs/ROSTER_MILESTONE.md: risk 7, RS-13, and RS-18.
+- docs/LOCKSTEP_MILESTONE.md: its 60 Hz figures restated for the 30 Hz
+  tick (D = 2 buffers about 67 ms; detection by F + D + 1 is about 100
+  ms), the stall-timeout figures the failure-handling layer and the
+  adapter use, and its FRAME_UNAVAILABLE rule reconciled with LR-11
+  (parked digests and the VERIFY_AHEAD fault).
+- docs/HANDOFF.md: every section but "Next work", to read true today.
 
 Plan: this document; GAME_LOOP_UI Task 8 and risks 1, 2, 3, and 10;
 RACE_LAUNCH risks 3, 4, 5, and 8; ROSTER risk 7, RS-13, and RS-18;
@@ -5952,18 +6003,18 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
 
 1. The scripted finish. The closed-loop autopilot may not finish 3 laps
    reliably: walls, jumps, or items can hit it, and both players must
-   finish. LR-S2 (b) decides. On failure, the gate uses an internal
-   race-tick cap. The natural END_OF_RACE path is then proven only by the
-   drive core test and a recorded manual run. LR-S2 (b) decided: the
-   autopilot passed. Both players finished and END_OF_RACE was reached in
-   5 of 5 seeds, by race tick 3753 of 6000 (LR-S2, "(b) result"), so the
-   gate keeps the natural finish and the race-tick cap fallback is not
-   needed. The risk remains for the gate's own races, whose seeds come
-   from the select. Since LR-18 a stuck autopilot is bounded: once the
-   other human has finished, the finish grace ends the race 900 ticks
-   later, as RACE COMPLETE on both cabinets. Such a run passes race 1
-   (LR-16), but the natural END_OF_RACE path is then unproven live in
-   that run; LR-S13 records which end happened.
+   finish. LR-S2 (b) decided it: the autopilot passed. Both players
+   finished and END_OF_RACE was reached in 5 of 5 seeds, by race tick 3753
+   of 6000 (LR-S2, "(b) result"), so the gate keeps the natural finish and
+   the race-tick cap fallback is not needed. The gate's own race 1 reached
+   END_OF_RACE live, on the same race tick on both cabinets, in each run
+   LR-S13 and LR-S14 record: 3685 and 3710 in LR-S13, 3701 in the
+   full-suite run of LR-S14. Its seeds come from the select, so a later
+   run can still meet a stuck autopilot. The finish grace (LR-18) remains
+   the bound: once the other human has finished, it ends the race 900
+   ticks later, as RACE COMPLETE on both cabinets. Such a run passes race
+   1 (LR-16), and the checker prints which end happened; the natural
+   END_OF_RACE path is then unproven live in that run only.
 2. The hold mechanism and audio. A blocking hold in the hook is new, and
    so is drawing a banner onto the displayed frame. SDL or GL presentation
    behaviour during a long hold is host-local but visible. Audio can
@@ -5976,18 +6027,25 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
    and draws its text in the arcade-link font after all, decoded read-only
    from the VRAM mirror, with the block font as the fallback (LR-72); a
    host whose font tiles are GPU-newer, or whose icon data is not loaded,
-   shows the block font instead, never a broken glyph. The race hold's
-   banner has no automated capture check until LR-S13's freeze can
-   produce one (LR-72). Audio during the hold was not observed or
-   recorded, so the underrun risk stays open. At a render scale above 1
+   shows the block font instead, never a broken glyph. The race hold and
+   its game-font banner have run live in the gate (LR-S13): in race 1
+   cab1 held 43 tick periods at race tick 602 and presented 34 banners,
+   every one logged "in the game font" and none in the block font, and the
+   checker requires exactly that (LR-76). That check reads the log only.
+   No image of the banner itself is captured automatically: the gate's
+   one capture per cabinet lies in race 1 after the hold and must not be a
+   banner frame, so the banner's pixels were last checked by eye (LR-S11,
+   LR-72). Audio during a hold is still unobserved and unrecorded, so the
+   underrun risk stays open. At a render scale above 1
    the banner frame shows the 1x VRAM image (the pinned present reads
    VRAM), so the picture visibly drops resolution while held and returns
    with the next rendered frame.
 3. Per-tick V4 cost. Drivers extraction and assembly, the
    MainCanonicalTopology context validation, and the world extractors now
-   run every tick, in Debug too. LR-S4 measures the cost. If it threatens
-   the 33 ms frame, the drive projects every tick but the slice reports it
-   for a budget decision; frames are never skipped.
+   run every tick, in Debug too. LR-S4 measured the cost in Debug: a mean
+   of 1.295 ms and a p99 of 1.895 ms per tick, far inside the 33.4 ms tick
+   (LR-S4's result). The drive projects every tick; frames are never
+   skipped. A slower cabinet PC is still unmeasured.
 4. A persistent lead. Fixed pacing never recovers a slow frame, so a host
    hitch of x ms puts its cabinet x ms behind for good. The other cabinet
    then leads by x ms, up to D + 1 ticks; beyond that it holds once for
@@ -5996,9 +6054,14 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
    it until the leader reaches D + 1 ticks and then holds briefly now and
    then. So a lead of 1 to D + 1 ticks is the normal state of a linked
    race, not a fault. The session parks the leader's early digests
-   (LR-11), and the race-1 freeze proves it live. Stalls stay short: holds
-   are polled at 1 ms and the timeout counts only full periods. A slow
-   host still makes its peer's race hitch.
+   (LR-11), and the gate's race-1 freeze proved it live: cab2 froze for 45
+   periods at race tick 600, cab1 ran on to race tick 602 (600 + D) and
+   held 43 periods, and after cab2 resumed neither cabinet latched a
+   divergence. All 3702 per-tick digest lines were equal across the two,
+   and both ended the race on the same tick (LR-S14's full-suite run;
+   LR-S13's recorded run matched). Stalls stay short: holds are polled at
+   1 ms and the timeout counts only full periods. A slow host still makes
+   its peer's race hitch.
 5. Paused link ticks in file reads. None happen inside an arcade race
    (section 2.6). The race-track load and the return load still pause
    them. The start grace covers the load gap at race tick 0, up to 30 s.
@@ -6032,14 +6095,26 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
     started. A flood of stale records can crowd the 8-entry staging
     buffer; the drops are counted and logged, and the resend recovers.
 12. The live gate needs a build from a clean tree (GAME_LOOP_UI risk 5),
-    and a skip does not count.
+    and a skip does not count. Satisfied for Task 8: LR-S13's recorded,
+    non-skipped PASS (2e06af2e2) and the full suite's non-skipped PASS on
+    0c08fb0cc (LR-S14). Any later change to the race path needs a new
+    non-skipped run.
 13. The 30 Hz assumption. Every bound here is in 30 Hz ticks (RS-14
-    enforces 30/1). The failure-handling layer's own constants and
-    docs/LOCKSTEP_MILESTONE.md are written for 60 Hz: the stall default is
-    180 frames and D = 2 is quoted as 33 ms. The adapter already passes 90
-    (UX-9). LR-S14 fixes the prose.
-14. Suite time. The extended gate adds about 190 s. If that is too slow,
-    races 2 and 3 can use the internal race-tick cap, but race 1 cannot.
+    enforces 30/1). docs/LOCKSTEP_MILESTONE.md now states its figures at
+    the 30 Hz tick (LR-S14): D = 2 buffers about 67 ms. The failure-handling
+    layer's own constants are still documented at 60 Hz, in their header
+    (include/platform/native_lockstep_match_outcome.h:25-41, a 180-frame
+    default called 3 s) and in docs/FAILURE_HANDLING_MILESTONE.md. No
+    linked race uses that default: the adapter passes 90 ticks, 3 s at
+    30 Hz (UX-9).
+14. Suite time. Measured in LR-S14's full-suite run: 157 tests in 604.9 s
+    of wall time, of which arcade_link_launch took 232.6 s,
+    arcade_roster_determinism 265.8 s, and arcade_link_preview_render
+    45.4 s; the 154 tests of `ctest -LE live` take about 62 s. The gate
+    grew from 78 s (RL-S10) to about 233 s. Race 1's natural finish is
+    most of it (3702 race ticks, about 124 s at the 33435 us tick period)
+    and cannot be shortened without giving up the live END_OF_RACE; races
+    2 and 3 already end at their faults near race tick 300.
 15. D is fixed at 2 and at most 3, because of the window lead of LR-3.
     The ring capacity is frozen at 8 by tests/native_lockstep_isolation_test.cmake,
     and raising it is out of scope. The owner accepted D + 1 = 3 ticks
@@ -6102,3 +6177,16 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
     isolation pin (LR-S4). Ruling (b), not taken, would have re-planned
     the Drivers projection without the bot nav index and lost direct
     detection of a bot's nav-path divergence.
+20. Open items LR-S13 recorded, not closed (LR-S13's result, LR-76):
+    - LR-70's divergence found only by the Tick that closes the link,
+      leaving RESULTS, is not logged: the link's session is gone before
+      the host's helper runs. The gate cannot reach it.
+    - The cabinet whose host Tick finds a divergence (race 2's cab2 in the
+      gate) logs no "drive end" line: the flow seen off RACING ends the
+      drive phase with no drive result
+      (game/MAIN/MainArcadeRaceLaunchCore.c:315-319). Only the line is
+      missing; the checker bounds that race's per-tick lines instead.
+    - LR-60's race tick cap is cross-checked between cabinets only by the
+      gate (the same "race tick limit 6000" line on both stdouts). The
+      option is internal and host-local; a mismatch shows as a stall, not
+      a silent desync.

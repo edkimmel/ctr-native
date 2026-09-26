@@ -991,12 +991,29 @@ game/MAIN/MainArcadeRaceSetupPlan.h and game/MAIN/MainArcadeRaceSetupCore.h.
    race keeps running until the return load sets LOADING. The caller's
    return step on the frame it first sees the end (deferred to the first
    later LOAD_IDLE or LOAD_REQUESTED frame behind a race-track load)
-   bounds this, and under the
-   rehearsal the race reads only the neutral pads, so nothing is lost
-   today. Task 8 must decide the frames between its real finish and the
-   return load.
-4. Host timing still feeds the simulation (ROSTER risk 7, Task 8).
-5. Pause under lockstep is undecided (Task 8).
+   bounds this. Task 8 decided the frames between the race's end and the
+   return load (docs/LOCKSTEP_RACE_MILESTONE.md LR-13, LR-66): the
+   committed pads are installed only on the drive's GO ticks, and from the
+   end frame (a finish, an outcome, a local failure, or the flow seen off
+   RACING) until the clear the caller installs the neutral pads, so the
+   race reads only neutral pads there and nothing is lost. The drive's
+   digest ends on the end frame, and the retail end-of-race screens that
+   run until the return load are host-local presentation, not compared.
+4. Resolved by Task 8 (docs/LOCKSTEP_RACE_MILESTONE.md LR-7, LR-8): a
+   linked race runs with fixed VBlank pacing, turned on by
+   NativeArcadeLinkHost_RaceBegin on the Launch frame and off on the
+   Disarm frame, so every race tick emits exactly 2 VBlanks whatever the
+   host frame time, and the setup pins the root counter
+   (sdata->rcntTotalUnits 0, gGT->clockFrameStart -200) at race init. Host
+   timing no longer feeds a linked race's simulation; the live gate
+   compares every per-tick V4 digest across the two cabinets. A host hitch
+   costs a lead or a hold instead (LOCKSTEP_RACE risk 4).
+5. Resolved by Task 8 (docs/LOCKSTEP_RACE_MILESTONE.md LR-6): pause
+   cannot happen in a linked race. START is never in a committed pad, and
+   every installed human pad is connected with status 0 and an allowed
+   id, so neither a START tap nor MainFrame_HaveAllPads can pause. No
+   retail code changed; the RL-13 vibration guard stays, now unreachable
+   in a linked race.
 6. The rehearsal RESULTS says RACE COMPLETE for an undriven race. This is
    interim and development only; HANDOFF steps 6-7 need Task 8.
 7. The live gate needs a build made from a clean tree (GAME_LOOP_UI risk
@@ -1004,8 +1021,11 @@ game/MAIN/MainArcadeRaceSetupPlan.h and game/MAIN/MainArcadeRaceSetupCore.h.
    Satisfied for Task 7: the recorded, non-skipped PASS at e5279e31d
    (RL-S10 status). Any later change to the launch path needs a new
    non-skipped run.
-8. Stale bundles after a rematch (GAME_LOOP_UI risk 2) stay a Task 8 test
-   item.
+8. Resolved by Task 8 (docs/LOCKSTEP_RACE_MILESTONE.md LR-14, LR-S6):
+   the peer link drops and counts a record of another match identity
+   instead of faulting the rematch's session, tested by the rematch cases
+   of native_arcade_netplay_unit and native_lockstep_peer_link_unit
+   (GAME_LOOP_UI risk 2).
 9. The ONE_CAB lobby and UI flow is a follow-up (ROSTER risk 14).
 10. Fixed: the link's own return to title did not check the load stage.
     Its return step now runs only at LOAD_IDLE or LOAD_REQUESTED, like the

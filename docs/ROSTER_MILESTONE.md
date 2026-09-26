@@ -587,8 +587,15 @@ overrode the TWO_CAB-only default.
     v1, except the ones that feed the race simulation, which the setup pins
     (RS-17).
 13. RS-13: The proof digests V1 control/RNG/input plus the topology-free
-    DRIVERS candidate; Physics, WORLD, TOPOLOGY, and live V4 projection
-    stay with Task 8.
+    DRIVERS candidate. Task 8 added the rest except TOPOLOGY
+    (docs/LOCKSTEP_RACE_MILESTONE.md LR-10, LR-S4): the live V4 projection,
+    game/MAIN/MainArcadeRaceDigest, projects the complete drivers (Physics
+    included), WORLD, race-relative control, and the post-setup bank on
+    every race tick. The linked race records and exchanges its digests,
+    and the proof (report v11) logs them per tick beside its V1 digests.
+    TOPOLOGY carries the unavailable summary, the same constant on both
+    cabinets, so it is not compared; live topology waits for a
+    lease-activation milestone (LOCKSTEP_RACE risk 17).
 14. RS-14 (R-4): The config's tick rate must be exactly 30/1, the retail
     30 Hz loop. MainArcadeRaceSetupPlan_Build enforces it
     (game/MAIN/MainArcadeRaceSetupPlan.c:159-160, against
@@ -627,10 +634,16 @@ overrode the TWO_CAB-only default.
     readers, and its verdict is in game/MAIN/MainArcadeRaceSetupCore.h.
 18. RS-18 (R-6b): Fixed VBlank pacing (Platform_SetFixedVBlankPacing,
     include/platform.h; the pure decision NativeVBlankPacing_Plan,
-    platform/native_vblank_pacing.c) is proof-only: main.c turns it on only
-    for the roster proof, and every other run keeps the retail-faithful
-    catch-up pacing. It is not the linked-race answer: Task 8 must adopt
-    deterministic VBlanks per tick (risk 7).
+    platform/native_vblank_pacing.c) runs for the roster proof and for a
+    linked race only. main.c turns it on for the roster proof. The
+    arcade-link host turns it on for a linked race
+    (NativeArcadeLinkHost_RaceBegin, on the Launch frame) and off again
+    (NativeArcadeLinkHost_RaceEnd on the Disarm frame, and
+    NativeArcadeLinkHost_Shutdown), touching only a pacing it turned on
+    (docs/LOCKSTEP_RACE_MILESTONE.md LR-7). Every other run keeps the
+    retail-faithful catch-up pacing.
+    tests/native_vblank_pacing_isolation_test.cmake pins those two caller
+    files, and game code never names the setter.
 
 RS-19..RS-24 are the implementation defaults chosen to carry out the
 owner's RS-1 decision; the owner has since accepted them with the rest of
@@ -984,10 +997,16 @@ parallel (C and I about 264 s each, the other eight about 81 s).
    emitted VBlank while not paused also increments gGT->frameTimer_Confetti
    (game/MAIN/MainDrawCb.c:25), which feeds the particle oscillators and
    through them MixRNG draws; RS-17 pins it only at race start, so a
-   mid-race host hitch still moves a simulation input. Only the proof pins
-   pacing (RS-18) and only V2 playback cancels it (the recorded VSync
-   packets and frame elapsed time), so Task 8 must adopt deterministic
-   VBlanks per tick for linked races.
+   mid-race host hitch still moves a simulation input in a run with the
+   default pacing. Closed for linked races by Task 8
+   (docs/LOCKSTEP_RACE_MILESTONE.md LR-7, LR-8): a linked race, like the
+   proof, runs with fixed pacing (RS-18), so every race tick emits exactly
+   2 VBlanks, and the setup also pins the root counter (rcntTotalUnits
+   and clockFrameStart) at race init. V2 playback still cancels it with
+   its recorded VSync packets and frame elapsed time. A hitch in a linked
+   race costs a lead or a hold, not a changed input (LOCKSTEP_RACE risk
+   4); a default-paced run (normal play) keeps the retail catch-up
+   behaviour.
 8. Closed by Task 7 RL-13 (docs/RACE_LAUNCH_MILESTONE.md RL-S9). The
    retail pause-menu vibration toggle flips a P*_VIBRATE bit in gameMode1
    mid-race, and gameMode1 is canonical control state, so one cabinet
