@@ -80,7 +80,13 @@ enum NativeArcadeLinkPreview
 	NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK = 14,         /* "select-track" */
 	NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS = 15,          /* "select-laps" */
 	NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT = 16,          /* "select-wait" */
-	NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT = 17         /* "select-result" */
+	NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT = 17,        /* "select-result" */
+	/* Solo (docs/SOLO_CAB_MILESTONE.md SOLO-S3): the offer, the one-human
+	 * select, and solo RESULTS with the other cabinet heard or a race error. */
+	NATIVE_ARCADE_LINK_PREVIEW_LOBBY_SOLO = 18,           /* "lobby-solo" */
+	NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO = 19,          /* "select-solo" */
+	NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO = 20,         /* "results-solo" */
+	NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO_ERROR = 21    /* "results-solo-error" */
 };
 
 /* ipv4 and port are host byte order, the same meaning as NativeUdpTransportAddress. */

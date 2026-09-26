@@ -173,8 +173,9 @@ struct NativeArcadeLinkHostView
 	uint8_t localMenuEvent;
 	/* The select screens (docs/MATCH_SELECT_MILESTONE.md section 2.7). */
 	struct NativeArcadeLinkHostSelectView select;
-	/* Solo (docs/SOLO_CAB_MILESTONE.md). LINK only; 0 in PREVIEW. solo: 1 on
-	 * the solo SELECT, SELECT_RESULT, RACING, and RESULTS screens.
+	/* Solo (docs/SOLO_CAB_MILESTONE.md). In PREVIEW only the solo previews
+	 * (SOLO-S3) set them, scripted and without the solo gate. solo: 1 on the
+	 * solo SELECT, SELECT_RESULT, RACING, and RESULTS screens.
 	 * soloOffered: 1 while the LOBBY offers solo (SOLO-2, SOLO-13).
 	 * peerHeard: 1 once the other cabinet was heard during this solo (SOLO-4,
 	 * SOLO-8). reserved is always 0. */

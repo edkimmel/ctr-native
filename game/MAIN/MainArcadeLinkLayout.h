@@ -170,6 +170,15 @@ struct MainArcadeLinkLayoutInput
 	uint8_t reserved;
 	/* SELECT and SELECT_RESULT only; ignored on every other screen */
 	struct MainArcadeLinkLayoutSelect select;
+	/* Solo (docs/SOLO_CAB_MILESTONE.md SOLO-5, SOLO-8, SOLO-13), each 0 or
+	 * 1. solo: the solo form of SELECT, SELECT_RESULT, RACING, or RESULTS,
+	 * and valid only on those screens. soloOffered: the LOBBY offers solo;
+	 * valid only on LOBBY. peerHeard: the other cabinet was heard during
+	 * this solo; drawn on solo RESULTS only. soloReserved is ignored. */
+	uint8_t solo;
+	uint8_t soloOffered;
+	uint8_t peerHeard;
+	uint8_t soloReserved;
 };
 
 /* Builds the draw list for one tick. Returns 1 on success. Returns 0 with
@@ -185,7 +194,20 @@ struct MainArcadeLinkLayoutInput
  * the three lock bits, and currentItem in range; and, when resolved, a known
  * track and lap count, a reassignment mask within humanCount, known human
  * characters, and botCount at most 8 - humanCount with known bot
- * characters. Screens OFF (without attract) and RACING give count 0. */
+ * characters. The solo fields must each be 0 or 1, solo 1 only on SELECT,
+ * SELECT_RESULT, RACING, or RESULTS (and on SELECT and SELECT_RESULT with
+ * humanCount 1), and soloOffered 1 only on LOBBY. Screens OFF (without
+ * attract) and RACING give count 0.
+ *
+ * Solo (docs/SOLO_CAB_MILESTONE.md section 4, SOLO-S3). With every solo
+ * field 0 each screen is exactly the linked one. With soloOffered 1 a
+ * WAITING, CONNECTING, or LOST lobby reads "WAITING FOR OTHER CABINET" and
+ * "PRESS START TO RACE SOLO" (SOLO-13); READY and REJECTED stay linked.
+ * Solo SELECT draws the local human alone: no opponent footer, no GRAY
+ * taken characters, and a waiting title without opponent lines (SOLO-5).
+ * Solo RESULTS has the rows RACE AGAIN and LOBBY, titles a LINK_ERROR end
+ * "RACE ERROR", and adds "OTHER CABINET IS READY" while peerHeard is 1
+ * (SOLO-7, SOLO-8); no solo string names the link. */
 int MainArcadeLinkLayout_Build(const struct MainArcadeLinkLayoutInput *input, struct MainArcadeLinkLayout *out);
 
 /* The layout's select fields mirror the host's select view; keep the
@@ -202,8 +224,8 @@ _Static_assert(MAIN_ARCADE_LINK_SELECT_LOCK_TRACK == NATIVE_ARCADE_LINK_HOST_SEL
 _Static_assert(MAIN_ARCADE_LINK_SELECT_LOCK_LAPS == NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_LAPS, "MAIN_ARCADE_LINK_SELECT_LOCK_LAPS must match NATIVE_ARCADE_LINK_HOST_SELECT_LOCK_LAPS");
 _Static_assert(MAIN_ARCADE_LINK_SELECT_STATUS_FAILED == NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_FAILED, "MAIN_ARCADE_LINK_SELECT_STATUS_FAILED must match NATIVE_ARCADE_LINK_HOST_SELECT_STATUS_FAILED");
 
-/* Fills *input from the host's view, field for field: the screen fields and
- * every select field, with every reserved byte zero. The view's
+/* Fills *input from the host's view, field for field: the screen fields,
+ * every select field, and the solo fields, with every reserved byte zero. The view's
  * localMenuEvent is not mapped: it is for menu sounds, not drawing, and
  * never reaches the layout. The result is exactly what the drawer hands
  * MainArcadeLinkLayout_Build. Returns 1 on success; returns 0 with *input

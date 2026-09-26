@@ -255,6 +255,10 @@ struct PreviewCase
 	uint32_t selectedRow;
 	uint8_t rowsEnabled;
 	uint8_t attract;
+	/* The solo view group (SOLO-S3): 0 on every linked preview. */
+	uint8_t solo;
+	uint8_t soloOffered;
+	uint8_t peerHeard;
 };
 
 static const struct PreviewCase kPreviewCases[] = {
@@ -280,6 +284,14 @@ static const struct PreviewCase kPreviewCases[] = {
 	{NATIVE_ARCADE_LINK_PREVIEW_EXIT, NATIVE_ARCADE_FLOW_SCREEN_EXIT, 0u, NATIVE_ARCADE_FLOW_END_FINISHED, 0u, 0u, 0u},
 	{NATIVE_ARCADE_LINK_PREVIEW_EXIT_OPPONENT_LEFT, NATIVE_ARCADE_FLOW_SCREEN_EXIT, 0u,
 		NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT, 0u, 0u, 0u},
+	/* Solo (SOLO-S3): the offer, and solo RESULTS on RACE AGAIN, finished
+	 * with the other cabinet heard or ended by the local race failure. */
+	{NATIVE_ARCADE_LINK_PREVIEW_LOBBY_SOLO, NATIVE_ARCADE_FLOW_SCREEN_LOBBY, NATIVE_ARCADE_FLOW_LOBBY_WAITING, 0u, 0u,
+		0u, 0u, 0u, 1u, 0u},
+	{NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO, NATIVE_ARCADE_FLOW_SCREEN_RESULTS, 0u, NATIVE_ARCADE_FLOW_END_FINISHED,
+		NATIVE_ARCADE_FLOW_ROW_RACE_AGAIN, 1u, 0u, 1u, 0u, 1u},
+	{NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO_ERROR, NATIVE_ARCADE_FLOW_SCREEN_RESULTS, 0u,
+		NATIVE_ARCADE_FLOW_END_LINK_ERROR, NATIVE_ARCADE_FLOW_ROW_RACE_AGAIN, 1u, 0u, 1u, 0u, 0u},
 };
 
 static int CheckSelectZero(const struct NativeArcadeLinkHostSelectView *select)
@@ -309,8 +321,13 @@ static int CheckPreviewView(const struct PreviewCase *expected, uint32_t ticks)
 	CHECK(view.rowsEnabled == expected->rowsEnabled);
 	CHECK(view.attract == expected->attract);
 	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
-	/* The original twelve previews carry no select view. */
+	/* The original twelve previews, and the three shared-panel solo ones,
+	 * carry no select view. */
 	CHECK(CheckSelectZero(&view.select) == 0);
+	CHECK(view.solo == expected->solo);
+	CHECK(view.soloOffered == expected->soloOffered);
+	CHECK(view.peerHeard == expected->peerHeard);
+	CHECK(view.reserved == 0u);
 	return 0;
 }
 
@@ -321,7 +338,7 @@ static int TestPreviews(void)
 	uint32_t i;
 	uint32_t tick;
 
-	CHECK(caseCount == 12u);
+	CHECK(caseCount == 15u);
 	for (i = 0u; i < caseCount; i++)
 	{
 		const struct PreviewCase *expected = &kPreviewCases[i];
@@ -586,6 +603,11 @@ static void ExpectedSelectPreview(uint32_t preview, uint32_t ticks, uint32_t *sc
 		expected->ticksLeft = 0u;
 		expected->peerLockedCharacterMask = (uint16_t)(1u << PREVIEW_CORTEX);
 		break;
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO:
+		/* One human on the character item: no opponent, no peer lock. */
+		expected->humanCount = 1u;
+		SetHuman(local, PREVIEW_CRASH, PREVIEW_CRASH_COVE, 3u, 0u, 0u);
+		break;
 	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT:
 	default:
 		*screen = NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT;
@@ -631,6 +653,11 @@ static int CheckSelectPreviewView(uint32_t preview, uint32_t ticks, struct Nativ
 	CHECK(view.rowsEnabled == 0u);
 	CHECK(view.attract == 0u);
 	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
+	/* Only select-solo is a solo view (SOLO-S3). */
+	CHECK(view.solo == ((preview == (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO) ? 1u : 0u));
+	CHECK(view.soloOffered == 0u);
+	CHECK(view.peerHeard == 0u);
+	CHECK(view.reserved == 0u);
 
 	CHECK(view.select.active == expected.active);
 	CHECK(view.select.humanCount == expected.humanCount);
@@ -694,10 +721,10 @@ static int ConfigurePreviewAt(uint32_t preview, uint32_t ticks)
 
 static int TestSelectPreviews(void)
 {
-	static const uint32_t previews[5] = {
+	static const uint32_t previews[6] = {
 		NATIVE_ARCADE_LINK_PREVIEW_SELECT_CHARACTER, NATIVE_ARCADE_LINK_PREVIEW_SELECT_TRACK,
 		NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS, NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT,
-		NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT};
+		NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT, NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO};
 	struct NativeArcadeLinkHostView view;
 	uint32_t i;
 	uint32_t tick;
@@ -726,7 +753,7 @@ static int TestSelectPreviews(void)
 
 	/* Every tick of every select preview, through two countdown wraps and
 	 * several opponent-cursor wraps; GetAgreedMatch stays 0. */
-	for (i = 0u; i < 5u; i++)
+	for (i = 0u; i < 6u; i++)
 	{
 		CHECK(ConfigurePreviewAt(previews[i], 0u) == 0);
 		CHECK(NativeArcadeLinkHost_ScreenActive() == 1);
@@ -812,6 +839,19 @@ static int TestSelectPreviews(void)
 	CHECK(view.select.botCharacter[2] == 2u);
 	CHECK(view.select.botCharacter[3] == 3u);
 	CHECK(view.select.botCharacter[4] == 0u);
+
+	/* select-solo: one human, the countdown running, nothing of a peer. */
+	CHECK(ConfigurePreviewAt(NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO, 95u) == 0);
+	CHECK(CheckSelectPreviewView(NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO, 95u, &view) == 0);
+	CHECK(view.screen == 7u);
+	CHECK(view.solo == 1u);
+	CHECK(view.select.humanCount == 1u);
+	CHECK(view.select.currentItem == 0u);
+	CHECK(view.select.ticksLeft == 505u);
+	CHECK(view.select.humans[0].characterID == 0u);
+	CHECK(view.select.humans[1].present == 0u);
+	CHECK(view.select.humans[1].characterID == 0u);
+	CHECK(view.select.peerLockedCharacterMask == 0u);
 
 	NativeArcadeLinkHost_Shutdown();
 	CHECK(CheckInert() == 0);
@@ -4524,9 +4564,10 @@ static int HostPress(uint32_t held)
 }
 
 /*
- * SOLO-11: the dark gate. Production never calls the internal setter, so the
- * host configures solo off: the LOBBY never offers solo, CROSS there begins
- * nothing, and the solo query stays empty.
+ * SOLO-11: the dark gate. The solo previews leave it shut. Production never
+ * calls the internal setter, so the host configures solo off: the LOBBY
+ * never offers solo, CROSS there begins nothing, and the solo query stays
+ * empty.
  */
 static int TestSoloDarkByDefault(void)
 {
@@ -4534,6 +4575,33 @@ static int TestSoloDarkByDefault(void)
 	struct NativeIdentityV1 identity;
 	struct NativeArcadeLinkHostView view;
 	uint32_t tick;
+
+	/* The solo previews (SOLO-S3) draw solo views from a script: they never
+	 * open the gate, answer the solo query, or leave anything behind for
+	 * the LINK Configure below. */
+	{
+		static const uint32_t soloPreviews[4] = {NATIVE_ARCADE_LINK_PREVIEW_LOBBY_SOLO,
+			NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO, NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO,
+			NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO_ERROR};
+		uint32_t p;
+
+		for (p = 0u; p < 4u; p++)
+		{
+			NativeArcadeLinkOptions_SetDefaults(&options);
+			options.preview = soloPreviews[p];
+			CHECK(NativeArcadeLinkHost_Configure(&options, NULL) == 1);
+			CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_PREVIEW);
+			for (tick = 0u; tick < 3u; tick++)
+			{
+				CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == ACT_NONE);
+				view = HostView();
+				CHECK((view.solo != 0u) || (view.soloOffered != 0u));
+				CHECK(CheckNoSoloConfig() == 0);
+				CHECK(CheckNoAgreedMatch() == 0);
+				CHECK(CheckNotRacing() == 0);
+			}
+		}
+	}
 
 	NativeArcadeLinkLoopback_Identity(&identity);
 	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SOLO_LOCAL_PORT,

@@ -11,6 +11,9 @@
 #define MAIN_ARCADE_LINK_LAYOUT_ROW_REMATCH_Y 120
 #define MAIN_ARCADE_LINK_LAYOUT_ROW_EXIT_Y 145
 #define MAIN_ARCADE_LINK_LAYOUT_FOOTER_Y 186
+/* The solo lobby prompt (SOLO-13): a FONT_SMALL line on the lower results
+ * row, clear of the body lines and the footer. */
+#define MAIN_ARCADE_LINK_LAYOUT_SOLO_PROMPT_Y 145
 #define MAIN_ARCADE_LINK_LAYOUT_PANEL_X 56
 #define MAIN_ARCADE_LINK_LAYOUT_PANEL_Y 28
 #define MAIN_ARCADE_LINK_LAYOUT_PANEL_W 400
@@ -190,11 +193,28 @@ static int MainArcadeLinkLayout_SelectValid(const struct MainArcadeLinkLayoutInp
 	}
 	if (sel->humans[sel->localHuman].present != 1u) return 0;
 	if ((sel->resolved == 1u) && !MainArcadeLinkLayout_OutcomeValid(sel)) return 0;
+	/* A solo select has one human (SOLO-5). */
+	if ((input->solo == 1u) && (sel->humanCount != 1u)) return 0;
+	return 1;
+}
+
+/* The solo fields: each 0 or 1; solo only on a screen with a solo form, the
+ * offer only on LOBBY (the flow clears both on every other screen). */
+static int MainArcadeLinkLayout_SoloValid(const struct MainArcadeLinkLayoutInput *input)
+{
+	if ((input->solo > 1u) || (input->soloOffered > 1u) || (input->peerHeard > 1u)) return 0;
+	if ((input->solo == 1u) && (input->screen != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT) &&
+		(input->screen != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT) &&
+		(input->screen != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) &&
+		(input->screen != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS))
+		return 0;
+	if ((input->soloOffered == 1u) && (input->screen != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_LOBBY)) return 0;
 	return 1;
 }
 
 static int MainArcadeLinkLayout_InputValid(const struct MainArcadeLinkLayoutInput *input)
 {
+	if (!MainArcadeLinkLayout_SoloValid(input)) return 0;
 	if (input->screen > (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT) return 0;
 	if (input->lobbyStatus > (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_LOST) return 0;
 	if (input->endReason > (uint32_t)NATIVE_ARCADE_FLOW_END_OPPONENT_LEFT) return 0;
@@ -331,6 +351,20 @@ static void MainArcadeLinkLayout_Lobby(
 	const uint32_t white = MAIN_ARCADE_LINK_COLOR_WHITE;
 
 	MainArcadeLinkLayout_Title(layout, MAIN_ARCADE_LINK_COLOR_ORANGE, "ARCADE LINK");
+	/* The solo offer (SOLO-13) stands only while the peer is not heard:
+	 * READY and REJECTED keep their linked lines. The prompt names START;
+	 * CROSS confirms too. */
+	if ((input->soloOffered == 1u) && (input->lobbyStatus != (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY) &&
+		(input->lobbyStatus != (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_REJECTED))
+	{
+		MainArcadeLinkLayout_Body(layout, MAIN_ARCADE_LINK_LAYOUT_BODY1_Y, white, "WAITING FOR OTHER CABINET", dots);
+		MainArcadeLinkLayout_Body(layout, MAIN_ARCADE_LINK_LAYOUT_BODY2_Y, white, cabinet, "");
+		MainArcadeLinkLayout_Body(layout, MAIN_ARCADE_LINK_LAYOUT_SOLO_PROMPT_Y, MAIN_ARCADE_LINK_COLOR_ORANGE,
+			"PRESS START TO RACE SOLO", "");
+		MainArcadeLinkLayout_Footer(layout, "TRIANGLE: BACK");
+		MainArcadeLinkLayout_Panel(layout);
+		return;
+	}
 	switch (input->lobbyStatus)
 	{
 	case NATIVE_ARCADE_FLOW_LOBBY_CONNECTING:
@@ -368,15 +402,30 @@ static void MainArcadeLinkLayout_Lobby(
 	MainArcadeLinkLayout_Panel(layout);
 }
 
-static void MainArcadeLinkLayout_Results(
+/* The solo RESULTS title and notice (SOLO-7, SOLO-8). A LINK_ERROR end in
+ * solo is only the local race failure, so no solo title names the link; the
+ * flow never ends a solo race on PEER_TIMEOUT or DESYNC. "OTHER CABINET IS
+ * READY" shows while the other cabinet was heard during this solo. */
+static void MainArcadeLinkLayout_SoloResultsTitle(
 	struct MainArcadeLinkLayout *layout, const struct MainArcadeLinkLayoutInput *input)
 {
-	const uint32_t rowColor =
-		input->rowsEnabled != 0u ? MAIN_ARCADE_LINK_COLOR_ORANGE : MAIN_ARCADE_LINK_COLOR_GRAY;
-	const int focusedY = input->selectedRow == NATIVE_ARCADE_FLOW_ROW_EXIT ? MAIN_ARCADE_LINK_LAYOUT_ROW_EXIT_Y :
-	                                                                       MAIN_ARCADE_LINK_LAYOUT_ROW_REMATCH_Y;
+	if (input->endReason == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED)
+		MainArcadeLinkLayout_Title(layout, MAIN_ARCADE_LINK_COLOR_ORANGE, "RACE COMPLETE");
+	else if (input->endReason == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR)
+		MainArcadeLinkLayout_Title(layout, MAIN_ARCADE_LINK_COLOR_RED, "RACE ERROR");
+	else
+		MainArcadeLinkLayout_Title(layout, MAIN_ARCADE_LINK_COLOR_ORANGE, "RESULTS");
+	if (input->peerHeard == 1u)
+	{
+		MainArcadeLinkLayout_Body(
+			layout, MAIN_ARCADE_LINK_LAYOUT_BODY1_Y, MAIN_ARCADE_LINK_COLOR_WHITE, "OTHER CABINET IS READY", "");
+	}
+}
 
-	switch (input->endReason)
+/* The linked RESULTS title by end reason. */
+static void MainArcadeLinkLayout_ResultsTitle(struct MainArcadeLinkLayout *layout, uint32_t endReason)
+{
+	switch (endReason)
 	{
 	case NATIVE_ARCADE_FLOW_END_FINISHED:
 	{
@@ -404,10 +453,27 @@ static void MainArcadeLinkLayout_Results(
 		break;
 	}
 	}
+}
+
+/* RESULTS: the linked rows REMATCH and EXIT, or in solo RACE AGAIN and LOBBY
+ * at the same indices (SOLO-8). */
+static void MainArcadeLinkLayout_Results(
+	struct MainArcadeLinkLayout *layout, const struct MainArcadeLinkLayoutInput *input)
+{
+	const uint32_t rowColor =
+		input->rowsEnabled != 0u ? MAIN_ARCADE_LINK_COLOR_ORANGE : MAIN_ARCADE_LINK_COLOR_GRAY;
+	const int focusedY = input->selectedRow == NATIVE_ARCADE_FLOW_ROW_EXIT ? MAIN_ARCADE_LINK_LAYOUT_ROW_EXIT_Y :
+	                                                                       MAIN_ARCADE_LINK_LAYOUT_ROW_REMATCH_Y;
+	const int solo = (input->solo == 1u);
+
+	if (solo)
+		MainArcadeLinkLayout_SoloResultsTitle(layout, input);
+	else
+		MainArcadeLinkLayout_ResultsTitle(layout, input->endReason);
+	MainArcadeLinkLayout_AddText(layout, MAIN_ARCADE_LINK_FONT_BIG, rowColor, MAIN_ARCADE_LINK_LAYOUT_ROW_REMATCH_Y,
+		solo ? "RACE AGAIN" : "REMATCH", "");
 	MainArcadeLinkLayout_AddText(
-		layout, MAIN_ARCADE_LINK_FONT_BIG, rowColor, MAIN_ARCADE_LINK_LAYOUT_ROW_REMATCH_Y, "REMATCH", "");
-	MainArcadeLinkLayout_AddText(
-		layout, MAIN_ARCADE_LINK_FONT_BIG, rowColor, MAIN_ARCADE_LINK_LAYOUT_ROW_EXIT_Y, "EXIT", "");
+		layout, MAIN_ARCADE_LINK_FONT_BIG, rowColor, MAIN_ARCADE_LINK_LAYOUT_ROW_EXIT_Y, solo ? "LOBBY" : "EXIT", "");
 	MainArcadeLinkLayout_Footer(layout, "CROSS: SELECT");
 	if (input->rowsEnabled != 0u)
 	{
@@ -501,16 +567,18 @@ static const char *MainArcadeLinkLayout_ItemName(uint32_t item, uint32_t index)
 	return MainArcadeLinkLayout_CharacterName(MainArcadeLinkLayout_CharacterOrder[index]);
 }
 
-/* A list entry's colour: a character a peer has locked is GRAY (taken); a
- * track or lap count that some human has locked as a vote is WHITE; every
- * other entry is ORANGE, like a retail menu row. */
+/* A list entry's colour: a character a peer has locked is GRAY (taken; in
+ * solo there is no peer, SOLO-5); a track or lap count that some human has
+ * locked as a vote is WHITE; every other entry is ORANGE, like a retail menu
+ * row. */
 static uint32_t MainArcadeLinkLayout_ItemColor(
-	const struct MainArcadeLinkLayoutSelect *sel, uint32_t item, uint32_t index)
+	const struct MainArcadeLinkLayoutSelect *sel, int solo, uint32_t item, uint32_t index)
 {
 	uint32_t h;
 
 	if (item == MAIN_ARCADE_LINK_SELECT_ITEM_CHARACTER)
 	{
+		if (solo) return MAIN_ARCADE_LINK_COLOR_ORANGE;
 		return (((uint32_t)sel->peerLockedCharacterMask >> MainArcadeLinkLayout_CharacterOrder[index]) & 1u) != 0u
 		           ? MAIN_ARCADE_LINK_COLOR_GRAY
 		           : MAIN_ARCADE_LINK_COLOR_ORANGE;
@@ -616,10 +684,11 @@ static void MainArcadeLinkLayout_SelectFooter(
  * SELECT with the local human on CHARACTER, TRACK, or LAPS: the title, the
  * countdown, every list entry in its grid cell, a marker for each present
  * human at or past this item on the cell of its cursor (or locked value),
- * the opponents' progress, then the retail row highlight on the local
- * cursor's cell and the panel.
+ * the opponents' progress (none in solo, SOLO-5), then the retail row
+ * highlight on the local cursor's cell and the panel.
  */
-static void MainArcadeLinkLayout_SelectItem(struct MainArcadeLinkLayout *layout, const struct MainArcadeLinkLayoutSelect *sel)
+static void MainArcadeLinkLayout_SelectItem(
+	struct MainArcadeLinkLayout *layout, const struct MainArcadeLinkLayoutSelect *sel, int solo)
 {
 	const uint32_t item = sel->currentItem;
 	const struct MainArcadeLinkLayoutGrid *grid = &MainArcadeLinkLayout_Grids[item];
@@ -634,7 +703,7 @@ static void MainArcadeLinkLayout_SelectItem(struct MainArcadeLinkLayout *layout,
 	{
 		x0 = grid->cellX + ((int)(index / grid->rows) * MAIN_ARCADE_LINK_LAYOUT_SELECT_CELL_W);
 		y = grid->rowY + ((int)(index % grid->rows) * grid->pitch);
-		MainArcadeLinkLayout_AddTextAt(layout, grid->font, MainArcadeLinkLayout_ItemColor(sel, item, index),
+		MainArcadeLinkLayout_AddTextAt(layout, grid->font, MainArcadeLinkLayout_ItemColor(sel, solo, item, index),
 			x0 + (MAIN_ARCADE_LINK_LAYOUT_SELECT_CELL_W / 2), y, MainArcadeLinkLayout_ItemName(item, index), "");
 	}
 	for (h = 0u; h < sel->humanCount; h++)
@@ -649,7 +718,7 @@ static void MainArcadeLinkLayout_SelectItem(struct MainArcadeLinkLayout *layout,
 			MainArcadeLinkLayout_MarkerX(x0, h, sel->humanCount, grid->advance), y,
 			(sel->humanCount <= 2u) ? MainArcadeLinkLayout_PlayerLabels[h] : MainArcadeLinkLayout_PlayerDigits[h], "");
 	}
-	MainArcadeLinkLayout_SelectFooter(layout, sel);
+	if (!solo) MainArcadeLinkLayout_SelectFooter(layout, sel);
 	index = MainArcadeLinkLayout_ItemIndex(item, &sel->humans[sel->localHuman]);
 	x0 = grid->cellX + ((int)(index / grid->rows) * MAIN_ARCADE_LINK_LAYOUT_SELECT_CELL_W);
 	y = grid->rowY + ((int)(index % grid->rows) * grid->pitch);
@@ -661,10 +730,13 @@ static void MainArcadeLinkLayout_SelectItem(struct MainArcadeLinkLayout *layout,
 
 /*
  * SELECT with the local human DONE: a waiting title with the dot animation,
- * the local picks, and each opponent's progress with its live cursor.
+ * the local picks, and each opponent's progress with its live cursor. In
+ * solo (SOLO-5) nobody is waited for: the title is GET READY and there are
+ * no opponent lines (a solo select resolves on the tick the local human is
+ * done, so this shows for at most a tick).
  */
 static void MainArcadeLinkLayout_SelectWait(
-	struct MainArcadeLinkLayout *layout, const struct MainArcadeLinkLayoutSelect *sel, const char *dots)
+	struct MainArcadeLinkLayout *layout, const struct MainArcadeLinkLayoutSelect *sel, int solo, const char *dots)
 {
 	const struct MainArcadeLinkLayoutSelectHuman *local = &sel->humans[sel->localHuman];
 	const uint32_t white = MAIN_ARCADE_LINK_COLOR_WHITE;
@@ -676,9 +748,17 @@ static void MainArcadeLinkLayout_SelectWait(
 	uint32_t h;
 
 	memset(text, 0, sizeof(text));
-	MainArcadeLinkLayout_Append(text, &length, "WAITING FOR ");
-	MainArcadeLinkLayout_Append(text, &length,
-		(sel->humanCount == 2u) ? MainArcadeLinkLayout_PlayerLabels[1u - sel->localHuman] : "PLAYERS");
+	if (solo)
+	{
+		MainArcadeLinkLayout_Append(text, &length, "GET READY");
+		dots = "";
+	}
+	else
+	{
+		MainArcadeLinkLayout_Append(text, &length, "WAITING FOR ");
+		MainArcadeLinkLayout_Append(text, &length,
+			(sel->humanCount == 2u) ? MainArcadeLinkLayout_PlayerLabels[1u - sel->localHuman] : "PLAYERS");
+	}
 	MainArcadeLinkLayout_AddText(
 		layout, MAIN_ARCADE_LINK_FONT_BIG, MAIN_ARCADE_LINK_COLOR_ORANGE, MAIN_ARCADE_LINK_LAYOUT_TITLE_Y, text, dots);
 
@@ -859,9 +939,9 @@ int MainArcadeLinkLayout_Build(const struct MainArcadeLinkLayoutInput *input, st
 	case NATIVE_ARCADE_FLOW_SCREEN_SELECT:
 	{
 		if (input->select.currentItem == MAIN_ARCADE_LINK_SELECT_ITEM_DONE)
-			MainArcadeLinkLayout_SelectWait(&layout, &input->select, dots);
+			MainArcadeLinkLayout_SelectWait(&layout, &input->select, input->solo == 1u, dots);
 		else
-			MainArcadeLinkLayout_SelectItem(&layout, &input->select);
+			MainArcadeLinkLayout_SelectItem(&layout, &input->select, input->solo == 1u);
 		break;
 	}
 	case NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT:
@@ -939,6 +1019,10 @@ int MainArcadeLinkLayout_InputFromHostView(const struct NativeArcadeLinkHostView
 	input->attract = view->attract;
 	input->reserved = 0u;
 	MainArcadeLinkLayout_MapSelect(&view->select, &input->select);
+	input->solo = view->solo;
+	input->soloOffered = view->soloOffered;
+	input->peerHeard = view->peerHeard;
+	input->soloReserved = 0u;
 	return 1;
 }
 
@@ -949,6 +1033,7 @@ int MainArcadeLinkLayout_InputFromHostView(const struct NativeArcadeLinkHostView
 #undef MAIN_ARCADE_LINK_LAYOUT_ROW_REMATCH_Y
 #undef MAIN_ARCADE_LINK_LAYOUT_ROW_EXIT_Y
 #undef MAIN_ARCADE_LINK_LAYOUT_FOOTER_Y
+#undef MAIN_ARCADE_LINK_LAYOUT_SOLO_PROMPT_Y
 #undef MAIN_ARCADE_LINK_LAYOUT_PANEL_X
 #undef MAIN_ARCADE_LINK_LAYOUT_PANEL_Y
 #undef MAIN_ARCADE_LINK_LAYOUT_PANEL_W

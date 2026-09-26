@@ -142,7 +142,7 @@ endforeach()
 # 11. The preview enum is append-only: every value is pinned, with its
 #     option name in the trailing comment, and the name table in the .c
 #     lists the names in enum order (the five select previews, MS-8, follow
-#     the original twelve).
+#     the original twelve, and the four solo previews, SOLO-S3, follow those).
 set(preview_pins
     "NONE 0 none" "TITLE 1 title" "LOBBY_WAITING 2 lobby" "LOBBY_CONNECTING 3 lobby-connecting"
     "LOBBY_REJECTED 4 lobby-rejected" "MATCH_FOUND 5 match-found" "RESULTS_FINISHED 6 results"
@@ -150,7 +150,8 @@ set(preview_pins
     "RESULTS_LINK_ERROR 9 results-link-error" "REMATCH_WAIT 10 rematch" "EXIT 11 exit"
     "EXIT_OPPONENT_LEFT 12 exit-opponent-left" "SELECT_CHARACTER 13 select-character"
     "SELECT_TRACK 14 select-track" "SELECT_LAPS 15 select-laps" "SELECT_WAIT 16 select-wait"
-    "SELECT_RESULT 17 select-result")
+    "SELECT_RESULT 17 select-result" "LOBBY_SOLO 18 lobby-solo" "SELECT_SOLO 19 select-solo"
+    "RESULTS_SOLO 20 results-solo" "RESULTS_SOLO_ERROR 21 results-solo-error")
 ctr_read_source("platform/native_arcade_link_options.c" options_source)
 string(FIND "${options_source}" "k_previewNames[NATIVE_ARCADE_LINK_PREVIEW_LAST + 1u] = {" names_at)
 if(names_at EQUAL -1)
@@ -175,7 +176,7 @@ if(NOT "${table_names}" STREQUAL "${expected_names}")
     message(FATAL_ERROR "arcade link options isolation: k_previewNames must list '${expected_names}' in enum order (found '${table_names}')")
 endif()
 ctr_require_single("platform/native_arcade_link_options.c" "PREVIEW_LAST definition" "${options_source}"
-    "#define NATIVE_ARCADE_LINK_PREVIEW_LAST NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT[\r\n]")
+    "#define NATIVE_ARCADE_LINK_PREVIEW_LAST NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO_ERROR[\r\n]")
 
 # 12. selectEntropy is host-local and never parsed: the options source never
 #     names it (SetDefaults zeroes it with the rest of the struct), and the

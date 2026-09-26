@@ -895,11 +895,11 @@ uint32_t NativeArcadeLinkHost_Tick(uint32_t heldMenuButtons, uint8_t raceFinishe
 
 /*
  * Synthesizes the select view of one select preview (*view already zeroed):
- * two humans, the local cabinet human 0. The opponent's cursor steps through
- * its current item's table in the rules module's order, one step every
- * PREVIEW_STEP_TICKS, so it visibly moves yet every capture frame is
- * deterministic. The countdown runs while the local human is picking and is
- * 0 once it is done, as the link reports it.
+ * two humans (one in the solo preview), the local cabinet human 0. The
+ * opponent's cursor steps through its current item's table in the rules
+ * module's order, one step every PREVIEW_STEP_TICKS, so it visibly moves
+ * yet every capture frame is deterministic. The countdown runs while the
+ * local human is picking and is 0 once it is done, as the link reports it.
  */
 static void NativeArcadeLinkHost_PreviewSelectView(struct NativeArcadeLinkHostView *view)
 {
@@ -961,6 +961,14 @@ static void NativeArcadeLinkHost_PreviewSelectView(struct NativeArcadeLinkHostVi
 		opponent->trackID = NATIVE_ARCADE_LINK_HOST_PREVIEW_OPPONENT_TRACK;
 		opponent->lapCount = NativeMatchSelect_LapOptionAt(step % NATIVE_MATCH_SELECT_LAP_OPTION_COUNT);
 		break;
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO:
+		/* Solo (SOLO-5): the local cabinet alone on the character item,
+		 * with no opponent, so no peer lock either. */
+		view->solo = 1u;
+		sel->humanCount = 1u;
+		local->currentItem = (uint8_t)NATIVE_ARCADE_LINK_HOST_SELECT_ITEM_CHARACTER;
+		memset(opponent, 0, sizeof(*opponent));
+		break;
 	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT:
 	default:
 		/* Both done; the two track votes differ, so the track is a draw
@@ -1011,7 +1019,33 @@ static void NativeArcadeLinkHost_PreviewView(struct NativeArcadeLinkHostView *vi
 	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS:
 	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT:
 	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT:
+	case NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO:
 		NativeArcadeLinkHost_PreviewSelectView(view);
+		break;
+	case NATIVE_ARCADE_LINK_PREVIEW_LOBBY_SOLO:
+		/* The solo offer (SOLO-13) on a lobby that has not heard the peer. */
+		view->screen = NATIVE_ARCADE_FLOW_SCREEN_LOBBY;
+		view->lobbyStatus = NATIVE_ARCADE_FLOW_LOBBY_WAITING;
+		view->soloOffered = 1u;
+		break;
+	case NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO:
+	case NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO_ERROR:
+		/* Solo RESULTS (SOLO-8) on the default RACE AGAIN row: a finished
+		 * race with the other cabinet heard, or the local race failure
+		 * (SOLO-7) with it unheard. */
+		view->screen = NATIVE_ARCADE_FLOW_SCREEN_RESULTS;
+		view->selectedRow = NATIVE_ARCADE_FLOW_ROW_RACE_AGAIN;
+		view->rowsEnabled = 1u;
+		view->solo = 1u;
+		if (g_options.preview == (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO)
+		{
+			view->endReason = NATIVE_ARCADE_FLOW_END_FINISHED;
+			view->peerHeard = 1u;
+		}
+		else
+		{
+			view->endReason = NATIVE_ARCADE_FLOW_END_LINK_ERROR;
+		}
 		break;
 	case NATIVE_ARCADE_LINK_PREVIEW_LOBBY_WAITING:
 		view->screen = NATIVE_ARCADE_FLOW_SCREEN_LOBBY;

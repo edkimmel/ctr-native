@@ -638,6 +638,65 @@ static int TestTransitions(void)
 	return 0;
 }
 
+/*
+ * Solo (docs/SOLO_CAB_MILESTONE.md SOLO-S3): the solo flow reuses the
+ * existing cues and needs no new rule. Every solo transition that has a
+ * linked equivalent with a cue gets that cue from the same rule: the CONFIRM
+ * that takes the offer (the linked LOBBY to MATCH_FOUND cue), the select
+ * cues, a race error on RESULTS, the RESULTS row moves, and RACE AGAIN and
+ * LOBBY. The offer appearing and the "other cabinet" notice are silent, as
+ * every lobby status change other than REJECTED is.
+ */
+static int TestSolo(void)
+{
+	struct MainArcadeLinkSoundInput prev;
+	struct MainArcadeLinkSoundInput cur;
+	uint32_t reason;
+
+	/* The offer appears (the sound input carries no solo field): silent. */
+	CHECK(Pair(Frame(S_LOBBY, L_WAITING, E_NONE), Frame(S_LOBBY, L_WAITING, E_NONE), 0u) == NONE);
+	CHECK(Pair(Frame(S_LOBBY, L_CONNECTING, E_NONE), Frame(S_LOBBY, L_LOST, E_NONE), 0u) == NONE);
+	/* CONFIRM takes the offer: LOBBY to the solo SELECT. */
+	CHECK(Pair(Frame(S_LOBBY, L_WAITING, E_NONE), WithEvent(SelectFrame(ITEM_CHARACTER, 0u, ST_PICKING), EV_CONFIRM), 0u) ==
+		CONFIRM);
+	CHECK(Pair(Frame(S_LOBBY, L_LOST, E_NONE), WithEvent(SelectFrame(ITEM_CHARACTER, 0u, ST_PICKING), EV_CONFIRM), 0u) ==
+		CONFIRM);
+	/* The last lock resolves a one-human select on the same tick: CONFIRM,
+	 * by the player's CONFIRM or by the item timer. */
+	prev = SelectFrame(ITEM_LAPS, (uint8_t)(LOCK_CHARACTER | LOCK_TRACK), ST_PICKING);
+	cur = SelectFrame(ITEM_DONE, (uint8_t)(LOCK_CHARACTER | LOCK_TRACK | LOCK_LAPS), ST_CONFIRMED);
+	cur.local.screen = S_SELECT_RESULT;
+	CHECK(Pair(prev, WithEvent(cur, EV_CONFIRM), 0u) == CONFIRM);
+	CHECK(Pair(prev, cur, 0u) == CONFIRM);
+	/* Into the race and to a finished RESULTS: silent, as linked. */
+	CHECK(Pair(Frame(S_SELECT_RESULT, L_WAITING, E_NONE), Frame(S_RACING, L_WAITING, E_NONE), 0u) == NONE);
+	CHECK(Pair(Frame(S_RACING, L_WAITING, E_NONE), Frame(S_RESULTS, L_WAITING, E_FINISHED), 0u) == NONE);
+	/* The local race failure (RACE ERROR) and a failed solo select: ERROR. */
+	CHECK(Pair(Frame(S_RACING, L_WAITING, E_NONE), Frame(S_RESULTS, L_WAITING, E_LINK_ERROR), 0u) == ERROR);
+	CHECK(Pair(SelectFrame(ITEM_TRACK, LOCK_CHARACTER, ST_PICKING), Frame(S_RESULTS, L_WAITING, E_LINK_ERROR), 0u) ==
+		ERROR);
+	for (reason = E_FINISHED; reason <= E_LINK_ERROR; reason += E_LINK_ERROR - E_FINISHED)
+	{
+		/* RACE AGAIN to LOBBY and back: MOVE. */
+		prev = Frame(S_RESULTS, L_WAITING, reason);
+		cur = prev;
+		cur.local.selectedRow = NATIVE_ARCADE_FLOW_ROW_LOBBY;
+		CHECK(Pair(prev, WithEvent(cur, EV_NEXT), 0u) == MOVE);
+		CHECK(Pair(cur, WithEvent(prev, EV_PREV), 0u) == MOVE);
+		/* RACE AGAIN: RESULTS to the solo SELECT, the end reason carried. */
+		cur = SelectFrame(ITEM_CHARACTER, 0u, ST_PICKING);
+		cur.local.endReason = reason;
+		CHECK(Pair(prev, WithEvent(cur, EV_CONFIRM), 0u) == CONFIRM);
+		/* LOBBY: RESULTS to the LOBBY. */
+		prev.local.selectedRow = NATIVE_ARCADE_FLOW_ROW_LOBBY;
+		CHECK(Pair(prev, WithEvent(Frame(S_LOBBY, L_WAITING, reason), EV_CONFIRM), 0u) == CONFIRM);
+		CHECK(Pair(prev, WithEvent(Frame(S_LOBBY, L_WAITING, E_NONE), EV_CONFIRM), 0u) == CONFIRM);
+		/* The idle timeout to EXIT: silent, as linked. */
+		CHECK(Pair(Frame(S_RESULTS, L_WAITING, reason), Frame(S_EXIT, L_WAITING, reason), 0u) == NONE);
+	}
+	return 0;
+}
+
 /* SND-1: at most one cue, and a local-input cue beats a transition cue. */
 static int TestPriority(void)
 {
@@ -762,6 +821,8 @@ int main(void)
 	if (TestTransitions() != 0)
 		return 1;
 	if (TestPriority() != 0)
+		return 1;
+	if (TestSolo() != 0)
 		return 1;
 	if (TestSequence() != 0)
 		return 1;

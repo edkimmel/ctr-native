@@ -229,12 +229,19 @@ struct NativeCaptureRgb NativeCaptureCheck_GetRgb(const struct NativeCaptureImag
 static const char *const CaptureCheck_ScreenNames[NATIVE_CAPTURE_SCREEN_COUNT] = {
     "title",   "lobby", "lobby-connecting",   "lobby-rejected",   "match-found",  "results",     "results-timeout", "results-desync", "results-link-error",
     "rematch", "exit",  "exit-opponent-left", "select-character", "select-track", "select-laps", "select-wait",     "select-result",
+    "lobby-solo", "select-solo", "results-solo", "results-solo-error",
 };
 
 /* The screens before this one use the fixed 400-wide panel and the six
- * shared text bands; the select screens from here on have their own
- * layout (CaptureCheck_SelectSpecs). */
+ * shared text bands; the five match-select screens from here on have their
+ * own layout (CaptureCheck_SelectSpecs).  The solo screens after them
+ * (CAPTURE_FIRST_SOLO_SCREEN on) are shared-panel screens again, except
+ * select-solo, which is a select screen (CaptureCheck_SelectSoloSpec). */
 #define CAPTURE_FIRST_SELECT_SCREEN NATIVE_CAPTURE_SCREEN_SELECT_CHARACTER
+#define CAPTURE_SELECT_SCREEN_COUNT 5u
+#define CAPTURE_FIRST_SOLO_SCREEN   NATIVE_CAPTURE_SCREEN_LOBBY_SOLO
+_Static_assert((unsigned)CAPTURE_FIRST_SELECT_SCREEN + CAPTURE_SELECT_SCREEN_COUNT == (unsigned)CAPTURE_FIRST_SOLO_SCREEN,
+               "the solo screens follow the five match-select screens");
 
 const char *NativeCaptureCheck_ScreenName(enum NativeCaptureScreen screen)
 {
@@ -303,6 +310,23 @@ static const struct CaptureCheckScreenSpec CaptureCheck_Specs[CAPTURE_FIRST_SELE
     {{CAPTURE_BAND_REQUIRED, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT}, 0u},
     /* exit-opponent-left */
     {{CAPTURE_BAND_REQUIRED, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT}, 0u},
+};
+
+/* The shared-panel solo screens (docs/SOLO_CAB_MILESTONE.md SOLO-S3), by
+ * screen - CAPTURE_FIRST_SOLO_SCREEN; the select-solo entry is unused (it
+ * is a select screen).  lobby-solo draws its FONT_SMALL prompt at y=145,
+ * inside the EXIT row band, and nothing on the REMATCH row; results-solo
+ * adds the "OTHER CABINET IS READY" notice on body1; results-solo-error has
+ * the linked results bands. */
+static const struct CaptureCheckScreenSpec CaptureCheck_SoloSpecs[NATIVE_CAPTURE_SCREEN_COUNT - CAPTURE_FIRST_SOLO_SCREEN] = {
+    /* lobby-solo */
+    {{CAPTURE_BAND_REQUIRED, CAPTURE_BAND_REQUIRED, CAPTURE_BAND_REQUIRED, CAPTURE_BAND_ABSENT, CAPTURE_BAND_REQUIRED, CAPTURE_BAND_REQUIRED}, 0u},
+    /* select-solo: unused */
+    {{CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT}, 0u},
+    /* results-solo */
+    {{CAPTURE_BAND_REQUIRED, CAPTURE_BAND_REQUIRED, CAPTURE_BAND_ABSENT, CAPTURE_BAND_REQUIRED, CAPTURE_BAND_REQUIRED, CAPTURE_BAND_REQUIRED}, 1u},
+    /* results-solo-error */
+    {{CAPTURE_BAND_REQUIRED, CAPTURE_BAND_ABSENT, CAPTURE_BAND_ABSENT, CAPTURE_BAND_REQUIRED, CAPTURE_BAND_REQUIRED, CAPTURE_BAND_REQUIRED}, 1u},
 };
 
 /* ------------------------------------------------------------------------ */
@@ -467,7 +491,7 @@ struct CaptureCheckSelectSpec
 #define CAPTURE_ABSENT(id, rects)   {(uint8_t)(id), (uint8_t)NATIVE_CAPTURE_EXPECT_AT_MOST, CAPTURE_COUNT_OF(rects), rects}
 
 /* Indexed by screen - CAPTURE_FIRST_SELECT_SCREEN. */
-static const struct CaptureCheckSelectSpec CaptureCheck_SelectSpecs[NATIVE_CAPTURE_SCREEN_COUNT - CAPTURE_FIRST_SELECT_SCREEN] = {
+static const struct CaptureCheckSelectSpec CaptureCheck_SelectSpecs[CAPTURE_SELECT_SCREEN_COUNT] = {
     /* select-character */
     {CaptureCheck_CharGapY,
 	 CAPTURE_COUNT_OF(CaptureCheck_CharGapY),
@@ -509,6 +533,18 @@ static const struct CaptureCheckSelectSpec CaptureCheck_SelectSpecs[NATIVE_CAPTU
 	 {CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_TITLE, CaptureCheck_SelTitle), CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_LINES, CaptureCheck_ResultLines),
 	  CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_FOOTER, CaptureCheck_SelFooter), CAPTURE_ABSENT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY, CaptureCheck_ResultEmpty)}},
 };
+
+/* select-solo (SOLO-5): the character screen for one human, as
+ * select-character but with no opponent footer. */
+static const struct CaptureCheckSelectSpec CaptureCheck_SelectSoloSpec = {
+    CaptureCheck_CharGapY,
+    CAPTURE_COUNT_OF(CaptureCheck_CharGapY),
+    CAPTURE_SELECT_CHAR_HIGHLIGHT,
+    (uint8_t)NATIVE_CAPTURE_EXPECT_AT_LEAST,
+    {CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_TITLE, CaptureCheck_SelTitle), CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_TIME, CaptureCheck_SelTime),
+     CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL1, CaptureCheck_CharCol1),
+     CAPTURE_REQUIRED(NATIVE_CAPTURE_CHECK_TEXT_GRID_COL2, CaptureCheck_CharCol2), CAPTURE_ABSENT(NATIVE_CAPTURE_CHECK_TEXT_FOOTER, CaptureCheck_SelFooter),
+     CAPTURE_ABSENT(NATIVE_CAPTURE_CHECK_TEXT_EMPTY, CaptureCheck_CharEmpty)}};
 
 /* ------------------------------------------------------------------------ */
 /* Thresholds                                                               */
@@ -884,9 +920,8 @@ static void CaptureCheck_Set(struct NativeCaptureSubCheck *check, uint32_t expec
 }
 
 /* The shared-panel screens: six fixed bands and the REMATCH highlight. */
-static void CaptureCheck_RunShared(const struct NativeCaptureImage *image, enum NativeCaptureScreen screen, struct NativeCaptureReport *report)
+static void CaptureCheck_RunShared(const struct NativeCaptureImage *image, const struct CaptureCheckScreenSpec *spec, struct NativeCaptureReport *report)
 {
-	const struct CaptureCheckScreenSpec *spec = &CaptureCheck_Specs[screen];
 	const struct CaptureCheckGaps gaps = {CaptureCheck_GapY, (uint32_t)(sizeof(CaptureCheck_GapY) / sizeof(CaptureCheck_GapY[0])), CAPTURE_INNER_X0,
 	                                      CAPTURE_INNER_X1};
 	const struct CaptureCheckRect highlight = {CAPTURE_HIGHLIGHT_X0, CAPTURE_HIGHLIGHT_Y0, CAPTURE_HIGHLIGHT_X1, CAPTURE_HIGHLIGHT_Y1};
@@ -925,9 +960,8 @@ static void CaptureCheck_RunShared(const struct NativeCaptureImage *image, enum 
 /* The select screens: the widened panel, per-screen regions and the local
  * cursor highlight.  A required check reports its emptiest region, an
  * absent check its fullest, so every region is judged. */
-static void CaptureCheck_RunSelect(const struct NativeCaptureImage *image, enum NativeCaptureScreen screen, struct NativeCaptureReport *report)
+static void CaptureCheck_RunSelect(const struct NativeCaptureImage *image, const struct CaptureCheckSelectSpec *spec, struct NativeCaptureReport *report)
 {
-	const struct CaptureCheckSelectSpec *spec = &CaptureCheck_SelectSpecs[screen - CAPTURE_FIRST_SELECT_SCREEN];
 	const struct CaptureCheckGaps dim = {spec->gapY, spec->gapCount, CAPTURE_SELECT_INNER_X0, CAPTURE_SELECT_INNER_X1};
 	const struct CaptureCheckGaps detail = {spec->gapY, spec->gapCount, CAPTURE_INNER_X0, CAPTURE_INNER_X1};
 	int32_t brightPermil;
@@ -985,9 +1019,13 @@ int NativeCaptureCheck_Run(const struct NativeCaptureImage *image, enum NativeCa
 		CaptureCheck_Set(&report.checks[i], NATIVE_CAPTURE_EXPECT_NONE, 0, 0);
 	}
 	if ((unsigned)screen < (unsigned)CAPTURE_FIRST_SELECT_SCREEN)
-		CaptureCheck_RunShared(image, screen, &report);
+		CaptureCheck_RunShared(image, &CaptureCheck_Specs[screen], &report);
+	else if ((unsigned)screen < (unsigned)CAPTURE_FIRST_SOLO_SCREEN)
+		CaptureCheck_RunSelect(image, &CaptureCheck_SelectSpecs[screen - CAPTURE_FIRST_SELECT_SCREEN], &report);
+	else if (screen == NATIVE_CAPTURE_SCREEN_SELECT_SOLO)
+		CaptureCheck_RunSelect(image, &CaptureCheck_SelectSoloSpec, &report);
 	else
-		CaptureCheck_RunSelect(image, screen, &report);
+		CaptureCheck_RunShared(image, &CaptureCheck_SoloSpecs[screen - CAPTURE_FIRST_SOLO_SCREEN], &report);
 
 	report.passed = 1u;
 	report.firstFailed = NATIVE_CAPTURE_CHECK_COUNT;

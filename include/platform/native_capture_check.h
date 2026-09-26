@@ -16,11 +16,12 @@
  *
  * Limits: the check tells screens apart only by where they draw text, the
  * panel and the row highlight.  It cannot tell apart screens that share a
- * band layout (the four results screens; exit and exit-opponent-left; lobby
- * and lobby-connecting), and it does not read wording, colour, the player
- * markers, or which list entry is locked.  The select checks expect the
- * preview layout: two humans and the local cursor on list entry 0, so a
- * cursor elsewhere fails the highlight check.  Thresholds were calibrated on
+ * band layout (the four linked results screens and results-solo-error; exit
+ * and exit-opponent-left; lobby and lobby-connecting), and it does not read
+ * wording, colour, the player markers, or which list entry is locked.  The
+ * select checks expect the preview layout: two humans (one on select-solo,
+ * which draws no footer) and the local cursor on list entry 0, so a cursor
+ * elsewhere fails the highlight check.  Thresholds were calibrated on
  * 800x600 nearest-filter captures only (platform/native_capture_check.c). */
 
 enum NativeCaptureBmpStatus
@@ -87,6 +88,12 @@ enum NativeCaptureScreen
 	NATIVE_CAPTURE_SCREEN_SELECT_LAPS,
 	NATIVE_CAPTURE_SCREEN_SELECT_WAIT,
 	NATIVE_CAPTURE_SCREEN_SELECT_RESULT,
+	/* Solo (docs/SOLO_CAB_MILESTONE.md SOLO-S3): select-solo on the select
+	 * panel, the other three on the shared panel. */
+	NATIVE_CAPTURE_SCREEN_LOBBY_SOLO,
+	NATIVE_CAPTURE_SCREEN_SELECT_SOLO,
+	NATIVE_CAPTURE_SCREEN_RESULTS_SOLO,
+	NATIVE_CAPTURE_SCREEN_RESULTS_SOLO_ERROR,
 	NATIVE_CAPTURE_SCREEN_COUNT
 };
 

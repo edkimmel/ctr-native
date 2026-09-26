@@ -24,8 +24,9 @@
  * MainArcadeLinkLayout_Build. Drift between them would show in the game as
  * a blank screen with the retail menu box hidden.
  *
- * Covered: every tick 0..PREVIEW_LAST_TICK of each of the 17 previews
- * (among them ticks 0, 29, 30, and 1320: the first frame, both sides of an
+ * Covered: every tick 0..PREVIEW_LAST_TICK of each of the 21 previews (the
+ * four solo previews of SOLO-S3 among them; among the ticks 0, 29, 30, and
+ * 1320: the first frame, both sides of an
  * opponent-cursor step, and past two countdown wraps), and every tick of a
  * live loopback LINK run, the host as cabinet 1 against a test-owned
  * adapter as cabinet 2, from the attract screen through Enter, the lobby,
@@ -56,7 +57,7 @@
 #define TEST_SOLO_DEAD_PEER_PORT 48523u
 
 #define PREVIEW_FIRST ((uint32_t)NATIVE_ARCADE_LINK_PREVIEW_TITLE)
-#define PREVIEW_LAST ((uint32_t)NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT)
+#define PREVIEW_LAST ((uint32_t)NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO_ERROR)
 #define PREVIEW_LAST_TICK 1320u
 
 /* Bounds every loop that waits for the loopback pair; generous, not tuned. */
@@ -144,16 +145,17 @@ static int CheckViewBuilds(struct NativeArcadeLinkHostView *out)
 	return 0;
 }
 
-/* (a) Every tick 0..PREVIEW_LAST_TICK of each of the 17 previews. */
+/* (a) Every tick 0..PREVIEW_LAST_TICK of each of the 21 previews. */
 static int TestEveryPreviewBuilds(void)
 {
 	struct NativeArcadeLinkOptions options;
 	struct NativeArcadeLinkHostView view;
 	uint32_t selectScreens = 0u;
+	uint32_t soloViews = 0u;
 	uint32_t preview;
 	uint32_t tick;
 
-	CHECK(PREVIEW_LAST - PREVIEW_FIRST + 1u == 17u);
+	CHECK(PREVIEW_LAST - PREVIEW_FIRST + 1u == 21u);
 	for (preview = PREVIEW_FIRST; preview <= PREVIEW_LAST; preview++)
 	{
 		NativeArcadeLinkOptions_SetDefaults(&options);
@@ -177,9 +179,15 @@ static int TestEveryPreviewBuilds(void)
 		{
 			selectScreens++;
 		}
+		if ((view.solo != 0u) || (view.soloOffered != 0u))
+		{
+			soloViews++;
+		}
 	}
-	/* The five select previews reached the select validation. */
-	CHECK(selectScreens == 5u);
+	/* The five select previews and select-solo reached the select
+	 * validation; the four solo previews reached the solo validation. */
+	CHECK(selectScreens == 6u);
+	CHECK(soloViews == 4u);
 	NativeArcadeLinkHost_Shutdown();
 	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF);
 	return 0;

@@ -227,11 +227,16 @@ static int TestPreviewNames(void)
 		{"select-laps", NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS},
 		{"select-wait", NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT},
 		{"select-result", NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT},
+		{"lobby-solo", NATIVE_ARCADE_LINK_PREVIEW_LOBBY_SOLO},
+		{"select-solo", NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO},
+		{"results-solo", NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO},
+		{"results-solo-error", NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO_ERROR},
 	};
 	static const char *const rejected[] = {
 		"none", "", "Title", "TITLE", "lobby ", " lobby", "lobby-waiting", "result", "results-finished",
 		"exit-opponent", "rematch-wait", "0", "1", "select", "select-", "select-char", "select-lap", "select-results",
-		"Select-track", "select-track ",
+		"Select-track", "select-track ", "solo", "lobby-solo ", "Lobby-solo", "results-solo-err", "select-solo-character",
+		"results-solo-link-error", "solo-lobby",
 	};
 	uint32_t preview;
 
@@ -243,7 +248,12 @@ static int TestPreviewNames(void)
 	CHECK(NATIVE_ARCADE_LINK_PREVIEW_SELECT_LAPS == 15);
 	CHECK(NATIVE_ARCADE_LINK_PREVIEW_SELECT_WAIT == 16);
 	CHECK(NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT == 17);
-	CHECK(sizeof(names) / sizeof(names[0]) == 17u);
+	/* The four solo previews follow (SOLO-S3). */
+	CHECK(NATIVE_ARCADE_LINK_PREVIEW_LOBBY_SOLO == 18);
+	CHECK(NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO == 19);
+	CHECK(NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO == 20);
+	CHECK(NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO_ERROR == 21);
+	CHECK(sizeof(names) / sizeof(names[0]) == 21u);
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
 	{
 		CHECK(names[i].preview == (uint32_t)(i + 1u));
@@ -265,7 +275,7 @@ static int TestPreviewNames(void)
 	CHECK(preview == 0xDEADBEEFu);
 	CHECK(!NativeArcadeLinkOptions_ParsePreview("title", NULL));
 	CHECK(strcmp(NativeArcadeLinkOptions_PreviewName(NATIVE_ARCADE_LINK_PREVIEW_NONE), "none") == 0);
-	CHECK(strcmp(NativeArcadeLinkOptions_PreviewName(18u), "unknown") == 0);
+	CHECK(strcmp(NativeArcadeLinkOptions_PreviewName(22u), "unknown") == 0);
 	CHECK(strcmp(NativeArcadeLinkOptions_PreviewName(0xFFFFFFFFu), "unknown") == 0);
 	return 0;
 }

@@ -45,7 +45,8 @@
 # rules header, builds the ONE_CAB solo base, and returns a solo race config
 # only through a fail-closed bot-rules check; the header appends the solo
 # view group and declares the solo query; and solo stays dark (rules 3 and
-# 3j).
+# 3j). Since SOLO-S3 the four solo previews set the solo view fields from a
+# script, and only there, without touching the gate (rule 3k).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -793,6 +794,29 @@ ctr_require_in("${host_source} (BuildSoloBase)" "${solo_base_body}"
     "NativeMatchConfigV1_InitArcadeOneCab(&candidate);"
     "NativeArcadeBotRules_ExpectedBots1P(fixture->slots[cab1Slot].characterID, bots)"
     "!NativeArcadeBotRules_Digest1PV1(candidate.botRulesDigest) || !NativeArcadeBotRules_ValidateConfigV1(&candidate)")
+
+# 3k. Solo previews (docs/SOLO_CAB_MILESTONE.md SOLO-S3). PREVIEW mode is
+#     scripted and socket-free: the four solo previews set the view's solo
+#     fields directly in the two preview synthesizers, and nothing else sets
+#     them outside the LINK copy in GetView. Neither synthesizer names the
+#     solo gate, the host config, the adapter, or the lobby, so a solo
+#     preview cannot open the gate for a later LINK Configure (rule 3j's
+#     write counts still hold: the gate's default stays 0u).
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_PreviewView(" preview_body)
+ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_PreviewSelectView(" preview_select_body)
+foreach(body_name preview_body preview_select_body)
+    foreach(term g_soloEnabled soloEnabled g_config g_netplay NativeArcadeNetplay_ NativeLobby)
+        ctr_forbid("${host_source} (${body_name})" "${${body_name}}" "${term}")
+    endforeach()
+endforeach()
+ctr_require_in("${host_source} (PreviewView)" "${preview_body}"
+    "case NATIVE_ARCADE_LINK_PREVIEW_LOBBY_SOLO: view->screen = NATIVE_ARCADE_FLOW_SCREEN_LOBBY; view->lobbyStatus = NATIVE_ARCADE_FLOW_LOBBY_WAITING; view->soloOffered = 1u; break;"
+    "view->solo = 1u; if (g_options.preview == (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_RESULTS_SOLO) { view->endReason = NATIVE_ARCADE_FLOW_END_FINISHED; view->peerHeard = 1u; }")
+ctr_require_in("${host_source} (PreviewSelectView)" "${preview_select_body}"
+    "case NATIVE_ARCADE_LINK_PREVIEW_SELECT_SOLO: view->solo = 1u; sel->humanCount = 1u;")
+ctr_require_count("${host_source}" "${source_flat}" "view->solo =" 3)
+ctr_require_count("${host_source}" "${source_flat}" "view->soloOffered =" 2)
+ctr_require_count("${host_source}" "${source_flat}" "view->peerHeard =" 2)
 
 # 4. ctr_native_arcade_link_host links exactly the adapter and the host
 #    options, in exactly one target_link_libraries call. Its one other

@@ -473,6 +473,9 @@ static int TestLongestStringsFit(void)
 	CHECK(strlen("WAITING FOR OPPONENT...") + 1u <= MAIN_ARCADE_LINK_LAYOUT_TEXT_BYTES);
 	CHECK(strlen("OPPONENT DISCONNECTED") + 1u <= MAIN_ARCADE_LINK_LAYOUT_TEXT_BYTES);
 	CHECK(strlen("THIS CABINET: CAB 1") + 1u <= MAIN_ARCADE_LINK_LAYOUT_TEXT_BYTES);
+	CHECK(strlen("WAITING FOR OTHER CABINET...") + 1u <= MAIN_ARCADE_LINK_LAYOUT_TEXT_BYTES);
+	CHECK(strlen("PRESS START TO RACE SOLO") + 1u <= MAIN_ARCADE_LINK_LAYOUT_TEXT_BYTES);
+	CHECK(strlen("OTHER CABINET IS READY") + 1u <= MAIN_ARCADE_LINK_LAYOUT_TEXT_BYTES);
 	return 0;
 }
 
@@ -1439,12 +1442,15 @@ static void TextBox(const struct MainArcadeLinkItem *item, int *x0, int *x1, int
 	*y1 = item->y + (big ? 17 : 8);
 }
 
-/* Checks one select layout: the item order (TEXT..., HIGHLIGHT, one PANEL
- * last); every text uses only glyphs the retail font maps, fits its buffer,
- * and sits inside the panel with a 4 px margin; no two texts overlap; the
- * highlight sits inside the panel; builds are deterministic regardless of
- * *out's previous contents, with unused items zero. */
-static int CheckSelectLayout(const struct MainArcadeLinkLayoutInput *input, int line)
+/* Checks one layout on a panel at x with width w (the select panel, 4 and
+ * 504, or the shared panel, 56 and 400): the item order (TEXT...,
+ * HIGHLIGHT, one PANEL last); every text uses only glyphs the retail font
+ * maps, fits its buffer, and sits inside the panel with a 4 px margin; no
+ * two texts overlap; the highlight sits inside the panel; builds are
+ * deterministic regardless of *out's previous contents, with unused items
+ * zero. Since SOLO-S3 it covers the shared-panel LOBBY and RESULTS layouts
+ * too (CheckPanelLayout), the solo strings among them (SOLO-13). */
+static int CheckLayoutOnPanel(const struct MainArcadeLinkLayoutInput *input, int line, int panelX, int panelW)
 {
 	struct MainArcadeLinkLayout layout;
 	struct MainArcadeLinkLayout again;
@@ -1458,14 +1464,14 @@ static int CheckSelectLayout(const struct MainArcadeLinkLayoutInput *input, int 
 		(memcmp(&layout, &again, sizeof(layout)) != 0) || (layout.count < 2u) ||
 		(layout.count > MAIN_ARCADE_LINK_LAYOUT_MAX_ITEMS))
 	{
-		fprintf(stderr, "line %d: select build failed or is not deterministic\n", line);
+		fprintf(stderr, "line %d: build failed or is not deterministic\n", line);
 		return 1;
 	}
 	panel = &layout.items[layout.count - 1u];
-	if ((panel->kind != MAIN_ARCADE_LINK_ITEM_PANEL) || (panel->x != 4) || (panel->w != 504) || (panel->y != 28) ||
-		(panel->h != 176) || !AllZero(panel->text, sizeof(panel->text)))
+	if ((panel->kind != MAIN_ARCADE_LINK_ITEM_PANEL) || (panel->x != panelX) || (panel->w != panelW) ||
+		(panel->y != 28) || (panel->h != 176) || !AllZero(panel->text, sizeof(panel->text)))
 	{
-		fprintf(stderr, "line %d: select panel\n", line);
+		fprintf(stderr, "line %d: panel\n", line);
 		return 1;
 	}
 	for (uint32_t i = 0; i + 1u < layout.count; i++)
@@ -1558,6 +1564,16 @@ static int CheckSelectLayout(const struct MainArcadeLinkLayoutInput *input, int 
 	return 0;
 }
 
+static int CheckSelectLayout(const struct MainArcadeLinkLayoutInput *input, int line)
+{
+	return CheckLayoutOnPanel(input, line, 4, 504);
+}
+
+static int CheckPanelLayout(const struct MainArcadeLinkLayoutInput *input, int line)
+{
+	return CheckLayoutOnPanel(input, line, 56, 400);
+}
+
 /* Sweeps the select screens over human counts, local humans, items, peer
  * items, and cursor positions (everyone on one cell, and everyone spread
  * out): no text leaves the panel or overlaps another. Then every result
@@ -1642,6 +1658,496 @@ static int TestSelectGeometrySweep(void)
 	return 0;
 }
 
+/* ---- Solo screens (docs/SOLO_CAB_MILESTONE.md SOLO-S3) ---- */
+
+#define ROW_RACE_AGAIN NATIVE_ARCADE_FLOW_ROW_RACE_AGAIN
+#define ROW_LOBBY NATIVE_ARCADE_FLOW_ROW_LOBBY
+
+/* A solo select (SOLO-5): MakeSelect with one human, the local cabinet
+ * alone. */
+static struct MainArcadeLinkLayoutInput MakeSoloSelect(uint32_t screen)
+{
+	struct MainArcadeLinkLayoutInput input = MakeSelect(screen);
+
+	input.solo = 1u;
+	input.select.humanCount = 1u;
+	memset(&input.select.humans[1], 0, sizeof(input.select.humans[1]));
+	return input;
+}
+
+/* A solo RESULTS input. */
+static struct MainArcadeLinkLayoutInput MakeSoloResults(
+	uint32_t endReason, uint32_t selectedRow, uint8_t rowsEnabled, uint8_t peerHeard)
+{
+	struct MainArcadeLinkLayoutInput input =
+		MakeInput(SC_RESULTS, LS_WAITING, endReason, selectedRow, 30u, 1u, rowsEnabled, 0u);
+
+	input.solo = 1u;
+	input.peerHeard = peerHeard;
+	return input;
+}
+
+/* Returns 1 when no text item of the layout contains `word`. */
+static int NoTextContains(const struct MainArcadeLinkLayout *layout, const char *word)
+{
+	for (uint32_t i = 0; i < layout->count; i++)
+	{
+		if ((layout->items[i].kind == MAIN_ARCADE_LINK_ITEM_TEXT) && (strstr(layout->items[i].text, word) != NULL))
+			return 0;
+	}
+	return 1;
+}
+
+/* SOLO-13 and SOLO-12: while the offer stands a WAITING, CONNECTING, or LOST
+ * lobby shows the solo lines, dots animating; READY and REJECTED, and every
+ * lobby without the offer, are exactly the linked lobby. */
+static int TestSoloLobby(void)
+{
+	const struct ExpectedItem offered[] = {
+		TXT(BIG, ORANGE, 40, "ARCADE LINK"),
+		TXT(SMALL, WHITE, 90, "WAITING FOR OTHER CABINET"),
+		TXT(SMALL, WHITE, 110, "THIS CABINET: CAB 1"),
+		TXT(SMALL, ORANGE, 145, "PRESS START TO RACE SOLO"),
+		TXT(SMALL, ORANGE, 186, "TRIANGLE: BACK"),
+		PANEL,
+	};
+	const struct ExpectedItem offeredCab2[] = {
+		TXT(BIG, ORANGE, 40, "ARCADE LINK"),
+		TXT(SMALL, WHITE, 90, "WAITING FOR OTHER CABINET..."),
+		TXT(SMALL, WHITE, 110, "THIS CABINET: CAB 2"),
+		TXT(SMALL, ORANGE, 145, "PRESS START TO RACE SOLO"),
+		TXT(SMALL, ORANGE, 186, "TRIANGLE: BACK"),
+		PANEL,
+	};
+	const struct ExpectedItem offeredDot[] = {
+		TXT(BIG, ORANGE, 40, "ARCADE LINK"),
+		TXT(SMALL, WHITE, 90, "WAITING FOR OTHER CABINET."),
+		TXT(SMALL, WHITE, 110, "THIS CABINET: CAB 1"),
+		TXT(SMALL, ORANGE, 145, "PRESS START TO RACE SOLO"),
+		TXT(SMALL, ORANGE, 186, "TRIANGLE: BACK"),
+		PANEL,
+	};
+
+	for (uint32_t status = LS_WAITING; status <= LS_LOST; status++)
+	{
+		struct MainArcadeLinkLayoutInput input = MakeInput(SC_LOBBY, status, END_NONE, ROW_REMATCH, 0u, 1u, 0u, 0u);
+		struct MainArcadeLinkLayout linked;
+		struct MainArcadeLinkLayout solo;
+
+		CHECK(BuildInto(&input, &linked) == 1);
+		input.soloOffered = 1u;
+		if ((status == LS_READY) || (status == LS_REJECTED))
+		{
+			/* No offer is shown once the peer is heard. */
+			CHECK(BuildInto(&input, &solo) == 1);
+			CHECK(memcmp(&linked, &solo, sizeof(linked)) == 0);
+			continue;
+		}
+		EXPECT_LAYOUT(input, offered);
+		input.localCab = 2u;
+		input.ticksInScreen = 45u;
+		EXPECT_LAYOUT(input, offeredCab2);
+		input.localCab = 1u;
+		input.ticksInScreen = 15u;
+		EXPECT_LAYOUT(input, offeredDot);
+		/* The end reason, focused row, rowsEnabled, and peerHeard do not
+		 * change it. */
+		input.ticksInScreen = 60u;
+		input.endReason = END_DESYNC;
+		input.selectedRow = ROW_EXIT;
+		input.rowsEnabled = 1u;
+		input.peerHeard = 1u;
+		EXPECT_LAYOUT(input, offered);
+	}
+	return 0;
+}
+
+/* SOLO-8 and SOLO-7: the solo RESULTS rows, the default cursor on RACE
+ * AGAIN, the RACE ERROR title for a LINK_ERROR end, and the notice while
+ * the other cabinet was heard. No solo results text names the link. */
+static int TestSoloResults(void)
+{
+	static const uint32_t reasons[] = {
+		END_NONE, END_FINISHED, END_PEER_TIMEOUT, END_DESYNC, END_LINK_ERROR, END_OPPONENT_LEFT};
+	static const char *const titles[] = {"RESULTS", "RACE COMPLETE", "RESULTS", "RESULTS", "RACE ERROR", "RESULTS"};
+	static const uint32_t titleColors[] = {ORANGE, ORANGE, ORANGE, ORANGE, RED, ORANGE};
+
+	for (uint32_t i = 0; i < COUNT(reasons); i++)
+	{
+		const struct ExpectedItem focusRaceAgain[] = {
+			TXT(BIG, titleColors[i], 40, titles[i]),
+			TXT(BIG, ORANGE, 120, "RACE AGAIN"),
+			TXT(BIG, ORANGE, 145, "LOBBY"),
+			TXT(SMALL, ORANGE, 186, "CROSS: SELECT"),
+			HIGHLIGHT(117),
+			PANEL,
+		};
+		const struct ExpectedItem focusLobbyHeard[] = {
+			TXT(BIG, titleColors[i], 40, titles[i]),
+			TXT(SMALL, WHITE, 90, "OTHER CABINET IS READY"),
+			TXT(BIG, ORANGE, 120, "RACE AGAIN"),
+			TXT(BIG, ORANGE, 145, "LOBBY"),
+			TXT(SMALL, ORANGE, 186, "CROSS: SELECT"),
+			HIGHLIGHT(142),
+			PANEL,
+		};
+		const struct ExpectedItem disabledHeard[] = {
+			TXT(BIG, titleColors[i], 40, titles[i]),
+			TXT(SMALL, WHITE, 90, "OTHER CABINET IS READY"),
+			TXT(BIG, GRAY, 120, "RACE AGAIN"),
+			TXT(BIG, GRAY, 145, "LOBBY"),
+			TXT(SMALL, ORANGE, 186, "CROSS: SELECT"),
+			PANEL,
+		};
+
+		EXPECT_LAYOUT(MakeSoloResults(reasons[i], ROW_RACE_AGAIN, 1u, 0u), focusRaceAgain);
+		EXPECT_LAYOUT(MakeSoloResults(reasons[i], ROW_LOBBY, 1u, 1u), focusLobbyHeard);
+		EXPECT_LAYOUT(MakeSoloResults(reasons[i], ROW_LOBBY, 0u, 1u), disabledHeard);
+		/* Any row other than ROW_LOBBY means RACE AGAIN, as in linked. */
+		EXPECT_LAYOUT(MakeSoloResults(reasons[i], 0xffffffffu, 1u, 0u), focusRaceAgain);
+		/* The lobby status never changes it (solo reads none). */
+		{
+			struct MainArcadeLinkLayoutInput input = MakeSoloResults(reasons[i], ROW_RACE_AGAIN, 1u, 0u);
+			input.lobbyStatus = LS_REJECTED;
+			input.localCab = 2u;
+			EXPECT_LAYOUT(input, focusRaceAgain);
+		}
+	}
+	CHECK(ROW_RACE_AGAIN == ROW_REMATCH);
+	CHECK(ROW_LOBBY == ROW_EXIT);
+
+	/* No "LINK" wording on any solo results screen (SOLO-7). */
+	for (uint32_t i = 0; i < COUNT(reasons); i++)
+	for (uint32_t row = 0u; row < 2u; row++)
+	for (uint8_t enabled = 0u; enabled <= 1u; enabled++)
+	for (uint8_t heard = 0u; heard <= 1u; heard++)
+	{
+		struct MainArcadeLinkLayoutInput input = MakeSoloResults(reasons[i], row, enabled, heard);
+		struct MainArcadeLinkLayout layout;
+		CHECK(BuildInto(&input, &layout) == 1);
+		CHECK(NoTextContains(&layout, "LINK"));
+		CHECK(NoTextContains(&layout, "REMATCH"));
+		CHECK(NoTextContains(&layout, "OPPONENT"));
+	}
+	return 0;
+}
+
+/* SOLO-5: the solo select draws the local human alone. No opponent footer,
+ * no GRAY taken character (a stray peer mask is ignored), a GET READY
+ * waiting title without dots or opponent lines, and SELECT_RESULT as the
+ * one-human linked screen. */
+static int TestSoloSelect(void)
+{
+	{
+		struct MainArcadeLinkLayoutInput input = MakeSoloSelect(SC_SELECT);
+		struct MainArcadeLinkLayoutInput linked;
+		const struct ExpectedItem expected[] = {
+			TXT(BIG, ORANGE, 40, "SELECT CHARACTER"),
+			TXT(SMALL, WHITE, 60, "TIME 20"),
+			TXTAT(BIG, ORANGE, 130, 78, "CRASH"),
+			TXTAT(BIG, ORANGE, 130, 102, "CORTEX"),
+			TXTAT(BIG, ORANGE, 130, 126, "TINY"),
+			TXTAT(BIG, ORANGE, 130, 150, "COCO"),
+			TXTAT(BIG, ORANGE, 382, 78, "N. GIN"),
+			TXTAT(BIG, ORANGE, 382, 102, "DINGODILE"),
+			TXTAT(BIG, ORANGE, 382, 126, "POLAR"),
+			TXTAT(BIG, ORANGE, 382, 150, "PURA"),
+			TXTAT(BIG, BLUE, 25, 78, "P1"),
+			HL(8, 75, 244, 21),
+			SELECT_PANEL,
+		};
+		EXPECT_LAYOUT(input, expected);
+		/* The same as the one-human linked screen. */
+		linked = input;
+		linked.solo = 0u;
+		{
+			struct MainArcadeLinkLayout a;
+			struct MainArcadeLinkLayout b;
+			CHECK(BuildInto(&input, &a) == 1);
+			CHECK(BuildInto(&linked, &b) == 1);
+			CHECK(memcmp(&a, &b, sizeof(a)) == 0);
+		}
+		/* A peer mask never greys a character in solo. */
+		input.select.peerLockedCharacterMask = 0xffu;
+		EXPECT_LAYOUT(input, expected);
+	}
+	{
+		/* Track and laps: the local marker and highlight, no footer. */
+		struct MainArcadeLinkLayoutInput input = MakeSoloSelect(SC_SELECT);
+		const struct ExpectedItem expected[] = {
+			TXT(BIG, ORANGE, 40, "VOTE LAPS"),
+			TXT(SMALL, WHITE, 60, "TIME 1"),
+			TXTAT(BIG, ORANGE, 256, 86, "3 LAPS"),
+			TXTAT(BIG, ORANGE, 256, 111, "5 LAPS"),
+			TXTAT(BIG, ORANGE, 256, 136, "7 LAPS"),
+			TXTAT(BIG, BLUE, 151, 111, "P1"),
+			HL(134, 108, 244, 21),
+			SELECT_PANEL,
+		};
+		SetItem(&input, 0u, IT_LAPS);
+		input.select.humans[0].lapCount = 5u;
+		input.select.ticksLeft = 1u;
+		EXPECT_LAYOUT(input, expected);
+	}
+	{
+		/* Done: GET READY, never "WAITING FOR", at any tick. */
+		static const uint32_t ticks[] = {0u, 15u, 30u, 45u};
+		for (uint32_t t = 0; t < COUNT(ticks); t++)
+		{
+			struct MainArcadeLinkLayoutInput input = MakeSoloSelect(SC_SELECT);
+			const struct ExpectedItem expected[] = {
+				TXT(BIG, ORANGE, 40, "GET READY"),
+				TXT(SMALL, WHITE, 68, "YOUR CHARACTER: CRASH"),
+				TXT(SMALL, WHITE, 80, "YOUR TRACK VOTE: CRASH COVE"),
+				TXT(SMALL, WHITE, 92, "YOUR LAP VOTE: 3 LAPS"),
+				SELECT_PANEL,
+			};
+			input.ticksInScreen = ticks[t];
+			SetItem(&input, 0u, IT_DONE);
+			input.select.ticksLeft = 0u;
+			input.select.status = 3u;
+			EXPECT_LAYOUT(input, expected);
+		}
+	}
+	{
+		/* SELECT_RESULT: one human line, the LOAD_Robots1P bots for CRASH on
+		 * two lines, GET READY; the same as the one-human linked screen. */
+		struct MainArcadeLinkLayoutInput input = MakeResult();
+		struct MainArcadeLinkLayoutInput linked;
+		static const uint8_t bots[7] = {1, 2, 3, 4, 5, 6, 7};
+		const struct ExpectedItem expected[] = {
+			TXT(BIG, ORANGE, 40, "MATCH SET"),
+			TXT(SMALL, WHITE, 66, "TRACK TIGER TEMPLE"),
+			TXT(SMALL, WHITE, 80, "LAPS 3"),
+			TXT(SMALL, BLUE, 100, "P1 CRASH"),
+			TXT(SMALL, WHITE, 118, "CPU CORTEX, TINY, COCO, N. GIN"),
+			TXT(SMALL, WHITE, 130, "DINGODILE, POLAR, PURA"),
+			TXT(SMALL, ORANGE, 186, "GET READY"),
+			SELECT_PANEL,
+		};
+		input.solo = 1u;
+		input.select.humanCount = 1u;
+		memset(&input.select.humans[1], 0, sizeof(input.select.humans[1]));
+		input.select.humanCharacter[1] = 0u;
+		input.select.trackDrawn = 0u;
+		input.select.botCount = 7u;
+		memcpy(input.select.botCharacter, bots, sizeof(bots));
+		EXPECT_LAYOUT(input, expected);
+		linked = input;
+		linked.solo = 0u;
+		EXPECT_LAYOUT(linked, expected);
+	}
+	return 0;
+}
+
+/* The solo fields' validation: range, the screens each may appear on, and
+ * one human on a solo select. */
+static int TestSoloInvalid(void)
+{
+	struct MainArcadeLinkLayoutInput input;
+
+	for (uint32_t screen = SC_OFF; screen <= SC_SELECT_RESULT; screen++)
+	{
+		const int selectScreen = (screen == SC_SELECT) || (screen == SC_SELECT_RESULT);
+		const int soloScreen = selectScreen || (screen == SC_RACING) || (screen == SC_RESULTS);
+
+		input = selectScreen ? ((screen == SC_SELECT) ? MakeSoloSelect(SC_SELECT) : MakeResult())
+		                     : MakeInput(screen, LS_WAITING, END_FINISHED, ROW_REMATCH, 0u, 1u, 0u, 0u);
+		if (screen == SC_SELECT_RESULT)
+		{
+			input.select.humanCount = 1u;
+			memset(&input.select.humans[1], 0, sizeof(input.select.humans[1]));
+		}
+		input.solo = 1u;
+		if (soloScreen)
+		{
+			struct MainArcadeLinkLayout layout;
+			CHECK(BuildInto(&input, &layout) == 1);
+			if (screen == SC_RACING) CHECK(layout.count == 0u);
+		}
+		else
+		{
+			EXPECT_INVALID(input);
+		}
+		input.solo = 0u;
+		input.soloOffered = 1u;
+		if (screen == SC_LOBBY)
+		{
+			struct MainArcadeLinkLayout layout;
+			CHECK(BuildInto(&input, &layout) == 1);
+		}
+		else
+		{
+			EXPECT_INVALID(input);
+		}
+		input.soloOffered = 0u;
+		input.solo = 2u;
+		EXPECT_INVALID(input);
+		input.solo = 0xffu;
+		EXPECT_INVALID(input);
+		input.solo = 0u;
+		input.soloOffered = 2u;
+		EXPECT_INVALID(input);
+		input.soloOffered = 0u;
+		input.peerHeard = 2u;
+		EXPECT_INVALID(input);
+	}
+	/* Solo and the offer together (the offer is LOBBY only, solo never). */
+	input = MakeInput(SC_LOBBY, LS_WAITING, END_NONE, ROW_REMATCH, 0u, 1u, 0u, 0u);
+	input.solo = 1u;
+	input.soloOffered = 1u;
+	EXPECT_INVALID(input);
+	/* The attract layout with a solo field. */
+	input = MakeInput(SC_OFF, LS_WAITING, END_NONE, ROW_REMATCH, 0u, 1u, 0u, 1u);
+	input.soloOffered = 1u;
+	EXPECT_INVALID(input);
+	/* A solo select has one human. */
+	input = MakeSelect(SC_SELECT);
+	input.solo = 1u;
+	EXPECT_INVALID(input);
+	input = MakeResult();
+	input.solo = 1u;
+	EXPECT_INVALID(input);
+	return 0;
+}
+
+/* SOLO-12: with solo and the offer off, the solo-only inputs change nothing
+ * on any screen: peerHeard (drawn on solo RESULTS alone) and soloReserved
+ * leave every linked layout byte-identical, and so every expectation above
+ * that builds with them zero stands for the linked screens. */
+static int TestSoloFieldsIgnoredWhenLinked(void)
+{
+	static const uint32_t ticks[] = {0u, 15u, 45u};
+	uint32_t compared = 0;
+
+	for (uint32_t screen = SC_OFF; screen <= SC_EXIT; screen++)
+	for (uint32_t status = LS_WAITING; status <= LS_LOST; status++)
+	for (uint32_t reason = END_NONE; reason <= END_OPPONENT_LEFT; reason++)
+	for (uint32_t row = 0u; row < 2u; row++)
+	for (uint32_t t = 0u; t < COUNT(ticks); t++)
+	for (uint8_t cab = 1u; cab <= 2u; cab++)
+	for (uint8_t enabled = 0u; enabled <= 1u; enabled++)
+	for (uint8_t attract = 0u; attract <= 1u; attract++)
+	{
+		struct MainArcadeLinkLayoutInput clean = MakeInput(screen, status, reason, row, ticks[t], cab, enabled, attract);
+		struct MainArcadeLinkLayoutInput dirty = clean;
+		struct MainArcadeLinkLayout a;
+		struct MainArcadeLinkLayout b;
+		int valid;
+
+		dirty.peerHeard = 1u;
+		dirty.soloReserved = 0xabu;
+		valid = BuildInto(&clean, &a);
+		CHECK(BuildInto(&dirty, &b) == valid);
+		CHECK(memcmp(&a, &b, sizeof(a)) == 0);
+		compared++;
+	}
+	CHECK(compared > 0u);
+	{
+		struct MainArcadeLinkLayoutInput clean = MakeSelect(SC_SELECT);
+		struct MainArcadeLinkLayoutInput dirty = clean;
+		struct MainArcadeLinkLayout a;
+		struct MainArcadeLinkLayout b;
+
+		dirty.peerHeard = 1u;
+		dirty.soloReserved = 0xabu;
+		CHECK(BuildInto(&clean, &a) == 1);
+		CHECK(BuildInto(&dirty, &b) == 1);
+		CHECK(memcmp(&a, &b, sizeof(a)) == 0);
+	}
+	return 0;
+}
+
+/* The glyph and panel checks (CheckLayoutOnPanel) on every shared-panel
+ * layout, linked and solo: every LOBBY with and without the offer, every
+ * RESULTS end reason, row, and notice state, MATCH_FOUND, REMATCH_WAIT,
+ * EXIT, and the attract layout; then the solo select screens over every
+ * item and cursor cell, and every solo result shape (SOLO-13). */
+static int TestSoloGlyphsAndPanel(void)
+{
+	static const uint32_t ticks[] = {0u, 15u, 30u, 45u};
+	static const uint32_t itemCounts[3] = {8u, 16u, 3u};
+	uint32_t checked = 0;
+
+	for (uint32_t status = LS_WAITING; status <= LS_LOST; status++)
+	for (uint32_t t = 0u; t < COUNT(ticks); t++)
+	for (uint8_t cab = 1u; cab <= 2u; cab++)
+	for (uint8_t offered = 0u; offered <= 1u; offered++)
+	{
+		struct MainArcadeLinkLayoutInput input = MakeInput(SC_LOBBY, status, END_NONE, ROW_REMATCH, ticks[t], cab, 0u, 0u);
+		input.soloOffered = offered;
+		if (CheckPanelLayout(&input, __LINE__) != 0) return 1;
+		checked++;
+	}
+	for (uint32_t reason = END_NONE; reason <= END_OPPONENT_LEFT; reason++)
+	for (uint32_t row = 0u; row < 2u; row++)
+	for (uint8_t enabled = 0u; enabled <= 1u; enabled++)
+	for (uint8_t solo = 0u; solo <= 1u; solo++)
+	for (uint8_t heard = 0u; heard <= 1u; heard++)
+	{
+		struct MainArcadeLinkLayoutInput input = MakeInput(SC_RESULTS, LS_WAITING, reason, row, 30u, 1u, enabled, 0u);
+		input.solo = solo;
+		input.peerHeard = heard;
+		if (CheckPanelLayout(&input, __LINE__) != 0) return 1;
+		checked++;
+	}
+	for (uint32_t reason = END_NONE; reason <= END_OPPONENT_LEFT; reason++)
+	for (uint32_t t = 0u; t < COUNT(ticks); t++)
+	for (uint8_t cab = 1u; cab <= 2u; cab++)
+	{
+		struct MainArcadeLinkLayoutInput input = MakeInput(SC_MATCH_FOUND, LS_READY, reason, ROW_REMATCH, ticks[t], cab, 0u, 0u);
+		if (CheckPanelLayout(&input, __LINE__) != 0) return 1;
+		input.screen = SC_REMATCH_WAIT;
+		if (CheckPanelLayout(&input, __LINE__) != 0) return 1;
+		input.screen = SC_EXIT;
+		if (CheckPanelLayout(&input, __LINE__) != 0) return 1;
+		input.screen = SC_OFF;
+		input.attract = 1u;
+		if (CheckPanelLayout(&input, __LINE__) != 0) return 1;
+		checked += 4u;
+	}
+	CHECK(checked > 100u);
+
+	for (uint32_t item = IT_CHARACTER; item <= IT_DONE; item++)
+	for (uint32_t cell = 0u; cell < 16u; cell++)
+	{
+		struct MainArcadeLinkLayoutInput input = MakeSoloSelect(SC_SELECT);
+		const uint32_t n = (item == IT_DONE) ? 16u : itemCounts[item];
+
+		if (cell >= n) continue;
+		input.ticksInScreen = cell * 15u;
+		input.select.ticksLeft = cell * 97u;
+		input.select.humans[0].characterID = k_characterOrder[cell % 8u];
+		input.select.humans[0].trackID = k_trackOrder[cell % 16u];
+		input.select.humans[0].lapCount = k_lapOrder[cell % 3u];
+		SetItem(&input, 0u, item);
+		input.select.peerLockedCharacterMask = (uint16_t)(0xa5u >> (cell % 4u));
+		if (CheckSelectLayout(&input, __LINE__) != 0) return 1;
+	}
+	for (uint32_t human = 0u; human < 8u; human++)
+	for (uint32_t bots = 0u; bots <= 7u; bots++)
+	{
+		struct MainArcadeLinkLayoutInput input = MakeResult();
+		uint32_t b = 0u;
+
+		input.solo = 1u;
+		input.select.humanCount = 1u;
+		memset(&input.select.humans[1], 0, sizeof(input.select.humans[1]));
+		input.select.humanCharacter[0] = (uint8_t)human;
+		input.select.humanCharacter[1] = 0u;
+		input.select.trackID = LV_SLIDE_COLISEUM;
+		input.select.lapCount = 7u;
+		input.select.botCount = (uint8_t)bots;
+		memset(input.select.botCharacter, 0, sizeof(input.select.botCharacter));
+		for (uint32_t c = 0u; (c < 8u) && (b < bots); c++)
+		{
+			if (c != human) input.select.botCharacter[b++] = (uint8_t)c;
+		}
+		if (CheckSelectLayout(&input, __LINE__) != 0) return 1;
+	}
+	return 0;
+}
+
 /* MainArcadeLinkLayout_InputFromHostView (MS-10b): NULL leaves *input
  * untouched; otherwise every field is copied from the host view, field for
  * field, and every reserved byte is zero whatever the view or the input
@@ -1704,6 +2210,11 @@ static int TestInputFromHostView(void)
 	 * drawing): a distinct value that must not reach input.reserved. Every
 	 * select reserved byte stays 0xEE. */
 	view.localMenuEvent = 0x18u;
+	/* The solo group (SOLO-S3): mapped field for field; the view's reserved
+	 * byte stays 0xEE and must not reach input.soloReserved. */
+	view.solo = 0x19u;
+	view.soloOffered = 0x1Au;
+	view.peerHeard = 0x1Bu;
 
 	CHECK(MainArcadeLinkLayout_InputFromHostView(&view, &input) == 1);
 	CHECK(input.screen == 0x01020304u);
@@ -1715,6 +2226,10 @@ static int TestInputFromHostView(void)
 	CHECK(input.rowsEnabled == 0x16u);
 	CHECK(input.attract == 0x17u);
 	CHECK(input.reserved == 0u);
+	CHECK(input.solo == 0x19u);
+	CHECK(input.soloOffered == 0x1Au);
+	CHECK(input.peerHeard == 0x1Bu);
+	CHECK(input.soloReserved == 0u);
 	CHECK(input.select.active == 0x21u);
 	CHECK(input.select.humanCount == 0x22u);
 	CHECK(input.select.localHuman == 0x23u);
@@ -1784,6 +2299,12 @@ int main(void)
 	if (TestSelectInvalid() != 0) return 1;
 	if (TestSelectFieldsIgnoredElsewhere() != 0) return 1;
 	if (TestSelectGeometrySweep() != 0) return 1;
+	if (TestSoloLobby() != 0) return 1;
+	if (TestSoloResults() != 0) return 1;
+	if (TestSoloSelect() != 0) return 1;
+	if (TestSoloInvalid() != 0) return 1;
+	if (TestSoloFieldsIgnoredWhenLinked() != 0) return 1;
+	if (TestSoloGlyphsAndPanel() != 0) return 1;
 	if (TestInputFromHostView() != 0) return 1;
 	printf("main_arcade_link_layout_test: ok\n");
 	return 0;

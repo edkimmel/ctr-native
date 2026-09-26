@@ -23,7 +23,8 @@ param(
     [string[]]$Screens = @(
         'title', 'lobby', 'lobby-connecting', 'lobby-rejected', 'match-found', 'results',
         'results-timeout', 'results-desync', 'results-link-error', 'rematch', 'exit', 'exit-opponent-left',
-        'select-character', 'select-track', 'select-laps', 'select-wait', 'select-result'),
+        'select-character', 'select-track', 'select-laps', 'select-wait', 'select-result',
+        'lobby-solo', 'select-solo', 'results-solo', 'results-solo-error'),
 
     [int]$Frame = 1320,
 
@@ -45,7 +46,8 @@ $skipExitCode = 77
 $allScreens = @(
     'title', 'lobby', 'lobby-connecting', 'lobby-rejected', 'match-found', 'results',
     'results-timeout', 'results-desync', 'results-link-error', 'rematch', 'exit', 'exit-opponent-left',
-    'select-character', 'select-track', 'select-laps', 'select-wait', 'select-result')
+    'select-character', 'select-track', 'select-laps', 'select-wait', 'select-result',
+    'lobby-solo', 'select-solo', 'results-solo', 'results-solo-error')
 $noDisplayMarker = 'No displays available'
 $notInternalMarker = '--arcade-link-preview is available in internal builds only.'
 
