@@ -155,9 +155,11 @@ C and E for TWO_CAB, their one-cab counterparts I and J for ONE_CAB),
 and seed divergence. The ONE_CAB runs go through the 1P setup, the green
 light, bot driving, and 1P race physics, digested through the rng,
 rcontrol, and topology-free drivers digests (the Physics group itself is
-not digested, RS-13). Networked launch (Task 7) is done
-(docs/RACE_LAUNCH_MILESTONE.md); the in-race lockstep drive (Task 8) and
-real two-cabinet evidence (steps 6-7) remain.
+not digested, RS-13). Networked launch (Task 7) and the in-race lockstep
+drive (Task 8) are done (docs/RACE_LAUNCH_MILESTONE.md,
+docs/LOCKSTEP_RACE_MILESTONE.md): linked TWO_CAB races launch through this
+seam and run on it in lockstep. Real two-cabinet evidence (steps 6-7)
+remains.
 
 ## 3. Decided design
 
@@ -305,6 +307,17 @@ The seam (Task 7's entry points; the proof uses the same ones):
   bank (NativeDeterministicRngBankV1_Init from masterSeed and
   rngDerivationVersion), and saves the cabinet's vibration bits (RS-15).
   ARMED; on failure it stays IDLE with failure PLAN or BANK and returns 0.
+  On a cabinet with no memcard save (sdata->boolHasLoadedOptions still 0,
+  so Launch's options precondition would fail every race), a successful
+  Arm also sets sdata->boolHasLoadedOptions to 1, and only that flag,
+  through the core's OPTIONS_LOADED op
+  (MAIN_ARCADE_RACE_SETUP_CORE_TARGET_OPTIONS_LOADED, applied by the
+  adapter's MainArcadeRaceSetup_Apply). It does not run the retail options
+  load, so the live volumes, stereo mode, data.rwd, and vibration bits stay
+  as they are, and it logs "arcade race setup: no memcard options loaded;
+  marked the options loaded (live settings kept)". With a save loaded the
+  flag is already 1 and nothing is written. Disarm does not restore it: it
+  is a one-time retail latch, and 1 matches a cabinet that loaded a save.
 - MainArcadeRaceSetup_Launch(): ARMED only. Preconditions, each failing
   closed (FAILED/PRECONDITION) with nothing written: Loading.stage idle,
   the four pending OnBegin mode words 0, the options loaded, and no PAUSE
@@ -323,7 +336,7 @@ The seam (Task 7's entry points; the proof uses the same ones):
   back), and _Bank (the post-setup bank when VALIDATED, else NULL).
 - MainArcadeRaceSetup_Disarm(): any state to IDLE. It touches the
   vibration bits only if Launch set fieldsWritten
-  (MainArcadeRaceSetupCore.c:214, checked at :423). After a Launch it
+  (MainArcadeRaceSetupCore.c:239, checked at :464). After a Launch it
   restores the saved bits only on the idle main-menu level; otherwise it
   leaves them as they are and logs that, since gameMode1 must not change
   under a running race. "As they are" means 0 from the pin; the pause-menu
@@ -387,7 +400,8 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   after the seeds, in ascending stable slot, so the post-setup bank
   (MainArcadeRaceSetup_Bank) has drawn MATCH_SETUP nine times for TWO_CAB
   (five seeds, four bots) and twelve times for ONE_CAB (five seeds, seven
-  bots; RS-22). That is the bank Task 8 must project. The seed recipe and
+  bots; RS-22). That is the bank the live V4 projection projects (Task 8,
+  docs/LOCKSTEP_RACE_MILESTONE.md LR-10; risk 3). The seed recipe and
   its order are the same for both profiles.
 - ITEMS, HAZARDS, BOT[0..7] are reserved and undrawn in bot rules v1. Any
   migration of a retail call site to them is a new bot-rules version.
@@ -442,12 +456,16 @@ Two CTR_NATIVE hooks in MainInit_FinalizeInit (game/MAIN/MainInit.c):
   code: 0 PASS; failures from 20 up (the table in
   include/platform/native_arcade_roster_proof.h); any other exit while the
   proof is active is 20 (INCOMPLETE), never 0.
-- Host timing (R-6b, RS-18): main.c turns on a host-local, proof-only
-  fixed VBlank pacing (Platform_SetFixedVBlankPacing,
+- Host timing (R-6b, RS-18): main.c turns on host-local fixed VBlank
+  pacing for the proof (Platform_SetFixedVBlankPacing,
   platform/native_vblank_pacing.c): the pacer never emits late (catch-up)
   VBlanks, so every game tick advances exactly the retail 2 VBlanks and
-  gGT->elapsedTimeMS cannot follow a host hitch. Every other run keeps the
-  default pacing; V2 playback keeps its own packet path.
+  gGT->elapsedTimeMS cannot follow a host hitch. The same pacing also runs
+  for a linked race: the arcade-link host turns it on at
+  NativeArcadeLinkHost_RaceBegin (the Launch frame) and off at
+  NativeArcadeLinkHost_RaceEnd (the Disarm frame) and at shutdown
+  (docs/LOCKSTEP_RACE_MILESTONE.md LR-7). Every other run keeps the default
+  pacing; V2 playback keeps its own packet path.
 - Each tick line also carries a race-relative control digest (rcontrol):
   the V1 control encoding and FNV-1a 64 digest with frameTimer,
   frameCounter, and timer zeroed, computed locally (no schema change). The
@@ -820,7 +838,8 @@ Status: done. Split into (in commit order):
   R-6b.
 - R-6c, ab83ea92f: the RS-17 audit and pins (gGT->timer and
   gGT->frameTimer_Confetti), their readback, and PIN_MISMATCH.
-- R-6b, 1bafa6005: proof-only fixed VBlank pacing (RS-18), parallel runs,
+- R-6b, 1bafa6005: fixed VBlank pacing for the proof (RS-18; proof-only at
+  the time, since Task 8 also used by linked races, LR-7), parallel runs,
   the race-relative control digest, run E, the "live" label, and the R-6
   review nits.
 - R-6c and R-6b were reviewed together in R-7: no blockers, four nits.
@@ -965,21 +984,34 @@ parallel (C and I about 264 s each, the other eight about 81 s).
    setup point (RS-17), and run E now matches A. sdata->frameCounter and
    gGT->frameTimer_VsyncCallback stay boot-relative (LEAVE in the RS-17
    audit; the VBlank counter is also not safe to reset), so the full V1
-   control digest still differs between cabinets and Task 8 must compare
-   race-relative control (as the proof's rcontrol does) or normalize these
-   two counters.
+   control digest still differs between cabinets. Closed by Task 8
+   (docs/LOCKSTEP_RACE_MILESTONE.md LR-10): it compares race-relative
+   control. The live V4 projection (game/MAIN/MainArcadeRaceDigest.c,
+   MainArcadeRaceDigest_ProjectControl) projects frameTimer and
+   frameCounter relative to their values at race tick 0 (timer is
+   race-relative through its RS-17 pin), so the V4 control domain the
+   cabinets exchange every race tick carries no boot history. The full V1
+   control digest of the roster proof stays informational.
 3. The V4 runtime derives a fresh bank from the config
    (game/MAIN/MainCanonicalRuntime.c,
    NativeDeterministicRngBankV1_InitInPlace), while the live bank after
    setup has drawn MATCH_SETUP nine times for TWO_CAB and twelve for
-   ONE_CAB (five seeds, one setupRandom per bot). Task 8 must project the
-   post-setup bank, MainArcadeRaceSetup_Bank() (non-NULL only when
-   VALIDATED), not a fresh one.
+   ONE_CAB (five seeds, one setupRandom per bot). Closed by Task 8
+   (docs/LOCKSTEP_RACE_MILESTONE.md LR-10): the race caller and the roster
+   proof hand the post-setup bank, MainArcadeRaceSetup_Bank() (non-NULL
+   only when VALIDATED), to MainArcadeRaceDigest, which copies it into the
+   V4 request, and MainCanonicalRuntime_StageBankV4 stages the request's
+   bank when it carries one; only a request without a bank still gets a
+   fresh derivation from the config.
 4. Shared-RNG presentation consumers (particles, VS quips) draw from
    randomNumber; they are deterministic given the simulation, but any
    future per-cabinet presentation (one viewport per cabinet) that changes
-   which particles spawn would desync the simulation RNG. Task 7/8 must
-   keep the 2P presentation path or migrate those draws.
+   which particles spawn would desync the simulation RNG. Closed for Task
+   8, which kept the 2P presentation path: both cabinets show the retail
+   two-player split screen (owner ruling, docs/LOCKSTEP_RACE_MILESTONE.md
+   section 3 criterion 9). Still open for a full-screen per-cabinet view
+   (HANDOFF stretch goal 13, LOCKSTEP_RACE risk 18): those draws must
+   move to a presentation-only RNG first.
 5. Closed: the dormant validators were written against source-shaped
    facts, and live facts could have exposed assumptions (for example human
    nav-path values). R-5a's retail audit

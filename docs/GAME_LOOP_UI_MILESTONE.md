@@ -637,10 +637,15 @@ assigned to player 1". The default keys are Enter for START, C for CROSS,
 and Z for TRIANGLE. Once both have entered the lobby, each should show
 OPPONENT FOUND, then the match-select screens (each item auto-locks after
 20 s, so an idle run takes about a minute), MATCH SET, and after the
-relink and the launch agreement the linked race: since Task 7 START_RACE
-logs the agreed match and launches the race, which until Task 8 is the
-undriven launch rehearsal (docs/RACE_LAUNCH_MILESTONE.md RL-10), then
-RESULTS (RACE COMPLETE) with REMATCH and EXIT back on the main-menu level.
+relink and the launch agreement the linked race: START_RACE logs the
+agreed match and launches the race (Task 7), and from race tick 0 both
+instances drive it in lockstep, each player steering with its own
+instance's player 1 (Task 8, docs/LOCKSTEP_RACE_MILESTONE.md). The race
+ends as RACE COMPLETE at END_OF_RACE or 900 ticks after the first human
+finish (or as OPPONENT DISCONNECTED, RACE OUT OF SYNC, or LINK ERROR on a
+failure), then RESULTS with REMATCH and EXIT back on the main-menu level.
+The undriven launch rehearsal that stood in for the drive before Task 8
+(docs/RACE_LAUNCH_MILESTONE.md RL-10) is closed.
 
 ### 3.1 Arcade-link menu sound defaults
 
@@ -1075,13 +1080,15 @@ tickOnly). The pause-menu vibration toggle is guarded while a race setup
 is not IDLE (RL-13), and sound IDs are kept out of cross-cabinet identity
 by an isolation test (RL-14). Retail cheat entry stays possible during the
 title intro before the menu-ready frame (section 2.5, residual retail
-window); RS-2 resets the gameMode2 cheat bits through the seam. Until Task
-8 a linked race is the launch rehearsal (RL-10): it loads and starts on
-neutral installed pads, nobody drives it, and after 150 ticks the caller
-reports it finished (RESULTS, RACE COMPLETE). The live two-process gate
-arcade_link_launch (RL-15, label live) has a recorded, non-skipped PASS at
-e5279e31d. MainArcadeRaceSetup_Bank is not consumed yet; projecting it is
-Task 8.
+window); RS-2 resets the gameMode2 cheat bits through the seam. When Task
+7 closed, a linked race was the launch rehearsal (RL-10): it loaded and
+started on neutral installed pads, nobody drove it, and after 150 ticks the
+caller reported it finished (RESULTS, RACE COMPLETE). The live two-process
+gate arcade_link_launch (RL-15, label live) had a recorded, non-skipped
+PASS at e5279e31d on that rehearsal. The rehearsal is closed: Task 8
+(below) replaced it with the lockstep drive, which projects
+MainArcadeRaceSetup_Bank in the live V4 state on every race tick, and
+arcade_link_launch now runs three driven races.
 
 ### Task 8 -- in-race lockstep drive and failure handling
 

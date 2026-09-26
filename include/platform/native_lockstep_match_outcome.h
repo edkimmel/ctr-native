@@ -23,18 +23,18 @@
  */
 
 /*
- * Default stall timeout: 180 consumption frames, 3 s at 60 Hz.  This is the
- * milestone's deliberate, documented policy decision: a two-cabinet wired-LAN
- * hiccup should recover well inside 3 s.
+ * Default stall timeout: 180 consumption frames.  A consumption frame is one
+ * race tick, 2 native VBlanks (33435 us, about 29.91 Hz), so 180 is about
+ * 6.0 s; the arcade-link adapter passes 90 (about 3.0 s) instead.
  */
 #define NATIVE_LOCKSTEP_STALL_TIMEOUT_DEFAULT_FRAMES 180u
 /*
- * Minimum configurable stall timeout: 30 consumption frames, 0.5 s at 60 Hz.
+ * Minimum configurable stall timeout: 30 consumption frames, about 1.0 s.
  * Below this a transient network hiccup could not plausibly recover in time.
  */
 #define NATIVE_LOCKSTEP_STALL_TIMEOUT_MIN_FRAMES 30u
 /*
- * Maximum configurable stall timeout: 600 consumption frames, 10 s at 60 Hz.
+ * Maximum configurable stall timeout: 600 consumption frames, about 20 s.
  * This is a hard ceiling so a truly dead peer does not stall the cabinet
  * forever.
  */

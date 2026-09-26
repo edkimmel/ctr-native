@@ -1,6 +1,7 @@
 # Packaging and the per-cabinet config file
 
-How a cabinet build is packaged and configured. Decisions PK-1..PK-8.
+How a cabinet build is packaged and configured. Decisions PK-1..PK-9. The
+owner's step-by-step cabinet setup is "Per-cabinet setup" below.
 
 ## Decisions
 
@@ -89,14 +90,28 @@ See "Running the package script" below.
 | `cab1.cfg` | `cab1` | 7001 | `192.168.1.102:7002` |
 | `cab2.cfg` | `cab2` | 7002 | `192.168.1.101:7001` |
 
-- The ports are the ones the loopback gate uses.
+- The ports are the default ports of the loopback gate
+  `tools/arcade-link-launch-check.ps1` and the ports the package smoke gate
+  runs on. The ctest `arcade_link_launch` passes 7101 and 7102 instead, so
+  the two live gates never share a port.
 - The IPs are placeholders. A comment says to edit each to the other
   cabinet's fixed IP.
 - Both templates set `data_dir = C:\ctr-data` and `fullscreen = 1`.
 - `tools/package/README.txt` is the operator guide: data, per-cabinet setup,
-  the firewall rule, starting, and the same-build hash check.
+  the firewall rule, starting, and the same-build hash check. Its firewall
+  rule is the port-only form; PK-9 narrows it.
 - `native_arcade_config_unit` parses both templates with the real parser and
   checks the resulting link options.
+
+**PK-9 Firewall rule.** A default the owner may change. Each cabinet
+allows inbound UDP on its own link port only, only for the packaged
+`ctr_native.exe` (`-Program`), and only from the other cabinet's fixed IP
+(`-RemoteAddress`). The link's only partner is the configured `peer`, so
+this is the narrowest rule the link needs; a port-only rule (as in
+`tools/package/README.txt`) also works but admits any program on the port
+and any sender on the LAN. The rule leaves `-Profile` at its default (all
+profiles), since a cabinet LAN on a dumb switch may not be classified as a
+private network. The exact commands are in "Per-cabinet setup", step 4.
 
 ## Config grammar
 
@@ -270,10 +285,15 @@ live gates: without the disc image, without a display, with a non-internal
 build, or with an unknown build identity (a build from a dirty tree). A skip
 is not a pass.
 
-The ctest `package_arcade_smoke` (label `live`, `RUN_SERIAL`) runs the stage
-mode on each configuration's own `ctr_native.exe`. It uses the same fixed
-ports as `arcade_link_launch`. `package_arcade_stage` (not live) checks the
-stage mode and the argument checks of both scripts with a dummy exe.
+The ctest `package_arcade_smoke` (labels `live` and `live-package`; not
+`RUN_SERIAL`, so it may run in parallel with the other live tests) runs the
+stage mode on each configuration's own `ctr_native.exe`, writing under
+`build-msvc-x86\package_smoke\<config>`. It runs on the package's ports,
+7001 and 7002; `arcade_link_launch` uses 7101 and 7102, so the two never
+share a port. Run it alone with
+`ctest --test-dir build-msvc-x86 -C Debug -L live-package --output-on-failure`.
+`package_arcade_stage` (not live) checks the stage mode and the argument
+checks of both scripts with a dummy exe.
 
 To smoke-test a real package folder, with a clean tree:
 
@@ -281,6 +301,140 @@ To smoke-test a real package folder, with a clean tree:
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-arcade.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-arcade-smoke.ps1 -PackageDirectory build-msvc-x86\package\ctr-arcade-<short12> -OutputDirectory build-msvc-x86\package_smoke\real
 ```
+
+## Fresh cabinet: game options
+
+A cabinet needs no `memcards\` folder and no memcard save. A package is
+deployed without one, and the smoke gate runs its copy that way.
+
+Retail marks the game options loaded (`sdata->boolHasLoadedOptions`) only
+when it loads them from a memcard save, and the race setup's Launch
+refuses to start a race until they are. So on a cabinet with no save,
+`MainArcadeRaceSetup_Arm` marks them loaded itself on the first linked
+race: it sets that one flag and nothing else
+(`game/MAIN/MainArcadeRaceSetupCore.c`, `MainArcadeRaceSetupCore_Arm`).
+It does not run the retail options load, which without a save would load
+all-zero options and mute the audio. The cabinet keeps its live volumes,
+stereo mode, `data.rwd`, and vibration settings. It logs, to the console
+and to `Crash Team Racing.log` next to the exe:
+
+```text
+[CTR Native] arcade race setup: no memcard options loaded; marked the options loaded (live settings kept)
+```
+
+The flag then stays set for the rest of the process (Disarm does not
+restore it), so later races and rematches log nothing more. On a cabinet
+that loaded a save the flag is already set: nothing is written or logged.
+See docs/ROSTER_MILESTONE.md (the MainArcadeRaceSetup_Arm seam).
+
+## Per-cabinet setup
+
+The complete steps for one cabinet, from a package folder to a running
+linked cabinet. Do them on both cabinets. Only the template, the port,
+and the peer differ:
+
+| | Cabinet 1 | Cabinet 2 |
+| --- | --- | --- |
+| template | `cab1.cfg` | `cab2.cfg` |
+| `seat` | `cab1` | `cab2` |
+| `port` (this cabinet's inbound UDP port) | `7001` | `7002` |
+| `peer` | `<cabinet 2 IP>:7002` | `<cabinet 1 IP>:7001` |
+
+The commands are PowerShell. They use `$pkg` for the folder the package
+was copied to; `C:\Arcade\games\ctr-native` is the example (the fleet
+location named in docs/HANDOFF.md). Set it first in each PowerShell
+window:
+
+```powershell
+$pkg = 'C:\Arcade\games\ctr-native'
+```
+
+1. **Copy the package.** Copy the whole package folder,
+   `build-msvc-x86\package\ctr-arcade-<short12>\` (made by
+   `tools/package-arcade.ps1`), to `$pkg` on the cabinet. The folder must
+   be writable: the game writes `Crash Team Racing.log` (recreated at each
+   start) and `memcards\` next to `ctr_native.exe`. No `memcards\` is
+   needed ("Fresh cabinet: game options").
+2. **Game data.** Put your own raw NTSC-U disc image (MODE2/2352), named
+   `ctr-u.bin`, in `C:\ctr-data`, the folder both templates name in
+   `data_dir`. The extracted files (`BIGFILE.BIG` and the rest) in that
+   folder work too. The package holds no game data (PK-6).
+3. **Config file.** Copy the cabinet's template to `arcade.cfg` next to
+   the exe. Cabinet 1:
+
+   ```powershell
+   Copy-Item "$pkg\cab1.cfg" "$pkg\arcade.cfg"
+   ```
+
+   Cabinet 2:
+
+   ```powershell
+   Copy-Item "$pkg\cab2.cfg" "$pkg\arcade.cfg"
+   ```
+
+   Then edit `$pkg\arcade.cfg` (save it as UTF-8 or ANSI text, not
+   UTF-16):
+   - `peer`: always. Replace the placeholder IP with the other cabinet's
+     fixed IP and keep the port: cabinet 1
+     `peer = <cabinet 2 IP>:7002`, cabinet 2 `peer = <cabinet 1 IP>:7001`.
+   - `data_dir`: only if the data is not in `C:\ctr-data`. Use a full path,
+     or a path relative to `$pkg`; `C:ctr-data` and `\ctr-data` are
+     refused (PK-6).
+   - `seat` and `port`: keep the template's values. The two cabinets need
+     different seats, and each `peer` port must be the other cabinet's
+     `port`.
+   - `fullscreen`: keep `1` on a cabinet (`0` is windowed, for testing).
+
+   There are no other keys (PK-3). A comment goes on its own line: a
+   `# comment` after a value makes the value invalid.
+4. **Firewall (PK-9).** In an elevated PowerShell (Run as administrator),
+   after setting `$pkg`, allow inbound UDP on this cabinet's port for the
+   packaged exe, from the other cabinet only. Cabinet 1:
+
+   ```powershell
+   New-NetFirewallRule -DisplayName 'CTR arcade link' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 7001 -RemoteAddress <cabinet 2 IP> -Program "$pkg\ctr_native.exe"
+   ```
+
+   Cabinet 2:
+
+   ```powershell
+   New-NetFirewallRule -DisplayName 'CTR arcade link' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 7002 -RemoteAddress <cabinet 1 IP> -Program "$pkg\ctr_native.exe"
+   ```
+
+   If the package folder or the other cabinet's IP changes, remove the
+   rule (`Remove-NetFirewallRule -DisplayName 'CTR arcade link'`) and add
+   it again.
+5. **Same build.** On both cabinets:
+
+   ```powershell
+   Get-FileHash "$pkg\ctr_native.exe" -Algorithm SHA256
+   ```
+
+   The hash must equal the `ctr_native.exe` line in `$pkg\MANIFEST.txt`,
+   and so be the same on both cabinets: the link handshake rejects two
+   different builds.
+6. **Start.** Double-click `ctr_native.exe` in `$pkg`, or run it with no
+   arguments with `$pkg` as the working directory:
+
+   ```powershell
+   Set-Location $pkg
+   .\ctr_native.exe
+   ```
+
+   It reads `arcade.cfg` from its own folder (PK-2) and then works in that
+   folder, whatever the launch directory. Among its first console lines
+   it must show (here with the example `$pkg`):
+
+   ```text
+   [CTR Native] Config file: C:\Arcade\games\ctr-native\arcade.cfg
+   [CTR Native] Config groups from the file: link fullscreen data_dir
+   [CTR Native] Local window mode: fullscreen
+   ```
+
+   `Config file: none (... not found)` means there is no `arcade.cfg` next
+   to the exe (check for a hidden `.txt` extension), and the cabinet would
+   start unlinked. An error in the file stops the game with a message
+   naming the file and, where there is one, the line.
 
 ## Template line ends
 

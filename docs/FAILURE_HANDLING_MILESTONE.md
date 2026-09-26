@@ -28,13 +28,27 @@ unbuilt at the point this document was written.
 `include/platform/native_lockstep_match_outcome.h:30-41` defines three
 constants:
 
-- `NATIVE_LOCKSTEP_STALL_TIMEOUT_DEFAULT_FRAMES` `180u` (3 s at 60 Hz) — the
-  milestone's deliberate default: a two-cabinet wired-LAN hiccup should
-  recover well inside 3 s.
-- `NATIVE_LOCKSTEP_STALL_TIMEOUT_MIN_FRAMES` `30u` (0.5 s at 60 Hz) — below
+- `NATIVE_LOCKSTEP_STALL_TIMEOUT_DEFAULT_FRAMES` `180u` (about 6.0 s) — the
+  module's default when the caller passes `0`. The milestone chose it as
+  "3 s at 60 Hz", assuming a 60 Hz consumption frame; at the real rate
+  (below) it is about 6.0 s.
+- `NATIVE_LOCKSTEP_STALL_TIMEOUT_MIN_FRAMES` `30u` (about 1.0 s) — below
   this a transient network hiccup could not plausibly recover in time.
-- `NATIVE_LOCKSTEP_STALL_TIMEOUT_MAX_FRAMES` `600u` (10 s at 60 Hz) — a hard
+- `NATIVE_LOCKSTEP_STALL_TIMEOUT_MAX_FRAMES` `600u` (about 20 s) — a hard
   ceiling so a truly dead peer does not stall the cabinet forever.
+
+The seconds are at the race tick rate. One consumption frame is one race
+tick, which is 2 VBlanks of the native pacer (897619 GPU cycles per VBlank
+at 53693175 Hz, `platform/native_platform.c`), 33435 us, about 29.91 Hz. A
+stall held in a linked race counts one stalled poll per full hold period of
+the same 33435 us (`MAIN_ARCADE_RACE_HOLD_PERIOD_US`,
+`game/MAIN/MainArcadeRaceHoldCore.h`). The one production caller, the
+arcade-link adapter, passes 90 frames, about 3.0 s
+(`NATIVE_ARCADE_NETPLAY_DEFAULT_STALL_TIMEOUT_TICKS`,
+`include/platform/native_arcade_netplay.h`), 90 periods of 33435 us,
+3009150 us in all. In the two-process gate's recorded run cab1 held 90 tick
+periods (3010214 us and 3010293 us) before it ended the race as a stall
+timeout (`docs/LOCKSTEP_RACE_MILESTONE.md` LR-S13).
 
 `NativeLockstepMatchOutcome_Init` (`platform/native_lockstep_match_outcome.c:5-23`)
 zeroes the tracker and uses the default when the caller passes `0`, otherwise

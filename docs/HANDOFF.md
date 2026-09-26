@@ -33,7 +33,9 @@ Integration order:
 3. Stable two-human-plus-bot roster and RNG ownership — functionally
    complete for both match profiles, the two-cabinet (two humans, four
    bots) and the single-cabinet (one human, seven bots) retail arcade race,
-   proven by the live roster proof (`arcade_roster_determinism`) on one
+   proven by the live roster proof (ctests
+   `arcade_roster_determinism_two_cab` and
+   `arcade_roster_determinism_one_cab`) on one
    machine: both profiles over 900 race ticks, covering same-seed
    identity, seed divergence, and menu-history independence (demo-race
    launch and odd-timer-offset runs). See `docs/ROSTER_MILESTONE.md`.
@@ -174,8 +176,12 @@ Integration order:
   words, seed the RNGs, and validate the live roster and bot setup facts,
   failing closed. It pins every non-transient mode bit (cheats included), the
   vibration bits to 0, and boolDemoMode to 0, and requires the 30/1 tick
-  rate. Dormant unless armed; its state is never checkpointed, recorded, or
-  canonical. The init of the main-menu level while VALIDATED (the return
+  rate. On a cabinet with no memcard save a successful Arm marks
+  `sdata->boolHasLoadedOptions` (only that flag, not restored at Disarm)
+  without running the retail options load, so Launch's options
+  precondition holds and the live audio settings stay
+  (`docs/PACKAGING.md` "Fresh cabinet: game options"). Dormant unless
+  armed; its state is never checkpointed, recorded, or canonical. The init of the main-menu level while VALIDATED (the return
   load after a linked race) is a no-op, and the owner Disarms on the first
   idle main-menu frame, which restores the saved vibration bits.
 - **Race counter pins (RS-17, LR-8).** The same race-init hook pins the
@@ -212,8 +218,11 @@ Integration order:
   one-cab builds a single-cabinet config from the fixture's track, laps,
   CAB1 character, and bot difficulty, with the retail 1P bots and the seed
   as its masterSeed (match select is not used). The report (format v11)
-  names the profile. `tools/arcade-roster-proof-check.ps1` (ctest
-  `arcade_roster_determinism`) runs eleven proofs. Two-cab, 900 race ticks
+  names the profile. `tools/arcade-roster-proof-check.ps1` runs eleven
+  proofs, split across two ctests by `-Group`:
+  `arcade_roster_determinism_two_cab` runs A-E and K, and
+  `arcade_roster_determinism_one_cab` runs F-J plus its own A (see Build
+  and test). Two-cab, 900 race ticks
   each: A and B (one seed, from the title) must be byte-identical; C (from
   the attract demo race) and E (37 ticks late; its launch timer offset
   from A must be odd) must equal A in the setup digests, the seeded and
@@ -475,7 +484,8 @@ the arcade-link screens and host adapter exist and are tested on top of it
   (`--arcade-link-autopilot-freeze <t>`, `--arcade-link-autopilot-desync
   <t>`); while it runs, every race tick logs its V4 digest line.
   `tools/arcade-link-launch-check.ps1` (ctest `arcade_link_launch`) runs
-  cab1 and cab2 over 127.0.0.1 ports 7001 and 7002 with a 6000-tick cap:
+  cab1 and cab2 over 127.0.0.1 (ports 7101 and 7102 under ctest; the
+  script's default is 7001 and 7002) with a 6000-tick cap:
   race 1 is a natural finish in which cab2 freezes for 45 periods at race
   tick 600 and cab1 must hold and resume; in race 2 cab2 flips a CONTROL
   digest at race tick 300 and a cabinet must report RACE OUT OF SYNC for
@@ -517,16 +527,20 @@ Run from the repository root:
 ```sh
 cmake --preset windows-msvc-x86
 cmake --build build-msvc-x86 --config Debug
-# Per-change check: the fast suite (163 tests, about 35 s).
+# Inner loop, while iterating on a change: the fast suite (163 tests).
 ctest --test-dir build-msvc-x86 -C Debug -LE live -j 8 --output-on-failure
-# One live area, only when the change reaches it:
+# Task scope: also each live area the change reaches.
 ctest --test-dir build-msvc-x86 -C Debug -L live-link --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-roster -j 8 --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-render --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-package --output-on-failure
-# The full suite (168 tests), all live tests at once:
+# Milestone gate, once before the work is done: the full suite (168 tests).
 ctest --test-dir build-msvc-x86 -C Debug -j 8 --output-on-failure
 ```
+
+The inner-loop and task-scope runs are checks while working; they do not
+replace the full suite. The full parallel suite runs once at the milestone
+gate, and the work is not done until it passes.
 
 Use `build-msvc-x86`; other `build-msvc-x86-*` directories are from earlier
 milestones. Keep `-C Debug` even with `-N`: this multi-configuration build
@@ -540,13 +554,14 @@ Five tests carry the ctest label `live` plus one area label:
 (`live-roster`, about 273 s each), `arcade_link_launch` (`live-link`, about
 242 s), and `package_arcade_smoke` (`live-package`, about 242 s).
 `ctest -LE live` excludes all five; the default run includes them. They are
-parallel-safe (no RUN_SERIAL or RESOURCE_LOCK): with `-L live -j 8` all five
-passed together in 273 s (the old serial full suite took about 605 s), so a
-full `-j 8` run should take about as long as the slowest live test (not
-measured separately); `-j 16` gave the fast suite no gain over `-j 8`. Each live test writes only under its own
-directory of the build tree, and the two link gates use distinct loopback
-ports (`arcade_link_launch` 7101 and 7102, `package_arcade_smoke` the
-package's 7001 and 7002; the fast suite's socket tests use 48000-48600).
+parallel-safe (no RUN_SERIAL or RESOURCE_LOCK). Measured in Debug: the fast
+suite (163 tests) takes 86 s serial and 36 s with `-j 8`, and all five live
+tests together with `-L live -j 8` take 273 s (the old serial full suite
+took about 605 s); `-j 16` gave the fast suite no gain over `-j 8`. Each
+live test writes only under its own directory of the build tree, and the
+two link gates use distinct loopback ports (`arcade_link_launch` 7101 and
+7102, `package_arcade_smoke` the package's 7001 and 7002; the fast suite's
+socket tests use 48000-48600).
 Runs from the build tree still read the repository's `memcards\` and write
 the gitignored `Crash Team Racing.log` in the repository root (shared,
 diagnostic only, never read by a check). All live tests are Windows only
@@ -585,6 +600,36 @@ one, platform init fails, the SDL error is logged, and the exe exits 1. SDL
 assertions are logged and ignored rather than shown as a dialog, and the G29
 stays enabled (HIDAPI is not disabled). When the exe owns its console window
 (e.g. launched by double-click), every early exit waits for Enter.
+
+## Packaging
+
+See `docs/PACKAGING.md` (decisions PK-1..PK-9).
+
+- `tools/package-arcade.ps1`, run from a clean tree after the full Debug
+  and Release suites pass, builds the Release `ctr_native` (the tested
+  `CTR_INTERNAL` build, PK-1) and writes one self-contained folder,
+  `build-msvc-x86\package\ctr-arcade-<short12>\`: the static
+  `ctr_native.exe`, the config templates `cab1.cfg` and `cab2.cfg`,
+  `README.txt`, and `MANIFEST.txt` (every file's size and SHA-256). Its
+  retail-data guard refuses any other file. The package holds no game
+  data.
+- Each cabinet runs from `arcade.cfg` next to the exe, a copy of its
+  template (`--config <path>` selects another file). Its keys are
+  `data_dir` (the folder with the cabinet's own `ctr-u.bin`), `seat`,
+  `port`, `peer`, and `fullscreen`; the link group goes through the same
+  parser as the `--arcade-link` flags, and the command line overrides the
+  file per group. The config is host-local: it never reaches match
+  identity, simulation, replay, or canonical state.
+- A fresh cabinet needs no `memcards\` save: the first linked race's Arm
+  marks the game options loaded (see Live race setup) and logs "no
+  memcard options loaded; marked the options loaded (live settings kept)".
+- `tools/package-arcade-smoke.ps1` runs the two-process loopback gate on a
+  copy of a package, with no `memcards\`, driven by the package's own
+  config files. The live ctest `package_arcade_smoke` runs it on a staged
+  package of the build's own exe; the fast ctests `package_arcade_stage`
+  and `package_arcade_content_guard` check the stage mode and the guard.
+- The owner's per-cabinet steps (data, config lines, the firewall rule,
+  starting) are `docs/PACKAGING.md` "Per-cabinet setup".
 
 ## Key files
 
@@ -696,8 +741,10 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
   `platform/native_vblank_pacing.c`, `include/platform/native_vblank_pacing.h`
   (the pure pacing decision behind fixed VBlank pacing, used by the proof
   and by linked races);
-  `tools/arcade-roster-proof-check.ps1` (the eleven-run checker, five
-  two-cab and five one-cab runs and the two-cab hold run K).
+  `tools/arcade-roster-proof-check.ps1` (the checker: eleven runs, five
+  two-cab and five one-cab runs and the two-cab hold run K, split by
+  `-Group two-cab|one-cab` into the two `arcade_roster_determinism_*`
+  ctests; `tests/arcade_roster_proof_groups_test.cmake` pins the split).
 - Presentation options (host-local): `platform/native_display_config.c`,
   `include/platform/native_display_config.h` (render scale, texture filter),
   `platform/native_frame_capture.c`, `include/platform/native_frame_capture.h`
@@ -713,13 +760,20 @@ stays enabled (HIDAPI is not disabled). When the exe owns its console window
 - Startup robustness: `platform/native_sdl_assert.c`,
   `include/platform/native_sdl_assert.h` (SDL assertion handler);
   `Platform_Init` in `platform/native_platform.c` (fail-fast platform init).
+- Packaging: `tools/package-arcade.ps1` (package, stage mode, and
+  retail-data guard), `tools/package-arcade-smoke.ps1` (smoke gate),
+  `tools/package/cab1.cfg`, `cab2.cfg`, `README.txt` (templates and
+  operator guide); `platform/native_arcade_config.c`,
+  `include/platform/native_arcade_config.h` (config file parser, called
+  only by `main.c`).
 - Unity build chain: `game/game_unity.h` (ordered includes; add new game `.c`
   files here). Standalone libraries are declared in `CMakeLists.txt`.
 - Related docs: `docs/ARCADE_FORK.md`, `docs/TOPOLOGY_LEASE_AUTHORITY.md`,
   `docs/REPLAYS.md`, `docs/MEMORY_MODEL.md`, `docs/G29_INPUT.md`,
   `docs/GAME_LOOP_UI_MILESTONE.md`, `docs/MATCH_SELECT_MILESTONE.md`,
   `docs/ROSTER_MILESTONE.md`, `docs/RACE_LAUNCH_MILESTONE.md`,
-  `docs/LOCKSTEP_MILESTONE.md`, `docs/LOCKSTEP_RACE_MILESTONE.md`.
+  `docs/LOCKSTEP_MILESTONE.md`, `docs/LOCKSTEP_RACE_MILESTONE.md`,
+  `docs/PACKAGING.md`.
 
 ## Rules and constraints
 

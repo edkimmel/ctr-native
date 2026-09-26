@@ -1014,8 +1014,15 @@ game/MAIN/MainArcadeRaceSetupPlan.h and game/MAIN/MainArcadeRaceSetupCore.h.
    id, so neither a START tap nor MainFrame_HaveAllPads can pause. No
    retail code changed; the RL-13 vibration guard stays, now unreachable
    in a linked race.
-6. The rehearsal RESULTS says RACE COMPLETE for an undriven race. This is
-   interim and development only; HANDOFF steps 6-7 need Task 8.
+6. Resolved by Task 8 (docs/LOCKSTEP_RACE_MILESTONE.md LR-12, LR-18):
+   the undriven rehearsal (RL-10), whose RESULTS said RACE COMPLETE for a
+   race nobody drove, is closed. A linked race is now driven in lockstep
+   from race tick 0, and RESULTS says RACE COMPLETE only when the drive
+   ends FINISHED: on END_OF_RACE, 900 race ticks after the first human
+   finish (the finish grace), or at the 18000-tick race-length bound. A
+   stall timeout or a dropped peer ends as OPPONENT DISCONNECTED, a
+   detected desync as RACE OUT OF SYNC, and a protocol fault or a local
+   failure as LINK ERROR (the full table is LOCKSTEP_RACE LR-12).
 7. The live gate needs a build made from a clean tree (GAME_LOOP_UI risk
    5), so it skips (77) on a dirty-tree build. A skip does not count.
    Satisfied for Task 7: the recorded, non-skipped PASS at e5279e31d
