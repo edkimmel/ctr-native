@@ -37,7 +37,10 @@
  *
  * - Arm (IDLE only) builds the plan and derives the bank from the config's
  *   masterSeed. On failure it stays IDLE, records PLAN or BANK as the
- *   failure code, and returns 0.
+ *   failure code, and returns 0. On a cabinet with no memcard save
+ *   (sdata->boolHasLoadedOptions still 0) a successful Arm sets that flag,
+ *   and only that flag, without running the retail options load, so the
+ *   live audio settings stay and Launch's options precondition holds.
  * - Launch (ARMED only) checks the preconditions (no load in progress, no
  *   pending OnBegin mode bits, options loaded, no pause bit), applies the
  *   plan to the live fields except levelID, and requests the load of the

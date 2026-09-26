@@ -187,6 +187,9 @@ static void MainArcadeRaceSetup_Apply(struct GameTracker *gGT, const struct Main
 		case MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CLOCK_FRAME_START:
 			gGT->clockFrameStart = (int)(int32_t)op->value;
 			break;
+		case MAIN_ARCADE_RACE_SETUP_CORE_TARGET_OPTIONS_LOADED:
+			sdata->boolHasLoadedOptions = (u16)(uint16_t)op->value;
+			break;
 		default:
 			break;
 		}
@@ -279,8 +282,17 @@ int MainArcadeRaceSetup_Arm(const struct NativeMatchConfigV1 *config)
 {
 	struct MainArcadeRaceSetupCoreOutcome *outcome = &s_mainArcadeRaceSetupScratch.outcome;
 	const struct MainArcadeRaceSetupPlan *plan = &s_mainArcadeRaceSetup.plan;
-	const int armed = MainArcadeRaceSetupCore_Arm(&s_mainArcadeRaceSetup, config, (uint32_t)sdata->gGT->gameMode1, outcome);
+	struct GameTracker *gGT = sdata->gGT;
+	const int armed = MainArcadeRaceSetupCore_Arm(&s_mainArcadeRaceSetup, config, (uint32_t)gGT->gameMode1,
+		(uint32_t)sdata->boolHasLoadedOptions, outcome);
 
+	/* On a cabinet with no memcard save: marks the options loaded (see the
+	 * core's Arm). Cabinet-local host state, not match state. */
+	MainArcadeRaceSetup_Apply(gGT, outcome);
+	if (outcome->optionsMarked != 0u)
+	{
+		Platform_Log(MAIN_ARCADE_RACE_SETUP_LOG "no memcard options loaded; marked the options loaded (live settings kept)\n");
+	}
 	if (armed)
 	{
 		Platform_Log(MAIN_ARCADE_RACE_SETUP_LOG

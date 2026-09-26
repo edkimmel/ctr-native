@@ -14,7 +14,7 @@ _Static_assert(MAIN_ARCADE_RACE_SETUP_CORE_LAUNCH_OP_COUNT <= MAIN_ARCADE_RACE_S
 	"every Launch op must fit the outcome's write list");
 _Static_assert(MAIN_ARCADE_RACE_SETUP_CORE_BEGIN_OP_COUNT <= MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS,
 	"every pre-drivers op must fit the outcome's write list");
-_Static_assert(MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS >= 1u, "the Disarm op must fit the outcome's write list");
+_Static_assert(MAIN_ARCADE_RACE_SETUP_CORE_MAX_OPS >= 1u, "the Arm op and the Disarm op must each fit the outcome's write list");
 /* Arm's BANK failure is defence in depth: the plan accepts only configs with
  * the match config's derivation version, and the bank derives exactly that
  * version, so a config the plan accepts always derives. */
@@ -109,7 +109,7 @@ static void MainArcadeRaceSetupCore_PushModeFields(struct MainArcadeRaceSetupCor
 }
 
 int MainArcadeRaceSetupCore_Arm(struct MainArcadeRaceSetupCore *core, const struct NativeMatchConfigV1 *config,
-	uint32_t liveGameMode1, struct MainArcadeRaceSetupCoreOutcome *outcome)
+	uint32_t liveGameMode1, uint32_t optionsLoaded, struct MainArcadeRaceSetupCoreOutcome *outcome)
 {
 	if ((core == NULL) || (outcome == NULL))
 	{
@@ -146,6 +146,22 @@ int MainArcadeRaceSetupCore_Arm(struct MainArcadeRaceSetupCore *core, const stru
 	core->config = *config;
 	memcpy(core->configDigest, core->plan.configDigest, sizeof(core->configDigest));
 	core->savedVibration = liveGameMode1 & MAIN_ARCADE_RACE_SETUP_GM1_HOST_LOCAL_MASK;
+	/* A fresh cabinet with no memcard save never loaded its options: retail
+	 * sets boolHasLoadedOptions only in RaceConfig_LoadGameOptions, after a
+	 * memcard load (RefreshCard.c), so Launch's options precondition would
+	 * fail on every race. The retail load is deliberately not run: with no
+	 * save, sdata->gameOptions is all zeros (the new-profile memset, GAMEPROG.c)
+	 * while the real defaults live in HOWL (howl_InitGlobals), so it would
+	 * mute every volume, force mono, and zero data.rwd. Only the flag is
+	 * marked (OPTIONS_LOADED): the live volumes, stereo mode, data.rwd, and
+	 * vibration bits stay as they are, and any later retail options load
+	 * becomes its retail no-op, the state Launch requires. With a save loaded
+	 * the flag is already set and nothing is written. */
+	if (optionsLoaded == 0u)
+	{
+		MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_OPTIONS_LOADED, 0u, 1);
+		outcome->optionsMarked = 1u;
+	}
 	MainArcadeRaceSetupCore_Enter(core, MAIN_ARCADE_RACE_SETUP_ARMED, outcome);
 	outcome->result = 1u;
 	return 1;

@@ -276,7 +276,8 @@
  *   bits in once (RaceConfig.c:19).
  * - Launch preconditions: sdata->Loading.stage is LOAD_IDLE; all four pending
  *   OnBegin mode words are 0; sdata->boolHasLoadedOptions != 0 (so the
- *   one-time options load cannot OR vibration bits in after Apply); and
+ *   one-time options load cannot OR vibration bits in after Apply; on a
+ *   cabinet with no memcard save, Arm sets the flag without that load); and
  *   (gameMode1 & PAUSE_ALL) == 0. Launch never clears pause itself: the
  *   unpause path (MainFrame.c:397-406) has side effects (menu input clear,
  *   pause audio, the adventure pause cleanup, ElimBG, the menu hide, the

@@ -254,7 +254,7 @@ static int ExpectHooksNoOp(struct MainArcadeRaceSetupCore *core)
 static int Arm(struct MainArcadeRaceSetupCore *core, uint32_t liveGameMode1)
 {
 	MainArcadeRaceSetupCore_Reset(core);
-	return MainArcadeRaceSetupCore_Arm(core, &s_config, liveGameMode1, &s_outcome);
+	return MainArcadeRaceSetupCore_Arm(core, &s_config, liveGameMode1, 1u, &s_outcome);
 }
 
 static int ArmAndLaunch(struct MainArcadeRaceSetupCore *core)
@@ -312,13 +312,13 @@ static int TestArm(void)
 
 	/* Refused configs stay IDLE with PLAN, and log ARM_REFUSED. */
 	MainArcadeRaceSetupCore_Reset(&s_other);
-	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, NULL, 0u, &s_outcome) == 0);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, NULL, 0u, 1u, &s_outcome) == 0);
 	CHECK(s_outcome.log == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_LOG_ARM_REFUSED && s_outcome.opCount == 0u);
 	CHECK(MainArcadeRaceSetupCore_Status(&s_other) == MAIN_ARCADE_RACE_SETUP_IDLE);
 	CHECK(MainArcadeRaceSetupCore_Failure(&s_other) == MAIN_ARCADE_RACE_SETUP_FAILURE_PLAN);
 	bad = s_config;
 	bad.tickRateNumerator = 60u;
-	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &bad, 0u, &s_outcome) == 0);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &bad, 0u, 1u, &s_outcome) == 0);
 	CHECK(MainArcadeRaceSetupCore_Status(&s_other) == MAIN_ARCADE_RACE_SETUP_IDLE);
 	CHECK(MainArcadeRaceSetupCore_Failure(&s_other) == MAIN_ARCADE_RACE_SETUP_FAILURE_PLAN);
 	/* BANK is unreachable through a config: the plan refuses a wrong
@@ -326,19 +326,88 @@ static int TestArm(void)
 	 * derives (the core static-asserts the two versions equal). */
 	bad = s_config;
 	bad.rngDerivationVersion = NATIVE_DETERMINISTIC_RNG_DERIVATION_VERSION + 1u;
-	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &bad, 0u, &s_outcome) == 0);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &bad, 0u, 1u, &s_outcome) == 0);
 	CHECK(MainArcadeRaceSetupCore_Failure(&s_other) == MAIN_ARCADE_RACE_SETUP_FAILURE_PLAN);
 	CHECK(NativeDeterministicRngBankV1_Init(&s_other.bank, bad.masterSeed, bad.rngDerivationVersion) == 0);
 	CHECK(strcmp(MainArcadeRaceSetupCore_FailureName(MAIN_ARCADE_RACE_SETUP_FAILURE_BANK), "BANK") == 0);
 	MainArcadeRaceSetupCore_Reset(&s_other);
 	/* A refused Arm leaves a usable IDLE. */
-	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, &s_outcome) == 1);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, 1u, &s_outcome) == 1);
 	CHECK(MainArcadeRaceSetupCore_Failure(&s_other) == MAIN_ARCADE_RACE_SETUP_FAILURE_NONE);
 
 	/* NULL arguments touch nothing. */
-	CHECK(MainArcadeRaceSetupCore_Arm(NULL, &s_config, 0u, &s_outcome) == 0);
-	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, NULL) == 0);
+	CHECK(MainArcadeRaceSetupCore_Arm(NULL, &s_config, 0u, 1u, &s_outcome) == 0);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, 1u, NULL) == 0);
 	CHECK(MainArcadeRaceSetupCore_Status(&s_other) == MAIN_ARCADE_RACE_SETUP_ARMED);
+	return 0;
+}
+
+/* A fresh cabinet with no memcard save (boolHasLoadedOptions 0): Arm emits
+ * the one OPTIONS_LOADED op, value 1, and nothing else; with the flag set it
+ * emits nothing. Only a successful Arm marks; Launch's precondition stays. */
+static int TestArmMarksOptions(void)
+{
+	struct MainArcadeRaceSetupCoreLaunchView launch;
+	struct MainArcadeRaceSetupCoreLaunchView unapplied;
+	struct NativeMatchConfigV1 bad;
+
+	/* Flag set (a memcard save's options were loaded): no op, as before. */
+	MainArcadeRaceSetupCore_Reset(&s_other);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, 1u, &s_outcome) == 1);
+	CHECK(s_outcome.opCount == 0u && s_outcome.optionsMarked == 0u);
+	MainArcadeRaceSetupCore_Reset(&s_other);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, 0xFFFFu, &s_outcome) == 1);
+	CHECK(s_outcome.opCount == 0u && s_outcome.optionsMarked == 0u);
+
+	/* Flag clear: exactly the OPTIONS_LOADED op, and the same armed state. */
+	MainArcadeRaceSetupCore_Reset(&s_core);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, 0u, &s_outcome) == 1);
+	CHECK(s_outcome.result == 1u && s_outcome.optionsMarked == 1u && s_outcome.overflowed == 0u);
+	CHECK(s_outcome.opCount == 1u);
+	CHECK(s_outcome.ops[0].target == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_TARGET_OPTIONS_LOADED);
+	CHECK(s_outcome.ops[0].index == 0u && s_outcome.ops[0].value == 1);
+	CHECK(s_outcome.log == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_LOG_ENTERED);
+	CHECK(s_outcome.status == (uint32_t)MAIN_ARCADE_RACE_SETUP_ARMED);
+	CHECK(memcmp(&s_core, &s_other, sizeof(s_core)) == 0);
+
+	/* Launch keeps its precondition: without the op applied it still fails
+	 * closed; with the op's value in the view it passes. */
+	TitleLaunchView(&unapplied);
+	unapplied.optionsLoaded = 0u;
+	CHECK(MainArcadeRaceSetupCore_Launch(&s_core, &unapplied, &s_outcome) == 0);
+	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_PRECONDITION) == 0);
+	CHECK(strcmp(s_outcome.detail, "the game options are not loaded yet") == 0);
+	MainArcadeRaceSetupCore_Reset(&s_core);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, 0u, &s_outcome) == 1);
+	TitleLaunchView(&launch);
+	launch.optionsLoaded = (uint32_t)s_outcome.ops[0].value;
+	CHECK(MainArcadeRaceSetupCore_Launch(&s_core, &launch, &s_outcome) == 1);
+	CHECK(s_outcome.status == (uint32_t)MAIN_ARCADE_RACE_SETUP_LAUNCHED);
+	CHECK(s_outcome.opCount == MAIN_ARCADE_RACE_SETUP_CORE_LAUNCH_OP_COUNT && s_outcome.optionsMarked == 0u);
+	for (uint32_t i = 0; i < s_outcome.opCount; i++)
+	{
+		CHECK(s_outcome.ops[i].target != (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_TARGET_OPTIONS_LOADED);
+	}
+
+	/* A refused or wrong-state Arm writes nothing, even with the flag clear. */
+	MainArcadeRaceSetupCore_Reset(&s_other);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, NULL, 0u, 0u, &s_outcome) == 0);
+	CHECK(s_outcome.opCount == 0u && s_outcome.optionsMarked == 0u);
+	bad = s_config;
+	bad.tickRateNumerator = 60u;
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &bad, 0u, 0u, &s_outcome) == 0);
+	CHECK(s_outcome.opCount == 0u && s_outcome.optionsMarked == 0u);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, 0u, &s_outcome) == 1);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, 0u, &s_outcome) == 0);
+	CHECK(ExpectFailed(&s_other, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
+	CHECK(s_outcome.optionsMarked == 0u);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, 0u, &s_outcome) == 0);
+	CHECK(s_outcome.log == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_LOG_REFUSED);
+	CHECK(s_outcome.opCount == 0u && s_outcome.optionsMarked == 0u);
+
+	/* No other step marks the options. */
+	CHECK(ArmLaunchSeedValidate(&s_core) == 1);
+	CHECK(s_outcome.optionsMarked == 0u);
 	return 0;
 }
 
@@ -361,14 +430,14 @@ static int TestWrongState(void)
 	 * SEEDED, and VALIDATED, and Launch in LAUNCHED, SEEDED, and VALIDATED
 	 * (each state below; Launch in ARMED is the success case). */
 	CHECK(Arm(&s_core, 0u) == 1);
-	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, &s_outcome) == 0);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, 1u, &s_outcome) == 0);
 	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
 	CHECK(strcmp(s_outcome.detail, "Arm") == 0);
 	before = s_core;
 	CHECK(MainArcadeRaceSetupCore_Launch(&s_core, &launch, &s_outcome) == 0);
 	CHECK(s_outcome.log == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_LOG_REFUSED && s_outcome.opCount == 0u);
 	CHECK(memcmp(&s_core, &before, sizeof(before)) == 0);
-	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, &s_outcome) == 0);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, 1u, &s_outcome) == 0);
 	CHECK(s_outcome.log == (uint8_t)MAIN_ARCADE_RACE_SETUP_CORE_LOG_REFUSED);
 	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_FAILED);
 
@@ -379,13 +448,13 @@ static int TestWrongState(void)
 	CHECK(MainArcadeRaceSetupCore_Launch(&s_core, &launch, &s_outcome) == 0);
 	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
 	CHECK(ArmAndLaunch(&s_core) == 1);
-	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, &s_outcome) == 0);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, 1u, &s_outcome) == 0);
 	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
 	CHECK(ArmLaunchSeed(&s_core) == 1);
 	CHECK(MainArcadeRaceSetupCore_Launch(&s_core, &launch, &s_outcome) == 0);
 	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
 	CHECK(ArmLaunchSeed(&s_core) == 1);
-	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, &s_outcome) == 0);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, 1u, &s_outcome) == 0);
 	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
 	CHECK(ArmLaunchSeedValidate(&s_core) == 1);
 	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_VALIDATED);
@@ -393,7 +462,7 @@ static int TestWrongState(void)
 	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
 	CHECK(strcmp(s_outcome.detail, "Launch") == 0);
 	CHECK(ArmLaunchSeedValidate(&s_core) == 1);
-	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, &s_outcome) == 0);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &s_config, 0u, 1u, &s_outcome) == 0);
 	CHECK(ExpectFailed(&s_core, &s_outcome, MAIN_ARCADE_RACE_SETUP_FAILURE_STATE) == 0);
 	CHECK(strcmp(s_outcome.detail, "Arm") == 0);
 
@@ -1012,7 +1081,7 @@ static int ExpectPinsOnlyWhenSeeding(const struct MainArcadeRaceSetupCore *core,
 		CHECK(PinOpCount(&s_outcome) == 0u);
 	}
 	s_other = *core;
-	(void)MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, &s_outcome);
+	(void)MainArcadeRaceSetupCore_Arm(&s_other, &s_config, 0u, 1u, &s_outcome);
 	CHECK(PinOpCount(&s_outcome) == 0u);
 	s_other = *core;
 	(void)MainArcadeRaceSetupCore_Launch(&s_other, &launch, &s_outcome);
@@ -1095,7 +1164,7 @@ static int ArmAndLaunchConfig(struct MainArcadeRaceSetupCore *core, const struct
 
 	TitleLaunchView(&launch);
 	MainArcadeRaceSetupCore_Reset(core);
-	return MainArcadeRaceSetupCore_Arm(core, config, launch.fields.gameMode1, &s_outcome) &&
+	return MainArcadeRaceSetupCore_Arm(core, config, launch.fields.gameMode1, 1u, &s_outcome) &&
 	       MainArcadeRaceSetupCore_Launch(core, &launch, &s_outcome);
 }
 
@@ -1170,7 +1239,7 @@ static int TestOneCab(void)
 
 	/* Arm. */
 	MainArcadeRaceSetupCore_Reset(&s_core);
-	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &oneCab, 0u, &s_outcome) == 1);
+	CHECK(MainArcadeRaceSetupCore_Arm(&s_core, &oneCab, 0u, 1u, &s_outcome) == 1);
 	CHECK(MainArcadeRaceSetupCore_Status(&s_core) == MAIN_ARCADE_RACE_SETUP_ARMED);
 	CHECK(memcmp(&s_core.plan, &plan, sizeof(plan)) == 0);
 	CHECK(MainArcadeRaceSetupPlan_Digest(&plan, expected) == 1 && memcmp(s_core.racePlanDigest, expected, sizeof(expected)) == 0);
@@ -1348,6 +1417,7 @@ int main(void)
 	CHECK(BuildConfig(&s_config) == 1);
 	CHECK(MainArcadeRaceSetupPlan_Build(&s_config, &s_plan) == 1);
 	CHECK(TestArm() == 0);
+	CHECK(TestArmMarksOptions() == 0);
 	CHECK(TestWrongState() == 0);
 	CHECK(TestLaunch() == 0);
 	CHECK(TestFinalizeInitBegin() == 0);

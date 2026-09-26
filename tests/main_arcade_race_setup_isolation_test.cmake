@@ -66,7 +66,10 @@
 #     RS-17, R-6c; sdata->rcntTotalUnits, gGT->clockFrameStart; LR-8) exactly
 #     once each, only in its seeding step, after the
 #     load-field verification and before the first seed, at their documented
-#     values;
+#     values; the options flag (boolHasLoadedOptions, a fresh cabinet with no
+#     memcard save) is written only by the OPTIONS_LOADED case, which the core
+#     emits only from Arm with the value 1 when the view's flag is 0, and no
+#     native file runs the retail options load (RaceConfig_LoadGameOptions);
 # 12. the proof's scripted pads and per-tick digests (R-6):
 #     MainArcadeRosterProof_Start is named only by main.c (once, in an
 #     internal-build guard, after the proof was configured and before
@@ -795,9 +798,10 @@ set(expected_TIMER "gGT->timer = (int)(int32_t)op->value;")
 set(expected_FRAME_TIMER_CONFETTI "gGT->frameTimer_Confetti = (int)(int32_t)op->value;")
 set(expected_RCNT_TOTAL_UNITS "sdata->rcntTotalUnits = (int)(int32_t)op->value;")
 set(expected_CLOCK_FRAME_START "gGT->clockFrameStart = (int)(int32_t)op->value;")
+set(expected_OPTIONS_LOADED "sdata->boolHasLoadedOptions = (u16)(uint16_t)op->value;")
 list(LENGTH declared_targets declared_target_count)
-if(NOT declared_target_count EQUAL 17)
-    message(FATAL_ERROR "${prefix}: ${core_header_path} declares ${declared_target_count} write targets besides NONE, expected 17; map every new target here and in MainArcadeRaceSetup_Apply")
+if(NOT declared_target_count EQUAL 18)
+    message(FATAL_ERROR "${prefix}: ${core_header_path} declares ${declared_target_count} write targets besides NONE, expected 18; map every new target here and in MainArcadeRaceSetup_Apply")
 endif()
 set(apply_remaining "${apply_body}")
 foreach(target IN LISTS declared_targets)
@@ -878,6 +882,63 @@ ctr_require_order("${core_source} (MainArcadeRaceSetupCore_OnFinalizeInitBegin)"
     "MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RCNT_TOTAL_UNITS, 0u, (int64_t)pins.rcntTotalUnits);"
     "MainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CLOCK_FRAME_START, 0u, (int64_t)pins.clockFrameStart);"
     "MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RANDOM_NUMBER")
+# 11, continued. The options flag (a fresh cabinet with no memcard save): the
+# core names OPTIONS_LOADED exactly once, in MainArcadeRaceSetupCore_Arm,
+# after the plan and bank succeeded, pushing the value 1 only when the view's
+# optionsLoaded is 0; the adapter reads boolHasLoadedOptions only into the Arm
+# and Launch views (its one store is the Apply case above) and applies Arm's
+# outcome; no file names RaceConfig_LoadGameOptions but its own and its retail
+# caller (the adapter never runs the retail options load).
+ctr_find_block("${core_source}" "${core_code}" "int MainArcadeRaceSetupCore_Arm(" arm_body_begin arm_body_end)
+math(EXPR arm_body_length "${arm_body_end} - ${arm_body_begin} + 1")
+string(SUBSTRING "${core_code}" ${arm_body_begin} ${arm_body_length} arm_body)
+ctr_count_identifier("${core_code}" "MAIN_ARCADE_RACE_SETUP_CORE_TARGET_OPTIONS_LOADED" options_hits)
+ctr_count_identifier("${arm_body}" "MAIN_ARCADE_RACE_SETUP_CORE_TARGET_OPTIONS_LOADED" options_arm_hits)
+if(NOT options_hits EQUAL 1 OR NOT options_arm_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${core_source} must name MAIN_ARCADE_RACE_SETUP_CORE_TARGET_OPTIONS_LOADED exactly once, in MainArcadeRaceSetupCore_Arm (found ${options_hits}, ${options_arm_hits} there)")
+endif()
+ctr_require_order("${core_source} (MainArcadeRaceSetupCore_Arm)" "${arm_body}"
+    "MainArcadeRaceSetupPlan_Build(config, &core->plan)"
+    "NativeDeterministicRngBankV1_Init(&core->bank, config->masterSeed, config->rngDerivationVersion)"
+    "if (optionsLoaded == 0u)\n\t{\n\t\tMainArcadeRaceSetupCore_Push(outcome, MAIN_ARCADE_RACE_SETUP_CORE_TARGET_OPTIONS_LOADED, 0u, 1);"
+    "MainArcadeRaceSetupCore_Enter(core, MAIN_ARCADE_RACE_SETUP_ARMED, outcome);")
+ctr_find_block("${adapter_source}" "${adapter_code}" "int MainArcadeRaceSetup_Arm(const struct NativeMatchConfigV1 *config)"
+    adapter_arm_begin adapter_arm_end)
+math(EXPR adapter_arm_length "${adapter_arm_end} - ${adapter_arm_begin} + 1")
+string(SUBSTRING "${adapter_code}" ${adapter_arm_begin} ${adapter_arm_length} adapter_arm_body)
+ctr_require_order("${adapter_source} (MainArcadeRaceSetup_Arm)" "${adapter_arm_body}"
+    "(uint32_t)sdata->boolHasLoadedOptions, outcome);" "MainArcadeRaceSetup_Apply(gGT, outcome);")
+string(REPLACE "(uint32_t)sdata->boolHasLoadedOptions, outcome);" "@ARM_VIEW@" options_masked "${adapter_code}")
+string(REPLACE "view->optionsLoaded = (uint32_t)sdata->boolHasLoadedOptions;" "@LAUNCH_VIEW@" options_masked "${options_masked}")
+string(REPLACE "sdata->boolHasLoadedOptions = (u16)(uint16_t)op->value;" "@APPLY_CASE@" options_masked "${options_masked}")
+foreach(marker IN ITEMS @ARM_VIEW@ @LAUNCH_VIEW@ @APPLY_CASE@)
+    string(REGEX MATCHALL "${marker}" marker_hits "${options_masked}")
+    list(LENGTH marker_hits marker_count)
+    if(NOT marker_count EQUAL 1)
+        message(FATAL_ERROR "${prefix}: ${adapter_source} must name boolHasLoadedOptions exactly once as ${marker} (found ${marker_count})")
+    endif()
+endforeach()
+ctr_count_identifier("${options_masked}" "boolHasLoadedOptions" options_left)
+if(NOT options_left EQUAL 0)
+    message(FATAL_ERROR "${prefix}: ${adapter_source} names boolHasLoadedOptions outside the Arm view, the Launch view, and the Apply case")
+endif()
+foreach(path IN LISTS scan_files)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    if(relative_path STREQUAL "game/RaceConfig.c" OR relative_path STREQUAL "game/RefreshCard.c")
+        continue()
+    endif()
+    file(READ "${path}" source)
+    string(FIND "${source}" "RaceConfig_LoadGameOptions" raw_options_hit)
+    if(raw_options_hit EQUAL -1)
+        continue()
+    endif()
+    ctr_strip_comments("${source}" code)
+    ctr_count_identifier("${code}" "RaceConfig_LoadGameOptions" load_options_hits)
+    if(load_options_hits GREATER 0 AND NOT relative_path MATCHES "^include/")
+        message(FATAL_ERROR "${prefix}: ${relative_path} names RaceConfig_LoadGameOptions; only its definition and its retail memcard caller may")
+    endif()
+endforeach()
+
 ctr_require("${core_header_path}" "${core_header_code}" "#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_TIMER 0\n")
 ctr_require("${core_header_path}" "${core_header_code}" "#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_FRAME_TIMER_CONFETTI 0\n")
 ctr_require("${core_header_path}" "${core_header_code}" "#define MAIN_ARCADE_RACE_SETUP_CORE_PIN_RCNT_TOTAL_UNITS 0\n")

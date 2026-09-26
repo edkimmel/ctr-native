@@ -65,6 +65,8 @@
  *   RCNT_TOTAL_UNITS, CLOCK_FRAME_START (LR-8; the pins, see "Boot-relative
  *   counters" below), then RANDOM_NUMBER, ADV_RNG0, ADV_RNG1, PSX_RAND_SEED,
  *   AUDIO_RNG (the seeds, RS-7, in this order).
+ * - Arm: OPTIONS_LOADED (value 1) only when the options were never loaded
+ *   (a fresh cabinet with no memcard save; see Arm below).
  * - Disarm: GAME_MODE1 only when the vibration bits are restored.
  * Every other step writes nothing. LAUNCH_OP_COUNT and BEGIN_OP_COUNT below
  * are those exact counts; a static assert proves each fits MAX_OPS, and a step
@@ -295,7 +297,8 @@ enum MainArcadeRaceSetupCoreTarget
 	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_TIMER,              /* gGT->timer (int), RS-17 */
 	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_FRAME_TIMER_CONFETTI, /* gGT->frameTimer_Confetti (int), RS-17 */
 	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_RCNT_TOTAL_UNITS,   /* sdata->rcntTotalUnits (int), LR-8 */
-	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CLOCK_FRAME_START   /* gGT->clockFrameStart (int), LR-8 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_CLOCK_FRAME_START,  /* gGT->clockFrameStart (int), LR-8 */
+	MAIN_ARCADE_RACE_SETUP_CORE_TARGET_OPTIONS_LOADED      /* sdata->boolHasLoadedOptions (u16), Arm only, value 1 */
 };
 
 /* The pinned boot-relative counters (RS-17, LR-8), each at 32 bits. */
@@ -341,6 +344,7 @@ struct MainArcadeRaceSetupCoreOutcome
 	uint8_t log;            /* MainArcadeRaceSetupCoreLog */
 	uint8_t vibration;      /* MainArcadeRaceSetupCoreVibration */
 	uint8_t overflowed;     /* 1 once a push found the list full; the step then fails closed (OPS) */
+	uint8_t optionsMarked;  /* Arm: 1 when the OPTIONS_LOADED op marks the options loaded */
 	uint32_t status;        /* MainArcadeRaceSetupStatus after the step */
 	uint32_t failure;       /* MainArcadeRaceSetupFailure after the step */
 	const char *detail;     /* fixed text for the log; never NULL */
@@ -452,12 +456,18 @@ void MainArcadeRaceSetupCore_Reset(struct MainArcadeRaceSetupCore *core);
  * outcome it returns 0 and touches nothing.
  *
  * Arm (IDLE only) builds the plan and its digest and derives the bank from
- * the config's masterSeed; it saves liveGameMode1's vibration bits. On failure
- * it stays IDLE with failure PLAN or BANK (log ARM_REFUSED) and returns 0.
- * config may be NULL (PLAN).
+ * the config's masterSeed; it saves liveGameMode1's vibration bits. When
+ * optionsLoaded (the live boolHasLoadedOptions) is 0, no memcard save's
+ * options were ever loaded (a fresh cabinet): Arm then emits the one
+ * OPTIONS_LOADED op (value 1) and sets optionsMarked, so the flag is set
+ * without running the retail options load (whose all-zero options would mute
+ * the audio) and Launch's options precondition holds; with optionsLoaded
+ * nonzero it writes nothing. On failure it stays IDLE with failure PLAN or
+ * BANK (log ARM_REFUSED), writes nothing, and returns 0. config may be NULL
+ * (PLAN).
  */
 int MainArcadeRaceSetupCore_Arm(struct MainArcadeRaceSetupCore *core, const struct NativeMatchConfigV1 *config,
-	uint32_t liveGameMode1, struct MainArcadeRaceSetupCoreOutcome *outcome);
+	uint32_t liveGameMode1, uint32_t optionsLoaded, struct MainArcadeRaceSetupCoreOutcome *outcome);
 
 /*
  * Launch (ARMED only): the preconditions, in order, each failing closed with
