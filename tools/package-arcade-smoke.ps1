@@ -57,8 +57,11 @@ $startedAt = Get-Date
 # The files MANIFEST.txt lists (every package file but itself).
 $manifestFiles = @('ctr_native.exe', 'cab1.cfg', 'cab2.cfg', 'README.txt')
 $packageFiles = $manifestFiles + @('MANIFEST.txt')
-# The seats, ports, and loopback peers tools/arcade-link-launch-check.ps1
-# uses with its own link options; the loopback configs must hold the same.
+# The seats, ports, and loopback peers of the package's cab1.cfg and cab2.cfg
+# (the real cabinet ports, also tools/arcade-link-launch-check.ps1's default
+# -Cab1Port and -Cab2Port); the loopback configs must hold the same.  The
+# ctest arcade_link_launch runs the gate on another port pair, so it can
+# overlap this smoke.
 $cabs = @(
     @{ Name = 'cab1'; Seat = 'cab1'; Port = '7001'; PeerPort = '7002' },
     @{ Name = 'cab2'; Seat = 'cab2'; Port = '7002'; PeerPort = '7001' })

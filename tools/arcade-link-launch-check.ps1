@@ -26,6 +26,15 @@ param(
     [string]$Cab1Config,
     [string]$Cab2Config,
 
+    # The loopback ports of cab1 and cab2 (each the other's peer port), used
+    # only without -Cab1Config/-Cab2Config (the config files hold their own
+    # ports; giving a port with them is a usage error).  The defaults are the
+    # package's 7001 and 7002 for manual runs; the ctest arcade_link_launch
+    # passes its own pair so it can overlap package_arcade_smoke, which keeps
+    # 7001 and 7002 through the package's config files.
+    [int]$Cab1Port = 7001,
+    [int]$Cab2Port = 7002,
+
     # Seconds both runs together may take.
     [int]$TimeoutSeconds = 780
 )
@@ -33,7 +42,8 @@ param(
 # Two-process live race gate (docs/RACE_LAUNCH_MILESTONE.md section 4 RL-15,
 # slice RL-S10; since LR-S13 part B the one-machine proof of
 # docs/LOCKSTEP_RACE_MILESTONE.md LR-16, LR-76).  Starts two internal
-# ctr_native processes at once, linked over loopback:
+# ctr_native processes at once, linked over loopback (ports -Cab1Port and
+# -Cab2Port, by default 7001 and 7002):
 #   cab1  --arcade-link cab1 --arcade-link-port 7001 --arcade-link-peer 127.0.0.1:7002
 #   cab2  --arcade-link cab2 --arcade-link-port 7002 --arcade-link-peer 127.0.0.1:7001
 # each with --arcade-link-autopilot <report>, which drives the link host's own
@@ -116,14 +126,17 @@ param(
 # --config <file> in place of the three link options, and its stdout must show
 # that file loaded ("Config file: <path>", once), the link group taken from it,
 # and no group overridden by the command line; everything else is unchanged.
-# The config files must hold the same seats, ports, and peers as the options
-# above (the package smoke gate, tools/package-arcade-smoke.ps1, checks that).
+# The config files must hold the same seats as the options above, and each
+# cabinet's peer must be the other's loopback port (the package smoke gate,
+# tools/package-arcade-smoke.ps1, checks that its files hold 7001 and 7002).
 #
 # Skips (77) without the disc image, without a display, with a non-internal
 # build (the option is rejected), or with an unknown build identity (a build
 # from a dirty tree: the link refuses to start).  A skip is not a pass.
 #
-# The ports are fixed, so the ctest runs RUN_SERIAL.  Every ctr_native the
+# Two checks may overlap only on distinct port pairs: the ctest
+# arcade_link_launch passes -Cab1Port/-Cab2Port distinct from the 7001 and
+# 7002 that package_arcade_smoke's config files use.  Every ctr_native the
 # check started is stopped when the check exits or is interrupted.
 #
 # Exit codes: 0 pass, 1 fail, 77 skipped (ctest SKIP_RETURN_CODE).
@@ -708,6 +721,17 @@ try {
             }
             $configPaths[$pair[0]] = (Resolve-Path -LiteralPath $pair[1] -ErrorAction Stop).ProviderPath
         }
+        if ($PSBoundParameters.ContainsKey('Cab1Port') -or $PSBoundParameters.ContainsKey('Cab2Port')) {
+            Exit-Failed '-Cab1Port and -Cab2Port apply only without -Cab1Config and -Cab2Config (the config files hold the ports)'
+        }
+    }
+    foreach ($port in @($Cab1Port, $Cab2Port)) {
+        if (($port -lt 1) -or ($port -gt 65535)) {
+            Exit-Failed "invalid port $port (1..65535)"
+        }
+    }
+    if ($Cab1Port -eq $Cab2Port) {
+        Exit-Failed "-Cab1Port and -Cab2Port must differ (both $Cab1Port)"
     }
     if ([string]::IsNullOrWhiteSpace($AssetsFile)) {
         $scriptDirectory = $PSScriptRoot
@@ -730,8 +754,8 @@ try {
     [System.IO.Directory]::CreateDirectory($resolvedOutput) | Out-Null
 
     $specs = @(
-        @{ Name = 'cab1'; Cab = 'cab1'; CabNumber = 1; Port = '7001'; Peer = '127.0.0.1:7002'; FaultArguments = @() },
-        @{ Name = 'cab2'; Cab = 'cab2'; CabNumber = 2; Port = '7002'; Peer = '127.0.0.1:7001'
+        @{ Name = 'cab1'; Cab = 'cab1'; CabNumber = 1; Port = "$Cab1Port"; Peer = "127.0.0.1:$Cab2Port"; FaultArguments = @() },
+        @{ Name = 'cab2'; Cab = 'cab2'; CabNumber = 2; Port = "$Cab2Port"; Peer = "127.0.0.1:$Cab1Port"
             FaultArguments = @('--arcade-link-autopilot-freeze', "$freezeTick", '--arcade-link-autopilot-desync', "$desyncTick") })
     foreach ($spec in $specs) {
         $run = [pscustomobject]@{
@@ -766,7 +790,11 @@ try {
     $cab1Run = $runs[0]
     $cab2Run = $runs[1]
 
-    Write-Output "arcade link launch check: two linked runs over loopback (cab1 port 7001, cab2 port 7002), three races (LR-16): the finish, the desync, the peer drop"
+    $portText = "cab1 port $Cab1Port, cab2 port $Cab2Port"
+    if ($cab1ConfigGiven) {
+        $portText = 'ports from the config files'
+    }
+    Write-Output "arcade link launch check: two linked runs over loopback ($portText), three races (LR-16): the finish, the desync, the peer drop"
     Write-Output "executable: $resolvedExecutable"
     Write-Output "output:     $resolvedOutput"
     Write-Output "race tick cap $raceTickCap on both; cab2: freeze at race 1 tick $freezeTick, desync at race 2 tick $desyncTick; cab2 killed at its race 3 tick $killRaceTick; capture frame $captureFrame on both"

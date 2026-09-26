@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Executable,
 
-    # Absolute directory for the eleven reports and their stdout/stderr logs.
+    # Absolute directory for the group's reports and their stdout/stderr logs.
     # Each run uses it as its working directory; the game itself still writes
     # the gitignored `Crash Team Racing.log` in the repository root.
     [Parameter(Mandatory = $true)]
@@ -21,12 +21,22 @@ param(
     # is 300 or less; the other runs take any count.
     [int]$Ticks = 900,
 
-    # Seconds all eleven runs together may take (parallel), or each run
+    # Seconds all the group's runs together may take (parallel), or each run
     # (-Sequential).
     [int]$TimeoutSeconds = 600,
 
-    # Run the eleven proofs one after another instead of all at once.
-    [switch]$Sequential
+    # Run the group's proofs one after another instead of all at once.
+    [switch]$Sequential,
+
+    # Which runs to launch (see "Groups" below): all (A-K, the default),
+    # two-cab (A-E and K), or one-cab (F-J plus its own A, the base of the
+    # cross-profile checks).
+    [ValidateSet('all', 'two-cab', 'one-cab')]
+    [string]$Group = 'all',
+
+    # Print the group's runs and which checks it runs, then exit 0 without
+    # launching anything (tests/arcade_roster_proof_groups_test.cmake).
+    [switch]$ListChecks
 )
 
 # Live roster determinism check (docs/ROSTER_MILESTONE.md section 3.4, R-6,
@@ -146,6 +156,17 @@ param(
 # fixed, the runs no longer depend on each other's timing and run in parallel
 # by default; -Sequential runs them one after another.
 #
+# Groups.  -Group all launches the eleven runs above and runs every check.
+# -Group two-cab launches A, B, C, D, E, and K; -Group one-cab launches F, G,
+# H, I, J, and its own A, the base of the cross-profile checks (F != A in the
+# config and race plan digests, F's input digests against A).  A check runs
+# in a group exactly when all its runs are in the group ($checkTable below);
+# a check is never skipped silently: the check prints which checks it ran and
+# which are left to the other group, and it fails at start-up unless every
+# check of -Group all runs in two-cab or one-cab.  The ctests
+# arcade_roster_determinism_two_cab and _one_cab run the two groups, each in
+# its own output directory, so together they cover every check of -Group all.
+#
 # Every ctr_native the check started is stopped when the check exits or is
 # interrupted.
 #
@@ -174,7 +195,67 @@ $slotRoles = @{
     'TWO_CAB' = @('CAB1_HUMAN', 'CAB2_HUMAN', 'BOT', 'BOT', 'BOT', 'BOT', 'INACTIVE', 'INACTIVE')
     'ONE_CAB' = @('CAB1_HUMAN', 'BOT', 'BOT', 'BOT', 'BOT', 'BOT', 'BOT', 'BOT')
 }
+# The runs of each group (see "Groups" above).
+$groupRuns = @{
+    'all' = @('A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K')
+    'two-cab' = @('A', 'B', 'C', 'D', 'E', 'K')
+    'one-cab' = @('A', 'F', 'G', 'H', 'I', 'J')
+}
+# Every check, with the runs it needs: a group runs the checks whose runs it
+# all launches.  "report X" is run X's own report checks (Read-Report and the
+# launch window).
+$checkTable = @(
+    @{ Id = 'report A'; Needs = @('A') },
+    @{ Id = 'report B'; Needs = @('B') },
+    @{ Id = 'report C'; Needs = @('C') },
+    @{ Id = 'report D'; Needs = @('D') },
+    @{ Id = 'report E'; Needs = @('E') },
+    @{ Id = 'report F'; Needs = @('F') },
+    @{ Id = 'report G'; Needs = @('G') },
+    @{ Id = 'report H'; Needs = @('H') },
+    @{ Id = 'report I'; Needs = @('I') },
+    @{ Id = 'report J'; Needs = @('J') },
+    @{ Id = 'report K'; Needs = @('K') },
+    @{ Id = 'A = B bytes'; Needs = @('A', 'B') },
+    @{ Id = 'F = G bytes'; Needs = @('F', 'G') },
+    @{ Id = 'C E offsets from A'; Needs = @('A', 'C', 'E') },
+    @{ Id = 'C E = A'; Needs = @('A', 'C', 'E') },
+    @{ Id = 'D != A'; Needs = @('A', 'D') },
+    @{ Id = 'H != F'; Needs = @('F', 'H') },
+    @{ Id = 'F != A'; Needs = @('A', 'F') },
+    @{ Id = 'F input vs A and H'; Needs = @('A', 'F', 'H') },
+    @{ Id = 'I J offsets from F'; Needs = @('F', 'I', 'J') },
+    @{ Id = 'I J = F'; Needs = @('F', 'I', 'J') },
+    @{ Id = 'K = A and hold'; Needs = @('A', 'K') })
 $runs = @()
+$checksRan = New-Object System.Collections.Generic.List[string]
+
+# The ids of the checks whose runs are all in $RunNames.
+function Get-GroupChecks([string[]]$RunNames) {
+    $ids = @()
+    foreach ($check in $checkTable) {
+        $covered = $true
+        foreach ($need in $check.Needs) {
+            if ($RunNames -notcontains $need) {
+                $covered = $false
+            }
+        }
+        if ($covered) {
+            $ids += $check.Id
+        }
+    }
+    return $ids
+}
+
+# $true when check $Id is planned for this run of the script (its runs were
+# all launched), recording it as run; $false otherwise.
+function Use-Check([string]$Id) {
+    if ($plannedChecks -notcontains $Id) {
+        return $false
+    }
+    $checksRan.Add($Id)
+    return $true
+}
 
 function Exit-Skipped([string]$Reason) {
     Write-Output "SKIPPED: $Reason"
@@ -535,6 +616,31 @@ function Compare-WithBase($Base, [string]$BaseName, $Other, [string]$Name) {
 }
 
 try {
+    # The split never drops a check: every check of -Group all must run in
+    # -Group two-cab or -Group one-cab.
+    $allChecks = @(Get-GroupChecks $groupRuns['all'])
+    $splitChecks = @(Get-GroupChecks $groupRuns['two-cab']) + @(Get-GroupChecks $groupRuns['one-cab'])
+    foreach ($check in $checkTable) {
+        if ($allChecks -notcontains $check.Id) {
+            Exit-Failed "check '$($check.Id)' does not run in -Group all"
+        }
+        if ($splitChecks -notcontains $check.Id) {
+            Exit-Failed "check '$($check.Id)' runs in neither -Group two-cab nor -Group one-cab"
+        }
+    }
+    $groupRunNames = $groupRuns[$Group]
+    $groupChecks = @(Get-GroupChecks $groupRunNames)
+    if ($ListChecks) {
+        Write-Output "group $Group runs $($groupRunNames -join ' ')"
+        foreach ($check in $checkTable) {
+            $state = 'other group'
+            if ($groupChecks -contains $check.Id) {
+                $state = 'runs'
+            }
+            Write-Output "check $($check.Id): $state"
+        }
+        exit 0
+    }
     if ([string]::IsNullOrWhiteSpace($AssetsFile)) {
         $scriptDirectory = $PSScriptRoot
         if ([string]::IsNullOrWhiteSpace($scriptDirectory)) {
@@ -553,8 +659,8 @@ try {
     }
     # Run K holds at race tick $holdTick and needs its tick lines, so it runs
     # only with more ticks than that; the other runs take any count.
-    $runK = ($Ticks -gt $holdTick)
-    if (-not $runK) {
+    $runK = ($groupRunNames -contains 'K') -and ($Ticks -gt $holdTick)
+    if (($groupRunNames -contains 'K') -and (-not $runK)) {
         Write-Output "note: run K (the stall hold) skipped: -Ticks $Ticks is not above its hold tick $holdTick"
     }
     $resolvedExecutable = (Resolve-Path -LiteralPath $Executable -ErrorAction Stop).Path
@@ -577,9 +683,12 @@ try {
         @{ Name = 'I'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 5400; Window = 'demo race'; Ticks = $Ticks; Hold = $false },
         @{ Name = 'J'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 37; Window = 'title'; Ticks = $Ticks; Hold = $false },
         @{ Name = 'K'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $true })
+    $specs = @($specs | Where-Object { $groupRunNames -contains $_.Name })
     if (-not $runK) {
         $specs = @($specs | Where-Object { $_.Name -ne 'K' })
     }
+    # The checks this invocation runs: those whose runs it all launches.
+    $plannedChecks = @(Get-GroupChecks @($specs | ForEach-Object { $_.Name }))
     foreach ($spec in $specs) {
         $run = [pscustomobject]@{
             Name = $spec.Name
@@ -609,11 +718,16 @@ try {
     if ($Sequential) {
         $mode = 'sequential'
     }
-    $runKText = ', and A with the stall hold (K)'
-    if (-not $runK) {
+    $groupText = @{
+        'all' = 'five two-cab (A-E), five one-cab (F-J), and A with the stall hold (K)'
+        'two-cab' = 'five two-cab (A-E) and A with the stall hold (K)'
+        'one-cab' = 'five one-cab (F-J) and the two-cab A, the base of the cross-profile checks'
+    }
+    $runKText = ''
+    if (($groupRunNames -contains 'K') -and (-not $runK)) {
         $runKText = ' (K skipped)'
     }
-    Write-Output "arcade roster determinism check: $($runs.Count) runs ($mode, fixed VBlank pacing), $Ticks race ticks each, five two-cab (A-E), five one-cab (F-J)$runKText"
+    Write-Output "arcade roster determinism check, group ${Group}: $($runs.Count) runs ($mode, fixed VBlank pacing), $Ticks race ticks each, $($groupText[$Group])$runKText"
     Write-Output "executable: $resolvedExecutable"
     Write-Output "output:     $resolvedOutput"
 
@@ -656,6 +770,8 @@ try {
 
     $reports = @{}
     foreach ($run in $runs) {
+        # Always planned: every launched run's own report checks.
+        $null = Use-Check "report $($run.Name)"
         $report = Read-Report $run
         foreach ($problem in $report.Problems) {
             $failures += "report $($run.Name): $problem"
@@ -692,6 +808,9 @@ try {
 
     # A and B, and F and G: byte-identical.
     foreach ($pair in @(@('A', 'B'), @('F', 'G'))) {
+        if (-not (Use-Check "$($pair[0]) = $($pair[1]) bytes")) {
+            continue
+        }
         $comparison = Compare-ReportBytes $runByName[$pair[0]].ReportPath $runByName[$pair[1]].ReportPath `
             $reports[$pair[0]] $reports[$pair[1]] $pair[0] $pair[1]
         if ($comparison.Identical) {
@@ -706,76 +825,86 @@ try {
     # run brings) and at race tick 0, and the offsets from A.  E must bring
     # an odd timer offset, and the race setup's pins (RS-17) must remove it:
     # C and E start the race with A's timer and frameTimerConfetti.
-    Write-Output "A launch counters: $($a.Header['launch counters'])"
-    Write-Output "A race tick 0 counters: $($a.Header['race tick 0 counters'])"
-    $launchC = Get-CounterOffsets $a $c -Launch
-    $launchE = Get-CounterOffsets $a $e -Launch
-    $offsetsC = Get-CounterOffsets $a $c
-    $offsetsE = Get-CounterOffsets $a $e
-    Write-Output "C - A offsets at launch: $($launchC.Text)"
-    Write-Output "E - A offsets at launch: $($launchE.Text)"
-    Write-Output "C - A offsets at race tick 0: $($offsetsC.Text)"
-    Write-Output "E - A offsets at race tick 0: $($offsetsE.Text)"
-    if (($launchE.Timer % 2) -eq 0) {
-        $failures += "E's timer offset from A at launch is $($launchE.Timer), not odd: run E no longer covers an odd boot-relative offset (choose another dwell)"
-    }
-    foreach ($pair in @(@('C', $offsetsC), @('E', $offsetsE))) {
-        if ($pair[1].Timer -ne 0) {
-            $failures += "$($pair[0])'s timer at race tick 0 is $($pair[1].Timer) off A's: the race setup's timer pin (RS-17) did not hold"
+    if (Use-Check 'C E offsets from A') {
+        Write-Output "A launch counters: $($a.Header['launch counters'])"
+        Write-Output "A race tick 0 counters: $($a.Header['race tick 0 counters'])"
+        $launchC = Get-CounterOffsets $a $c -Launch
+        $launchE = Get-CounterOffsets $a $e -Launch
+        $offsetsC = Get-CounterOffsets $a $c
+        $offsetsE = Get-CounterOffsets $a $e
+        Write-Output "C - A offsets at launch: $($launchC.Text)"
+        Write-Output "E - A offsets at launch: $($launchE.Text)"
+        Write-Output "C - A offsets at race tick 0: $($offsetsC.Text)"
+        Write-Output "E - A offsets at race tick 0: $($offsetsE.Text)"
+        if (($launchE.Timer % 2) -eq 0) {
+            $failures += "E's timer offset from A at launch is $($launchE.Timer), not odd: run E no longer covers an odd boot-relative offset (choose another dwell)"
         }
-        if ($pair[1].FrameTimerConfetti -ne 0) {
-            $failures += "$($pair[0])'s frameTimerConfetti at race tick 0 is $($pair[1].FrameTimerConfetti) off A's: the race setup's frameTimer_Confetti pin (RS-17) did not hold"
+        foreach ($pair in @(@('C', $offsetsC), @('E', $offsetsE))) {
+            if ($pair[1].Timer -ne 0) {
+                $failures += "$($pair[0])'s timer at race tick 0 is $($pair[1].Timer) off A's: the race setup's timer pin (RS-17) did not hold"
+            }
+            if ($pair[1].FrameTimerConfetti -ne 0) {
+                $failures += "$($pair[0])'s frameTimerConfetti at race tick 0 is $($pair[1].FrameTimerConfetti) off A's: the race setup's frameTimer_Confetti pin (RS-17) did not hold"
+            }
         }
     }
 
     # C and E against A.
-    foreach ($pair in @(@('C', $c), @('E', $e))) {
-        $comparison = Compare-WithBase $a 'A' $pair[1] $pair[0]
-        foreach ($message in $comparison.Messages) {
-            Write-Output $message
+    if (Use-Check 'C E = A') {
+        foreach ($pair in @(@('C', $c), @('E', $e))) {
+            $comparison = Compare-WithBase $a 'A' $pair[1] $pair[0]
+            foreach ($message in $comparison.Messages) {
+                Write-Output $message
+            }
+            $failures += @($comparison.Failures)
         }
-        $failures += @($comparison.Failures)
     }
 
     # D against A: another seed changes the config, the bank, and race tick 0's RNG.
-    foreach ($key in @('config digest', 'bank digest')) {
-        if ($d.Header[$key] -eq $a.Header[$key]) {
-            $failures += "D does not differ from A in the $key ($($a.Header[$key]))"
+    if (Use-Check 'D != A') {
+        foreach ($key in @('config digest', 'bank digest')) {
+            if ($d.Header[$key] -eq $a.Header[$key]) {
+                $failures += "D does not differ from A in the $key ($($a.Header[$key]))"
+            }
         }
-    }
-    if ($d.Ticks[0].Rng -eq $a.Ticks[0].Rng) {
-        $failures += "D does not differ from A in the tick 0 rng digest ($($a.Ticks[0].Rng))"
-    }
-    else {
-        Write-Output "D != A: config digest, bank digest, and tick 0 rng digest (A $($a.Ticks[0].Rng), D $($d.Ticks[0].Rng))"
+        if ($d.Ticks[0].Rng -eq $a.Ticks[0].Rng) {
+            $failures += "D does not differ from A in the tick 0 rng digest ($($a.Ticks[0].Rng))"
+        }
+        else {
+            Write-Output "D != A: config digest, bank digest, and tick 0 rng digest (A $($a.Ticks[0].Rng), D $($d.Ticks[0].Rng))"
+        }
     }
 
     # H against F: another seed changes the ONE_CAB config, bank, and race tick 0's RNG.
-    $hDiffers = $true
-    foreach ($key in @('config digest', 'bank digest')) {
-        if ($h.Header[$key] -eq $f.Header[$key]) {
-            $failures += "H does not differ from F in the $key ($($f.Header[$key]))"
+    if (Use-Check 'H != F') {
+        $hDiffers = $true
+        foreach ($key in @('config digest', 'bank digest')) {
+            if ($h.Header[$key] -eq $f.Header[$key]) {
+                $failures += "H does not differ from F in the $key ($($f.Header[$key]))"
+                $hDiffers = $false
+            }
+        }
+        if ($h.Ticks[0].Rng -eq $f.Ticks[0].Rng) {
+            $failures += "H does not differ from F in the tick 0 rng digest ($($f.Ticks[0].Rng))"
             $hDiffers = $false
         }
-    }
-    if ($h.Ticks[0].Rng -eq $f.Ticks[0].Rng) {
-        $failures += "H does not differ from F in the tick 0 rng digest ($($f.Ticks[0].Rng))"
-        $hDiffers = $false
-    }
-    if ($hDiffers) {
-        Write-Output "H != F: config digest, bank digest, and tick 0 rng digest (F $($f.Ticks[0].Rng), H $($h.Ticks[0].Rng))"
+        if ($hDiffers) {
+            Write-Output "H != F: config digest, bank digest, and tick 0 rng digest (F $($f.Ticks[0].Rng), H $($h.Ticks[0].Rng))"
+        }
     }
 
     # F against A: another profile changes the config and the race plan.
-    $fDiffers = $true
-    foreach ($key in @('config digest', 'race plan digest')) {
-        if ($f.Header[$key] -eq $a.Header[$key]) {
-            $failures += "F does not differ from A in the $key ($($a.Header[$key]))"
-            $fDiffers = $false
+    if (Use-Check 'F != A') {
+        $fDiffers = $true
+        foreach ($key in @('config digest', 'race plan digest')) {
+            if ($f.Header[$key] -eq $a.Header[$key]) {
+                $failures += "F does not differ from A in the $key ($($a.Header[$key]))"
+                $fDiffers = $false
+            }
         }
-    }
-    if ($fDiffers) {
-        Write-Output "F != A: config digest and race plan digest (ONE_CAB vs TWO_CAB)"
+        if ($fDiffers) {
+            Write-Output "F != A: config digest and race plan digest (ONE_CAB vs TWO_CAB)"
+        }
     }
 
     # The ONE_CAB pads reach the game.  The input digest is the V1 INPUT
@@ -785,63 +914,70 @@ try {
     # from race tick 1 A's player 1 holds CROSS and F's player 1 is neutral,
     # so F != A at every later tick; and the pads are a function of (profile,
     # tick) only, so F = H at every tick.
-    $inputFailures = @()
-    if ($f.Ticks[0].Input -ne $a.Ticks[0].Input) {
-        $inputFailures += "F differs from A in the tick 0 input digest (A $($a.Ticks[0].Input), F $($f.Ticks[0].Input)): the neutral pads of the two profiles are not the same pad layout"
-    }
-    for ($i = 1; $i -lt $Ticks; $i++) {
-        if ($f.Ticks[$i].Input -eq $a.Ticks[$i].Input) {
-            $inputFailures += "F does not differ from A in the tick $i input digest ($($a.Ticks[$i].Input)): the ONE_CAB pads did not reach the game"
-            break
+    if (Use-Check 'F input vs A and H') {
+        $inputFailures = @()
+        if ($f.Ticks[0].Input -ne $a.Ticks[0].Input) {
+            $inputFailures += "F differs from A in the tick 0 input digest (A $($a.Ticks[0].Input), F $($f.Ticks[0].Input)): the neutral pads of the two profiles are not the same pad layout"
         }
-    }
-    for ($i = 0; $i -lt $Ticks; $i++) {
-        if ($f.Ticks[$i].Input -ne $h.Ticks[$i].Input) {
-            $inputFailures += "F differs from H in the tick $i input digest (F $($f.Ticks[$i].Input), H $($h.Ticks[$i].Input)): the pads depend on the seed"
-            break
+        for ($i = 1; $i -lt $Ticks; $i++) {
+            if ($f.Ticks[$i].Input -eq $a.Ticks[$i].Input) {
+                $inputFailures += "F does not differ from A in the tick $i input digest ($($a.Ticks[$i].Input)): the ONE_CAB pads did not reach the game"
+                break
+            }
         }
+        for ($i = 0; $i -lt $Ticks; $i++) {
+            if ($f.Ticks[$i].Input -ne $h.Ticks[$i].Input) {
+                $inputFailures += "F differs from H in the tick $i input digest (F $($f.Ticks[$i].Input), H $($h.Ticks[$i].Input)): the pads depend on the seed"
+                break
+            }
+        }
+        if ($inputFailures.Count -eq 0) {
+            Write-Output "F input digests: = A at tick 0 (neutral, same pad layout), != A at ticks 1..$($Ticks - 1) (ONE_CAB pads), = H at all $Ticks ticks (seed-independent)"
+        }
+        $failures += $inputFailures
     }
-    if ($inputFailures.Count -eq 0) {
-        Write-Output "F input digests: = A at tick 0 (neutral, same pad layout), != A at ticks 1..$($Ticks - 1) (ONE_CAB pads), = H at all $Ticks ticks (seed-independent)"
-    }
-    $failures += $inputFailures
 
     # I and J against F, as C and E against A: J must bring an odd timer
     # offset from F at launch, the RS-17 pins must remove it (I and J start
     # the race with F's timer and frameTimerConfetti), and I and J must match
     # F in the setup evidence and the per-tick digests.
-    Write-Output "F launch counters: $($f.Header['launch counters'])"
-    Write-Output "F race tick 0 counters: $($f.Header['race tick 0 counters'])"
-    $launchI = Get-CounterOffsets $f $reportI -Launch
-    $launchJ = Get-CounterOffsets $f $reportJ -Launch
-    $offsetsI = Get-CounterOffsets $f $reportI
-    $offsetsJ = Get-CounterOffsets $f $reportJ
-    Write-Output "I - F offsets at launch: $($launchI.Text)"
-    Write-Output "J - F offsets at launch: $($launchJ.Text)"
-    Write-Output "I - F offsets at race tick 0: $($offsetsI.Text)"
-    Write-Output "J - F offsets at race tick 0: $($offsetsJ.Text)"
-    if (($launchJ.Timer % 2) -eq 0) {
-        $failures += "J's timer offset from F at launch is $($launchJ.Timer), not odd: run J no longer covers an odd boot-relative offset (choose another dwell)"
+    if (Use-Check 'I J offsets from F') {
+        Write-Output "F launch counters: $($f.Header['launch counters'])"
+        Write-Output "F race tick 0 counters: $($f.Header['race tick 0 counters'])"
+        $launchI = Get-CounterOffsets $f $reportI -Launch
+        $launchJ = Get-CounterOffsets $f $reportJ -Launch
+        $offsetsI = Get-CounterOffsets $f $reportI
+        $offsetsJ = Get-CounterOffsets $f $reportJ
+        Write-Output "I - F offsets at launch: $($launchI.Text)"
+        Write-Output "J - F offsets at launch: $($launchJ.Text)"
+        Write-Output "I - F offsets at race tick 0: $($offsetsI.Text)"
+        Write-Output "J - F offsets at race tick 0: $($offsetsJ.Text)"
+        if (($launchJ.Timer % 2) -eq 0) {
+            $failures += "J's timer offset from F at launch is $($launchJ.Timer), not odd: run J no longer covers an odd boot-relative offset (choose another dwell)"
+        }
+        foreach ($pair in @(@('I', $offsetsI), @('J', $offsetsJ))) {
+            if ($pair[1].Timer -ne 0) {
+                $failures += "$($pair[0])'s timer at race tick 0 is $($pair[1].Timer) off F's: the race setup's timer pin (RS-17) did not hold"
+            }
+            if ($pair[1].FrameTimerConfetti -ne 0) {
+                $failures += "$($pair[0])'s frameTimerConfetti at race tick 0 is $($pair[1].FrameTimerConfetti) off F's: the race setup's frameTimer_Confetti pin (RS-17) did not hold"
+            }
+        }
     }
-    foreach ($pair in @(@('I', $offsetsI), @('J', $offsetsJ))) {
-        if ($pair[1].Timer -ne 0) {
-            $failures += "$($pair[0])'s timer at race tick 0 is $($pair[1].Timer) off F's: the race setup's timer pin (RS-17) did not hold"
+    if (Use-Check 'I J = F') {
+        foreach ($pair in @(@('I', $reportI), @('J', $reportJ))) {
+            $comparison = Compare-WithBase $f 'F' $pair[1] $pair[0]
+            foreach ($message in $comparison.Messages) {
+                Write-Output $message
+            }
+            $failures += @($comparison.Failures)
         }
-        if ($pair[1].FrameTimerConfetti -ne 0) {
-            $failures += "$($pair[0])'s frameTimerConfetti at race tick 0 is $($pair[1].FrameTimerConfetti) off F's: the race setup's frameTimer_Confetti pin (RS-17) did not hold"
-        }
-    }
-    foreach ($pair in @(@('I', $reportI), @('J', $reportJ))) {
-        $comparison = Compare-WithBase $f 'F' $pair[1] $pair[0]
-        foreach ($message in $comparison.Messages) {
-            Write-Output $message
-        }
-        $failures += @($comparison.Failures)
     }
 
     # K against A (LR-S2 (a)): every line but the hold line is A's, and the
-    # hold evidence passes.  Skipped with K itself when -Ticks is too small.
-    if ($runK) {
+    # hold evidence passes.  Not planned (so listed as not run below) when K
+    # is not in the group or -Ticks is too small for it.
+    if (Use-Check 'K = A and hold') {
         $linesA = @($a.Lines | Where-Object { $_ -notmatch '^hold ' })
         $linesK = @($reportK.Lines | Where-Object { $_ -notmatch '^hold ' })
         $kFirstDifference = $null
@@ -911,10 +1047,40 @@ try {
         $failures += $holdFailures
     }
 
-    Write-Output "report A first tick: $($a.Ticks[0].Line)"
-    Write-Output "report A last tick:  $($a.Ticks[$Ticks - 1].Line)"
-    Write-Output "report F first tick: $($f.Ticks[0].Line)"
-    Write-Output "report F last tick:  $($f.Ticks[$Ticks - 1].Line)"
+    foreach ($pair in @(@('A', $a), @('F', $f))) {
+        if ($null -ne $pair[1]) {
+            Write-Output "report $($pair[0]) first tick: $($pair[1].Ticks[0].Line)"
+            Write-Output "report $($pair[0]) last tick:  $($pair[1].Ticks[$Ticks - 1].Line)"
+        }
+    }
+
+    # Which checks ran.  Every planned check must have run exactly once (a
+    # check id the code above does not use would otherwise be dropped).
+    $notRun = @()
+    foreach ($check in $checkTable) {
+        $count = @($checksRan | Where-Object { $_ -eq $check.Id }).Count
+        if ($plannedChecks -contains $check.Id) {
+            if ($count -ne 1) {
+                $failures += "check '$($check.Id)' was planned for group $Group but ran $count time(s)"
+            }
+        }
+        else {
+            $reason = 'in the other group'
+            if (($check.Needs -contains 'K') -and ($groupRunNames -contains 'K') -and (-not $runK)) {
+                $reason = "run K skipped (-Ticks $Ticks)"
+            }
+            $notRun += "$($check.Id) ($reason)"
+        }
+    }
+    foreach ($id in $checksRan) {
+        if (@($checkTable | Where-Object { $_.Id -eq $id }).Count -ne 1) {
+            $failures += "check '$id' ran but is not in the check table"
+        }
+    }
+    Write-Output "group ${Group}: $($checksRan.Count) of $($checkTable.Count) checks ran: $($checksRan -join '; ')"
+    if ($notRun.Count -ne 0) {
+        Write-Output "group ${Group}: not run here: $($notRun -join '; ')"
+    }
     Write-Output ''
     if ($failures.Count -ne 0) {
         foreach ($failure in $failures) {

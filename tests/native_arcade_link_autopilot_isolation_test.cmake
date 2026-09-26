@@ -37,8 +37,11 @@
 #     include and one MainArcadeLinkAutopilot_Active call, the first
 #     statement of its autopilot sample, inside its CTR_INTERNAL part;
 #  7. the live gate is registered: arcade_link_launch runs the checker on
-#     Windows with SKIP_RETURN_CODE 77, RUN_SERIAL TRUE, and the label live,
-#     and the checker uses the fixed loopback ports and the autopilot option,
+#     Windows with SKIP_RETURN_CODE 77, its own loopback ports (-Cab1Port 7101
+#     -Cab2Port 7102, so it may overlap package_arcade_smoke on 7001/7002),
+#     and the labels live and live-link,
+#     and the checker takes the loopback ports as parameters (default 7001
+#     and 7002) and uses the autopilot option,
 #     passes the race tick cap 300, and reads the v2 report's race ticks line.
 # Since LR-S13 part A (docs/LOCKSTEP_RACE_MILESTONE.md LR-73, LR-74):
 #  1b. the module parses --arcade-link-autopilot-freeze and
@@ -669,11 +672,13 @@ ctr_require_order("CMakeLists.txt (arcade_link_launch)" "${live_block}"
     "COMMAND powershell -NoProfile -ExecutionPolicy Bypass"
     "tools/arcade-link-launch-check.ps1"
     "-Executable \"$<TARGET_FILE:ctr_native>\""
+    "-Cab1Port 7101" "-Cab2Port 7102"
     "set_tests_properties(arcade_link_launch PROPERTIES"
-    "SKIP_RETURN_CODE 77" "TIMEOUT" "RUN_SERIAL TRUE" "LABELS live)")
+    "SKIP_RETURN_CODE 77" "TIMEOUT" "LABELS \"live;live-link\")")
 ctr_read_source("tools/arcade-link-launch-check.ps1" checker)
 foreach(literal IN ITEMS "--arcade-link-autopilot" "'--arcade-link-autopilot-race-ticks', \$raceTickCap" "\$raceTickCap = 6000"
-        "^race ticks ([0-9]+)\$" "'arcade link autopilot v3'" "127.0.0.1:7002" "127.0.0.1:7001" "'7001'" "'7002'" "'cab1'" "'cab2'"
+        "^race ticks ([0-9]+)\$" "'arcade link autopilot v3'" "[int]\$Cab1Port = 7001,\n" "[int]\$Cab2Port = 7002,\n"
+        "if (\$Cab1Port -eq \$Cab2Port) {" "'cab1'" "'cab2'"
         "Start-Process" "exit \$skipExitCode" "--arcade-link-autopilot is available in internal builds only."
         "arcade link requires a known build and content identity." "No displays available")
     ctr_require_literal("tools/arcade-link-launch-check.ps1" "${checker}" "${literal}")
@@ -682,8 +687,8 @@ endforeach()
 # to both, and the kill and the stall timeout are checked.
 foreach(literal IN ITEMS "\$races = 3\n" "\$freezeTick = 600\n" "\$desyncTick = 300\n" "\$freezePeriods = 45\n" "\$killRaceTick = 300\n"
         "\$stallTimeoutPeriods = 90\n" "\$stallMarginPercent = 25\n" "[int]\$TimeoutSeconds = 780\n"
-        "@{ Name = 'cab1'; Cab = 'cab1'; CabNumber = 1; Port = '7001'; Peer = '127.0.0.1:7002'; FaultArguments = @() },"
-        "@{ Name = 'cab2'; Cab = 'cab2'; CabNumber = 2; Port = '7002'; Peer = '127.0.0.1:7001'\n            FaultArguments = @('--arcade-link-autopilot-freeze', \"\$freezeTick\", '--arcade-link-autopilot-desync', \"\$desyncTick\") })"
+        "@{ Name = 'cab1'; Cab = 'cab1'; CabNumber = 1; Port = \"\$Cab1Port\"; Peer = \"127.0.0.1:\$Cab2Port\"; FaultArguments = @() },"
+        "@{ Name = 'cab2'; Cab = 'cab2'; CabNumber = 2; Port = \"\$Cab2Port\"; Peer = \"127.0.0.1:\$Cab1Port\"\n            FaultArguments = @('--arcade-link-autopilot-freeze', \"\$freezeTick\", '--arcade-link-autopilot-desync', \"\$desyncTick\") })"
         "'--capture-frame', \"\$captureFrame=\$(\$Run.CapturePath)\") + \$Run.FaultArguments"
         "CapturePath = Join-Path \$resolvedOutput \"\$(\$spec.Name).race1.bmp\""
         "if (\$watch.Tick -ge \$killRaceTick)" "\$Victim.Process.Kill()"

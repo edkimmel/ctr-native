@@ -211,6 +211,15 @@ expect_script(gate_one_config "${gate_script}" 1 "-Cab1Config and -Cab2Config mu
 expect_script(gate_missing_config "${gate_script}" 1 "config file for cab2 not found"
     -Executable "${dummy_exe}" -OutputDirectory "${work_dir}/gate" -Cab1Config "${staged}/cab1.cfg"
     -Cab2Config "${work_dir}/missing.cfg")
+# The gate's ports: only without the config files (which hold their own),
+# in range, and distinct. All fail before the disc image check.
+expect_script(gate_port_with_config "${gate_script}" 1 "-Cab1Port and -Cab2Port apply only without -Cab1Config and -Cab2Config"
+    -Executable "${dummy_exe}" -OutputDirectory "${work_dir}/gate" -Cab1Config "${staged}/cab1.cfg"
+    -Cab2Config "${staged}/cab2.cfg" -Cab2Port 7102)
+expect_script(gate_same_ports "${gate_script}" 1 "-Cab1Port and -Cab2Port must differ (both 7101)"
+    -Executable "${dummy_exe}" -OutputDirectory "${work_dir}/gate" -Cab1Port 7101 -Cab2Port 7101)
+expect_script(gate_port_range "${gate_script}" 1 "invalid port 65536 (1..65535)"
+    -Executable "${dummy_exe}" -OutputDirectory "${work_dir}/gate" -Cab1Port 65536)
 if(EXISTS "${work_dir}/gate")
     message(FATAL_ERROR "package stage: a refused gate run created its output directory")
 endif()

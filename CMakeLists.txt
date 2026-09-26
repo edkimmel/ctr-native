@@ -2042,11 +2042,26 @@ if(BUILD_TESTING)
     add_test(NAME native_capture_check_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/native_capture_check_isolation_test.cmake")
 
+    # The live tests (Windows only): each launches ctr_native and needs the
+    # user-supplied assets/ctr-u.bin and a desktop session with a display, and
+    # skips (77) otherwise; a skip is not a pass.  Each carries the label
+    # "live" (`ctest -LE live` leaves them all out; the default full run
+    # includes them) and one area label: live-render, live-roster, live-link,
+    # or live-package (`ctest -L live-roster` runs just that area).  They may
+    # run in parallel (`ctest -j`): each writes its reports, captures, and logs
+    # only under its own directory of the build tree; the two link gates use
+    # distinct loopback port pairs (arcade_link_launch 7101/7102,
+    # package_arcade_smoke the package's 7001/7002; the fast suite's socket
+    # tests use 48000-48600); each capture reads the game's own window
+    # framebuffer, not the desktop.  What they still share is read-only or
+    # diagnostic: every run from the build tree reads the developer's
+    # memcards\ in the repository root, and writes the repository root's
+    # gitignored `Crash Team Racing.log` (opened share-deny-none; no check
+    # reads it).  package_arcade_smoke runs a copied exe whose base directory,
+    # log, and memcards\ are its own run folder.
+    #
     # Renders every arcade-link preview screen (plus the default path) with
-    # ctr_native and checks each capture with the RGB checker.  Needs the
-    # user-supplied assets/ctr-u.bin and a desktop session with a display;
-    # skips (77) otherwise.  Captures and logs are written only under the
-    # build tree.
+    # ctr_native and checks each capture with the RGB checker.
     if(WIN32)
         add_test(NAME arcade_link_preview_render
             COMMAND powershell -NoProfile -ExecutionPolicy Bypass
@@ -2058,71 +2073,73 @@ if(BUILD_TESTING)
         set_tests_properties(arcade_link_preview_render PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 420
-            RUN_SERIAL TRUE
-            LABELS live)
+            LABELS "live;live-render")
 
         # The live roster determinism proof (docs/ROSTER_MILESTONE.md section
         # 3.4, R-6, R-6b, R-6c, R-6d, and OC-3; run K is
-        # docs/LOCKSTEP_RACE_MILESTONE.md LR-S2 (a)): eleven internal
-        # --arcade-roster-proof runs of ctr_native, all at once under the
-        # proof's fixed VBlank pacing, five of the two-cabinet profile (A-E)
-        # and five of the single-cabinet profile (F-J), each profile run as:
-        # same seed twice, same seed launched from inside the attract demo
-        # race, another seed, same seed launched an odd number of ticks late;
-        # compared tick by tick, within each profile and across the two; and
-        # A again with the stall hold (K), which must equal A.
-        # Needs the user-supplied assets/ctr-u.bin, a desktop session with a
-        # display, and an internal build; skips (77) otherwise.  Reports and
-        # logs are written only under the build tree.
-        # The live tests carry the label "live": `ctest -LE live` leaves them
-        # out, and the default full run still includes them.
-        add_test(NAME arcade_roster_determinism
-            COMMAND powershell -NoProfile -ExecutionPolicy Bypass
-                -File "${CMAKE_SOURCE_DIR}/tools/arcade-roster-proof-check.ps1"
-                -Executable "$<TARGET_FILE:ctr_native>"
-                -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_roster_proof/$<CONFIG>"
-                -Ticks 900
-                -TimeoutSeconds 600)
-        set_tests_properties(arcade_roster_determinism PROPERTIES
-            SKIP_RETURN_CODE 77
-            TIMEOUT 900
-            RUN_SERIAL TRUE
-            LABELS live)
+        # docs/LOCKSTEP_RACE_MILESTONE.md LR-S2 (a)): internal
+        # --arcade-roster-proof runs of ctr_native, all of a group at once
+        # under the proof's fixed VBlank pacing, compared tick by tick.  The
+        # eleven runs are split in two ctests (tools/arcade-roster-proof-check.ps1
+        # -Group): _two_cab runs the two-cabinet profile (A-E: same seed twice,
+        # same seed launched from inside the attract demo race, another seed,
+        # same seed launched an odd number of ticks late) and A again with the
+        # stall hold (K), which must equal A; _one_cab runs the single-cabinet
+        # profile the same way (F-J) plus its own A, the base of the
+        # cross-profile checks (F against A).  Together they run every check
+        # of the unsplit proof (tests/arcade_roster_proof_groups_test.cmake).
+        # Needs an internal build too.  Each group writes only under its own
+        # directory of the build tree.
+        foreach(roster_group IN ITEMS two-cab one-cab)
+            string(REPLACE "-" "_" roster_suffix "${roster_group}")
+            add_test(NAME arcade_roster_determinism_${roster_suffix}
+                COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_SOURCE_DIR}/tools/arcade-roster-proof-check.ps1"
+                    -Executable "$<TARGET_FILE:ctr_native>"
+                    -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_roster_proof/${roster_group}/$<CONFIG>"
+                    -Group ${roster_group}
+                    -Ticks 900
+                    -TimeoutSeconds 600)
+            set_tests_properties(arcade_roster_determinism_${roster_suffix} PROPERTIES
+                SKIP_RETURN_CODE 77
+                TIMEOUT 900
+                LABELS "live;live-roster")
+        endforeach()
 
         # The two-process live race gate (docs/RACE_LAUNCH_MILESTONE.md
         # RL-15, RL-S10; since LR-S13 part B the one-machine proof of
         # docs/LOCKSTEP_RACE_MILESTONE.md LR-16, LR-76): two internal
-        # ctr_native processes linked over loopback (127.0.0.1 ports 7001 and
-        # 7002, cab1 and cab2), each driven by --arcade-link-autopilot through
-        # START, the select, and three lockstep races with a 6000-tick cap:
-        # race 1 to the natural finish (or the finish grace) on the same race
-        # tick, with cab2 frozen for 45 tick periods at race tick 600 (cab1
-        # holds with the banner in the game font); REMATCH; race 2, where
-        # cab2 flips its CONTROL digest of race tick 300 (RACE OUT OF SYNC);
-        # REMATCH; race 3, where the check kills cab2 at its race tick 300 and
-        # cab1 ends OPPONENT DISCONNECTED after the 90-period stall timeout,
-        # takes EXIT, and exits 0 with PASS. The check compares the k-th race
-        # of the two cabinets (the agreed match, the config, plan, bots, and
-        # bank digests, the LR-8 triples, and every per-tick V4 digest line),
-        # requires each race's config to differ from the previous race's, and
-        # checks each race's end, and one race 1 frame capture per cabinet
-        # (criterion 9, kept under the build tree). RUN_SERIAL like the other
-        # live tests, and because the ports are fixed. Needs the user-supplied
-        # assets/ctr-u.bin, a desktop session with a display, an internal
-        # build, and a known build identity (a build from a clean tree); skips
-        # (77) otherwise, and a skip is not a pass. Reports, captures, and
+        # ctr_native processes linked over loopback (127.0.0.1 ports 7101 and
+        # 7102, cab1 and cab2: not the package's 7001 and 7002, so this gate
+        # can overlap package_arcade_smoke), each driven by
+        # --arcade-link-autopilot through START, the select, and three
+        # lockstep races with a 6000-tick cap: race 1 to the natural finish (or
+        # the finish grace) on the same race tick, with cab2 frozen for 45
+        # tick periods at race tick 600 (cab1 holds with the banner in the
+        # game font); REMATCH; race 2, where cab2 flips its CONTROL digest of
+        # race tick 300 (RACE OUT OF SYNC); REMATCH; race 3, where the check
+        # kills cab2 at its race tick 300 and cab1 ends OPPONENT DISCONNECTED
+        # after the 90-period stall timeout, takes EXIT, and exits 0 with
+        # PASS. The check compares the k-th race of the two cabinets (the
+        # agreed match, the config, plan, bots, and bank digests, the LR-8
+        # triples, and every per-tick V4 digest line), requires each race's
+        # config to differ from the previous race's, and checks each race's
+        # end, and one race 1 frame capture per cabinet (criterion 9, kept
+        # under the build tree). Needs an internal build and a known build
+        # identity (a build from a clean tree) too. Reports, captures, and
         # logs are written only under the build tree.
         add_test(NAME arcade_link_launch
             COMMAND powershell -NoProfile -ExecutionPolicy Bypass
                 -File "${CMAKE_SOURCE_DIR}/tools/arcade-link-launch-check.ps1"
                 -Executable "$<TARGET_FILE:ctr_native>"
                 -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_link_launch/$<CONFIG>"
+                -Cab1Port 7101
+                -Cab2Port 7102
                 -TimeoutSeconds 780)
         set_tests_properties(arcade_link_launch PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 900
-            RUN_SERIAL TRUE
-            LABELS live)
+            LABELS "live;live-link")
 
         # The package smoke gate (docs/PACKAGING.md "Package smoke gate"):
         # stages this configuration's ctr_native as a test package
@@ -2132,9 +2149,10 @@ if(BUILD_TESTING)
         # derives loopback copies of the package's cab1.cfg and cab2.cfg
         # (only the peer IP, data_dir, and fullscreen change), and runs the
         # arcade_link_launch gate on the copied exe with --config in place of
-        # the link options. The same fixed ports as arcade_link_launch;
-        # RUN_SERIAL keeps them apart. Skips (77) like arcade_link_launch;
-        # a skip is not a pass. Everything is written under the build tree.
+        # the link options. It keeps the package's ports 7001 and 7002;
+        # arcade_link_launch uses 7101 and 7102, so the two may overlap.
+        # Skips (77) like arcade_link_launch. Everything is written under the
+        # build tree.
         add_test(NAME package_arcade_smoke
             COMMAND powershell -NoProfile -ExecutionPolicy Bypass
                 -File "${CMAKE_SOURCE_DIR}/tools/package-arcade-smoke.ps1"
@@ -2144,8 +2162,15 @@ if(BUILD_TESTING)
         set_tests_properties(package_arcade_smoke PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 900
-            RUN_SERIAL TRUE
-            LABELS live)
+            LABELS "live;live-package")
+
+        # The roster check's two-way split, without a game run: -Group
+        # two-cab and -Group one-cab together run every check of the unsplit
+        # proof, and one-cab keeps the cross-profile checks.
+        add_test(NAME arcade_roster_proof_groups
+            COMMAND "${CMAKE_COMMAND}"
+                -DREPO_DIR=${CMAKE_SOURCE_DIR}
+                -P "${CMAKE_SOURCE_DIR}/tests/arcade_roster_proof_groups_test.cmake")
     endif()
 
     add_executable(native_canonical_world_mine_registry_v1_test tests/native_canonical_world_mine_registry_v1_test.c)
