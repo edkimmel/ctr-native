@@ -20,6 +20,7 @@ void NativeArcadeFlow_DefaultTimings(struct NativeArcadeFlowTimings *timings)
 	timings->exitHoldTicks = NATIVE_ARCADE_FLOW_DEFAULT_EXIT_HOLD_TICKS;
 	timings->selectResultHoldTicks = NATIVE_ARCADE_FLOW_DEFAULT_SELECT_RESULT_HOLD_TICKS;
 	timings->launchTimeoutTicks = NATIVE_ARCADE_FLOW_DEFAULT_LAUNCH_TIMEOUT_TICKS;
+	timings->soloOfferDelayTicks = NATIVE_ARCADE_FLOW_DEFAULT_SOLO_OFFER_DELAY_TICKS;
 }
 
 static int NativeArcadeFlow_TimingsValid(const struct NativeArcadeFlowTimings *timings)
@@ -27,7 +28,8 @@ static int NativeArcadeFlow_TimingsValid(const struct NativeArcadeFlowTimings *t
 	if ((timings->lobbyRetryPauseTicks == 0u) || (timings->matchFoundHoldTicks == 0u) ||
 		(timings->resultsDwellTicks == 0u) || (timings->resultsIdleTimeoutTicks == 0u) ||
 		(timings->rematchWaitTimeoutTicks == 0u) || (timings->opponentLeftNoticeTicks == 0u) ||
-		(timings->exitHoldTicks == 0u) || (timings->selectResultHoldTicks == 0u) || (timings->launchTimeoutTicks == 0u))
+		(timings->exitHoldTicks == 0u) || (timings->selectResultHoldTicks == 0u) || (timings->launchTimeoutTicks == 0u) ||
+		(timings->soloOfferDelayTicks == 0u))
 	{
 		return 0;
 	}
@@ -70,11 +72,16 @@ int NativeArcadeFlow_Init(struct NativeArcadeFlow *flow, const struct NativeArca
 	flow->screenSerial = 0u;
 	flow->relinked = 0u;
 	flow->ticksSinceRelink = 0u;
+	flow->solo = 0u;
+	flow->soloOffered = 0u;
+	flow->ticksPeerUnheard = 0u;
 	return 1;
 }
 
 /* Every transition, including re-entering the same screen, goes through
- * here so the per-screen counters and the serial stay consistent. */
+ * here so the per-screen counters and the serial stay consistent. Solo mode
+ * survives only an entry into a screen that has a solo form (SELECT,
+ * SELECT_RESULT, RACING, RESULTS); only NativeArcadeFlow_BeginSolo sets it. */
 static void NativeArcadeFlow_EnterScreen(struct NativeArcadeFlow *flow, uint32_t screen)
 {
 	flow->screen = screen;
@@ -83,6 +90,13 @@ static void NativeArcadeFlow_EnterScreen(struct NativeArcadeFlow *flow, uint32_t
 	flow->ticksSinceInput = 0u;
 	flow->relinked = 0u;
 	flow->ticksSinceRelink = 0u;
+	flow->soloOffered = 0u;
+	flow->ticksPeerUnheard = 0u;
+	if ((screen != NATIVE_ARCADE_FLOW_SCREEN_SELECT) && (screen != NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT) &&
+		(screen != NATIVE_ARCADE_FLOW_SCREEN_RACING) && (screen != NATIVE_ARCADE_FLOW_SCREEN_RESULTS))
+	{
+		flow->solo = 0u;
+	}
 	flow->screenSerial += 1u;
 	if (screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS)
 	{
@@ -133,6 +147,10 @@ static int NativeArcadeFlow_ObservationValid(const struct NativeArcadeFlowObserv
 	{
 		return 0;
 	}
+	if (observation->soloAvailable > 1u)
+	{
+		return 0;
+	}
 	return 1;
 }
 
@@ -152,9 +170,42 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_RetryPause(struct NativeArca
 	return NATIVE_ARCADE_FLOW_ACTION_NONE;
 }
 
-static enum NativeArcadeFlowAction NativeArcadeFlow_TickLobby(struct NativeArcadeFlow *flow, uint32_t status,
-	enum NativeArcadeMenuEvent event)
+/* Enters solo SELECT in solo mode (from the LOBBY offer, or RACE AGAIN on
+ * solo RESULTS) and returns BEGIN_SOLO_SELECT. */
+static enum NativeArcadeFlowAction NativeArcadeFlow_BeginSolo(struct NativeArcadeFlow *flow)
 {
+	flow->endReason = NATIVE_ARCADE_FLOW_END_NONE;
+	NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	flow->solo = 1u;
+	return NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT;
+}
+
+/* One LOBBY tick with the peer not heard (WAITING, CONNECTING, or LOST):
+ * counts toward the solo offer while solo is available (SOLO-2, SOLO-11);
+ * without it the count restarts and no offer stands. */
+static void NativeArcadeFlow_CountSoloOffer(struct NativeArcadeFlow *flow, uint32_t soloAvailable)
+{
+	if (soloAvailable == 0u)
+	{
+		flow->ticksPeerUnheard = 0u;
+		flow->soloOffered = 0u;
+		return;
+	}
+	if (flow->ticksPeerUnheard < UINT32_MAX)
+	{
+		flow->ticksPeerUnheard += 1u;
+	}
+	if (flow->ticksPeerUnheard >= flow->timings.soloOfferDelayTicks)
+	{
+		flow->soloOffered = 1u;
+	}
+}
+
+static enum NativeArcadeFlowAction NativeArcadeFlow_TickLobby(struct NativeArcadeFlow *flow, uint32_t status,
+	uint32_t soloAvailable, enum NativeArcadeMenuEvent event)
+{
+	uint32_t offeredBefore = flow->soloOffered;
+
 	if (event == NATIVE_ARCADE_MENU_EVENT_BACK)
 	{
 		flow->endReason = NATIVE_ARCADE_FLOW_END_NONE;
@@ -168,13 +219,23 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_TickLobby(struct NativeArcad
 	}
 	if (status == NATIVE_ARCADE_FLOW_LOBBY_REJECTED)
 	{
-		/* Never retried automatically; CONFIRM retries in place. */
+		/* Never retried automatically; CONFIRM retries in place. Never an
+		 * offer either: the count restarts (SOLO-2). */
 		flow->ticksSinceRetry = 0u;
+		flow->ticksPeerUnheard = 0u;
+		flow->soloOffered = 0u;
 		if (event == NATIVE_ARCADE_MENU_EVENT_CONFIRM)
 		{
 			return NATIVE_ARCADE_FLOW_ACTION_RESTART_LOBBY;
 		}
 		return NATIVE_ARCADE_FLOW_ACTION_NONE;
+	}
+	/* WAITING, CONNECTING, or LOST: the peer is not heard. */
+	NativeArcadeFlow_CountSoloOffer(flow, soloAvailable);
+	if ((event == NATIVE_ARCADE_MENU_EVENT_CONFIRM) && (offeredBefore != 0u) && (flow->soloOffered != 0u))
+	{
+		/* SOLO-3: after BACK and READY, and only on an offer already shown. */
+		return NativeArcadeFlow_BeginSolo(flow);
 	}
 	if ((status == NATIVE_ARCADE_FLOW_LOBBY_WAITING) || (status == NATIVE_ARCADE_FLOW_LOBBY_LOST))
 	{
@@ -218,6 +279,21 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_SelectLinkError(struct Nativ
 static enum NativeArcadeFlowAction NativeArcadeFlow_TickSelect(struct NativeArcadeFlow *flow, uint32_t status,
 	uint32_t selectStatus)
 {
+	if (flow->solo != 0u)
+	{
+		/* Solo SELECT (SOLO-5): no lobby status, no link failure. A select
+		 * that fails shows on solo RESULTS; nothing is closed. */
+		if (selectStatus == (uint32_t)NATIVE_ARCADE_FLOW_SELECT_FAILED)
+		{
+			flow->endReason = NATIVE_ARCADE_FLOW_END_LINK_ERROR;
+			NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+		}
+		else if (selectStatus == (uint32_t)NATIVE_ARCADE_FLOW_SELECT_CONFIRMED)
+		{
+			NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+		}
+		return NATIVE_ARCADE_FLOW_ACTION_NONE;
+	}
 	if (status != NATIVE_ARCADE_FLOW_LOBBY_READY)
 	{
 		return NativeArcadeFlow_SelectLinkError(flow);
@@ -239,6 +315,17 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_TickSelect(struct NativeArca
 static enum NativeArcadeFlowAction NativeArcadeFlow_TickSelectResult(struct NativeArcadeFlow *flow, uint32_t status,
 	uint32_t launchStatus)
 {
+	if (flow->solo != 0u)
+	{
+		/* Solo SELECT_RESULT (SOLO-5, SOLO-7): the result hold, then the
+		 * local race, with no relink and no launch agreement. */
+		if (flow->ticksInScreen >= flow->timings.selectResultHoldTicks)
+		{
+			NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_RACING);
+			return NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE;
+		}
+		return NATIVE_ARCADE_FLOW_ACTION_NONE;
+	}
 	if (flow->relinked == 0u)
 	{
 		/* The lobby status is the old link's here and is ignored. */
@@ -278,6 +365,23 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_TickSelectResult(struct Nati
 static enum NativeArcadeFlowAction NativeArcadeFlow_TickRacing(struct NativeArcadeFlow *flow,
 	const struct NativeArcadeFlowObservation *observation)
 {
+	if (flow->solo != 0u)
+	{
+		/* Solo RACING (SOLO-7): there is no peer, so the lobby status and the
+		 * PEER_TIMEOUT and DESYNC failures are not read. LINK_ERROR is the
+		 * local race failure (RL-11) and outranks a same-tick finish. */
+		if (observation->linkFailure == (uint32_t)NATIVE_ARCADE_FLOW_END_LINK_ERROR)
+		{
+			flow->endReason = NATIVE_ARCADE_FLOW_END_LINK_ERROR;
+			NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+		}
+		else if (observation->raceFinished != 0u)
+		{
+			flow->endReason = NATIVE_ARCADE_FLOW_END_FINISHED;
+			NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+		}
+		return NATIVE_ARCADE_FLOW_ACTION_NONE;
+	}
 	/* A link failure outranks a same-tick finish (UX-6). */
 	if (observation->linkFailure != (uint32_t)NATIVE_ARCADE_FLOW_END_NONE)
 	{
@@ -320,6 +424,17 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_TickResults(struct NativeArc
 			flow->selectedRow = NATIVE_ARCADE_FLOW_ROW_EXIT;
 			return NATIVE_ARCADE_FLOW_ACTION_NONE;
 		case NATIVE_ARCADE_MENU_EVENT_CONFIRM:
+			if (flow->solo != 0u)
+			{
+				/* Solo RESULTS (SOLO-8): RACE AGAIN or LOBBY. */
+				if (flow->selectedRow == NATIVE_ARCADE_FLOW_ROW_RACE_AGAIN)
+				{
+					return NativeArcadeFlow_BeginSolo(flow);
+				}
+				flow->endReason = NATIVE_ARCADE_FLOW_END_NONE;
+				NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+				return NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY;
+			}
 			if (flow->selectedRow == NATIVE_ARCADE_FLOW_ROW_REMATCH)
 			{
 				NativeArcadeFlow_EnterScreen(flow, NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT);
@@ -333,7 +448,8 @@ static enum NativeArcadeFlowAction NativeArcadeFlow_TickResults(struct NativeArc
 		}
 	}
 
-	/* Idle timeout returns an abandoned cabinet to the title (UX-10). */
+	/* Idle timeout returns an abandoned cabinet to the title (UX-10), solo
+	 * included (SOLO-8): never to LOBBY. */
 	if (flow->ticksSinceInput < UINT32_MAX)
 	{
 		flow->ticksSinceInput += 1u;
@@ -423,7 +539,7 @@ enum NativeArcadeFlowAction NativeArcadeFlow_Tick(struct NativeArcadeFlow *flow,
 	switch (flow->screen)
 	{
 	case NATIVE_ARCADE_FLOW_SCREEN_LOBBY:
-		return NativeArcadeFlow_TickLobby(flow, status, event);
+		return NativeArcadeFlow_TickLobby(flow, status, observation->soloAvailable, event);
 	case NATIVE_ARCADE_FLOW_SCREEN_MATCH_FOUND:
 		return NativeArcadeFlow_TickMatchFound(flow, status);
 	case NATIVE_ARCADE_FLOW_SCREEN_RACING:
@@ -471,4 +587,14 @@ uint32_t NativeArcadeFlow_LobbyStatus(const struct NativeArcadeFlow *flow)
 uint32_t NativeArcadeFlow_ScreenSerial(const struct NativeArcadeFlow *flow)
 {
 	return (flow == NULL) ? 0u : flow->screenSerial;
+}
+
+uint32_t NativeArcadeFlow_Solo(const struct NativeArcadeFlow *flow)
+{
+	return (flow == NULL) ? 0u : flow->solo;
+}
+
+uint32_t NativeArcadeFlow_SoloOffered(const struct NativeArcadeFlow *flow)
+{
+	return (flow == NULL) ? 0u : flow->soloOffered;
 }

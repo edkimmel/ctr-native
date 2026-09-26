@@ -56,6 +56,37 @@
  * - EXIT holds for exitHoldTicks (opponentLeftNoticeTicks for OPPONENT_LEFT),
  *   then returns to OFF with RETURN_TO_TITLE.
  *
+ * Solo (docs/SOLO_CAB_MILESTONE.md SOLO-2, SOLO-3, SOLO-5, SOLO-7, SOLO-8,
+ * SOLO-11): a cabinet whose peer is not heard may race alone, one human
+ * against seven bots.
+ * - The offer. Only while the observation's soloAvailable is 1, LOBBY counts
+ *   consecutive ticks whose lobby status is WAITING, CONNECTING, or LOST (the
+ *   peer not heard); the offer stands once the count reaches
+ *   soloOfferDelayTicks. The count starts at every LOBBY entry, spans the
+ *   automatic retries (they are not screen entries), and restarts, with the
+ *   offer withdrawn, on REJECTED (never offered: CONFIRM there retries) and
+ *   on every tick soloAvailable is 0.
+ * - LOBBY checks, in order: BACK (exit), READY (MATCH_FOUND), then CONFIRM
+ *   while the offer already stood before this tick: solo SELECT with
+ *   BEGIN_SOLO_SELECT. A CONFIRM on the tick the offer first stands is not
+ *   taken, so the prompt is on screen before it can be answered.
+ * - Solo mode holds from BEGIN_SOLO_SELECT through solo SELECT,
+ *   SELECT_RESULT, RACING, and RESULTS, and ends on any other screen. Solo
+ *   screens read no lobby status. Solo SELECT ignores every menu event and
+ *   the link failure: select CONFIRMED moves to solo SELECT_RESULT, FAILED to
+ *   solo RESULTS with LINK_ERROR (action NONE). Solo SELECT_RESULT holds
+ *   selectResultHoldTicks, then moves to solo RACING with START_SOLO_RACE (no
+ *   relink and no launch agreement). Solo RACING ignores PEER_TIMEOUT and
+ *   DESYNC; LINK_ERROR (in solo only the local race failure) moves to solo
+ *   RESULTS with LINK_ERROR and outranks a same-tick finish, which moves to
+ *   solo RESULTS with FINISHED; both return NONE.
+ * - Solo RESULTS has rows RACE AGAIN (default focus) and LOBBY, with the
+ *   same dwell, focus moves, and BACK as RESULTS. CONFIRM on RACE AGAIN
+ *   returns BEGIN_SOLO_SELECT (solo SELECT again); CONFIRM on LOBBY moves to
+ *   LOBBY with RETURN_TO_LOBBY (the caller ends the solo link and begins a
+ *   lobby). The idle timeout moves to EXIT with CLOSE_LINK, and so to the
+ *   title, never to LOBBY (UX-10).
+ *
  * Pure: caller-owned state, no heap use, no I/O, no hidden state, fully
  * deterministic, and at most one action per tick.
  */
@@ -70,11 +101,15 @@
 #define NATIVE_ARCADE_FLOW_DEFAULT_EXIT_HOLD_TICKS 60u
 #define NATIVE_ARCADE_FLOW_DEFAULT_SELECT_RESULT_HOLD_TICKS 60u /* SEL-8 */
 #define NATIVE_ARCADE_FLOW_DEFAULT_LAUNCH_TIMEOUT_TICKS 300u    /* SEL-9 */
+#define NATIVE_ARCADE_FLOW_DEFAULT_SOLO_OFFER_DELAY_TICKS 90u   /* SOLO-2 */
 
 /* Results screen rows. */
 #define NATIVE_ARCADE_FLOW_ROW_REMATCH 0u
 #define NATIVE_ARCADE_FLOW_ROW_EXIT 1u
 #define NATIVE_ARCADE_FLOW_RESULTS_ROW_COUNT 2u
+/* Solo results screen rows (SOLO-8), at the same indices. */
+#define NATIVE_ARCADE_FLOW_ROW_RACE_AGAIN 0u
+#define NATIVE_ARCADE_FLOW_ROW_LOBBY 1u
 
 enum NativeArcadeFlowScreen
 {
@@ -119,7 +154,17 @@ enum NativeArcadeFlowAction
 	NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK = 5,
 	NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE = 6,
 	NATIVE_ARCADE_FLOW_ACTION_BEGIN_SELECT = 7,
-	NATIVE_ARCADE_FLOW_ACTION_RELINK = 8
+	NATIVE_ARCADE_FLOW_ACTION_RELINK = 8,
+	/* Solo (SOLO-4, SOLO-5): the caller closes the lobby if one is open,
+	 * opens the listen-only link if none is open, and starts a one-human
+	 * select. */
+	NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT = 9,
+	/* Solo (SOLO-6, SOLO-7): the caller builds the solo race config from the
+	 * one-human select; the race runs locally. */
+	NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE = 10,
+	/* Solo RESULTS row LOBBY (SOLO-8): the caller closes the listen-only link
+	 * and begins a lobby on its fixture. */
+	NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY = 11
 };
 
 /* The caller's select session status, mapped onto this module's own enum. */
@@ -137,7 +182,7 @@ enum NativeArcadeFlowLaunchStatus
 	NATIVE_ARCADE_FLOW_LAUNCH_COMMITTED = 1
 };
 
-/* Every timing (all nine) is in 30 Hz game-loop ticks and must be at least
+/* Every timing (all ten) is in 30 Hz game-loop ticks and must be at least
  * 1; resultsIdleTimeoutTicks must exceed resultsDwellTicks. */
 struct NativeArcadeFlowTimings
 {
@@ -153,6 +198,9 @@ struct NativeArcadeFlowTimings
 	/* Ticks after RELINK without READY and a launch commit before LINK_ERROR
 	 * (SEL-9, RL-5). */
 	uint32_t launchTimeoutTicks;
+	/* Consecutive LOBBY ticks without the peer heard before solo is offered
+	 * (SOLO-2). */
+	uint32_t soloOfferDelayTicks;
 };
 
 struct NativeArcadeFlowObservation
@@ -170,10 +218,13 @@ struct NativeArcadeFlowObservation
 	/* enum NativeArcadeFlowLaunchStatus; acted on in SELECT_RESULT phase 2
 	 * only, but validated on every screen, like selectStatus. */
 	uint8_t launchStatus;
-	uint8_t reserved[1];
+	/* 0 or 1: the caller can race solo (SOLO-11). Acted on in LOBBY only,
+	 * but validated on every screen, like selectStatus. */
+	uint8_t soloAvailable;
 };
 
-/* launchStatus took the first reserved byte: the observation did not grow. */
+/* launchStatus and then soloAvailable took the reserved bytes: the
+ * observation did not grow. */
 _Static_assert(sizeof(struct NativeArcadeFlowObservation) == 12u, "NativeArcadeFlowObservation must stay 12 bytes");
 
 struct NativeArcadeFlow
@@ -200,6 +251,15 @@ struct NativeArcadeFlow
 	uint32_t relinked;
 	/* SELECT_RESULT phase 2: ticks since the RELINK tick (saturating). */
 	uint32_t ticksSinceRelink;
+	/* 1 from BEGIN_SOLO_SELECT while on solo SELECT, SELECT_RESULT, RACING,
+	 * or RESULTS; 0 on every other screen. */
+	uint32_t solo;
+	/* LOBBY: 1 while the solo offer stands (SOLO-2); cleared on every screen
+	 * entry. */
+	uint32_t soloOffered;
+	/* LOBBY: consecutive ticks without the peer heard while soloAvailable is
+	 * 1 (saturating); cleared on every screen entry. */
+	uint32_t ticksPeerUnheard;
 };
 
 /* Fills in the frozen default timings. NULL is a no-op. */
@@ -215,8 +275,9 @@ int NativeArcadeFlow_Init(struct NativeArcadeFlow *flow, const struct NativeArca
 enum NativeArcadeFlowAction NativeArcadeFlow_Enter(struct NativeArcadeFlow *flow);
 
 /* Advances one tick. Returns at most one action. NULL arguments, an invalid
- * observation (lobbyStatus, linkFailure, raceFinished, selectStatus, or
- * launchStatus out of range; a launchStatus above COMMITTED is invalid), or
+ * observation (lobbyStatus, linkFailure, raceFinished, selectStatus,
+ * launchStatus, or soloAvailable out of range; a launchStatus above
+ * COMMITTED, or a soloAvailable above 1, is invalid), or
  * screen OFF return NONE and change nothing. Event values above
  * NATIVE_ARCADE_MENU_EVENT_BACK are treated as NONE. */
 enum NativeArcadeFlowAction NativeArcadeFlow_Tick(struct NativeArcadeFlow *flow,
@@ -229,5 +290,11 @@ uint32_t NativeArcadeFlow_SelectedRow(const struct NativeArcadeFlow *flow);
 uint32_t NativeArcadeFlow_TicksInScreen(const struct NativeArcadeFlow *flow);
 uint32_t NativeArcadeFlow_LobbyStatus(const struct NativeArcadeFlow *flow);
 uint32_t NativeArcadeFlow_ScreenSerial(const struct NativeArcadeFlow *flow);
+
+/* Solo accessors (SOLO-2, SOLO-11); NULL gives 0. Solo: 1 in solo mode (solo
+ * SELECT, SELECT_RESULT, RACING, or RESULTS). SoloOffered: 1 while the LOBBY
+ * offers solo. */
+uint32_t NativeArcadeFlow_Solo(const struct NativeArcadeFlow *flow);
+uint32_t NativeArcadeFlow_SoloOffered(const struct NativeArcadeFlow *flow);
 
 #endif

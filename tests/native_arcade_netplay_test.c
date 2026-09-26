@@ -192,6 +192,7 @@
 #define EXIT_HOLD_TICKS 3u
 #define SELECT_RESULT_HOLD_TICKS 8u
 #define LAUNCH_TIMEOUT_TICKS 60u
+#define SOLO_OFFER_DELAY_TICKS 5u
 
 /* Select session timings: every scripted pick below finishes well inside
  * one item; an idle select auto-picks after three items. */
@@ -245,6 +246,7 @@ static void SmallTimings(struct NativeArcadeFlowTimings *timings)
 	timings->exitHoldTicks = EXIT_HOLD_TICKS;
 	timings->selectResultHoldTicks = SELECT_RESULT_HOLD_TICKS;
 	timings->launchTimeoutTicks = LAUNCH_TIMEOUT_TICKS;
+	timings->soloOfferDelayTicks = SOLO_OFFER_DELAY_TICKS;
 }
 
 static void SmallSelectTimings(struct NativeMatchSelectTimings *timings)
