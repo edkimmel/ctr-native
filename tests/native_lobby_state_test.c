@@ -71,6 +71,16 @@
 #define TEST12_A_PORT 48333u
 #define TEST12_B_PORT 48334u
 
+/* The listen-only lobby (docs/SOLO_CAB_MILESTONE.md SOLO-4, SOLO-S2). */
+#define TEST13_A_PORT 48335u
+#define TEST13_PEER_PORT 48336u
+#define TEST13_STRANGER_PORT 48337u
+#define TEST13_DEAD_PORT 48338u
+#define TEST14_A_PORT 48339u
+#define TEST14_DEAD_PORT 48340u
+#define TEST15_A_PORT 48341u
+#define TEST15_PEER_PORT 48342u
+
 /* Small, fixed, frame-counted budgets: not wall-clock timeouts. A dead
  * candidate is deterministically abandoned after exactly this many
  * NativeLobbyState_Poll calls; a real loopback handshake completes in a
@@ -652,6 +662,225 @@ static int TestZeroRetransmitIntervalDisablesOwnResendButStillConnects(void)
 	return 0;
 }
 
+/* ---- The listen-only lobby (SOLO-4) ---- */
+
+/* Polls the listening state `count` times; returns 0 if the probe transport
+ * received anything in between (the listen-only link must never send). */
+static int PollListeningQuiet(struct NativeLobbyState *state, struct NativeUdpTransport *probe, uint32_t count)
+{
+	uint8_t bytes[512];
+	size_t size = 0;
+	struct NativeUdpTransportAddress sender;
+	uint32_t i;
+
+	for (i = 0; i < count; i++)
+	{
+		NativeLobbyState_Poll(state);
+		CHECK(NativeLobbyState_Mode(state) == NATIVE_LOBBY_STATE_LISTENING);
+		CHECK(NativeUdpTransport_Receive(probe, bytes, sizeof(bytes), &size, &sender) == NATIVE_UDP_TRANSPORT_RECEIVE_EMPTY);
+	}
+	return 0;
+}
+
+/* One well-formed handshake HELLO (284 bytes) from role CAB2 on config. */
+static int ComposeHello(const struct NativeMatchConfigV1 *config, uint8_t *bytes, size_t capacity, size_t *size)
+{
+	struct NativeLockstepHandshake handshake;
+
+	NativeLockstepHandshake_Init(&handshake);
+	CHECK(NativeLockstepHandshake_Begin(&handshake, config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN));
+	CHECK(NativeLockstepHandshake_ComposeMessage(&handshake, bytes, capacity, size));
+	CHECK(*size == NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES);
+	return 0;
+}
+
+/*
+ * The listen-only lobby never sends, and it filters what it hears: only a
+ * well-formed handshake datagram from a candidate address latches peerHeard.
+ * A malformed handshake-width datagram, a datagram of another width, and a
+ * well-formed handshake from an address that is not a candidate do not.
+ */
+static int TestListenNeverSendsAndFilters(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeLobbyState state;
+	struct NativeUdpTransportAddress candidates[2];
+	struct NativeUdpTransportAddress listenAddress;
+	struct NativeUdpTransport peer;
+	struct NativeUdpTransport stranger;
+	uint8_t hello[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
+	uint8_t junk[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
+	uint8_t aux[NATIVE_LOCKSTEP_PEER_LINK_AUX_BYTES];
+	size_t helloSize = 0;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+	CHECK(ComposeHello(&config, hello, sizeof(hello), &helloSize) == 0);
+	memset(junk, 0x5A, sizeof(junk));
+	memset(aux, 0x3C, sizeof(aux));
+	CHECK(NativeUdpTransport_MakeAddress(&candidates[0], "127.0.0.1", (uint16_t)TEST13_DEAD_PORT));
+	CHECK(NativeUdpTransport_MakeAddress(&candidates[1], "127.0.0.1", (uint16_t)TEST13_PEER_PORT));
+	CHECK(NativeUdpTransport_MakeAddress(&listenAddress, "127.0.0.1", (uint16_t)TEST13_A_PORT));
+
+	CHECK(NativeUdpTransport_GlobalInit());
+	memset(&peer, 0, sizeof(peer));
+	memset(&stranger, 0, sizeof(stranger));
+	CHECK(NativeUdpTransport_Open(&peer, (uint16_t)TEST13_PEER_PORT));
+	CHECK(NativeUdpTransport_Open(&stranger, (uint16_t)TEST13_STRANGER_PORT));
+
+	memset(&state, 0, sizeof(state));
+	CHECK(NativeLobbyState_BeginListen(&state, (uint16_t)TEST13_A_PORT, candidates, 2u) == 1);
+	CHECK(NativeLobbyState_Mode(&state) == NATIVE_LOBBY_STATE_LISTENING);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+	/* No handshake link to drive, and no cycle to restart. */
+	CHECK(NativeLobbyState_Link(&state) == NULL);
+	CHECK(NativeLobbyState_RestartCycle(&state) == 0);
+	CHECK(NativeLobbyState_Mode(&state) == NATIVE_LOBBY_STATE_LISTENING);
+	CHECK(NativeLockstepPeerLink_Mode(&state.link) == NATIVE_LOCKSTEP_PEER_LINK_LISTENING);
+
+	/* Nothing is ever sent, to a candidate or anyone. */
+	CHECK(PollListeningQuiet(&state, &peer, 30u) == 0);
+	CHECK(PollListeningQuiet(&state, &stranger, 5u) == 0);
+	/* The peer link's other entry points do nothing on a listening link. */
+	NativeLockstepPeerLink_Retransmit(&state.link);
+	CHECK(NativeLockstepPeerLink_SendAux(&state.link, aux, sizeof(aux)) == 0);
+	CHECK(NativeLockstepPeerLink_ComposeAndSendBundle(&state.link, 0u) == 0);
+	CHECK(PollListeningQuiet(&state, &peer, 1u) == 0);
+
+	/* A malformed handshake-width datagram from the candidate: not heard. */
+	CHECK(NativeUdpTransport_Send(&peer, &listenAddress, junk, sizeof(junk)));
+	CHECK(PollListeningQuiet(&state, &peer, 3u) == 0);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+
+	/* An aux-width datagram from the candidate: not heard. */
+	CHECK(NativeUdpTransport_Send(&peer, &listenAddress, aux, sizeof(aux)));
+	CHECK(PollListeningQuiet(&state, &peer, 3u) == 0);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+
+	/* A truncated HELLO from the candidate: not heard. */
+	CHECK(NativeUdpTransport_Send(&peer, &listenAddress, hello, helloSize - 1u));
+	CHECK(PollListeningQuiet(&state, &peer, 3u) == 0);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+
+	/* A well-formed HELLO from an address that is not a candidate: not
+	 * heard, and not answered. */
+	CHECK(NativeUdpTransport_Send(&stranger, &listenAddress, hello, helloSize));
+	CHECK(PollListeningQuiet(&state, &stranger, 3u) == 0);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+
+	/* The ordinary Poll is a no-op on a listening link: a HELLO it would
+	 * otherwise read stays queued for the listen poll. */
+	CHECK(NativeUdpTransport_Send(&peer, &listenAddress, hello, helloSize));
+	NativeLockstepPeerLink_Poll(&state.link);
+	CHECK(NativeLockstepPeerLink_Mode(&state.link) == NATIVE_LOCKSTEP_PEER_LINK_LISTENING);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+
+	/* The well-formed HELLO from the candidate: heard, latched, and not
+	 * answered. */
+	CHECK(PollListeningQuiet(&state, &peer, 1u) == 0);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 1);
+	CHECK(PollListeningQuiet(&state, &peer, 20u) == 0);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 1);
+	CHECK(NativeLockstepPeerLink_Mode(&state.link) == NATIVE_LOCKSTEP_PEER_LINK_LISTENING);
+
+	/* Close clears the latch. */
+	NativeLobbyState_Close(&state);
+	CHECK(NativeLobbyState_Mode(&state) == NATIVE_LOBBY_STATE_WAITING_FOR_PEER);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+	CHECK(NativeLockstepPeerLink_Mode(&state.link) == NATIVE_LOCKSTEP_PEER_LINK_IDLE);
+
+	NativeUdpTransport_Close(&stranger);
+	NativeUdpTransport_Close(&peer);
+	NativeUdpTransport_GlobalShutdown();
+	return 0;
+}
+
+/*
+ * The listen-only lobby closes and reopens on the same local port, as a
+ * cabinet does between LOBBY and solo: listen, close, listen again, close,
+ * then an ordinary handshaking lobby on that same port. A second listener on
+ * a port in use fails and changes nothing.
+ */
+static int TestListenCloseAndReopenSamePort(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeLobbyState state;
+	struct NativeLobbyState other;
+	struct NativeLobbyState sentinel;
+	struct NativeUdpTransportAddress dead;
+	uint32_t round;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&config);
+	CHECK(NativeUdpTransport_MakeAddress(&dead, "127.0.0.1", (uint16_t)TEST14_DEAD_PORT));
+	memset(&state, 0, sizeof(state));
+
+	for (round = 0; round < 3u; round++)
+	{
+		CHECK(NativeLobbyState_BeginListen(&state, (uint16_t)TEST14_A_PORT, &dead, 1u) == 1);
+		CHECK(NativeLobbyState_Mode(&state) == NATIVE_LOBBY_STATE_LISTENING);
+
+		/* The port is taken while listening. */
+		memset(&other, 0xA5, sizeof(other));
+		memcpy(&sentinel, &other, sizeof(other));
+		CHECK(NativeLobbyState_BeginListen(&other, (uint16_t)TEST14_A_PORT, &dead, 1u) == 0);
+		CHECK(memcmp(&other, &sentinel, sizeof(other)) == 0);
+
+		NativeLobbyState_Poll(&state);
+		NativeLobbyState_Close(&state);
+		CHECK(NativeLobbyState_Mode(&state) == NATIVE_LOBBY_STATE_WAITING_FOR_PEER);
+		NativeLobbyState_Close(&state);
+	}
+
+	/* The same port serves an ordinary lobby next (LOBBY after solo). */
+	CHECK(NativeLobbyState_Begin(&state, (uint16_t)TEST14_A_PORT, &dead, 1u, &config, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN,
+		(uint32_t)NATIVE_LOCKSTEP_MIN_INPUT_DELAY, ATTEMPT_FRAMES_PER_CANDIDATE, RETRANSMIT_INTERVAL_FRAMES));
+	CHECK(NativeLobbyState_Mode(&state) == NATIVE_LOBBY_STATE_HANDSHAKING);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+	NativeLobbyState_Close(&state);
+
+	/* ...and a listener after it. */
+	CHECK(NativeLobbyState_BeginListen(&state, (uint16_t)TEST14_A_PORT, NULL, 0u) == 1);
+	CHECK(NativeLobbyState_Mode(&state) == NATIVE_LOBBY_STATE_LISTENING);
+	NativeLobbyState_Poll(&state);
+	CHECK(NativeLobbyState_PeerHeard(&state) == 0);
+	NativeLobbyState_Close(&state);
+	return 0;
+}
+
+/* BeginListen validates like Begin and changes nothing on a rejection; the
+ * NULL-state entry points are safe. */
+static int TestListenRejections(void)
+{
+	struct NativeLobbyState state;
+	struct NativeLobbyState sentinel;
+	struct NativeUdpTransportAddress candidates[NATIVE_LOBBY_STATE_MAX_CANDIDATES + 1u];
+	uint32_t i;
+
+	for (i = 0; i < (NATIVE_LOBBY_STATE_MAX_CANDIDATES + 1u); i++)
+	{
+		CHECK(NativeUdpTransport_MakeAddress(&candidates[i], "127.0.0.1", (uint16_t)(TEST15_PEER_PORT)));
+	}
+	memset(&state, 0xA5, sizeof(state));
+	memcpy(&sentinel, &state, sizeof(state));
+	CHECK(NativeLobbyState_BeginListen(NULL, (uint16_t)TEST15_A_PORT, candidates, 1u) == 0);
+	CHECK(NativeLobbyState_BeginListen(&state, (uint16_t)TEST15_A_PORT, candidates, NATIVE_LOBBY_STATE_MAX_CANDIDATES + 1u) == 0);
+	CHECK(memcmp(&state, &sentinel, sizeof(state)) == 0);
+	CHECK(NativeLobbyState_BeginListen(&state, (uint16_t)TEST15_A_PORT, NULL, 1u) == 0);
+	CHECK(memcmp(&state, &sentinel, sizeof(state)) == 0);
+	CHECK(NativeLobbyState_PeerHeard(NULL) == 0);
+
+	/* A full candidate list is accepted. */
+	memset(&state, 0, sizeof(state));
+	CHECK(NativeLobbyState_BeginListen(&state, (uint16_t)TEST15_A_PORT, candidates, NATIVE_LOBBY_STATE_MAX_CANDIDATES) == 1);
+	CHECK(state.candidateCount == NATIVE_LOBBY_STATE_MAX_CANDIDATES);
+	NativeLobbyState_Close(&state);
+
+	/* The bare peer-link entry points refuse NULL and other modes. */
+	CHECK(NativeLockstepPeerLink_OpenListen(NULL, (uint16_t)TEST15_A_PORT) == 0);
+	CHECK(NativeLockstepPeerLink_PollListen(NULL, candidates, 1u) == 0u);
+	CHECK(NativeLockstepPeerLink_PollListen(&state.link, candidates, 1u) == 0u);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestEmptyCandidateList() == 0);
@@ -666,6 +895,9 @@ int main(void)
 	CHECK(TestBeginRejectsInvalidConfigAndTouchesNothing() == 0);
 	CHECK(TestBeginRejectsZeroAttemptFramesPerCandidate() == 0);
 	CHECK(TestZeroRetransmitIntervalDisablesOwnResendButStillConnects() == 0);
+	CHECK(TestListenNeverSendsAndFilters() == 0);
+	CHECK(TestListenCloseAndReopenSamePort() == 0);
+	CHECK(TestListenRejections() == 0);
 	puts("native_lobby_state_test: passed");
 	return 0;
 }

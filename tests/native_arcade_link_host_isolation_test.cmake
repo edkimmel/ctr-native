@@ -41,6 +41,11 @@
 # 0, LR-69; rule 3g), and the host latches a pointer-free divergence record
 # once per race after every Tick, RaceStep, and RaceHold, which the header's
 # TakeRaceDivergence hands to the game hook's log (LR-70; rule 3i).
+# Since SOLO-S2 (docs/SOLO_CAB_MILESTONE.md) the .c also includes the bot
+# rules header, builds the ONE_CAB solo base, and returns a solo race config
+# only through a fail-closed bot-rules check; the header appends the solo
+# view group and declares the solo query; and solo stays dark (rules 3 and
+# 3j).
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -128,8 +133,11 @@ endforeach()
 # 3. #include allowlists. The header: stdint.h and the three game-safe
 #    platform headers. The .c: string.h, stdint.h, stddef.h, its own header,
 #    the adapter header, the flow, options, menu-input, and identity
-#    headers, <platform.h> (the pacing switch, LR-7), and the race drive
-#    core's header (LR-S9). The header's allowlist is unchanged by LR-S9.
+#    headers, <platform.h> (the pacing switch, LR-7), the race drive
+#    core's header (LR-S9), and the bot rules header (the solo base and the
+#    solo query's check, docs/SOLO_CAB_MILESTONE.md SOLO-6; the library
+#    already reaches the bot rules through the host options, so rule 4 is
+#    unchanged). The header's allowlist is unchanged by LR-S9 and SOLO-S2.
 function(ctr_check_includes relative_path text allowed_pattern)
     string(REGEX MATCHALL "#[ \t]*include[^\r\n]*" include_lines "${text}")
     list(LENGTH include_lines include_count)
@@ -146,7 +154,7 @@ endfunction()
 ctr_check_includes("${host_header}" "${header}"
     "<stdint\\.h>|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"")
 ctr_check_includes("${host_source}" "${source}"
-    "<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_link_host\\.h\"|\"platform/native_arcade_link_host_internal\\.h\"|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"|\"platform/native_arcade_race_drive\\.h\"|<platform\\.h>")
+    "<string\\.h>|<stdint\\.h>|<stddef\\.h>|\"platform/native_arcade_bot_rules\\.h\"|\"platform/native_arcade_link_host\\.h\"|\"platform/native_arcade_link_host_internal\\.h\"|\"platform/native_arcade_netplay\\.h\"|\"platform/native_arcade_flow\\.h\"|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_menu_input\\.h\"|\"platform/native_identity\\.h\"|\"platform/native_arcade_race_drive\\.h\"|<platform\\.h>")
 
 # 3b. The host-side test read-back header (MS-8): the same header-only and
 #     category rules as the public header, it includes only stdint.h, and no
@@ -745,6 +753,46 @@ endforeach()
 if(NOT divergence_take_seen)
     message(FATAL_ERROR "arcade link host isolation: game/MAIN/MainArcadeLink.c, the hook, was not scanned")
 endif()
+
+# 3j. Solo (docs/SOLO_CAB_MILESTONE.md SOLO-S2). The view grows by one
+#     4-byte group appended after the select view, and the header declares
+#     the solo query. The .c builds the ONE_CAB solo base beside the fixture
+#     in Configure, and the solo query returns the link's solo race config
+#     only through one check that fails closed: an ARCADE_ONE_CAB config that
+#     passes NativeArcadeBotRules_ValidateConfigV1 (SOLO-6); the adapter's
+#     solo config is named nowhere else. The solo gate is dark (SOLO-11): its
+#     default is literally 0u, its only other write is the unit tests'
+#     internal setter (which rule 3b keeps out of game/ and main.c), and
+#     Configure turns solo on only through it. SOLO-S4 flips the default.
+ctr_require_in("${host_header}" "${header_flat}"
+    "struct NativeArcadeLinkHostSelectView select; uint8_t solo; uint8_t soloOffered; uint8_t peerHeard; uint8_t reserved; };"
+    "int NativeArcadeLinkHost_GetSoloConfig(struct NativeMatchConfigV1 *out);")
+string(REGEX MATCH "\n#define NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT 0u\r?\n" solo_default "${source}")
+if(solo_default STREQUAL "")
+    message(FATAL_ERROR "arcade link host isolation: ${host_source} must define NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT as 0u on a line of its own (SOLO-11: solo stays dark until SOLO-S4)")
+endif()
+ctr_require_count("${host_source}" "${source_flat}" "NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT" 2)
+ctr_require_in("${host_source}" "${source_flat}"
+    "static uint8_t g_soloEnabled = NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT;")
+ctr_require_count("${host_source}" "${source_flat}" "g_soloEnabled =" 2)
+ctr_body("${host_source}" "${source_code}" "void NativeArcadeLinkHost_InternalSetSoloEnabled(" solo_setter_body)
+ctr_require_in("${host_source} (InternalSetSoloEnabled)" "${solo_setter_body}"
+    "{ g_soloEnabled = (uint8_t)((enabled != 0u) ? 1u : 0u);")
+ctr_require_in("${host_source} (Configure)" "${configure_body}"
+    "g_config.soloEnabled = 0u; if ((g_soloEnabled != 0u) && NativeArcadeLinkHost_BuildSoloBase(&fixture, &g_config.soloBase)) { g_config.soloEnabled = 1u; }")
+ctr_require_count("${host_source}" "${source_flat}" "soloEnabled =" 4)
+ctr_body("${host_source}" "${source_code}" "int NativeArcadeLinkHost_InternalCopyValidSoloConfig(" solo_check_body)
+ctr_require_in("${host_source} (InternalCopyValidSoloConfig)" "${solo_check_body}"
+    "if ((candidate == NULL) || (out == NULL)) { return 0; } if ((candidate->profile != NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB) || !NativeArcadeBotRules_ValidateConfigV1(candidate)) { return 0; } memcpy(out, candidate, sizeof(*out)); return 1;")
+ctr_body("${host_source}" "${source_code}" "int NativeArcadeLinkHost_GetSoloConfig(" solo_query_body)
+ctr_require_in("${host_source} (GetSoloConfig)" "${solo_query_body}"
+    "return NativeArcadeLinkHost_InternalCopyValidSoloConfig(NativeArcadeNetplay_SoloConfig(&g_netplay), out);")
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeNetplay_SoloConfig(" 1)
+ctr_body("${host_source}" "${source_code}" "static int NativeArcadeLinkHost_BuildSoloBase(" solo_base_body)
+ctr_require_in("${host_source} (BuildSoloBase)" "${solo_base_body}"
+    "NativeMatchConfigV1_InitArcadeOneCab(&candidate);"
+    "NativeArcadeBotRules_ExpectedBots1P(fixture->slots[cab1Slot].characterID, bots)"
+    "!NativeArcadeBotRules_Digest1PV1(candidate.botRulesDigest) || !NativeArcadeBotRules_ValidateConfigV1(&candidate)")
 
 # 4. ctr_native_arcade_link_host links exactly the adapter and the host
 #    options, in exactly one target_link_libraries call. Its one other

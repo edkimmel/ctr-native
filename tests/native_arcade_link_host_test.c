@@ -60,6 +60,10 @@
 #define TEST_DRIVE_PEER_PORT 48516u
 #define TEST_DRIVE2_HOST_PORT 48517u
 #define TEST_DRIVE2_PEER_PORT 48518u
+/* Solo (docs/SOLO_CAB_MILESTONE.md SOLO-S2): the last free port of the band,
+ * against the first test's dead peer (the tests run in turn). */
+#define TEST_SOLO_LOCAL_PORT 48519u
+#define TEST_SOLO_DEAD_PEER_PORT 48501u
 
 /* Bounds every loop that waits for the loopback pair; generous, not tuned. */
 #define PAIR_BUDGET 4000u
@@ -71,6 +75,10 @@
 
 /* Well under the default 150-tick per-candidate attempt budget. */
 #define LOBBY_TICKS 5u
+
+/* Past the default 90-tick solo offer delay, inside the 150-tick attempt
+ * budget. */
+#define SOLO_WATCH_TICKS 120u
 
 #define ACT_NONE ((uint32_t)NATIVE_ARCADE_FLOW_ACTION_NONE)
 
@@ -4449,6 +4457,327 @@ static int TestDriveCappedHoldPastStartWait(void)
 	return 0;
 }
 
+/* ---- SOLO-S2: the solo query and the dark gate ---- */
+
+/* A real solo race config from TestSoloConfigEveryCharacter, for
+ * TestSoloConfigFailsClosed. */
+static struct NativeMatchConfigV1 g_soloSample;
+static int g_soloSampleValid;
+
+/* The host view, or a 0xA5 fill when GetView fails. */
+static struct NativeArcadeLinkHostView HostView(void)
+{
+	struct NativeArcadeLinkHostView view;
+
+	memset(&view, 0xA5, sizeof(view));
+	(void)NativeArcadeLinkHost_GetView(&view);
+	return view;
+}
+
+/* No solo config: 0, and *out untouched. */
+static int CheckNoSoloConfig(void)
+{
+	struct NativeMatchConfigV1 config;
+	struct NativeMatchConfigV1 sentinel;
+
+	memset(&config, 0xA5, sizeof(config));
+	memcpy(&sentinel, &config, sizeof(config));
+	CHECK(NativeArcadeLinkHost_GetSoloConfig(&config) == 0);
+	CHECK(memcmp(&config, &sentinel, sizeof(config)) == 0);
+	CHECK(NativeArcadeLinkHost_GetSoloConfig(NULL) == 0);
+	return 0;
+}
+
+/* Released ticks on LOBBY until the solo offer stands; the view's solo bits
+ * on the way. Returns the ticks it took, or 0 when it never came. */
+static uint32_t HostTicksToSoloOffer(void)
+{
+	struct NativeArcadeLinkHostView view;
+	uint32_t tick;
+
+	for (tick = 1u; tick <= PAIR_BUDGET; tick++)
+	{
+		if (NativeArcadeLinkHost_Tick(0u, 0u) != ACT_NONE)
+		{
+			return 0u;
+		}
+		view = HostView();
+		if ((view.screen != (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_LOBBY) || (view.solo != 0u) || (view.peerHeard != 0u) ||
+			(view.reserved != 0u))
+		{
+			return 0u;
+		}
+		if (view.soloOffered != 0u)
+		{
+			return tick;
+		}
+	}
+	return 0u;
+}
+
+/* One press of held and its release, both with no action. */
+static int HostPress(uint32_t held)
+{
+	CHECK(NativeArcadeLinkHost_Tick(held, 0u) == ACT_NONE);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	return 0;
+}
+
+/*
+ * SOLO-11: the dark gate. Production never calls the internal setter, so the
+ * host configures solo off: the LOBBY never offers solo, CROSS there begins
+ * nothing, and the solo query stays empty.
+ */
+static int TestSoloDarkByDefault(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	struct NativeArcadeLinkHostView view;
+	uint32_t tick;
+
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SOLO_LOCAL_PORT,
+		TEST_SOLO_DEAD_PEER_PORT);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(CheckNoSoloConfig() == 0);
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	for (tick = 0u; tick < SOLO_WATCH_TICKS; tick++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(((tick % 2u) == 0u) ? 0u : NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == ACT_NONE);
+		view = HostView();
+		CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+		CHECK(view.solo == 0u);
+		CHECK(view.soloOffered == 0u);
+		CHECK(view.peerHeard == 0u);
+		CHECK(view.reserved == 0u);
+		CHECK(CheckNoSoloConfig() == 0);
+	}
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	CHECK(CheckNoSoloConfig() == 0);
+	return 0;
+}
+
+/*
+ * SOLO-5, SOLO-6 through the host with solo enabled by the internal setter:
+ * for every one of the 8 human characters, the solo race config passes the
+ * bot rules' own check, is ONE_CAB, and its bots are ExpectedBots1P of the
+ * pick in slot order. The agreed-config query stays empty in solo; the solo
+ * query is empty off the solo race.
+ */
+static int TestSoloConfigEveryCharacter(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	struct NativeArcadeLinkHostView view;
+	struct NativeMatchConfigV1 solo;
+	uint8_t expected[NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT];
+	uint32_t index;
+	uint32_t action = ACT_NONE;
+	uint32_t tick;
+	uint32_t slot;
+	uint32_t bot;
+	uint32_t humans;
+	uint8_t character;
+
+	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SOLO_LOCAL_PORT,
+		TEST_SOLO_DEAD_PEER_PORT);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(CheckNoSoloConfig() == 0);
+
+	for (index = 0u; index < 8u; index++)
+	{
+		character = NativeMatchSelect_CharacterAt(index);
+		CHECK(NativeArcadeLinkHost_Enter() == 1);
+		CHECK(HostTicksToSoloOffer() == NATIVE_ARCADE_FLOW_DEFAULT_SOLO_OFFER_DELAY_TICKS);
+		CHECK(CheckNoSoloConfig() == 0);
+		CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) ==
+			(uint32_t)NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT);
+		view = HostView();
+		CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+		CHECK((view.solo == 1u) && (view.soloOffered == 0u) && (view.peerHeard == 0u) && (view.reserved == 0u));
+		CHECK((view.select.active == 1u) && (view.select.humanCount == 1u) && (view.select.localHuman == 0u));
+
+		/* Arm, move the cursor onto the character, confirm all three items. */
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+		for (tick = 0u; (tick < 16u) && (HostView().select.humans[0].characterID != character); tick++)
+		{
+			CHECK(HostPress(NATIVE_ARCADE_MENU_BUTTON_DOWN) == 0);
+		}
+		CHECK(HostView().select.humans[0].characterID == character);
+		for (tick = 0u; (tick < 3u) && (HostView().screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT); tick++)
+		{
+			CHECK(HostPress(NATIVE_ARCADE_MENU_BUTTON_CROSS) == 0);
+		}
+		CHECK(HostView().screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+		CHECK(CheckNoSoloConfig() == 0);
+		for (tick = 0u; (tick < PAIR_BUDGET) && (HostView().screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+			 tick++)
+		{
+			action = NativeArcadeLinkHost_Tick(0u, 0u);
+		}
+		CHECK(action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE);
+		view = HostView();
+		CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+		CHECK(view.solo == 1u);
+
+		/* The solo query: the bot rules' own check, ONE_CAB, the pick, and
+		 * ExpectedBots1P in bot-slot order. */
+		memset(&solo, 0xA5, sizeof(solo));
+		CHECK(NativeArcadeLinkHost_GetSoloConfig(&solo) == 1);
+		CHECK(NativeArcadeLinkHost_GetSoloConfig(NULL) == 0);
+		CHECK(NativeArcadeBotRules_ValidateConfigV1(&solo));
+		CHECK(solo.profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB);
+		CHECK(NativeArcadeBotRules_ExpectedBots1P(character, expected));
+		bot = 0u;
+		humans = 0u;
+		for (slot = 0u; slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; slot++)
+		{
+			if (solo.slots[slot].role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN)
+			{
+				CHECK(solo.slots[slot].characterID == character);
+				humans++;
+			}
+			else if (solo.slots[slot].role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT)
+			{
+				CHECK(bot < NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT);
+				CHECK(solo.slots[slot].characterID == expected[bot]);
+				bot++;
+			}
+			else
+			{
+				CHECK(solo.slots[slot].role != (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN);
+			}
+		}
+		CHECK((humans == 1u) && (bot == NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT));
+		if (index == 3u)
+		{
+			g_soloSample = solo;
+			g_soloSampleValid = 1;
+		}
+		/* The linked queries stay empty in solo. */
+		CHECK(CheckNoAgreedMatch() == 0);
+
+		/* Solo RESULTS keeps it; the title drops it. */
+		CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == ACT_NONE);
+		CHECK(HostView().screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+		CHECK(HostView().solo == 1u);
+		{
+			struct NativeMatchConfigV1 again;
+
+			CHECK(NativeArcadeLinkHost_GetSoloConfig(&again) == 1);
+			CHECK(memcmp(&again, &solo, sizeof(solo)) == 0);
+		}
+		NativeArcadeLinkHost_AbortToTitle();
+		CHECK(CheckNoSoloConfig() == 0);
+		view = HostView();
+		CHECK((view.solo == 0u) && (view.soloOffered == 0u) && (view.peerHeard == 0u));
+	}
+
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(CheckInert() == 0);
+	CHECK(CheckNoSoloConfig() == 0);
+	NativeArcadeLinkHost_InternalSetSoloEnabled(0u);
+	return 0;
+}
+
+/*
+ * SOLO-6, fail closed: the solo query's check returns only a config that
+ * passes NativeArcadeBotRules_ValidateConfigV1 and is ONE_CAB; anything else
+ * is refused with *out untouched.
+ */
+static int TestSoloConfigFailsClosed(void)
+{
+	struct NativeIdentityV1 identity;
+	struct NativeMatchConfigV1 twoCab;
+	struct NativeMatchConfigV1 bad;
+	struct NativeMatchConfigV1 out;
+	struct NativeMatchConfigV1 sentinel;
+	uint32_t first = NATIVE_MATCH_CONFIG_V1_SLOT_COUNT;
+	uint32_t second = NATIVE_MATCH_CONFIG_V1_SLOT_COUNT;
+	uint8_t human = 0xFFu;
+	uint32_t slot;
+	uint8_t swap;
+
+	/* The real solo config the host built above. */
+	CHECK(g_soloSampleValid == 1);
+	CHECK(NativeArcadeBotRules_ValidateConfigV1(&g_soloSample));
+	for (slot = 0u; slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; slot++)
+	{
+		if (g_soloSample.slots[slot].role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN)
+		{
+			human = g_soloSample.slots[slot].characterID;
+		}
+		else if (g_soloSample.slots[slot].role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT)
+		{
+			if (first == NATIVE_MATCH_CONFIG_V1_SLOT_COUNT)
+			{
+				first = slot;
+			}
+			else if (second == NATIVE_MATCH_CONFIG_V1_SLOT_COUNT)
+			{
+				second = slot;
+			}
+		}
+	}
+	CHECK((human < 8u) && (first < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT) && (second < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT));
+
+	/* The valid config is copied exactly. */
+	memset(&out, 0xA5, sizeof(out));
+	CHECK(NativeArcadeLinkHost_InternalCopyValidSoloConfig(&g_soloSample, &out) == 1);
+	CHECK(memcmp(&out, &g_soloSample, sizeof(out)) == 0);
+
+	/* NULL candidate or out. */
+	memset(&out, 0xA5, sizeof(out));
+	sentinel = out;
+	CHECK(NativeArcadeLinkHost_InternalCopyValidSoloConfig(NULL, &out) == 0);
+	CHECK(memcmp(&out, &sentinel, sizeof(out)) == 0);
+	CHECK(NativeArcadeLinkHost_InternalCopyValidSoloConfig(&g_soloSample, NULL) == 0);
+
+	/* A TWO_CAB config that passes the bot rules' check is still refused. */
+	NativeArcadeLinkLoopback_Identity(&identity);
+	CHECK(NativeArcadeLinkFixture_Build(&identity, &twoCab));
+	CHECK(twoCab.profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB);
+	CHECK(NativeArcadeBotRules_ValidateConfigV1(&twoCab));
+	CHECK(NativeArcadeLinkHost_InternalCopyValidSoloConfig(&twoCab, &out) == 0);
+	CHECK(memcmp(&out, &sentinel, sizeof(out)) == 0);
+
+	/* Two bots swapped: the LOAD_Robots1P order broken. */
+	bad = g_soloSample;
+	swap = bad.slots[first].characterID;
+	bad.slots[first].characterID = bad.slots[second].characterID;
+	bad.slots[second].characterID = swap;
+	CHECK(NativeArcadeLinkHost_InternalCopyValidSoloConfig(&bad, &out) == 0);
+	CHECK(memcmp(&out, &sentinel, sizeof(out)) == 0);
+
+	/* A bot on the human's character. */
+	bad = g_soloSample;
+	bad.slots[first].characterID = human;
+	CHECK(NativeArcadeLinkHost_InternalCopyValidSoloConfig(&bad, &out) == 0);
+	CHECK(memcmp(&out, &sentinel, sizeof(out)) == 0);
+
+	/* The wrong bot-rules digest. */
+	bad = g_soloSample;
+	bad.botRulesDigest[0] ^= 0x01u;
+	CHECK(NativeArcadeLinkHost_InternalCopyValidSoloConfig(&bad, &out) == 0);
+	CHECK(memcmp(&out, &sentinel, sizeof(out)) == 0);
+
+	/* The profile byte alone changed to TWO_CAB. */
+	bad = g_soloSample;
+	bad.profile = NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB;
+	CHECK(NativeArcadeLinkHost_InternalCopyValidSoloConfig(&bad, &out) == 0);
+	CHECK(memcmp(&out, &sentinel, sizeof(out)) == 0);
+
+	/* An invalid config (no laps). */
+	bad = g_soloSample;
+	bad.lapCount = 0u;
+	CHECK(NativeArcadeLinkHost_InternalCopyValidSoloConfig(&bad, &out) == 0);
+	CHECK(memcmp(&out, &sentinel, sizeof(out)) == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestInertBeforeConfigure() == 0);
@@ -4481,6 +4810,9 @@ int main(void)
 	CHECK(TestDrivePeerLeadsFinishDivergence() == 0);
 	CHECK(TestDriveHostOnlyFinishesOnF() == 0);
 	CHECK(TestDriveCappedHoldPastStartWait() == 0);
+	CHECK(TestSoloDarkByDefault() == 0);
+	CHECK(TestSoloConfigEveryCharacter() == 0);
+	CHECK(TestSoloConfigFailsClosed() == 0);
 	puts("native_arcade_link_host_test: passed");
 	return 0;
 }

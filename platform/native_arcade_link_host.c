@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "platform/native_arcade_bot_rules.h"
 #include "platform/native_arcade_flow.h"
 #include "platform/native_arcade_link_host_internal.h"
 #include "platform/native_arcade_link_options.h"
@@ -211,6 +212,13 @@ static uint32_t g_raceTickLimit;
 static struct NativeArcadeLinkHostRaceDivergence g_raceDivergence;
 static uint8_t g_raceDivergencePending;
 static uint32_t g_raceDivergenceRace;
+/* The solo gate (docs/SOLO_CAB_MILESTONE.md SOLO-11): solo stays dark until
+ * the solo race launch slice (SOLO-S4) and its live proof land, so a
+ * cabinet is never left on a solo screen that cannot race. Only the unit
+ * tests' NativeArcadeLinkHost_InternalSetSoloEnabled changes it; every LINK
+ * Configure reads it. Host-local. */
+#define NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT 0u
+static uint8_t g_soloEnabled = NATIVE_ARCADE_LINK_HOST_SOLO_ENABLED_DEFAULT;
 
 uint64_t NativeArcadeLinkHost_MixSelectEntropy(uint64_t entropy, uint64_t epoch)
 {
@@ -688,6 +696,83 @@ void NativeArcadeLinkHost_Shutdown(void)
 	g_mode = NATIVE_ARCADE_LINK_HOST_MODE_OFF;
 }
 
+void NativeArcadeLinkHost_InternalSetSoloEnabled(uint8_t enabled)
+{
+	g_soloEnabled = (uint8_t)((enabled != 0u) ? 1u : 0u);
+}
+
+/*
+ * The solo base (docs/SOLO_CAB_MILESTONE.md SOLO-6), built beside the TWO_CAB
+ * fixture as the roster proof builds its ONE_CAB config (RS-23): the
+ * fixture's identity, track, laps, tick rate, and masterSeed, its CAB1
+ * character as the one human (CAB1_HUMAN, slot 0, on either seat), its bot
+ * difficulty, the LOAD_Robots1P bots for that character, and the 1P
+ * bot-rules digest. It must pass the bot rules' full check. The one-human
+ * select then resolves the race config on it.
+ */
+static int NativeArcadeLinkHost_BuildSoloBase(const struct NativeMatchConfigV1 *fixture, struct NativeMatchConfigV1 *base)
+{
+	struct NativeMatchConfigV1 candidate;
+	uint8_t bots[NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT];
+	uint8_t cab1Slot = 0u;
+	uint8_t botDifficulty = 0u;
+	int botFound = 0;
+	uint32_t bot = 0u;
+	uint32_t slot;
+
+	if (!NativeMatchConfigV1_FindRoleSlot(fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &cab1Slot))
+	{
+		return 0;
+	}
+	for (slot = 0u; (slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT) && !botFound; slot++)
+	{
+		if (fixture->slots[slot].role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT)
+		{
+			botDifficulty = fixture->slots[slot].difficulty;
+			botFound = 1;
+		}
+	}
+	if (!botFound || !NativeArcadeBotRules_ExpectedBots1P(fixture->slots[cab1Slot].characterID, bots))
+	{
+		return 0;
+	}
+	NativeMatchConfigV1_InitArcadeOneCab(&candidate);
+	candidate.trackID = fixture->trackID;
+	candidate.lapCount = fixture->lapCount;
+	candidate.tickRateNumerator = fixture->tickRateNumerator;
+	candidate.tickRateDenominator = fixture->tickRateDenominator;
+	candidate.masterSeed = fixture->masterSeed;
+	memcpy(candidate.buildIdentity, fixture->buildIdentity, sizeof(candidate.buildIdentity));
+	memcpy(candidate.contentIdentity, fixture->contentIdentity, sizeof(candidate.contentIdentity));
+	for (slot = 0u; slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; slot++)
+	{
+		struct NativeMatchConfigSlotV1 *target = &candidate.slots[slot];
+
+		if (target->role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN)
+		{
+			target->characterID = fixture->slots[cab1Slot].characterID;
+			target->difficulty = 0u;
+		}
+		else if (target->role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT)
+		{
+			if (bot >= NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT)
+			{
+				return 0;
+			}
+			target->characterID = bots[bot];
+			target->difficulty = botDifficulty;
+			bot++;
+		}
+	}
+	if ((bot != NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT) || !NativeArcadeBotRules_Digest1PV1(candidate.botRulesDigest) ||
+		!NativeArcadeBotRules_ValidateConfigV1(&candidate))
+	{
+		return 0;
+	}
+	*base = candidate;
+	return 1;
+}
+
 int NativeArcadeLinkHost_Configure(const struct NativeArcadeLinkOptions *options,
 	const struct NativeIdentityV1 *identity)
 {
@@ -735,6 +820,13 @@ int NativeArcadeLinkHost_Configure(const struct NativeArcadeLinkOptions *options
 	g_config.candidateCount = options->peerCount;
 	g_config.localPort = options->localPort;
 	g_config.localRole = options->localRole;
+	/* SOLO-11: solo only through the gate, and only on a solo base that
+	 * builds; otherwise the link runs exactly as without solo. */
+	g_config.soloEnabled = 0u;
+	if ((g_soloEnabled != 0u) && NativeArcadeLinkHost_BuildSoloBase(&fixture, &g_config.soloBase))
+	{
+		g_config.soloEnabled = 1u;
+	}
 	NativeArcadeLinkHost_NextEpoch(options->selectEntropy);
 	if (!NativeArcadeNetplay_Init(&g_netplay, &g_config))
 	{
@@ -1057,6 +1149,10 @@ int NativeArcadeLinkHost_GetView(struct NativeArcadeLinkHostView *view)
 	view->attract = (uint8_t)((netplayView.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF) ? 1u : 0u);
 	view->localMenuEvent = netplayView.localMenuEvent;
 	NativeArcadeLinkHost_CopySelectView(&netplayView.select, &view->select);
+	view->solo = (uint8_t)(((netplayView.soloFlags & NATIVE_ARCADE_NETPLAY_VIEW_SOLO) != 0u) ? 1u : 0u);
+	view->soloOffered = (uint8_t)(((netplayView.soloFlags & NATIVE_ARCADE_NETPLAY_VIEW_SOLO_OFFERED) != 0u) ? 1u : 0u);
+	view->peerHeard = (uint8_t)(((netplayView.soloFlags & NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD) != 0u) ? 1u : 0u);
+	view->reserved = 0u;
 	return 1;
 }
 
@@ -1101,6 +1197,34 @@ int NativeArcadeLinkHost_GetAgreedConfig(struct NativeMatchConfigV1 *out)
 	/* The exact bytes the link agreed, padding included. */
 	memcpy(out, agreed, sizeof(*out));
 	return 1;
+}
+
+int NativeArcadeLinkHost_InternalCopyValidSoloConfig(const struct NativeMatchConfigV1 *candidate,
+	struct NativeMatchConfigV1 *out)
+{
+	if ((candidate == NULL) || (out == NULL))
+	{
+		return 0;
+	}
+	/* SOLO-6: a hard check that fails closed. BuildConfig does not check the
+	 * bots outside the 2P shape (risk 2), so every solo config is checked
+	 * against the LOAD_Robots1P rule here before any caller sees it. */
+	if ((candidate->profile != NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB) ||
+		!NativeArcadeBotRules_ValidateConfigV1(candidate))
+	{
+		return 0;
+	}
+	memcpy(out, candidate, sizeof(*out));
+	return 1;
+}
+
+int NativeArcadeLinkHost_GetSoloConfig(struct NativeMatchConfigV1 *out)
+{
+	if ((out == NULL) || (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK))
+	{
+		return 0;
+	}
+	return NativeArcadeLinkHost_InternalCopyValidSoloConfig(NativeArcadeNetplay_SoloConfig(&g_netplay), out);
 }
 
 int NativeArcadeLinkHost_ReportRaceFailure(void)

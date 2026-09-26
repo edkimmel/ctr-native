@@ -173,6 +173,15 @@ struct NativeArcadeLinkHostView
 	uint8_t localMenuEvent;
 	/* The select screens (docs/MATCH_SELECT_MILESTONE.md section 2.7). */
 	struct NativeArcadeLinkHostSelectView select;
+	/* Solo (docs/SOLO_CAB_MILESTONE.md). LINK only; 0 in PREVIEW. solo: 1 on
+	 * the solo SELECT, SELECT_RESULT, RACING, and RESULTS screens.
+	 * soloOffered: 1 while the LOBBY offers solo (SOLO-2, SOLO-13).
+	 * peerHeard: 1 once the other cabinet was heard during this solo (SOLO-4,
+	 * SOLO-8). reserved is always 0. */
+	uint8_t solo;
+	uint8_t soloOffered;
+	uint8_t peerHeard;
+	uint8_t reserved;
 };
 
 /* The agreed match, for logging. slotRole uses NATIVE_ARCADE_LINK_HOST_ROLE_*
@@ -270,6 +279,17 @@ int NativeArcadeLinkHost_GetAgreedMatch(struct NativeArcadeLinkHostMatch *out);
  * armed with. Otherwise (NULL, OFF, PREVIEW, or no agreed config) returns 0
  * with *out untouched. */
 int NativeArcadeLinkHost_GetAgreedConfig(struct NativeMatchConfigV1 *out);
+
+/* LINK only (docs/SOLO_CAB_MILESTONE.md SOLO-6): the solo race config, on the
+ * solo RACING screen and on solo RESULTS after that race. It is the ONE_CAB
+ * config the one-human select built on the solo base, and it is returned only
+ * if it also passes the bot rules' full config check (LOAD_Robots1P bots,
+ * the 1P bot-rules digest, table track and laps); a config that fails is
+ * never returned (fail closed), so no solo race is armed on it. Copies its
+ * exact bytes into *out and returns 1; otherwise (NULL, OFF, PREVIEW, not
+ * solo, no solo race config, or a failed check) returns 0 with *out
+ * untouched. Solo has no agreement: GetAgreedConfig is 0 throughout solo. */
+int NativeArcadeLinkHost_GetSoloConfig(struct NativeMatchConfigV1 *out);
 
 /* LINK only (docs/RACE_LAUNCH_MILESTONE.md RL-11): the caller reports that
  * the local race failed (setup, launch, a bounded wait, or a FAILED setup

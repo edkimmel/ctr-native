@@ -29,7 +29,7 @@
  * twice in a row as part of verification.
  *
  * Fixed loopback test ports, in the 48400-48499 band (and 48540-48541 for
- * the race hold service), distinct from every other test file's own bands (tests/native_lobby_state_test.c uses
+ * the race hold service, 48542-48547 for solo), distinct from every other test file's own bands (tests/native_lobby_state_test.c uses
  * 48300-48399; see tests/native_lockstep_peer_link_test.c for the others).
  * Each socket test uses its own pair; a rematch deliberately reopens the
  * same local port, as a cabinet does.
@@ -178,6 +178,14 @@
  * 48520-48539). */
 #define TEST_RACE_SERVICE_A_PORT 48540u
 #define TEST_RACE_SERVICE_B_PORT 48541u
+/* Solo (docs/SOLO_CAB_MILESTONE.md SOLO-S2): 48542-48547, next to the race
+ * hold service's pair and outside every other test file's band. */
+#define TEST_SOLO_A_PORT 48542u
+#define TEST_SOLO_PEER_PORT 48543u
+#define TEST_SOLO_STRANGER_PORT 48544u
+#define TEST_SOLO_CAB2_PORT 48545u
+#define TEST_SOLO_LINK_A_PORT 48546u
+#define TEST_SOLO_LINK_B_PORT 48547u
 
 /* Small, fixed, tick-counted budgets and timings: a real loopback handshake
  * completes in a handful of ticks, well inside every one of them. */
@@ -3789,7 +3797,7 @@ static int TestLocalMenuEvent(void)
 	CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
 	CHECK(view.menuArmed == 1u);
 	CHECK(view.localMenuEvent == (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE);
-	CHECK(view.reserved == 0u);
+	CHECK(view.soloFlags == 0u);
 
 	/* A rising NEXT is reported on its own tick only: held and released
 	 * ticks report NONE. The lobby ignores NEXT, PREV, and CONFIRM while
@@ -6579,6 +6587,490 @@ static int TestRaceServiceStartWait(void)
 	return 0;
 }
 
+/* ---- Solo (docs/SOLO_CAB_MILESTONE.md SOLO-S2) ---- */
+
+/* The base CAB1 character of the solo base below: not the fixture's, so the
+ * select's first cursor shows it came from the solo base's CAB1_HUMAN slot. */
+#define SOLO_BASE_CHARACTER 2u
+
+/* A valid ONE_CAB solo base on the fixture's identity, track, laps, tick
+ * rate, seed, and bot-rules bytes, with SOLO_BASE_CHARACTER as the one
+ * human. */
+static int MakeSoloBase(const struct NativeMatchConfigV1 *fixture, struct NativeMatchConfigV1 *base)
+{
+	uint8_t slot = 0u;
+
+	NativeMatchConfigV1_InitArcadeOneCab(base);
+	base->trackID = fixture->trackID;
+	base->lapCount = fixture->lapCount;
+	base->tickRateNumerator = fixture->tickRateNumerator;
+	base->tickRateDenominator = fixture->tickRateDenominator;
+	base->masterSeed = fixture->masterSeed;
+	memcpy(base->buildIdentity, fixture->buildIdentity, sizeof(base->buildIdentity));
+	memcpy(base->contentIdentity, fixture->contentIdentity, sizeof(base->contentIdentity));
+	memcpy(base->botRulesDigest, fixture->botRulesDigest, sizeof(base->botRulesDigest));
+	CHECK(NativeMatchConfigV1_FindRoleSlot(base, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &slot));
+	base->slots[slot].characterID = SOLO_BASE_CHARACTER;
+	CHECK(NativeMatchConfigV1_Validate(base));
+	return 0;
+}
+
+/* A solo-enabled config for role on localPort, its one candidate peerPort. */
+static int MakeSoloConfig(struct NativeArcadeNetplayConfig *config, const struct NativeMatchConfigV1 *fixture, uint8_t role,
+	uint32_t localPort, uint32_t peerPort)
+{
+	CHECK(MakeConfig(config, fixture, role, localPort, peerPort));
+	CHECK(MakeSoloBase(fixture, &config->soloBase) == 0);
+	config->soloEnabled = 1u;
+	return 0;
+}
+
+static uint32_t SoloFlagsOf(const struct NativeArcadeNetplay *netplay)
+{
+	struct NativeArcadeNetplayView view;
+
+	(void)NativeArcadeNetplay_GetView(netplay, &view);
+	return view.soloFlags;
+}
+
+/* Receives every datagram waiting on probe; returns how many. */
+static uint32_t DrainProbe(struct NativeUdpTransport *probe)
+{
+	uint8_t bytes[512];
+	size_t size = 0u;
+	struct NativeUdpTransportAddress sender;
+	uint32_t count = 0u;
+
+	while (NativeUdpTransport_Receive(probe, bytes, sizeof(bytes), &size, &sender) != NATIVE_UDP_TRANSPORT_RECEIVE_EMPTY)
+	{
+		count++;
+	}
+	return count;
+}
+
+/* One tick of netplay; with a probe, nothing may have reached it. */
+static int SoloTick(struct NativeArcadeNetplay *netplay, uint32_t held, uint8_t finished, struct NativeUdpTransport *probe,
+	enum NativeArcadeFlowAction *action)
+{
+	*action = NativeArcadeNetplay_Tick(netplay, held, finished);
+	if (probe != NULL)
+	{
+		CHECK(DrainProbe(probe) == 0u);
+	}
+	return 0;
+}
+
+/* From LOBBY (just entered): the offer after SOLO_OFFER_DELAY_TICKS released
+ * ticks, then CROSS begins solo. */
+static int SoloFromLobby(struct NativeArcadeNetplay *netplay)
+{
+	enum NativeArcadeFlowAction action;
+	uint32_t tick;
+
+	for (tick = 1u; tick <= SOLO_OFFER_DELAY_TICKS; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(netplay, 0u, 0u) == ACT_NONE);
+		CHECK(ScreenOf(netplay) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+		CHECK(((SoloFlagsOf(netplay) & NATIVE_ARCADE_NETPLAY_VIEW_SOLO_OFFERED) != 0u) == (tick == SOLO_OFFER_DELAY_TICKS));
+	}
+	action = NativeArcadeNetplay_Tick(netplay, BTN_CROSS, 0u);
+	CHECK(action == NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT);
+	CHECK(ScreenOf(netplay) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(SoloFlagsOf(netplay) == NATIVE_ARCADE_NETPLAY_VIEW_SOLO);
+	CHECK(netplay->lobbyBegun == 0u);
+	CHECK(netplay->listening == 1u);
+	CHECK(NativeArcadeNetplay_Link(netplay) == NULL);
+	CHECK(NativeArcadeNetplay_AgreedConfig(netplay) == NULL);
+	return 0;
+}
+
+/* On solo SELECT: arm, move the character cursor nextPresses times, confirm
+ * the three items, and hold through SELECT_RESULT to START_SOLO_RACE. */
+static int SoloPickAndStart(struct NativeArcadeNetplay *netplay, uint32_t nextPresses, struct NativeUdpTransport *probe)
+{
+	enum NativeArcadeFlowAction action;
+	uint32_t i;
+
+	CHECK(SoloTick(netplay, 0u, 0u, probe, &action) == 0);
+	CHECK(action == ACT_NONE);
+	for (i = 0u; i < nextPresses; i++)
+	{
+		CHECK(SoloTick(netplay, BTN_DOWN, 0u, probe, &action) == 0);
+		CHECK(SoloTick(netplay, 0u, 0u, probe, &action) == 0);
+	}
+	for (i = 0u; (i < 3u) && (ScreenOf(netplay) == NATIVE_ARCADE_FLOW_SCREEN_SELECT); i++)
+	{
+		CHECK(SoloTick(netplay, BTN_CROSS, 0u, probe, &action) == 0);
+		CHECK(action == ACT_NONE);
+		CHECK(SoloTick(netplay, 0u, 0u, probe, &action) == 0);
+		CHECK((action == ACT_NONE) || (action == NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE));
+	}
+	CHECK(ScreenOf(netplay) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+	CHECK(NativeArcadeNetplay_AgreedConfig(netplay) == NULL);
+	CHECK(NativeArcadeNetplay_SoloConfig(netplay) == NULL);
+	for (i = 0u; (i < DRIVE_BUDGET) && (ScreenOf(netplay) == NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT); i++)
+	{
+		CHECK(SoloTick(netplay, 0u, 0u, probe, &action) == 0);
+		CHECK((action == ACT_NONE) || (action == NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE));
+	}
+	CHECK(action == NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE);
+	CHECK(ScreenOf(netplay) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	return 0;
+}
+
+/* The solo race config: ONE_CAB, the resolved picks, and the LOAD_Robots1P
+ * bots for its human (every base character but the human, ascending, in
+ * ascending bot slot order), on a new seed. */
+static int CheckSoloConfig(const struct NativeArcadeNetplay *netplay, uint8_t human, uint8_t trackID, uint8_t laps)
+{
+	const struct NativeMatchConfigV1 *solo = NativeArcadeNetplay_SoloConfig(netplay);
+	uint8_t expected = 0u;
+	uint32_t slot;
+	uint32_t bots = 0u;
+
+	CHECK(solo != NULL);
+	CHECK(NativeMatchConfigV1_Validate(solo));
+	CHECK(solo->profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB);
+	CHECK(solo->trackID == trackID);
+	CHECK(solo->lapCount == laps);
+	CHECK(solo->masterSeed != 0u);
+	CHECK(solo->masterSeed != netplay->config.soloBase.masterSeed);
+	for (slot = 0u; slot < NATIVE_MATCH_CONFIG_V1_SLOT_COUNT; slot++)
+	{
+		if (solo->slots[slot].role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN)
+		{
+			CHECK(solo->slots[slot].characterID == human);
+		}
+		else if (solo->slots[slot].role == (uint8_t)NATIVE_MATCH_SLOT_ROLE_BOT)
+		{
+			if (expected == human)
+			{
+				expected++;
+			}
+			CHECK(solo->slots[slot].characterID == expected);
+			expected++;
+			bots++;
+		}
+		else
+		{
+			CHECK(solo->slots[slot].role != (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN);
+		}
+	}
+	CHECK(bots == 7u);
+	return 0;
+}
+
+/*
+ * SOLO-4, SOLO-5, SOLO-6: the listen-only link. A probe socket bound on the
+ * configured peer address receives the LOBBY's HELLOs, and then nothing at
+ * all through solo SELECT, SELECT_RESULT, RACING, and RESULTS. A HELLO from
+ * a stranger's address is not heard; one from the configured peer latches
+ * peerHeard and changes no screen. The solo RESULTS idle timeout closes the
+ * listen socket, and the flow returns to the title.
+ */
+static int TestSoloListenOnly(void)
+{
+	struct NativeArcadeNetplayConfig config;
+	struct NativeArcadeNetplayConfig bad;
+	struct NativeMatchConfigV1 fixture;
+	struct NativeArcadeNetplayView view;
+	struct NativeArcadeNetplayRaceEnd raceEnd;
+	struct NativeUdpTransport probe;
+	struct NativeUdpTransport stranger;
+	struct NativeUdpTransport reopen;
+	struct NativeUdpTransportAddress soloAddress;
+	struct NativeLockstepHandshake handshake;
+	uint8_t hello[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
+	size_t helloSize = 0u;
+	enum NativeArcadeFlowAction action;
+	uint32_t serial;
+	uint32_t tick;
+	uint32_t baseIndex = 0u;
+	uint8_t human;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(MakeSoloConfig(&config, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SOLO_A_PORT,
+		TEST_SOLO_PEER_PORT) == 0);
+
+	/* Init: soloEnabled is 0 or 1, and with 1 the solo base must be a valid
+	 * ONE_CAB config with a CAB1_HUMAN slot. */
+	bad = config;
+	bad.soloEnabled = 2u;
+	CHECK(InitRejectsUntouched(&bad));
+	bad = config;
+	bad.soloBase = fixture;
+	CHECK(InitRejectsUntouched(&bad));
+	bad = config;
+	bad.soloBase.lapCount = 0u;
+	CHECK(InitRejectsUntouched(&bad));
+	/* With solo off the base is not read. */
+	bad.soloEnabled = 0u;
+	CHECK(NativeArcadeNetplay_Init(&g_probe, &bad) == 1);
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+	CHECK(g_a.listening == 0u);
+	CHECK(g_a.peerHeard == 0u);
+
+	CHECK(NativeUdpTransport_GlobalInit());
+	memset(&probe, 0, sizeof(probe));
+	memset(&stranger, 0, sizeof(stranger));
+	CHECK(NativeUdpTransport_Open(&probe, (uint16_t)TEST_SOLO_PEER_PORT));
+	CHECK(NativeUdpTransport_Open(&stranger, (uint16_t)TEST_SOLO_STRANGER_PORT));
+	CHECK(NativeUdpTransport_MakeAddress(&soloAddress, "127.0.0.1", (uint16_t)TEST_SOLO_A_PORT));
+	NativeLockstepHandshake_Init(&handshake);
+	CHECK(NativeLockstepHandshake_Begin(&handshake, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN));
+	CHECK(NativeLockstepHandshake_ComposeMessage(&handshake, hello, sizeof(hello), &helloSize));
+
+	/* LOBBY handshakes with the configured peer (the probe hears HELLOs),
+	 * then offers solo; CROSS begins it. */
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(SoloFromLobby(&g_a) == 0);
+	CHECK(DrainProbe(&probe) > 0u);
+
+	/* The one-human select: humanCount 1, localHuman 0, the cursor on the
+	 * solo base's CAB1_HUMAN character. */
+	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+	CHECK(view.select.active == 1u);
+	CHECK(view.select.humanCount == 1u);
+	CHECK(view.select.localHuman == 0u);
+	CHECK(view.select.humans[0].present == 1u);
+	CHECK(view.select.humans[0].characterID == SOLO_BASE_CHARACTER);
+	CHECK(view.select.humans[0].trackID == FIXTURE_TRACK_CURSOR);
+	CHECK(view.select.humans[0].lapCount == FIXTURE_LAP_CURSOR);
+	CHECK(view.select.humans[1].present == 0u);
+
+	/* Nothing is sent in solo SELECT. */
+	for (tick = 0u; tick < 10u; tick++)
+	{
+		CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+		CHECK(action == ACT_NONE);
+	}
+
+	/* A well-formed HELLO from a stranger's address is not heard. */
+	CHECK(NativeUdpTransport_Send(&stranger, &soloAddress, hello, helloSize));
+	CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+	CHECK(DrainProbe(&stranger) == 0u);
+	CHECK((SoloFlagsOf(&g_a) & NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD) == 0u);
+
+	/* The configured peer's HELLO is heard: peerHeard latches, no screen
+	 * changes, and nothing answers it. */
+	serial = g_a.flow.screenSerial;
+	CHECK(NativeUdpTransport_Send(&probe, &soloAddress, hello, helloSize));
+	CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+	CHECK(action == ACT_NONE);
+	CHECK(SoloFlagsOf(&g_a) == (NATIVE_ARCADE_NETPLAY_VIEW_SOLO | NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD));
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(g_a.flow.screenSerial == serial);
+
+	/* One NEXT press from the base character, confirm, and race: no relink, no launch
+	 * agreement, still nothing sent. */
+	CHECK(SoloPickAndStart(&g_a, 1u, &probe) == 0);
+	CHECK(NativeArcadeNetplay_GetView(&g_a, &view) == 1);
+	CHECK(view.soloFlags == (NATIVE_ARCADE_NETPLAY_VIEW_SOLO | NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD));
+	CHECK(view.matchCount == 1u);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(NativeArcadeNetplay_Select(&g_a) == NULL);
+	CHECK(g_a.raceArmed == 0u);
+	CHECK(NativeArcadeLaunch_Active(&g_a.launch) == 0);
+	CHECK(NativeMatchSelect_CharacterIndex(SOLO_BASE_CHARACTER, &baseIndex));
+	human = NativeMatchSelect_CharacterAt(baseIndex + 1u);
+	CHECK(CheckSoloConfig(&g_a, human, (uint8_t)FIXTURE_TRACK_CURSOR, (uint8_t)FIXTURE_LAP_CURSOR) == 0);
+	for (tick = 0u; tick < 20u; tick++)
+	{
+		CHECK(SoloTick(&g_a, BTN_CROSS, 0u, &probe, &action) == 0);
+		CHECK(action == ACT_NONE);
+	}
+
+	/* The finish: solo RESULTS, the race-end record, the config kept. */
+	CHECK(SoloTick(&g_a, 0u, 1u, &probe, &action) == 0);
+	CHECK(action == ACT_NONE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_a) == NATIVE_ARCADE_FLOW_END_FINISHED);
+	CHECK(NativeArcadeNetplay_TakeRaceEnd(&g_a, &raceEnd) == 1);
+	CHECK(raceEnd.raceNumber == 1u);
+	CHECK(raceEnd.endReason == NATIVE_ARCADE_FLOW_END_FINISHED);
+	CHECK(NativeArcadeNetplay_SoloConfig(&g_a) != NULL);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) == NULL);
+	CHECK(SoloFlagsOf(&g_a) == (NATIVE_ARCADE_NETPLAY_VIEW_SOLO | NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD));
+
+	/* Abandoned: the idle timeout closes the listen socket (CLOSE_LINK) and
+	 * the title follows; never LOBBY. */
+	for (tick = 0u; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS); tick++)
+	{
+		CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+	}
+	CHECK(action == ACT_CLOSE_LINK);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_EXIT);
+	CHECK(g_a.listening == 0u);
+	CHECK(g_a.peerHeard == 0u);
+	CHECK(SoloFlagsOf(&g_a) == 0u);
+	CHECK(NativeArcadeNetplay_SoloConfig(&g_a) == NULL);
+	/* The port is free again. */
+	memset(&reopen, 0, sizeof(reopen));
+	CHECK(NativeUdpTransport_Open(&reopen, (uint16_t)TEST_SOLO_A_PORT));
+	NativeUdpTransport_Close(&reopen);
+	for (tick = 0u; (tick < DRIVE_BUDGET) && (ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_EXIT); tick++)
+	{
+		CHECK(SoloTick(&g_a, 0u, 0u, &probe, &action) == 0);
+	}
+	CHECK(action == ACT_RETURN_TO_TITLE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_OFF);
+
+	NativeArcadeNetplay_Shutdown(&g_a);
+	NativeUdpTransport_Close(&stranger);
+	NativeUdpTransport_Close(&probe);
+	NativeUdpTransport_GlobalShutdown();
+	return 0;
+}
+
+/*
+ * SOLO-5, SOLO-7, SOLO-8 on the CAB2 seat: localHuman 0 there too, the
+ * cursor from the base's CAB1_HUMAN slot; a local race failure ends the solo
+ * race with LINK_ERROR; RACE AGAIN starts a new select on the previous picks
+ * with a new seed.
+ */
+static int TestSoloCab2RaceAgain(void)
+{
+	struct NativeArcadeNetplayConfig config;
+	struct NativeMatchConfigV1 fixture;
+	struct NativeMatchConfigV1 first;
+	struct NativeArcadeNetplayView view;
+	enum NativeArcadeFlowAction action;
+	uint32_t tick;
+	uint32_t baseIndex = 0u;
+	uint8_t human;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(MakeSoloConfig(&config, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, TEST_SOLO_CAB2_PORT,
+		TEST_SOLO_PEER_PORT) == 0);
+	CHECK(NativeArcadeNetplay_Init(&g_b, &config) == 1);
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	CHECK(SoloFromLobby(&g_b) == 0);
+	CHECK(NativeArcadeNetplay_GetView(&g_b, &view) == 1);
+	CHECK(view.localRole == (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN);
+	CHECK(view.select.humanCount == 1u);
+	CHECK(view.select.localHuman == 0u);
+	CHECK(view.select.humans[0].characterID == SOLO_BASE_CHARACTER);
+
+	/* Two NEXT presses from the base character. */
+	CHECK(SoloPickAndStart(&g_b, 2u, NULL) == 0);
+	CHECK(NativeMatchSelect_CharacterIndex(SOLO_BASE_CHARACTER, &baseIndex));
+	human = NativeMatchSelect_CharacterAt(baseIndex + 2u);
+	CHECK(CheckSoloConfig(&g_b, human, (uint8_t)FIXTURE_TRACK_CURSOR, (uint8_t)FIXTURE_LAP_CURSOR) == 0);
+	first = *NativeArcadeNetplay_SoloConfig(&g_b);
+
+	/* A local race failure is LINK_ERROR on solo RESULTS. */
+	CHECK(NativeArcadeNetplay_ReportLocalRaceFailure(&g_b) == 1);
+	CHECK(NativeArcadeNetplay_Tick(&g_b, 0u, 1u) == ACT_NONE);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	CHECK(EndReasonOf(&g_b) == NATIVE_ARCADE_FLOW_END_LINK_ERROR);
+	CHECK(SoloFlagsOf(&g_b) == NATIVE_ARCADE_NETPLAY_VIEW_SOLO);
+	CHECK(g_b.listening == 1u);
+
+	/* RACE AGAIN, after the dwell. */
+	for (tick = 0u; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_b, 0u, 0u) == ACT_NONE);
+	}
+	action = NativeArcadeNetplay_Tick(&g_b, BTN_CROSS, 0u);
+	CHECK(action == NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(g_b.listening == 1u);
+	CHECK(NativeArcadeNetplay_SoloConfig(&g_b) == NULL);
+	/* The cursors start on the previous picks (OD-3). */
+	CHECK(NativeArcadeNetplay_GetView(&g_b, &view) == 1);
+	CHECK(view.select.humans[0].characterID == human);
+	CHECK(view.select.humans[0].trackID == (uint8_t)first.trackID);
+	CHECK(view.select.humans[0].lapCount == (uint8_t)first.lapCount);
+
+	/* The same picks race again on a new seed. */
+	CHECK(SoloPickAndStart(&g_b, 0u, NULL) == 0);
+	CHECK(CheckSoloConfig(&g_b, human, (uint8_t)first.trackID, (uint8_t)first.lapCount) == 0);
+	CHECK(NativeArcadeNetplay_SoloConfig(&g_b)->masterSeed != first.masterSeed);
+	CHECK(g_b.matchCount == 2u);
+
+	NativeArcadeNetplay_Shutdown(&g_b);
+	CHECK(g_b.listening == 0u);
+	CHECK(NativeArcadeNetplay_SoloConfig(&g_b) == NULL);
+	return 0;
+}
+
+/*
+ * SOLO-4, SOLO-8: the other cabinet wakes during solo. Its HELLOs are heard
+ * and never answered, so it stays in its own LOBBY; the solo cabinet's
+ * screens do not move. LOBBY on solo RESULTS then links the two as today,
+ * on the fixture, through the whole linked select to START_RACE.
+ */
+static int TestSoloThenLobbyLinks(void)
+{
+	struct NativeArcadeNetplayConfig config;
+	struct NativeMatchConfigV1 fixture;
+	enum NativeArcadeFlowAction actionA;
+	enum NativeArcadeFlowAction actionB;
+	uint32_t serial;
+	uint32_t tick;
+
+	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
+	CHECK(MakeSoloConfig(&config, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SOLO_LINK_A_PORT,
+		TEST_SOLO_LINK_B_PORT) == 0);
+	CHECK(NativeArcadeNetplay_Init(&g_a, &config) == 1);
+	CHECK(MakeConfig(&config, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, TEST_SOLO_LINK_B_PORT,
+		TEST_SOLO_LINK_A_PORT));
+	CHECK(NativeArcadeNetplay_Init(&g_b, &config) == 1);
+
+	/* A alone: LOBBY, then solo. */
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == ACT_BEGIN_LOBBY);
+	CHECK(SoloFromLobby(&g_a) == 0);
+
+	/* B wakes: it handshakes at A, which only listens. */
+	serial = g_a.flow.screenSerial;
+	CHECK(NativeArcadeNetplay_Enter(&g_b) == ACT_BEGIN_LOBBY);
+	for (tick = 0u; tick < 3u * ATTEMPT_TICKS_PER_CANDIDATE; tick++)
+	{
+		TickBoth(0u, 0u, 0u, &actionA, &actionB);
+		CHECK(actionA == ACT_NONE);
+		CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+		CHECK(LobbyStatusOf(&g_b) != (uint32_t)NATIVE_ARCADE_FLOW_LOBBY_READY);
+	}
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_SELECT);
+	CHECK(g_a.flow.screenSerial == serial);
+	CHECK(SoloFlagsOf(&g_a) == (NATIVE_ARCADE_NETPLAY_VIEW_SOLO | NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD));
+	/* B's own offer is off (its default config): it only waits. */
+	CHECK(SoloFlagsOf(&g_b) == 0u);
+
+	/* A races solo, finishes, and picks LOBBY. */
+	CHECK(SoloPickAndStart(&g_a, 0u, NULL) == 0);
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 1u) == ACT_NONE);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	for (tick = 0u; tick <= RESULTS_DWELL_TICKS; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	}
+	CHECK(NativeArcadeNetplay_Tick(&g_a, BTN_DOWN, 0u) == ACT_NONE);
+	CHECK(NativeArcadeNetplay_Tick(&g_a, 0u, 0u) == ACT_NONE);
+	CHECK(g_a.flow.selectedRow == NATIVE_ARCADE_FLOW_ROW_LOBBY);
+	CHECK(NativeArcadeNetplay_Tick(&g_a, BTN_CROSS, 0u) == NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY);
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	CHECK(SoloFlagsOf(&g_a) == 0u);
+	CHECK(g_a.listening == 0u);
+	CHECK(g_a.lobbyBegun == 1u);
+	CHECK(memcmp(&g_a.currentConfig, &fixture, sizeof(fixture)) == 0);
+	CHECK(NativeArcadeNetplay_SoloConfig(&g_a) == NULL);
+
+	/* The pair links as today, through the linked select to the race. */
+	CHECK(DriveBothToRaceChecked());
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(ScreenOf(&g_b) == NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a) != NULL);
+	CHECK(NativeArcadeNetplay_AgreedConfig(&g_a)->profile == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB);
+	CHECK(memcmp(NativeArcadeNetplay_AgreedConfig(&g_a), NativeArcadeNetplay_AgreedConfig(&g_b),
+			  sizeof(struct NativeMatchConfigV1)) == 0);
+	CHECK(NativeArcadeNetplay_SoloConfig(&g_a) == NULL);
+	CHECK(SoloFlagsOf(&g_a) == 0u);
+
+	ShutdownBoth();
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestPure() == 0);
@@ -6634,6 +7126,9 @@ int main(void)
 	CHECK(TestRaceServiceHold() == 0);
 	CHECK(TestRaceServiceNoOps() == 0);
 	CHECK(TestRaceServiceStartWait() == 0);
+	CHECK(TestSoloListenOnly() == 0);
+	CHECK(TestSoloCab2RaceAgain() == 0);
+	CHECK(TestSoloThenLobbyLinks() == 0);
 	puts("native_arcade_netplay_test: passed");
 	return 0;
 }

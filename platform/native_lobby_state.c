@@ -73,6 +73,48 @@ int NativeLobbyState_Begin(struct NativeLobbyState *state, uint16_t localPort,
 	return 1;
 }
 
+int NativeLobbyState_BeginListen(struct NativeLobbyState *state, uint16_t localPort,
+	const struct NativeUdpTransportAddress *candidates, uint32_t candidateCount)
+{
+	struct NativeLockstepPeerLink link = {0};
+	uint32_t i;
+
+	if (state == NULL)
+	{
+		return 0;
+	}
+	if (candidateCount > NATIVE_LOBBY_STATE_MAX_CANDIDATES)
+	{
+		return 0;
+	}
+	if ((candidateCount > 0u) && (candidates == NULL))
+	{
+		return 0;
+	}
+	/* Open before touching *state, as Begin does: a failure changes nothing. */
+	if (!NativeLockstepPeerLink_OpenListen(&link, localPort))
+	{
+		return 0;
+	}
+
+	memset(state, 0, sizeof(*state));
+	state->link = link;
+	state->mode = NATIVE_LOBBY_STATE_LISTENING;
+	for (i = 0; i < candidateCount; i++)
+	{
+		state->candidates[i] = candidates[i];
+	}
+	state->candidateCount = candidateCount;
+	state->localPort = localPort;
+	state->peerHeard = 0u;
+	return 1;
+}
+
+int NativeLobbyState_PeerHeard(const struct NativeLobbyState *state)
+{
+	return ((state != NULL) && (state->mode == NATIVE_LOBBY_STATE_LISTENING) && (state->peerHeard != 0u)) ? 1 : 0;
+}
+
 /*
  * Closes the current candidate's link (if any is open) and tries candidate 0
  * again, using the state's own stored config/role/inputDelay. Shared by
@@ -193,6 +235,14 @@ void NativeLobbyState_Poll(struct NativeLobbyState *state)
 	{
 		NativeLobbyState_PollReady(state);
 	}
+	else if (state->mode == NATIVE_LOBBY_STATE_LISTENING)
+	{
+		/* Listen-only (SOLO-4): drain, never reply, latch a heard peer. */
+		if (NativeLockstepPeerLink_PollListen(&state->link, state->candidates, state->candidateCount) != 0u)
+		{
+			state->peerHeard = 1u;
+		}
+	}
 	/* WAITING_FOR_PEER, REJECTED, PEER_LOST: no-op. */
 }
 
@@ -223,7 +273,8 @@ struct NativeLockstepPeerLink *NativeLobbyState_Link(struct NativeLobbyState *st
 	{
 		return NULL;
 	}
-	if (NativeLockstepPeerLink_Mode(&state->link) == NATIVE_LOCKSTEP_PEER_LINK_IDLE)
+	if ((NativeLockstepPeerLink_Mode(&state->link) == NATIVE_LOCKSTEP_PEER_LINK_IDLE) ||
+	    (state->mode == NATIVE_LOBBY_STATE_LISTENING))
 	{
 		return NULL;
 	}
@@ -243,4 +294,5 @@ void NativeLobbyState_Close(struct NativeLobbyState *state)
 	}
 	NativeLockstepPeerLink_Close(&state->link);
 	state->mode = NATIVE_LOBBY_STATE_WAITING_FOR_PEER;
+	state->peerHeard = 0u;
 }

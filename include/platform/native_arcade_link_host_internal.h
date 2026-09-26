@@ -43,4 +43,22 @@ uint32_t NativeArcadeLinkHost_InternalRaceTickLimit(void);
  * for a default begin), 0 for a drive not begun; 0 unless the mode is LINK. */
 uint32_t NativeArcadeLinkHost_InternalDriveRaceTickLimit(void);
 
+/* Forward-declared only, as in the public header. */
+struct NativeMatchConfigV1;
+
+/* Solo (docs/SOLO_CAB_MILESTONE.md SOLO-11): the unit tests' switch for the
+ * solo gate, read by the next LINK Configure (and kept by AbortToTitle).
+ * Production never calls it, so solo stays off there until SOLO-S4 changes
+ * the host's own default. Any nonzero value means 1. Kept across Shutdown. */
+void NativeArcadeLinkHost_InternalSetSoloEnabled(uint8_t enabled);
+
+/* The solo query's fail-closed check (SOLO-6), on any candidate: copies
+ * *candidate into *out and returns 1 only when it is an ARCADE_ONE_CAB config
+ * that passes NativeArcadeBotRules_ValidateConfigV1; otherwise (a NULL
+ * argument, another profile, or a failed check) returns 0 with *out
+ * untouched. NativeArcadeLinkHost_GetSoloConfig returns exactly what this
+ * returns for the link's solo race config. */
+int NativeArcadeLinkHost_InternalCopyValidSoloConfig(const struct NativeMatchConfigV1 *candidate,
+	struct NativeMatchConfigV1 *out);
+
 #endif

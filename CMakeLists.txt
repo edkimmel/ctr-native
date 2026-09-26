@@ -1786,7 +1786,8 @@ if(BUILD_TESTING)
     # Arcade-link host view into the screen layout (MS-10b): every tick of
     # every preview and of a live loopback LINK run (host as cabinet 1 on
     # ports 48520-48521 against a test-owned adapter) passes the drawer's
-    # path, GetView -> MainArcadeLinkLayout_InputFromHostView -> Build.
+    # path, GetView -> MainArcadeLinkLayout_InputFromHostView -> Build; so
+    # does every tick of a solo run (SOLO-S2, ports 48522-48523).
     add_executable(main_arcade_link_view_layout_test tests/main_arcade_link_view_layout_test.c)
     set_target_properties(main_arcade_link_view_layout_test PROPERTIES
         C_STANDARD 17

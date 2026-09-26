@@ -44,6 +44,10 @@
  * PEER_LOST: the underlying peer link reached FAULTED or DIVERGED after
  * previously being READY -- a session that was running stopped being
  * usable.
+ * LISTENING (appended; docs/SOLO_CAB_MILESTONE.md SOLO-4, risk 1): the
+ * listen-only link NativeLobbyState_BeginListen opened. Nothing is attempted
+ * and nothing is sent; Poll only drains the socket and latches peerHeard
+ * when a well-formed handshake datagram arrives from a candidate address.
  */
 enum NativeLobbyStateMode
 {
@@ -51,7 +55,8 @@ enum NativeLobbyStateMode
 	NATIVE_LOBBY_STATE_HANDSHAKING = 1,
 	NATIVE_LOBBY_STATE_READY = 2,
 	NATIVE_LOBBY_STATE_REJECTED = 3,
-	NATIVE_LOBBY_STATE_PEER_LOST = 4
+	NATIVE_LOBBY_STATE_PEER_LOST = 4,
+	NATIVE_LOBBY_STATE_LISTENING = 5
 };
 
 /*
@@ -81,6 +86,10 @@ struct NativeLobbyState
 	/* Snapshot of the proposal passed to Begin, reused verbatim by every
 	 * candidate attempt in this cycle and by NativeLobbyState_RestartCycle. */
 	struct NativeMatchConfigV1 proposedConfig;
+	/* LISTENING only: 1 once a well-formed handshake datagram arrived from a
+	 * candidate address (SOLO-4). Cleared by every Begin, BeginListen, and
+	 * Close. */
+	uint8_t peerHeard;
 };
 
 /*
@@ -103,6 +112,25 @@ int NativeLobbyState_Begin(struct NativeLobbyState *state, uint16_t localPort,
 	const struct NativeUdpTransportAddress *candidates, uint32_t candidateCount,
 	const struct NativeMatchConfigV1 *proposedConfig, uint8_t localRole, uint32_t inputDelay,
 	uint32_t attemptFramesPerCandidate, uint32_t retransmitIntervalFrames);
+
+/*
+ * The listen-only lobby (docs/SOLO_CAB_MILESTONE.md SOLO-4, risk 1): while a
+ * cabinet races solo it keeps one socket bound on localPort, never sends,
+ * and only notes whether a candidate peer is in its own lobby. Validates like
+ * Begin (candidateCount at most NATIVE_LOBBY_STATE_MAX_CANDIDATES, candidates
+ * non-NULL when candidateCount > 0), then opens the peer link in its listen
+ * mode (NativeLockstepPeerLink_OpenListen) before touching *state, so a
+ * failure (for example localPort in use) returns 0 and changes nothing. On
+ * success *state is reset, the candidates are copied by value, localPort is
+ * stored, peerHeard is 0, and mode is LISTENING. Nothing is sent. Like
+ * Begin, it must not be called while a link is open: Close first.
+ */
+int NativeLobbyState_BeginListen(struct NativeLobbyState *state, uint16_t localPort,
+	const struct NativeUdpTransportAddress *candidates, uint32_t candidateCount);
+
+/* 1 while the state is LISTENING and a candidate peer has been heard
+ * (peerHeard); 0 otherwise, including a NULL state. */
+int NativeLobbyState_PeerHeard(const struct NativeLobbyState *state);
 
 /*
  * Call once per tick. A NULL state is a no-op. Behavior depends on mode:
@@ -134,6 +162,9 @@ int NativeLobbyState_Begin(struct NativeLobbyState *state, uint16_t localPort,
  *   draining arriving lockstep bundles even though the lobby layer itself
  *   has nothing left to decide), then checks the peer link mode; if it
  *   became FAULTED or DIVERGED, sets state mode PEER_LOST.
+ * - LISTENING: NativeLockstepPeerLink_PollListen on the link with the
+ *   candidate list as the filter; any datagram it counts latches peerHeard.
+ *   Nothing is sent and the mode never changes.
  * - WAITING_FOR_PEER, REJECTED, or PEER_LOST: no-op. This module never
  *   silently resumes attempting connections on its own once it has given up
  *   or definitively failed; the caller must call
@@ -155,7 +186,8 @@ void NativeLobbyState_Poll(struct NativeLobbyState *state);
  *
  * Returns 0 and changes nothing from any other mode (HANDSHAKING or READY,
  * where there is an active attempt or an active session already in progress
- * that must not be silently discarded), or for a NULL state.
+ * that must not be silently discarded; LISTENING, which is ended only by
+ * Close), or for a NULL state.
  */
 int NativeLobbyState_RestartCycle(struct NativeLobbyState *state);
 
@@ -166,7 +198,8 @@ enum NativeLobbyStateMode NativeLobbyState_Mode(const struct NativeLobbyState *s
 /*
  * Non-const accessor to the currently active peer link: NULL if there is no
  * currently open link (WAITING_FOR_PEER with nothing attempted yet, or a
- * NULL state), non-NULL whenever a link is currently open -- meaningful once
+ * NULL state) and while LISTENING (a listen-only link has no handshake or
+ * session to drive), non-NULL whenever a link is currently open -- meaningful once
  * mode is READY (to drive the running session), or PEER_LOST (to read the
  * terminal session report one last time).
  */
@@ -180,9 +213,10 @@ struct NativeLockstepPeerLink *NativeLobbyState_Link(struct NativeLobbyState *st
 uint32_t NativeLobbyState_CurrentCandidateIndex(const struct NativeLobbyState *state);
 
 /*
- * Closes whatever link is currently open, if any, and resets mode to
- * WAITING_FOR_PEER. Safe on a never-begun (e.g. zero-initialized) or
- * already-closed state, and safe on a NULL state.
+ * Closes whatever link is currently open, if any (the listen-only link
+ * included), clears peerHeard, and resets mode to WAITING_FOR_PEER. Safe on
+ * a never-begun (e.g. zero-initialized) or already-closed state, and safe on
+ * a NULL state.
  */
 void NativeLobbyState_Close(struct NativeLobbyState *state);
 

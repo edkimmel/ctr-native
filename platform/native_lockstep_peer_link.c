@@ -73,6 +73,36 @@ int NativeLockstepPeerLink_Open(struct NativeLockstepPeerLink *link, uint16_t lo
 	return 1;
 }
 
+int NativeLockstepPeerLink_OpenListen(struct NativeLockstepPeerLink *link, uint16_t localPort)
+{
+	if (link == NULL)
+	{
+		return 0;
+	}
+	if (!NativeUdpTransport_GlobalInit())
+	{
+		return 0;
+	}
+	if (!NativeUdpTransport_Open(&link->transport, localPort))
+	{
+		NativeUdpTransport_GlobalShutdown();
+		return 0;
+	}
+
+	/* No handshake is begun and nothing is sent: a listen-only link. */
+	NativeLockstepHandshake_Init(&link->handshake);
+	memset(&link->peerAddress, 0, sizeof(link->peerAddress));
+	link->inputDelay = 0;
+	link->localRole = 0;
+	link->earlyBundleCount = 0;
+	link->droppedEarlyBundleCount = 0;
+	link->droppedForeignBundleCount = 0;
+	NativeLockstepPeerLink_ResetAux(link);
+	link->mode = NATIVE_LOCKSTEP_PEER_LINK_LISTENING;
+	link->opened = 1;
+	return 1;
+}
+
 void NativeLockstepPeerLink_Retransmit(struct NativeLockstepPeerLink *link)
 {
 	uint8_t bytes[NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES];
@@ -302,7 +332,8 @@ void NativeLockstepPeerLink_Poll(struct NativeLockstepPeerLink *link)
 	uint32_t drained;
 
 	if ((link == NULL) || (link->mode == NATIVE_LOCKSTEP_PEER_LINK_IDLE) || (link->mode == NATIVE_LOCKSTEP_PEER_LINK_REJECTED) ||
-	    (link->mode == NATIVE_LOCKSTEP_PEER_LINK_FAULTED) || (link->mode == NATIVE_LOCKSTEP_PEER_LINK_DIVERGED))
+	    (link->mode == NATIVE_LOCKSTEP_PEER_LINK_FAULTED) || (link->mode == NATIVE_LOCKSTEP_PEER_LINK_DIVERGED) ||
+	    (link->mode == NATIVE_LOCKSTEP_PEER_LINK_LISTENING))
 	{
 		return;
 	}
@@ -356,6 +387,66 @@ void NativeLockstepPeerLink_Poll(struct NativeLockstepPeerLink *link)
 			break;
 		}
 	}
+}
+
+/* 1 when sender equals one of peers[0 .. peerCount), ipv4 and port. */
+static int NativeLockstepPeerLink_IsListedPeer(const struct NativeUdpTransportAddress *sender,
+	const struct NativeUdpTransportAddress *peers, uint32_t peerCount)
+{
+	uint32_t i;
+
+	if (peers == NULL)
+	{
+		return 0;
+	}
+	for (i = 0; i < peerCount; i++)
+	{
+		if ((sender->ipv4 == peers[i].ipv4) && (sender->port == peers[i].port))
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
+
+uint32_t NativeLockstepPeerLink_PollListen(struct NativeLockstepPeerLink *link, const struct NativeUdpTransportAddress *peers,
+	uint32_t peerCount)
+{
+	uint32_t drained;
+	uint32_t heard = 0;
+
+	if ((link == NULL) || (link->mode != NATIVE_LOCKSTEP_PEER_LINK_LISTENING))
+	{
+		return 0;
+	}
+
+	for (drained = 0; drained < NATIVE_LOCKSTEP_PEER_LINK_POLL_BUDGET; drained++)
+	{
+		uint8_t bytes[NATIVE_LOCKSTEP_PEER_LINK_POLL_BUFFER_BYTES];
+		size_t byteCount = 0;
+		struct NativeUdpTransportAddress sender;
+		struct NativeCodecReader reader;
+		struct NativeLockstepHandshakeMessageV1 message;
+		enum NativeUdpTransportReceiveResult received =
+			NativeUdpTransport_Receive(&link->transport, bytes, sizeof(bytes), &byteCount, &sender);
+
+		if (received == NATIVE_UDP_TRANSPORT_RECEIVE_EMPTY)
+		{
+			break;
+		}
+		if ((received != NATIVE_UDP_TRANSPORT_RECEIVE_OK) || (byteCount != NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES) ||
+		    !NativeLockstepPeerLink_IsListedPeer(&sender, peers, peerCount))
+		{
+			/* Discarded unread; the drain goes on. */
+			continue;
+		}
+		NativeCodecReader_Init(&reader, bytes, byteCount);
+		if (NativeLockstepHandshakeMessageV1_Decode(&reader, &message, NULL))
+		{
+			heard++;
+		}
+	}
+	return heard;
 }
 
 int NativeLockstepPeerLink_ComposeAndSendBundle(struct NativeLockstepPeerLink *link, uint32_t frameIndex)

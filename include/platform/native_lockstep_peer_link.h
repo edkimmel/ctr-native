@@ -59,6 +59,11 @@
  * mirror the underlying NativeLockstepSession's FirstFault/FirstDivergence
  * becoming latched once RUNNING. All three, like the handshake and session
  * latches they mirror, are terminal: reached once, kept forever.
+ * LISTENING (appended; docs/SOLO_CAB_MILESTONE.md SOLO-4, risk 1) is the
+ * listen-only link NativeLockstepPeerLink_OpenListen opens: a bound socket
+ * with no handshake and no session, that never sends. Only
+ * NativeLockstepPeerLink_PollListen reads it; every other entry point treats
+ * it as it treats a terminal mode (nothing received, nothing sent).
  */
 enum NativeLockstepPeerLinkMode
 {
@@ -67,7 +72,8 @@ enum NativeLockstepPeerLinkMode
 	NATIVE_LOCKSTEP_PEER_LINK_RUNNING = 2,
 	NATIVE_LOCKSTEP_PEER_LINK_REJECTED = 3,
 	NATIVE_LOCKSTEP_PEER_LINK_FAULTED = 4,
-	NATIVE_LOCKSTEP_PEER_LINK_DIVERGED = 5
+	NATIVE_LOCKSTEP_PEER_LINK_DIVERGED = 5,
+	NATIVE_LOCKSTEP_PEER_LINK_LISTENING = 6
 };
 
 /*
@@ -176,6 +182,34 @@ int NativeLockstepPeerLink_Open(struct NativeLockstepPeerLink *link, uint16_t lo
 	uint8_t localRole, uint32_t inputDelay);
 
 /*
+ * The listen-only link (docs/SOLO_CAB_MILESTONE.md SOLO-4, risk 1): calls
+ * NativeUdpTransport_GlobalInit and opens the transport on localPort, exactly
+ * as Open does, but sends nothing and begins no handshake. On success it
+ * resets the handshake (NativeLockstepHandshake_Init), zeroes the peer
+ * address, empties the early-bundle staging buffer and the aux inbox, zeroes
+ * every drop counter, and sets mode LISTENING. Returns 0 and changes nothing
+ * on failure (a NULL link, or a global init or transport open failure).
+ * Like Open, it must not be called on a link that is already open: Close it
+ * first. Close releases the socket as for any other link, so the same local
+ * port can be opened again (by Open or OpenListen) at once.
+ */
+int NativeLockstepPeerLink_OpenListen(struct NativeLockstepPeerLink *link, uint16_t localPort);
+
+/*
+ * Only meaningful while mode is LISTENING (0 otherwise, including a NULL
+ * link): drains up to NATIVE_LOCKSTEP_PEER_LINK_POLL_BUDGET waiting datagrams
+ * and never replies. Each is discarded unread unless it is exactly
+ * NATIVE_LOCKSTEP_HANDSHAKE_V1_ENCODED_BYTES long, comes from an address
+ * (ipv4 and port) equal to one of peers[0 .. peerCount), and decodes as a
+ * well-formed handshake message (NativeLockstepHandshakeMessageV1_Decode,
+ * its nested config included). Returns how many drained datagrams passed all
+ * three. Nothing else changes: no handshake, session, aux inbox, or mode.
+ * peers may be NULL only when peerCount is 0 (then nothing passes).
+ */
+uint32_t NativeLockstepPeerLink_PollListen(struct NativeLockstepPeerLink *link, const struct NativeUdpTransportAddress *peers,
+	uint32_t peerCount);
+
+/*
  * Only meaningful while mode is HANDSHAKING: composes the handshake's
  * current outgoing message again and sends it to the peer address. A no-op
  * in every other mode, including on a NULL link. This module has no wall
@@ -211,7 +245,8 @@ void NativeLockstepPeerLink_Retransmit(struct NativeLockstepPeerLink *link);
  * the transport this call (so a receive burst cannot spin this function
  * forever) via a Receive loop, stopping early once the transport reports no
  * more are waiting. A NULL link, or a link whose mode is already terminal
- * (REJECTED, FAULTED, or DIVERGED) or still IDLE (Open never succeeded), is
+ * (REJECTED, FAULTED, or DIVERGED), still IDLE (Open never succeeded), or
+ * LISTENING (read only by NativeLockstepPeerLink_PollListen), is
  * a no-op: it returns at once without receiving anything, so every waiting
  * datagram stays queued on the transport, unread. Once the link is terminal
  * the aux inbox therefore keeps exactly what it held at the terminal

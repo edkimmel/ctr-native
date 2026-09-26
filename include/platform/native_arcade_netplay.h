@@ -192,6 +192,35 @@
  * adapter passes an explicit value inside that layer's frozen [30, 600]
  * range instead of changing its constants.
  *
+ * Solo (docs/SOLO_CAB_MILESTONE.md SOLO-4 to SOLO-8, SOLO-11): with
+ * config.soloEnabled 1 the flow's observation reports soloAvailable, so its
+ * LOBBY offers solo when the peer is not heard; with 0 (the default) the
+ * flow never offers it and nothing below runs.
+ * - BEGIN_SOLO_SELECT from LOBBY closes the lobby (the handshake stops) and
+ *   opens the listen-only link on the same local port
+ *   (NativeLobbyState_BeginListen); from solo RESULTS (RACE AGAIN) the listen
+ *   link stays, and is opened again only if it is not open. Either way a
+ *   one-human select starts on config.soloBase (humanCount 1, localHuman 0
+ *   on either seat), its cursors on the base's CAB1_HUMAN slot, track, and
+ *   laps, or after a solo race on that race's picks (OD-3). The nonce is
+ *   derived as for every select, so masterSeed is new each time.
+ * - Each tick the listen-only link is drained and never answered; a
+ *   well-formed handshake datagram from a configured candidate latches
+ *   peerHeard (the view's NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD bit) until
+ *   solo ends. Nothing is sent during solo: no HELLO, select record, or
+ *   launch record.
+ * - START_SOLO_RACE builds the solo race config with
+ *   NativeMatchSelect_BuildConfig on the session's base and outcome (the
+ *   SELECT_RESULT CPU list and the config agree), with no relink and no
+ *   launch agreement. NativeArcadeNetplay_SoloConfig reads it; a build
+ *   failure leaves it NULL, so no solo race can be armed.
+ * - RETURN_TO_LOBBY (solo RESULTS row LOBBY) closes the listen-only link and
+ *   begins a lobby on config.fixture: the handshake restarts. CLOSE_LINK
+ *   (the solo RESULTS idle timeout) closes it too.
+ * - Solo state is host-local: never sent, and never part of a replay,
+ *   saved state, or canonical state beyond the ONE_CAB profile of the solo
+ *   config itself.
+ *
  * Caller-owned state, no heap use, no hidden state, no wall clock: every
  * duration is counted in caller ticks. A never-entered adapter opens nothing.
  */
@@ -233,6 +262,11 @@ struct NativeArcadeNetplayConfig
 	 * tests and previews). It reaches the match only through the exchanged
 	 * nonces and so the agreed masterSeed. */
 	uint64_t selectEntropy;
+	/* Solo (SOLO-6): the ONE_CAB base of every solo select (the caller builds
+	 * it beside the fixture). Checked only when soloEnabled is 1. */
+	struct NativeMatchConfigV1 soloBase;
+	/* Solo (SOLO-11): 0 (the default) or 1; feeds the flow's soloAvailable. */
+	uint8_t soloEnabled;
 };
 
 /* The select view's per-human and bot capacities. */
@@ -321,10 +355,19 @@ struct NativeArcadeNetplayView
 	 * without a new edge. Local input only: a peer's input never appears
 	 * here. Presentation only (menu sounds). */
 	uint8_t localMenuEvent;
-	uint8_t reserved;
+	/* NATIVE_ARCADE_NETPLAY_VIEW_SOLO* bits (docs/SOLO_CAB_MILESTONE.md); 0
+	 * outside solo and the solo offer. */
+	uint8_t soloFlags;
 	/* The select phase (docs/MATCH_SELECT_MILESTONE.md section 2.7). */
 	struct NativeArcadeNetplaySelectView select;
 };
+
+/* The view's soloFlags bits: solo mode (solo SELECT, SELECT_RESULT, RACING,
+ * or RESULTS); the LOBBY solo offer standing; a configured peer heard on the
+ * listen-only link during this solo. */
+#define NATIVE_ARCADE_NETPLAY_VIEW_SOLO 0x1u
+#define NATIVE_ARCADE_NETPLAY_VIEW_SOLO_OFFERED 0x2u
+#define NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD 0x4u
 
 /*
  * The end of one race, for the end-of-race log line
@@ -442,6 +485,20 @@ struct NativeArcadeNetplay
 	 * it. */
 	uint8_t raceEndPending;
 	struct NativeArcadeNetplayRaceEnd raceEnd;
+	/* Solo (docs/SOLO_CAB_MILESTONE.md SOLO-4, SOLO-6). listening: 1 while
+	 * the lobby holds the listen-only link. peerHeard: 1 once that link heard
+	 * a configured peer; cleared whenever the link closes. soloConfigValid: 1
+	 * once START_SOLO_RACE built soloConfig (the next solo select's cursors);
+	 * cleared when solo begins from LOBBY, on RETURN_TO_LOBBY, Enter,
+	 * RETURN_TO_TITLE, and Shutdown. soloRaceArmed: 1 from a START_SOLO_RACE
+	 * that built soloConfig until the next BEGIN_SOLO_SELECT, RETURN_TO_LOBBY,
+	 * Enter, RETURN_TO_TITLE, or Shutdown. Host-local, like everything
+	 * above. */
+	uint8_t listening;
+	uint8_t peerHeard;
+	uint8_t soloConfigValid;
+	uint8_t soloRaceArmed;
+	struct NativeMatchConfigV1 soloConfig;
 };
 
 /* memset 0, then the four NATIVE_ARCADE_NETPLAY_DEFAULT_* values, the flow's
@@ -457,8 +514,10 @@ void NativeArcadeNetplay_DefaultConfig(struct NativeArcadeNetplayConfig *config)
  * or CAB2_HUMAN or is absent from the fixture, a zero local port, zero or
  * more than NATIVE_LOBBY_STATE_MAX_CANDIDATES candidates, a zero attempt
  * budget, a retransmit interval other than 1, an input delay or stall timeout
- * outside the ranges the lower layers accept, timings the flow rejects, or
- * select timings with any zero field.
+ * outside the ranges the lower layers accept, timings the flow rejects,
+ * select timings with any zero field, a soloEnabled above 1, or, with
+ * soloEnabled 1, a soloBase that fails NativeMatchConfigV1_Validate, is not
+ * ARCADE_ONE_CAB, or has no CAB1_HUMAN slot.
  * Must not be called on an adapter with an open lobby (it would be
  * overwritten without being closed): call Shutdown first. */
 int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct NativeArcadeNetplayConfig *config);
@@ -564,6 +623,14 @@ int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struc
  * without a race (a select failure, a relink that could not be built, or a
  * launch timeout) it is NULL: no race config was agreed. */
 const struct NativeMatchConfigV1 *NativeArcadeNetplay_AgreedConfig(const struct NativeArcadeNetplay *netplay);
+/* (Solo has no agreement: AgreedConfig is NULL on every solo screen.) */
+
+/* The solo race config (SOLO-6): non-NULL only in solo mode on RACING, and on
+ * RESULTS after that race, when START_SOLO_RACE built it
+ * (NativeMatchSelect_BuildConfig on the one-human select's base and
+ * outcome). It is not checked against the bot rules here: the caller must
+ * run NativeArcadeBotRules_ValidateConfigV1 on it and fail closed. */
+const struct NativeMatchConfigV1 *NativeArcadeNetplay_SoloConfig(const struct NativeArcadeNetplay *netplay);
 
 /* The select session, for a view (read-only): non-NULL only while the flow
  * is on SELECT or SELECT_RESULT and the session started. */

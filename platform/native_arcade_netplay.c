@@ -64,6 +64,7 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 {
 	struct NativeArcadeFlow flow;
 	uint8_t localSlot = 0u;
+	uint8_t soloSlot = 0u;
 
 	if ((netplay == NULL) || (config == NULL))
 	{
@@ -119,6 +120,19 @@ int NativeArcadeNetplay_Init(struct NativeArcadeNetplay *netplay, const struct N
 	{
 		return 0;
 	}
+	/* Solo (SOLO-6, SOLO-11): the one-human base must be a valid ONE_CAB
+	 * config with a CAB1_HUMAN slot whenever solo can be offered. */
+	if (config->soloEnabled > 1u)
+	{
+		return 0;
+	}
+	if ((config->soloEnabled != 0u) &&
+		(!NativeMatchConfigV1_Validate(&config->soloBase) ||
+			(config->soloBase.profile != NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB) ||
+			!NativeMatchConfigV1_FindRoleSlot(&config->soloBase, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &soloSlot)))
+	{
+		return 0;
+	}
 
 	memset(netplay, 0, sizeof(*netplay));
 	netplay->config = *config;
@@ -163,12 +177,18 @@ static void NativeArcadeNetplay_ReadForeignDrops(struct NativeArcadeNetplay *net
 /* Tick's step 2, shared with NativeArcadeNetplay_RaceService so the two can
  * never drift apart: services the lobby (which drains arriving bundles into
  * the session), then reads the link's foreign-identity drops (LR-14): the
- * poll is where the link drops them. */
+ * poll is where the link drops them. In solo the same service drains the
+ * listen-only link, which never answers, and latches a heard peer
+ * (SOLO-4). */
 static void NativeArcadeNetplay_PollLobby(struct NativeArcadeNetplay *netplay)
 {
-	if (netplay->lobbyBegun != 0u)
+	if ((netplay->lobbyBegun != 0u) || (netplay->listening != 0u))
 	{
 		NativeLobbyState_Poll(&netplay->lobby);
+	}
+	if ((netplay->listening != 0u) && NativeLobbyState_PeerHeard(&netplay->lobby))
+	{
+		netplay->peerHeard = 1u;
 	}
 	NativeArcadeNetplay_ReadForeignDrops(netplay);
 }
@@ -187,6 +207,7 @@ static void NativeArcadeNetplay_BeginLobby(struct NativeArcadeNetplay *netplay)
 										netplay->config.retransmitIntervalTicks) != 0);
 }
 
+/* Closes the lobby's link, the listen-only link of solo included. */
 static void NativeArcadeNetplay_CloseLobby(struct NativeArcadeNetplay *netplay)
 {
 	NativeArcadeNetplay_ReadForeignDrops(netplay);
@@ -195,6 +216,8 @@ static void NativeArcadeNetplay_CloseLobby(struct NativeArcadeNetplay *netplay)
 	netplay->lobbyBegun = 0u;
 	netplay->lobbyReadySeen = 0u;
 	netplay->raceArmed = 0u;
+	netplay->listening = 0u;
+	netplay->peerHeard = 0u;
 }
 
 /* Restarts the candidate cycle, or closes and begins again when no lobby is
@@ -270,6 +293,8 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
 		netplay->raceConfigValid = 0u;
 		netplay->lastReadyValid = 0u;
 		netplay->lastMenuEvent = (uint8_t)NATIVE_ARCADE_MENU_EVENT_NONE;
+		netplay->soloConfigValid = 0u;
+		netplay->soloRaceArmed = 0u;
 		NativeArcadeNetplay_ClearSelect(netplay);
 		NativeArcadeLaunch_Reset(&netplay->launch);
 		NativeArcadeNetplay_BeginLobby(netplay);
@@ -454,6 +479,122 @@ static void NativeArcadeNetplay_Relink(struct NativeArcadeNetplay *netplay)
 	netplay->lastOutcome = *outcome;
 	netplay->outcomeValid = 1u;
 	netplay->currentConfig = resolved;
+	NativeArcadeNetplay_BeginLobby(netplay);
+}
+
+/*
+ * Solo select (SOLO-5): a fresh one-human select on the ONE_CAB solo base,
+ * humanCount 1 and localHuman 0 whichever seat this cabinet is. The cursors
+ * start on the base's CAB1_HUMAN character, track, and laps, or, after a solo
+ * race built soloConfig, on that race's picks (OD-3), each replaced by the
+ * first table entry when it is not a table value. The nonce is derived as
+ * for every select, so the resolved masterSeed is new each time. If the
+ * session cannot start, selectActive stays 0 and the flow reads FAILED.
+ */
+static void NativeArcadeNetplay_BeginSoloSelect(struct NativeArcadeNetplay *netplay)
+{
+	const struct NativeMatchConfigV1 *base = &netplay->config.soloBase;
+	const struct NativeMatchConfigV1 *cursors = (netplay->soloConfigValid != 0u) ? &netplay->soloConfig : base;
+	uint64_t nonce = 0u;
+	uint8_t slot = 0u;
+	uint8_t character = NativeMatchSelect_CharacterAt(0u);
+	uint8_t track;
+	uint8_t laps;
+
+	if (NativeMatchConfigV1_FindRoleSlot(cursors, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &slot))
+	{
+		character = NativeArcadeNetplay_CharacterOrFirst(cursors->slots[slot].characterID);
+	}
+	track = NativeArcadeNetplay_TrackOrFirst(cursors->trackID);
+	laps = NativeArcadeNetplay_LapsOrFirst(cursors->lapCount);
+
+	NativeArcadeNetplay_ClearSelect(netplay);
+	netplay->outcomeValid = 0u;
+	netplay->raceConfigValid = 0u;
+	netplay->soloRaceArmed = 0u;
+	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+	netplay->localRaceFailure = 0u;
+	netplay->selectSerial += 1u;
+	(void)NativeArcadeNetplay_DeriveSelectNonce(netplay->config.selectEntropy, netplay->config.localRole,
+		netplay->selectSerial, &nonce);
+	netplay->selectActive = (uint8_t)(NativeMatchSelectSession_Init(&netplay->select, base, 1u, 0u, nonce, character,
+											track, laps, &netplay->config.selectTimings) != 0);
+}
+
+/*
+ * BEGIN_SOLO_SELECT (SOLO-4, SOLO-5). From LOBBY the lobby is closed, so the
+ * handshake stops and nothing more is sent, and the previous solo picks are
+ * forgotten. Whenever the listen-only link is not open (from LOBBY, or a
+ * RACE AGAIN after a failed open) it is opened on the same local port; a
+ * failed open leaves solo without the peer notice and is tried again on the
+ * next BEGIN_SOLO_SELECT. Then the one-human select starts.
+ */
+static void NativeArcadeNetplay_BeginSolo(struct NativeArcadeNetplay *netplay, int fromLobby)
+{
+	if (fromLobby)
+	{
+		NativeArcadeNetplay_CloseLobby(netplay);
+		netplay->soloConfigValid = 0u;
+	}
+	if (netplay->listening == 0u)
+	{
+		netplay->peerHeard = 0u;
+		netplay->listening = (uint8_t)(NativeLobbyState_BeginListen(&netplay->lobby, netplay->config.localPort,
+											 netplay->config.candidates, netplay->config.candidateCount) != 0);
+	}
+	NativeArcadeNetplay_BeginSoloSelect(netplay);
+}
+
+/*
+ * START_SOLO_RACE (SOLO-6, SOLO-7): the solo race config is BuildConfig on
+ * the session's own base (the solo base) and its outcome, so the
+ * SELECT_RESULT CPU list and the config agree. There is no relink and no
+ * launch agreement. The race counts as a race (matchCount, and the race-end
+ * record when it ends). A config that cannot be built leaves soloRaceArmed
+ * 0, so NativeArcadeNetplay_SoloConfig stays NULL and no solo race can be
+ * armed on it; the caller's local failure then ends the race.
+ */
+static void NativeArcadeNetplay_StartSoloRace(struct NativeArcadeNetplay *netplay)
+{
+	const struct NativeMatchSelectOutcome *outcome = NULL;
+	const struct NativeMatchConfigV1 *base = NULL;
+	struct NativeMatchConfigV1 resolved;
+	int built = 0;
+
+	if (netplay->selectActive != 0u)
+	{
+		outcome = NativeMatchSelectSession_Outcome(&netplay->select);
+		base = NativeMatchSelectSession_Base(&netplay->select);
+	}
+	if ((outcome != NULL) && (base != NULL))
+	{
+		built = NativeMatchSelect_BuildConfig(base, outcome, &resolved);
+	}
+	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+	netplay->localRaceFailure = 0u;
+	netplay->soloRaceArmed = 0u;
+	netplay->matchCount += 1u;
+	if (!built)
+	{
+		return;
+	}
+	netplay->soloConfig = resolved;
+	netplay->soloConfigValid = 1u;
+	netplay->soloRaceArmed = 1u;
+}
+
+/* RETURN_TO_LOBBY (SOLO-8): the listen-only link closes and a lobby begins
+ * on the fixture, so the handshake restarts. */
+static void NativeArcadeNetplay_EndSolo(struct NativeArcadeNetplay *netplay)
+{
+	NativeArcadeNetplay_CloseLobby(netplay);
+	NativeArcadeNetplay_ClearSelect(netplay);
+	netplay->soloConfigValid = 0u;
+	netplay->soloRaceArmed = 0u;
+	netplay->raceConfigValid = 0u;
+	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
+	netplay->localRaceFailure = 0u;
+	netplay->currentConfig = netplay->config.fixture;
 	NativeArcadeNetplay_BeginLobby(netplay);
 }
 
@@ -761,6 +902,8 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	observation.linkFailure = netplay->pendingLinkFailure;
 	observation.raceFinished = (uint8_t)((raceFinished != 0u) ? 1u : 0u);
 	observation.selectStatus = (uint8_t)NATIVE_ARCADE_FLOW_SELECT_PENDING;
+	/* SOLO-11: the flow offers solo only when the config enables it. */
+	observation.soloAvailable = netplay->config.soloEnabled;
 
 	/* 5a. The local race-failure input (RL-11), taken on RACING only: LINK
 	 * ERROR, unless a link failure of its own is already pending, which the
@@ -815,9 +958,22 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 	 * CLOSE_LINK, BEGIN_SELECT, BEGIN_REMATCH, and RETURN_TO_TITLE reset the
 	 * launch agreement (RL-3); START_RACE keeps it lingering. BEGIN_SELECT,
 	 * RELINK, START_RACE, CLOSE_LINK, BEGIN_REMATCH, and RETURN_TO_TITLE
-	 * clear the local race-failure latch (RL-11). */
+	 * clear the local race-failure latch (RL-11). The solo actions reset the
+	 * agreement too (BEGIN_SOLO_SELECT and RETURN_TO_LOBBY) and clear the
+	 * latch (all three). */
 	switch (action)
 	{
+	case NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT:
+		NativeArcadeLaunch_Reset(&netplay->launch);
+		NativeArcadeNetplay_BeginSolo(netplay, screenBefore == NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+		break;
+	case NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE:
+		NativeArcadeNetplay_StartSoloRace(netplay);
+		break;
+	case NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY:
+		NativeArcadeLaunch_Reset(&netplay->launch);
+		NativeArcadeNetplay_EndSolo(netplay);
+		break;
 	case NATIVE_ARCADE_FLOW_ACTION_BEGIN_SELECT:
 		NativeArcadeLaunch_Reset(&netplay->launch);
 		NativeArcadeNetplay_BeginSelect(netplay);
@@ -849,6 +1005,8 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Tick(struct NativeArcadeNetplay 
 		netplay->localRaceFailure = 0u;
 		netplay->rematchBlocked = 0u;
 		netplay->raceConfigValid = 0u;
+		netplay->soloConfigValid = 0u;
+		netplay->soloRaceArmed = 0u;
 		NativeArcadeNetplay_ClearSelect(netplay);
 		break;
 	case NATIVE_ARCADE_FLOW_ACTION_NONE:
@@ -1014,6 +1172,9 @@ int NativeArcadeNetplay_GetView(const struct NativeArcadeNetplay *netplay, struc
 	view->localRole = netplay->config.localRole;
 	view->menuArmed = (uint8_t)((NativeArcadeMenuInput_IsArmed(&netplay->menuInput) != 0) ? 1u : 0u);
 	view->localMenuEvent = netplay->lastMenuEvent;
+	view->soloFlags = (uint8_t)(((NativeArcadeFlow_Solo(&netplay->flow) != 0u) ? NATIVE_ARCADE_NETPLAY_VIEW_SOLO : 0u) |
+		((NativeArcadeFlow_SoloOffered(&netplay->flow) != 0u) ? NATIVE_ARCADE_NETPLAY_VIEW_SOLO_OFFERED : 0u) |
+		((netplay->peerHeard != 0u) ? NATIVE_ARCADE_NETPLAY_VIEW_PEER_HEARD : 0u));
 	NativeArcadeNetplay_FillSelectView(netplay, &view->select);
 	return 1;
 }
@@ -1034,7 +1195,8 @@ const struct NativeMatchConfigV1 *NativeArcadeNetplay_AgreedConfig(const struct 
 {
 	uint32_t screen;
 
-	if ((netplay == NULL) || (netplay->initialized == 0u))
+	/* Solo has no agreement (SOLO-7): see NativeArcadeNetplay_SoloConfig. */
+	if ((netplay == NULL) || (netplay->initialized == 0u) || (NativeArcadeFlow_Solo(&netplay->flow) != 0u))
 	{
 		return NULL;
 	}
@@ -1046,6 +1208,23 @@ const struct NativeMatchConfigV1 *NativeArcadeNetplay_AgreedConfig(const struct 
 	if ((screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (netplay->raceConfigValid != 0u))
 	{
 		return &netplay->currentConfig;
+	}
+	return NULL;
+}
+
+const struct NativeMatchConfigV1 *NativeArcadeNetplay_SoloConfig(const struct NativeArcadeNetplay *netplay)
+{
+	uint32_t screen;
+
+	if ((netplay == NULL) || (netplay->initialized == 0u) || (netplay->soloRaceArmed == 0u) ||
+		(NativeArcadeFlow_Solo(&netplay->flow) == 0u))
+	{
+		return NULL;
+	}
+	screen = NativeArcadeFlow_Screen(&netplay->flow);
+	if ((screen == NATIVE_ARCADE_FLOW_SCREEN_RACING) || (screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS))
+	{
+		return &netplay->soloConfig;
 	}
 	return NULL;
 }
@@ -1182,4 +1361,8 @@ void NativeArcadeNetplay_Shutdown(struct NativeArcadeNetplay *netplay)
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 	netplay->localRaceFailure = 0u;
 	netplay->raceEndPending = 0u;
+	netplay->listening = 0u;
+	netplay->peerHeard = 0u;
+	netplay->soloConfigValid = 0u;
+	netplay->soloRaceArmed = 0u;
 }

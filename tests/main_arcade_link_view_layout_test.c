@@ -1,6 +1,7 @@
 #include "MAIN/MainArcadeLinkLayout.h"
 #include "platform/native_arcade_flow.h"
 #include "platform/native_arcade_link_host.h"
+#include "platform/native_arcade_link_host_internal.h"
 #include "platform/native_arcade_link_options.h"
 #include "platform/native_arcade_netplay.h"
 
@@ -32,6 +33,9 @@
  * to the START_RACE tick (RACING, an empty draw list). The host exposes no
  * select-timing option, so the live run uses the production timings; its
  * character item is left to auto-lock, which walks its whole countdown.
+ * Also every tick of a solo run (docs/SOLO_CAB_MILESTONE.md SOLO-S2): the
+ * LOBBY's solo offer, the one-human SELECT, SELECT_RESULT, the
+ * START_SOLO_RACE tick, and the solo RESULTS screen.
  *
  * Known exception, by design and not constructed here: on the single tick
  * where the link's select session fails to start (the session rejects the
@@ -47,6 +51,9 @@
  */
 #define TEST_VIEW_HOST_PORT 48520u
 #define TEST_VIEW_PEER_PORT 48521u
+/* The solo run: nobody listens on the peer port. */
+#define TEST_SOLO_HOST_PORT 48522u
+#define TEST_SOLO_DEAD_PEER_PORT 48523u
 
 #define PREVIEW_FIRST ((uint32_t)NATIVE_ARCADE_LINK_PREVIEW_TITLE)
 #define PREVIEW_LAST ((uint32_t)NATIVE_ARCADE_LINK_PREVIEW_SELECT_RESULT)
@@ -383,10 +390,94 @@ static int TestLiveLinkBuilds(void)
 	return 0;
 }
 
+/*
+ * (c) The solo live run (docs/SOLO_CAB_MILESTONE.md SOLO-S2): the host with
+ * solo enabled by its test-only setter, against a dead peer port. Every
+ * tick from Enter through the solo offer in the LOBBY, the one-human SELECT
+ * on each item, SELECT_RESULT, the START_SOLO_RACE tick, and the solo
+ * RESULTS screen passes the build check.
+ */
+static int TestSoloLiveBuilds(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	struct NativeArcadeLinkHostView view;
+	uint32_t soloTicks = 0u;
+	uint32_t offeredTicks = 0u;
+	uint32_t selectItems[4] = {0u, 0u, 0u, 0u};
+	uint32_t action = (uint32_t)NATIVE_ARCADE_FLOW_ACTION_NONE;
+	uint32_t tick;
+	uint32_t item;
+
+	NativeArcadeLinkHost_InternalSetSoloEnabled(1u);
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_SOLO_HOST_PORT,
+		TEST_SOLO_DEAD_PEER_PORT);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(CheckViewBuilds(&view) == 0);
+
+	/* The LOBBY until the offer stands, then one tick of it shown. */
+	for (tick = 0u; (tick < PAIR_BUDGET) && (view.soloOffered == 0u); tick++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_NONE);
+		CHECK(CheckViewBuilds(&view) == 0);
+		CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_LOBBY);
+	}
+	CHECK(view.soloOffered == 1u);
+	offeredTicks++;
+	CHECK(NativeArcadeLinkHost_Tick(BUTTON_CROSS, 0u) == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT);
+
+	/* Solo SELECT (arm, then confirm each item), SELECT_RESULT, and the
+	 * START_SOLO_RACE tick. */
+	for (tick = 0u; (tick < PAIR_BUDGET) && (action != (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE); tick++)
+	{
+		CHECK(CheckViewBuilds(&view) == 0);
+		CHECK(view.solo == 1u);
+		soloTicks++;
+		if (view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT)
+		{
+			CHECK(view.select.currentItem < 4u);
+			selectItems[view.select.currentItem]++;
+		}
+		action = NativeArcadeLinkHost_Tick(((tick % 2u) == 1u) ? BUTTON_CROSS : 0u, 0u);
+	}
+	CHECK(action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE);
+	CHECK(CheckViewBuilds(&view) == 0);
+	CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+	CHECK(view.solo == 1u);
+	for (item = 0u; item < 3u; item++)
+	{
+		CHECK(selectItems[item] > 0u);
+	}
+
+	/* The finish: solo RESULTS, its dwell and its rows. */
+	CHECK(NativeArcadeLinkHost_Tick(0u, 1u) == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_NONE);
+	for (tick = 0u; tick < 200u; tick++)
+	{
+		CHECK(CheckViewBuilds(&view) == 0);
+		CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+		CHECK(view.solo == 1u);
+		soloTicks++;
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_NONE);
+	}
+	CHECK(view.rowsEnabled == 1u);
+	printf("main_arcade_link_view_layout_test: solo run checked %u solo ticks, %u offered\n", (unsigned)soloTicks,
+		(unsigned)offeredTicks);
+
+	NativeArcadeLinkHost_AbortToTitle();
+	CHECK(CheckViewBuilds(&view) == 0);
+	CHECK(view.screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	NativeArcadeLinkHost_Shutdown();
+	NativeArcadeLinkHost_InternalSetSoloEnabled(0u);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestEveryPreviewBuilds() == 0);
 	CHECK(TestLiveLinkBuilds() == 0);
+	CHECK(TestSoloLiveBuilds() == 0);
 	puts("main_arcade_link_view_layout_test: passed");
 	return 0;
 }
