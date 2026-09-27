@@ -862,12 +862,28 @@ void VehPickupItem_ShootNow(struct Driver *d, s32 weaponID, s32 flags)
 		{
 			struct Driver *victim;
 
+#ifdef CTR_NATIVE
+			// NOTE: Retail stores clockFlash through drivers[i] before the
+			// NULL check below, so a race with fewer than eight drivers (an
+			// empty slot) writes 4 to NULL + offsetof(clockFlash) (0x367).
+			// The PS1 absorbs that write into low (kernel) RAM; on the host
+			// it is an access violation.
+			// Native stores only to a present driver, which it still does
+			// before the hurt call, as retail does.
+			victim = GAME_TRACKER->drivers[i];
+			if (victim == 0)
+			{
+				continue;
+			}
+			victim->clockFlash = CLOCK_FLASH_FRAMES;
+#else
 			GAME_TRACKER->drivers[i]->clockFlash = CLOCK_FLASH_FRAMES;
 			victim = GAME_TRACKER->drivers[i];
 			if (victim == 0)
 			{
 				continue;
 			}
+#endif
 			if (victim != d)
 			{
 				if (RB_Hazard_HurtDriver(victim, CLOCK_HURT_REASON, 0, 0) != 0)

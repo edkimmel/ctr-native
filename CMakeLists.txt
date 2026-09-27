@@ -2572,6 +2572,11 @@ if(BUILD_TESTING)
     add_test(NAME main_arcade_bot_tick_evidence_link_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_bot_tick_evidence_isolation_test.cmake")
 
+    # Clock weapon empty driver slot (VehPickupItem_ShootNow): the native build
+    # NULL-checks drivers[i] before the clockFlash store (v1 two-cab crash).
+    add_test(NAME veh_pickup_clock_null_slot_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/veh_pickup_clock_null_slot_isolation_test.cmake")
+
     add_executable(native_replay_scheduler_seam_test tests/native_replay_scheduler_seam_test.c)
     set_target_properties(native_replay_scheduler_seam_test PROPERTIES
         C_STANDARD 17
