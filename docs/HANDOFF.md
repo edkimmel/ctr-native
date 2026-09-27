@@ -564,7 +564,11 @@ Use `build-msvc-x86`; other `build-msvc-x86-*` directories are from earlier
 milestones. Keep `-C Debug` even with `-N`: this multi-configuration build
 tree sets the test labels per configuration, so without `-C` the label
 filters select nothing (`-L`) or everything (`-LE`). LF-to-CRLF warnings
-are benign.
+are benign. ctest runs every test with `SDL_AUDIO_DRIVER=dummy` (appended
+at the end of the `BUILD_TESTING` block, pinned by
+`ctest_silent_audio_isolation`), so no game a test starts, the live
+scripts' children included, plays through the speakers; normal runs keep
+SDL's default driver.
 
 Eight tests carry the ctest label `live` plus one area label:
 `arcade_link_preview_render` (`live-render`, about 47 s measured with the

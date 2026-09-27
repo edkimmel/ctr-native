@@ -2175,7 +2175,9 @@ if(BUILD_TESTING)
     # memcards\ in the repository root, and writes the repository root's
     # gitignored `Crash Team Racing.log` (opened share-deny-none; no check
     # reads it).  package_arcade_smoke runs a copied exe whose base directory,
-    # log, and memcards\ are its own run folder.
+    # log, and memcards\ are its own run folder.  Like every test, they run
+    # with SDL_AUDIO_DRIVER=dummy (see the end of this block), so no game
+    # started by ctest plays through the machine's speakers.
     #
     # Renders every arcade-link preview screen (plus the default path) with
     # ctr_native and checks each capture with the RGB checker.
@@ -2842,4 +2844,25 @@ if(BUILD_TESTING)
             -s ${CMAKE_SOURCE_DIR}/tools/matching
             -p test_*.py
     )
+
+    # Pins the block below: every listed test (this one included) carries
+    # SDL_AUDIO_DRIVER=dummy, the eight live tests are listed, and no
+    # platform/ source overrides the driver choice.
+    add_test(NAME ctest_silent_audio_isolation
+        COMMAND "${CMAKE_COMMAND}"
+            "-DCTEST_COMMAND=${CMAKE_CTEST_COMMAND}"
+            "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+            -DCONFIG=$<CONFIG>
+            -P "${CMAKE_SOURCE_DIR}/tests/ctest_silent_audio_isolation_test.cmake")
+
+    # Keep this last in the block.  Owner request: this machine is also an
+    # arcade cabinet, and a test run must not play retail music through its
+    # speakers (the track sweep alone starts sixteen games at once).  Every
+    # test registered above runs with SDL's dummy audio driver, which opens
+    # no device but still pulls the game's audio stream at the real-time
+    # rate; the live check scripts' Start-Process children inherit it.
+    # Normal runs are unaffected: the host code does not choose the driver
+    # on Windows, so only the test environment changes.
+    get_property(ctr_all_tests DIRECTORY PROPERTY TESTS)
+    set_property(TEST ${ctr_all_tests} APPEND PROPERTY ENVIRONMENT "SDL_AUDIO_DRIVER=dummy")
 endif()
