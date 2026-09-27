@@ -1,5 +1,9 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeLink.h"
+#endif
+
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 #include "MAIN/MainArcadeRosterProof.h"
 #include <platform/native_perf.h>
@@ -768,7 +772,20 @@ void StateZero()
 
 	// Load Intro TIM for "SCEA Presents" from VRAM file
 	LOAD_VramFile(sdata->ptrBigfile1, 0x1fd, NULL, &vramSize, -1);
-	MainInit_VRAMDisplay();
+#if defined(CTR_NATIVE)
+	/* Arcade-link boot-intro skip (docs/SOLO_CAB_MILESTONE.md section 7):
+	 * in LINK mode the SCEA TIM still loads but is not displayed, and the
+	 * "Start your engines" XA below is neither played nor waited on. Every
+	 * load, howl and music init, memcard init, and lease call here runs as
+	 * retail, and the level is still the ND crate, loaded by the ten-stage
+	 * loader as on every boot. */
+	const int skipBootIntro = MainArcadeLink_SkipBootIntro();
+
+	if (skipBootIntro == 0)
+#endif
+	{
+		MainInit_VRAMDisplay();
+	}
 
 	// \SOUNDS\KART.HWL;1
 	howl_InitGlobals(data.kartHwlPath);
@@ -780,18 +797,29 @@ void StateZero()
 	CseqMusic_Start(CSEQ_SONG_LEVEL, 0, NULL, 0, 0);
 	Music_Start(0);
 
-	// "Start your engines, for Sony Computer..."
-	CDSYS_XAPlay(CDSYS_XA_TYPE_EXTRA, 0x50);
-
-	while (sdata->XA_State != 0)
-	{
-		// WARNING: Read-only address (ram, 0x8008d888) is written
-#ifdef CTR_NATIVE
-		// NOTE(aalhendi): Retail hardware interrupts keep XA/audio moving while
-		// this loop spins. Native owns VBlank in VSync(), so pump it here.
-		VSync(0);
+#if defined(CTR_NATIVE)
+	/* Arcade-link boot-intro skip: no XA play, so no wait. The XA state
+	 * stays as CDSYS_Init (LOAD_InitCD above) left it: XA_State idle and
+	 * XA_PauseFrame 0, the values the retail play leaves once it ends here
+	 * (frameTimer_MainFrame_ResetDB is still 0 in StateZero). The index,
+	 * category, volume, and sample fields it would leave are rewritten by
+	 * the next CDSYS_XAPlay before anything reads them. */
+	if (skipBootIntro == 0)
 #endif
-		CDSYS_XAPauseAtEnd();
+	{
+		// "Start your engines, for Sony Computer..."
+		CDSYS_XAPlay(CDSYS_XA_TYPE_EXTRA, 0x50);
+
+		while (sdata->XA_State != 0)
+		{
+			// WARNING: Read-only address (ram, 0x8008d888) is written
+#ifdef CTR_NATIVE
+			// NOTE(aalhendi): Retail hardware interrupts keep XA/audio moving while
+			// this loop spins. Native owns VBlank in VSync(), so pump it here.
+			VSync(0);
+#endif
+			CDSYS_XAPauseAtEnd();
+		}
 	}
 
 	DecalGlobal_Clear(gGT);

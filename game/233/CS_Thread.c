@@ -1,5 +1,9 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeLink.h"
+#endif
+
 struct CSThreadParentFrameScratch
 {
 	SVec3Slot parentPos;
@@ -320,14 +324,30 @@ int CS_Thread_UseOpcode(struct Instance *instance, struct CutsceneObj *cs)
 			gGT->pushBuffer[0].distanceToScreen_CURR = gGT->pushBuffer[0].distanceToScreen_PREV;
 		}
 
+#if defined(CTR_NATIVE)
+		/* Arcade-link boot-intro skip (docs/SOLO_CAB_MILESTONE.md section 7):
+		 * in LINK mode the ND crate takes this retail START skip on its first
+		 * camera tick, with no pad tap injected, bypassing only the
+		 * minimum-time gate below. The request sets LOADING on the next frame
+		 * (the ND crate case in CTR_Main), so no later tick repeats it.
+		 * Credits, endings, and every other launch are untouched. */
+		const int skipBootIntro = (gGT->levelID == NAUGHTY_DOG_CRATE) && (MainArcadeLink_SkipBootIntro() != 0);
+
+		if (((sdata->gGamepads->gamepad[0].buttonsTapped & BTN_START) != 0) || (skipBootIntro != 0))
+#else
 		if ((sdata->gGamepads->gamepad[0].buttonsTapped & BTN_START) != 0)
+#endif
 		{
 			gGT->clockEffectEnabled &= ~CAM_PATH_FLAG_CLOCK_EFFECT;
 			if ((u32)(gGT->levelID - CREDITS_CRASH) >= CS_CREDITS_LEVEL_COUNT)
 			{
 				if (gGT->levelID == NAUGHTY_DOG_CRATE)
 				{
+#if defined(CTR_NATIVE)
+					if ((skipBootIntro == 0) && ((u32)gGT->msInThisLEV >> CS_FRAME32_SHIFT < CS_ND_CRATE_SKIP_MIN_FRAME32))
+#else
 					if ((u32)gGT->msInThisLEV >> CS_FRAME32_SHIFT < CS_ND_CRATE_SKIP_MIN_FRAME32)
+#endif
 					{
 						goto afterCameraAndSkipChecks;
 					}

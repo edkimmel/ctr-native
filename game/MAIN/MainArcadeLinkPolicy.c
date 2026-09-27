@@ -140,3 +140,9 @@ int MainArcadeLinkPolicy_ReturnStep(uint8_t *pending, uint8_t returnAction, uint
 	*pending = 1u;
 	return 0;
 }
+
+/* The boot-intro skip: LINK mode only. */
+int MainArcadeLinkPolicy_SkipBootIntro(uint32_t hostMode)
+{
+	return (hostMode == MAIN_ARCADE_LINK_POLICY_MODE_LINK) ? 1 : 0;
+}

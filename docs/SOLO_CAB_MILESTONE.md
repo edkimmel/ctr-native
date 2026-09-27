@@ -710,3 +710,74 @@ All five slices have landed on `arcade`:
 Open: risks 3 and 9 (no live test of the race window or of a peer that
 wakes during solo), risk 6 (an abandoned LOBBY still waits forever), and
 physical two-cabinet validation (HANDOFF steps 6 and 7).
+
+## 7. Boot-intro skip (arcade link)
+
+Owner request: a cabinet configured for the arcade link boots straight to
+the title. In host mode LINK (`--arcade-link` with static seats or
+`seat = auto`, solo included) the cabinet skips the SCEA logo and its
+"Start your engines" XA, the copyright page, and the Naughty Dog crate
+cutscene. Every other launch keeps the retail intro unchanged: no link
+option, PREVIEW (`--arcade-link-preview`), `--arcade-roster-proof`, and the
+replay and determinism fixtures.
+
+The decision is the pure `MainArcadeLinkPolicy_SkipBootIntro(hostMode)`
+(game/MAIN/MainArcadeLinkPolicy.c, 1 for LINK only; unit-tested in
+tests/main_arcade_link_policy_test.c). The game reads it only through the
+thin accessor `MainArcadeLink_SkipBootIntro()` (game/MAIN/MainArcadeLink.c).
+main.c configures the host, which fixes the mode for the run, before
+`CTR_Main` and so before any StateZero. The accessor has three call sites,
+each inside `#if defined(CTR_NATIVE)`, with the retail code in place for
+every other mode:
+
+1. StateZero (game/MAIN/MainMain.c): the SCEA TIM still loads but is not
+   displayed, and the XA is neither played nor waited on. Every load, the
+   howl and music init, the memcard init, and the four topology-lease calls
+   run as before, in the same order. Skipping the play leaves no XA state
+   that matters later. CDSYS_Init (from LOAD_InitCD) has already left
+   `XA_State` idle and `XA_PauseFrame` 0, the values the retail play leaves
+   when it ends here (`frameTimer_MainFrame_ResetDB` is still 0 in
+   StateZero). The next `CDSYS_XAPlay` rewrites the index, category,
+   volume, and sample fields before anything reads them.
+2. LOAD_TenStages stage 0, first boot (game/LOAD/LOAD_TenStages.c): the
+   copyright TIM still loads, `boolFirstBoot` is still cleared, and the
+   bookmark is still pushed. Only the display and the native intro-CSEQ
+   hold are skipped.
+3. The crate (game/233/CS_Thread.c): on the crate's first camera tick the
+   cutscene takes the retail START-skip path (flag, `CseqMusic_StopAll`,
+   `CDSYS_XAPauseRequest`, `MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL)`,
+   `isCutsceneOver`). Only the minimum-time gate
+   (`CS_ND_CRATE_SKIP_MIN_FRAME32`, about 5.8 s) is bypassed, for
+   `NAUGHTY_DOG_CRATE` only. No pad tap is injected. Credits and endings
+   are untouched. On the next frame the crate's load request sets LOADING
+   (the ND crate case in CTR_Main), so the skip fires once.
+
+Why not load the main menu at boot? That was rejected as unsafe. The
+first-boot branch of stage 0 skips `MEMPACK_SwapPacks` and
+`MEMPACK_PopToState`, so a main menu loaded at first boot would sit in a
+pack and memory layout retail never uses for it. The skip therefore keeps
+`levelID = NAUGHTY_DOG_CRATE` and the whole loader flow. The main menu is
+then loaded the retail way, the same as after a START skip.
+
+Checked:
+
+- Memcard and options: `MEMCARD_InitCard` still runs in StateZero.
+  `RefreshCard_Entry` runs only on MAIN_MENU, ADVENTURE_ARENA, or
+  END_OF_RACE frames (game/MAIN/MainFrame_RenderFrame.c:254-259), never
+  in the crate. The boot memcard load and `RaceConfig_LoadGameOptions`
+  (game/RefreshCard.c:279, game/RaceConfig.c:5-10) therefore run on the
+  title as before.
+- The arcade-link hook: the title is reached through the retail main-menu
+  load, so its intro and `MainArcadeLinkPolicy_TitleMenuReady`'s
+  menu-ready frame are unchanged.
+- RNG: the crate's `MixRNG_Scramble` calls (game/233/CS_Thread.c) no
+  longer run. They only move `sdata->randomNumber`, which the race setup
+  reseeds from the agreed seed before every linked or solo race
+  (game/MAIN/MainArcadeRaceSetupCore.c:356,
+  game/MAIN/MainArcadeRaceSetup.c:163-164). This is the same menu-history
+  independence the roster proof relies on. The live link tests are the
+  proof.
+
+tests/main_arcade_link_boot_intro_isolation_test.cmake pins the structure:
+the three guarded call sites, StateZero's load and lease order, the exact
+gated blocks, the retail START-skip path, and that no pad word is written.

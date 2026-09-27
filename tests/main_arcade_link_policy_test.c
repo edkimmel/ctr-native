@@ -838,6 +838,28 @@ static int TestReturnStep(void)
 	return 0;
 }
 
+/* The boot-intro skip (docs/SOLO_CAB_MILESTONE.md section 7): LINK only. */
+static int TestSkipBootIntro(void)
+{
+	uint32_t mode;
+
+	CHECK(MainArcadeLinkPolicy_SkipBootIntro(MODE_LINK) == 1);
+	CHECK(MainArcadeLinkPolicy_SkipBootIntro(MODE_OFF) == 0);
+	CHECK(MainArcadeLinkPolicy_SkipBootIntro(MODE_PREVIEW) == 0);
+	/* Any unknown mode keeps the retail intro. */
+	CHECK(MainArcadeLinkPolicy_SkipBootIntro(3u) == 0);
+	CHECK(MainArcadeLinkPolicy_SkipBootIntro(0xFFFFFFFFu) == 0);
+	CHECK(MainArcadeLinkPolicy_SkipBootIntro(0x80000001u) == 0);
+	for (mode = 0u; mode < 64u; mode++)
+	{
+		CHECK(MainArcadeLinkPolicy_SkipBootIntro(mode) == ((mode == MODE_LINK) ? 1 : 0));
+	}
+	/* Pure: the same answer on every call. */
+	CHECK(MainArcadeLinkPolicy_SkipBootIntro(MODE_LINK) == 1);
+	CHECK(MainArcadeLinkPolicy_SkipBootIntro(MODE_PREVIEW) == 0);
+	return 0;
+}
+
 int main(void)
 {
 	if (TestLayout() != 0) return 1;
@@ -855,6 +877,7 @@ int main(void)
 	if (TestRestore() != 0) return 1;
 	if (TestHeldReported() != 0) return 1;
 	if (TestReturnStep() != 0) return 1;
+	if (TestSkipBootIntro() != 0) return 1;
 	printf("main_arcade_link_policy_test: ok\n");
 	return 0;
 }

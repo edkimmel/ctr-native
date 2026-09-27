@@ -1565,6 +1565,13 @@ if(BUILD_TESTING)
     add_test(NAME main_arcade_link_policy_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_policy_isolation_test.cmake")
 
+    # Arcade-link boot-intro skip (docs/SOLO_CAB_MILESTONE.md section 7): the
+    # accessor's three CTR_NATIVE call sites, StateZero's retail load and
+    # topology-lease order, the exact gated blocks, and the crate's retail
+    # START-skip path.
+    add_test(NAME main_arcade_link_boot_intro_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_boot_intro_isolation_test.cmake")
+
     # Arcade-link menu sound decision (docs/GAME_LOOP_UI_MILESTONE.md
     # section 3.1): every SND rule and its negatives, pure.
     add_executable(main_arcade_link_sound_test tests/main_arcade_link_sound_test.c)

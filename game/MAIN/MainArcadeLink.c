@@ -462,6 +462,11 @@ int MainArcadeLink_TitleMenuReady(const struct GameTracker *gGT, const struct Ga
 	return MainArcadeLinkPolicy_TitleMenuReady(&input);
 }
 
+int MainArcadeLink_SkipBootIntro(void)
+{
+	return MainArcadeLinkPolicy_SkipBootIntro(NativeArcadeLinkHost_Mode());
+}
+
 int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 {
 	struct MainArcadeLinkPolicyInput input;

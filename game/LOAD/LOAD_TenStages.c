@@ -1,5 +1,9 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeLink.h"
+#endif
+
 void (*mainMenuInit[])() = {MM_JumpTo_Title_FirstTime, MM_JumpTo_Characters, MM_JumpTo_TrackSelect, MM_JumpTo_BattleSetup, CS_Garage_Init, MM_JumpTo_Scrapbook};
 
 #ifdef CTR_NATIVE
@@ -65,20 +69,29 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 
 			// Load Intro TIM for Copyright Page from VRAM file
 			LOAD_VramFile(bigfile, LOAD_FIRST_BOOT_COPYRIGHT_TIM_BIGFILE_INDEX, NULL, &vramSize, -1);
-			MainInit_VRAMDisplay();
+#if defined(CTR_NATIVE)
+			/* Arcade-link boot-intro skip (docs/SOLO_CAB_MILESTONE.md
+			 * section 7): in LINK mode the copyright TIM still loads but is
+			 * neither displayed nor held on the intro CSEQ. boolFirstBoot and
+			 * the rest of stage 0 run as retail. */
+			if (MainArcadeLink_SkipBootIntro() == 0)
+#endif
+			{
+				MainInit_VRAMDisplay();
 
 #ifdef CTR_NATIVE
-			// NOTE(aalhendi): SCEA is already held by XA playback in MainMain. The copyright
-			// TIM has no XA, so keep it visible until the intro CSEQ reaches
-			// the point retail normally reaches while loading the ND crate.
-			// Present every wait tick so both host swapchain images are
-			// overwritten with copyright instead of briefly revealing SCEA.
-			while (((sdata->songPool[0].flags & 3) == 1) && (sdata->songPool[0].timeSpentPlaying < LOAD_NATIVE_NDBOX_INTRO_SONG_SYNC_TIME))
-			{
-				VSync(0);
-				Platform_PresentVRAMDisplay();
-			}
+				// NOTE(aalhendi): SCEA is already held by XA playback in MainMain. The copyright
+				// TIM has no XA, so keep it visible until the intro CSEQ reaches
+				// the point retail normally reaches while loading the ND crate.
+				// Present every wait tick so both host swapchain images are
+				// overwritten with copyright instead of briefly revealing SCEA.
+				while (((sdata->songPool[0].flags & 3) == 1) && (sdata->songPool[0].timeSpentPlaying < LOAD_NATIVE_NDBOX_INTRO_SONG_SYNC_TIME))
+				{
+					VSync(0);
+					Platform_PresentVRAMDisplay();
+				}
 #endif
+			}
 
 			gGT->db[0].drawEnv.isbg = 0;
 			gGT->db[1].drawEnv.isbg = 0;

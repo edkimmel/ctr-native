@@ -206,4 +206,15 @@ int MainArcadeLinkPolicy_Decide(const struct MainArcadeLinkPolicyInput *input, s
  */
 int MainArcadeLinkPolicy_ReturnStep(uint8_t *pending, uint8_t returnAction, uint32_t loadingStage, uint8_t onMainMenuLevel);
 
+/*
+ * The arcade-link boot-intro skip (docs/SOLO_CAB_MILESTONE.md section 7):
+ * 1 when the boot splashes are skipped, else 0. Only LINK mode (static seats,
+ * seat auto, solo included) skips: the SCEA display and its "Start your
+ * engines" XA, the copyright display and its intro-song hold, and the
+ * Naughty Dog crate cutscene (through the retail START skip). OFF, PREVIEW,
+ * and any unknown mode keep the retail intro, so default runs, previews,
+ * the roster proof, and replay fixtures are untouched.
+ */
+int MainArcadeLinkPolicy_SkipBootIntro(uint32_t hostMode);
+
 #endif

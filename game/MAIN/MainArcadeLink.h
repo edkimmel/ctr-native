@@ -34,4 +34,15 @@ int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS);
  */
 int MainArcadeLink_TitleMenuReady(const struct GameTracker *gGT, const struct GamepadSystem *gGS);
 
+/*
+ * The arcade-link boot-intro skip (docs/SOLO_CAB_MILESTONE.md section 7):
+ * MainArcadeLinkPolicy_SkipBootIntro on the host mode, which main.c fixes
+ * before the first StateZero. 1 in LINK mode only. Reads only; changes
+ * nothing. Called only from StateZero (the SCEA display and its XA), the
+ * first-boot branch of LOAD_TenStages stage 0 (the copyright display and its
+ * hold), and the cutscene camera thread (the Naughty Dog crate's retail
+ * START skip).
+ */
+int MainArcadeLink_SkipBootIntro(void);
+
 #endif
