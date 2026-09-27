@@ -27,22 +27,31 @@ file; a relative path resolves against the launch directory.
 **PK-3 Keys.** `data_dir`, `seat` (`cab1`|`cab2`|`auto`), `port`
 (1-65535, optional), `peer` (`a.b.c.d:port`, repeatable up to 8, optional),
 `group` (1-32 letters, digits, `.`, `_`, or `-`, not starting with `-`;
-optional), `fullscreen` (`0`|`1`|`yes`|`no`|`true`|`false`), `render_scale`
+optional), `lan` (`a.b.c.d/n`, an IPv4 subnet with a prefix of 8-30 and
+the host bits zero, as `--arcade-link-lan`; optional, docs/DISCOVERY_MILESTONE.md
+DISC-19), `fullscreen` (`0`|`1`|`yes`|`no`|`true`|`false`), `render_scale`
 (`1`|`2`|`3`|`4`|`6`|`8`, as `--render-scale`), `texture_filter`
 (`nearest`|`bilinear`, as `--texture-filter`). Keys and values are
 case-sensitive, as on the command line. The grammar and the error classes
-are listed below. The link group (`seat`, `port`, `peer`, `group`) follows
-exactly the command line's rules (PK-5, docs/DISCOVERY_MILESTONE.md
+are listed below. The link group (`seat`, `port`, `peer`, `group`, `lan`)
+follows exactly the command line's rules (PK-5, docs/DISCOVERY_MILESTONE.md
 DISC-11): `seat` turns the link on; with a `peer` it is static mode, without
-one discovery mode. `render_scale` and `texture_filter` are host-local
-presentation of one cabinet: the two cabinets may differ in them, and they
+one discovery mode. `lan` pins the link to one subnet, in either mode: the
+same value on every cabinet (a subnet, unlike an interface address, is the
+same on all of them). It exists because Windows sends the limited broadcast
+255.255.255.255 through one network card only on a machine with several,
+and because without it the beacons also go to every other network the
+cabinet is on (the fleet cabinets have the wired arcade switch at
+192.168.1.x and a second network). `render_scale` and `texture_filter`
+are host-local presentation of one cabinet: the two cabinets may differ in them, and they
 never reach the match config, simulation identity, replay, checkpoints, the
 link, or canonical state.
 
 **PK-4 Command-line overrides, per group.**
 - Link: if argv names `--arcade-link`, `--arcade-link-port`,
-  `--arcade-link-peer`, `--arcade-link-group`, or `--arcade-link-preview`,
-  the file's whole link group is ignored. The discovery test flags
+  `--arcade-link-peer`, `--arcade-link-group`, `--arcade-link-lan`, or
+  `--arcade-link-preview`, the file's whole link group is ignored (the
+  file's `lan` included). The discovery test flags
   `--arcade-discovery-port` and `--arcade-discovery-target` are not link
   group options (DISC-18): argv naming them keeps the file's group, so a
   test can run a shipped `arcade.cfg` with them.
@@ -56,19 +65,23 @@ link, or canonical state.
 Startup prints the loaded file (or `none (<default path> not found)`), the
 groups taken from it, and the groups the command line overrode.
 
-**PK-5 One link grammar.** The config module has no seat, port, peer, or
-group grammar of its own.
-- Each `seat`, `port`, `peer`, and `group` value is checked, at its line, by
-  `NativeArcadeLinkOptions_ApplyArgs` itself, over a synthetic argv that is
-  a valid group for every good value: `seat` and `group` in a discovery-mode
-  sample (a sample seat, no peer), `port` and `peer` in a static-mode sample
-  (a sample seat, port, and peer).
+**PK-5 One link grammar.** The config module has no seat, port, peer,
+group, or lan grammar of its own.
+- Each `seat`, `port`, `peer`, `group`, and `lan` value is checked, at its
+  line, by `NativeArcadeLinkOptions_ApplyArgs` itself, over a synthetic argv
+  that is a valid group for every good value: `seat`, `group`, and `lan` in
+  a discovery-mode sample (a sample seat, no peer), `port` and `peer` in a
+  static-mode sample (a sample seat, port, and peer). The `lan` grammar is
+  the discovery core's `NativeArcadeDiscovery_ParseLan` (DISC-19), which the
+  options parser calls: `a.b.c.d/n`, octets 0-255, prefix 8-30, host bits
+  zero, nothing else (no spaces inside, no comment after it).
 - The whole group is then checked the same way, as
-  `--arcade-link <seat> --arcade-link-port <port> --arcade-link-group <group> --arcade-link-peer <peer>...`
+  `--arcade-link <seat> --arcade-link-port <port> --arcade-link-group <group> --arcade-link-lan <lan> --arcade-link-peer <peer>...`
   with only the keys the file sets. `ApplyArgs` applies the DISC-11 rules to
   the file and to argv alike:
-  - `seat` is the one key that turns the link on. `port`, `peer`, or
-    `group` without `seat` is an incomplete link group.
+  - `seat` is the one key that turns the link on. `port`, `peer`, `group`,
+    or `lan` without `seat` is an incomplete link group.
+  - `lan` is optional in both modes below.
   - Static mode: at least one `peer`. It needs `seat` `cab1` or `cab2` and
     a `port`, and takes no `group`. Discovery is off: no discovery socket,
     no beacon.
@@ -83,9 +96,23 @@ group grammar of its own.
   `--arcade-discovery-port` or `--arcade-discovery-target` without
   discovery mode is an error, and in discovery mode the link port may not
   equal the discovery port (7000 unless `--arcade-discovery-port` sets
-  another: the discovery socket holds it for the whole run). Either stops
-  the game (exit 1) with `invalid arcade-link option; ...`, with no config
-  line: `port = 7000` passes the file check and is refused here.
+  another: the discovery socket holds it for the whole run). With a `lan`
+  (DISC-19) every `peer` and every `--arcade-discovery-target` must lie
+  inside it. Any of these stops the game (exit 1) with
+  `invalid arcade-link option; ...`, with no config line: `port = 7000`, or
+  a `peer` outside the `lan`, passes the file check and is refused here.
+- With a `lan`, in discovery mode, the cabinet beacons only to the lan's
+  directed broadcast (192.168.1.0/24 gives 192.168.1.255), and only while
+  one of its network cards (up, not loopback) has an address inside the
+  lan; it never sends 255.255.255.255 or another card's broadcast, and it
+  drops every beacon from a source outside the lan. With no card in the lan
+  it sends nothing, logs `arcade discovery: no network interface in lan
+  <lan>; not beaconing, retrying` once, and looks again at every interface
+  refresh (every 10 s, held while a race runs); it never falls back to the
+  other cards. When a card appears it logs `arcade discovery: lan <lan> on
+  interface <address>; beaconing`. `main.c` prints `arcade link: lan <lan>`
+  at startup, after the `arcade link: <seat> port <p>, <n> peers` line.
+- Without a `lan` nothing of the above changes.
 - A static cabinet and a discovery cabinet never link (the static one does
   not beacon): both cabinets of a pair use the same mode.
 - The group reaches the link only through `NativeArcadeConfig_ApplyLink`. It
@@ -150,11 +177,13 @@ See "Running the package script" below.
 **PK-8 Template.** One file, `tools/package/arcade.cfg`, for every cabinet
 (DISC-11, DISC-S5):
 - `seat = auto` (discovery mode: the cabinets find each other and elect
-  their seats) and no active `port`, `peer`, or `group` line. Comments show
-  the optional overrides: `# port = 7001` (the default link port; it must
-  differ from the discovery port 7000), `# group = <name>` (keeps two
-  installations on one LAN apart; both cabinets need the same one),
-  `seat = cab1` or `cab2` as a fixed-seat override, and a static override
+  their seats) and no active `port`, `peer`, `group`, or `lan` line.
+  Comments show the optional overrides: `# port = 7001` (the default link
+  port; it must differ from the discovery port 7000), `# group = <name>`
+  (keeps two installations on one LAN apart; both cabinets need the same
+  one), `# lan = 192.168.1.0/24` (DISC-19: pins discovery to the arcade
+  switch on a cabinet with two network cards; both cabinets need the same
+  value), `seat = cab1` or `cab2` as a fixed-seat override, and a static override
   (`seat = cab1|cab2`, `port`, and `peer = a.b.c.d:port`, on BOTH cabinets:
   a pair of one static and one discovery cabinet never links).
 - `data_dir = C:\ctr-data`, `fullscreen = 1`, `render_scale = 8`, and
@@ -167,7 +196,7 @@ See "Running the package script" below.
   "Per-cabinet setup" and "Solo race" below.
 - `native_arcade_config_unit` parses it with the real parser and checks the
   resulting link options (on, discovery mode, seat auto, link port 7001, no
-  peer, no group, and the post-merge check passes) and display config. The
+  peer, no group, no lan, and the post-merge check passes) and display config. The
   package smoke gate checks the packaged copy's keys and runs the packaged
   exe with it.
 
@@ -193,7 +222,7 @@ New-NetFirewallRule -DisplayName 'CTR arcade link' -Direction Inbound -Protocol 
 **PK-10 Per-cabinet files.** A default the owner may change. `arcade.cfg`,
 `memcards\`, and `Crash Team Racing.log` in the package folder belong to
 one cabinet. The shipped `arcade.cfg` is the same on every cabinet, but an
-edited one (`data_dir`, a `seat`, `group`, or `port` override, a static
+edited one (`data_dir`, a `seat`, `group`, `lan`, or `port` override, a static
 peer, or the display keys) is that cabinet's alone. Any sync of the folder
 between cabinets (docs/HANDOFF.md: CAB2 receives the bundle through the
 fleet rsync path) excludes them. If a sync copied them anyway, the receiving
@@ -207,7 +236,7 @@ a copy of an edited one and put it back.
 ## Config grammar
 
 - One `key = value` per line. Keys are exactly `data_dir`, `seat`, `port`,
-  `peer`, `group`, `fullscreen`, `render_scale`, `texture_filter`
+  `peer`, `group`, `lan`, `fullscreen`, `render_scale`, `texture_filter`
   (lowercase). Only `peer` may repeat.
 - Whitespace (space, tab) around the key and the value is trimmed.
 - The value is the rest of the line after the first `=`. It may contain
@@ -236,7 +265,7 @@ file-size error, which has no line: `config file <path>: <reason>`.
 | empty value | that line |
 | bad value | that line |
 | a ninth `peer` | that line |
-| incomplete link group (PK-5: `port`, `peer`, or `group` without `seat`; a `peer` with `seat = auto`, without `port`, or with `group`) | the first link line |
+| incomplete link group (PK-5: `port`, `peer`, `group`, or `lan` without `seat`; a `peer` with `seat = auto`, without `port`, or with `group`) | the first link line |
 
 A discovery-mode link port equal to the discovery port (`port = 7000`)
 passes the file check; `main.c` refuses it after the merge (PK-5), with no
@@ -362,8 +391,8 @@ Steps:
    memcard save, so no game options were ever loaded from one.
 3. Checks the package's `arcade.cfg`: `data_dir`, `seat`, `fullscreen`,
    `render_scale`, and `texture_filter` set exactly once each, `seat = auto`,
-   `texture_filter = bilinear`, and no other key set (`port`, `peer`, and
-   `group` are commented-out examples only).
+   `texture_filter = bilinear`, and no other key set (`port`, `peer`,
+   `group`, and `lan` are commented-out examples only).
 4. Derives `<output>\a.loopback.cfg` and `b.loopback.cfg` from it. Only
    three values change: `data_dir` (to the folder holding the disc image),
    `fullscreen` (to `0`), and `render_scale` (to `1`: two cabinets at 8x on
@@ -416,7 +445,7 @@ alone with
 `ctest --test-dir build-msvc-x86 -C Debug -L live-package --output-on-failure`.
 `package_arcade_stage` (not live) checks the stage mode, the argument checks
 of the smoke and of both gate scripts with a dummy exe, and the smoke's
-refusal of a package `arcade.cfg` that sets a port, a peer, a group, or a
+refusal of a package `arcade.cfg` that sets a port, a peer, a group, a lan, or a
 seat other than `auto`.
 
 To smoke-test a real package folder, with a clean tree:
@@ -463,11 +492,29 @@ cabinets find each other on the local network and elect their seats.
 | `seat` | `auto`: elected; the lower IP address is cab1 | `cab1` or `cab2`: a fixed seat, the other cabinet takes the other one (never the same seat on both) |
 | `port` (this cabinet's link port) | none: 7001 | another port, never 7000 (change the firewall rule to match) |
 | `group` | none: `ctr-native` | a name, the same on both cabinets, to keep two installations on one LAN apart |
+| `lan` | none: every network | `lan = 192.168.1.0/24` (the arcade switch's subnet), the same on both cabinets: on a cabinet with two network cards, discovery then uses only that subnet (see below) |
 | `peer` | none: discovery | static mode on BOTH cabinets: `seat` `cab1`/`cab2`, `port`, `peer = <other cabinet IP>:<its port>`, no `group` |
 
 A static cabinet does not beacon, so a pair of one static and one discovery
 cabinet never links (PK-5). `<other cabinet IP>` stands for that cabinet's
 fixed IP address; replace the whole placeholder, angle brackets included.
+
+`lan` is for a cabinet with two network cards, such as the fleet's (the
+wired arcade switch at 192.168.1.x and another network). Windows sends the
+search broadcast 255.255.255.255 through one card only, and without `lan`
+the cabinet's beacons also go onto the other network and beacons from it
+are heard. With `lan = 192.168.1.0/24` on both cabinets, discovery uses only
+that subnet (PK-5): beacons to 192.168.1.255 only, nothing heard from
+outside it, and a `peer` (static mode) must be inside it. If no card of the
+cabinet is in the subnet (the switch cable out, the card down), the cabinet
+sends nothing, logs `[CTR Native] arcade discovery: no network interface in
+lan 192.168.1.0/24; not beaconing, retrying` once, waits (solo is offered),
+and looks again every 10 s; it never falls back to the other card. When the
+card is back it logs `[CTR Native] arcade discovery: lan 192.168.1.0/24 on
+interface <its address>; beaconing`. Two cards in the same subnet are still
+not supported (docs/DISCOVERY_MILESTONE.md risk 2). The fleet setup script
+(C:\Arcade\scripts\setup-ctr-native.ps1) will write `lan = 192.168.1.0/24`
+in a later change; this repository does not change it.
 
 The commands are PowerShell. They use `$pkg` for the folder the package
 was copied to; `C:\Arcade\games\ctr-native` is the example (the fleet
@@ -514,7 +561,7 @@ cabinet.
      refused (PK-6).
    - `seat`: keep `auto`. `cab1` or `cab2` is an optional fixed-seat
      override (see the table above).
-   - `port`, `group`, `peer`: none by default. The file shows each as a
+   - `port`, `group`, `lan`, `peer`: none by default. The file shows each as a
      comment; uncomment one only for an override from the table above.
    - `fullscreen`: keep `1` on a cabinet (`0` is windowed, for testing).
    - `render_scale` (shipped `8`) and `texture_filter` (shipped
@@ -524,7 +571,7 @@ cabinet.
 
    There are no other keys (PK-3). A comment goes on its own line: a
    `# comment` after a value becomes part of the value. After `seat`,
-   `port`, `peer`, `group`, `fullscreen`, `render_scale`, or
+   `port`, `peer`, `group`, `lan`, `fullscreen`, `render_scale`, or
    `texture_filter` that is a bad value, and the game stops
    with the file and line. After `data_dir` it becomes part of the path, and
    the game stops with `data directory ... does not hold ctr-u.bin or
@@ -595,7 +642,8 @@ cabinet.
 
    and, a little later, `[CTR Native] arcade link: auto port 7001, 0 peers`
    (with a fixed seat `cab1` or `cab2` in place of `auto`; a static cabinet
-   shows its seat, port, and peer count). These lines are on the console
+   shows its seat, port, and peer count), followed, with a `lan` set, by
+   `[CTR Native] arcade link: lan 192.168.1.0/24`. These lines are on the console
    only, not in `Crash Team Racing.log` (the config lines are printed
    before the log file opens). The fullscreen window may hide the console;
    switch to it (Alt+Tab) to read them. When the two cabinets have found

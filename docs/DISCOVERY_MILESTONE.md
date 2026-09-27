@@ -402,7 +402,8 @@ alternative.
       service, because the adapter may not link the transport (section
       2.5). The one other user is the options library, which links the
       pure core only, for NativeArcadeDiscovery_GroupNameValid (the one
-      group grammar, DISC-9), as
+      group grammar, DISC-9) and, since DISC-19, ParseLan and LanContains
+      (the one lan grammar and the post-merge containment check), as
       tests/native_arcade_discovery_isolation_test.cmake allows. The netplay adapter receives plain values (peer address, role)
       through its setter and keeps its include allow-list and nine-library
       pin (tests/native_arcade_netplay_isolation_test.cmake:67-78,
@@ -460,6 +461,78 @@ alternative.
       each other. Their link ports differ, so the election is by port: the
       lower link port is cab1. The live test runs both with
       `--arcade-link auto` and NO `--arcade-link-peer`.
+19. DISC-19 (owner request, after S5): the `lan` key. Each fleet cabinet
+    has two NICs, the wired arcade switch at 192.168.1.x and another
+    network. Windows sends 255.255.255.255 out of one interface only, and
+    DISC-5 also sends every interface's directed broadcast, so beacons
+    went onto the other network too and beacons from anywhere were
+    accepted.
+    - Key `lan = a.b.c.d/n` in `arcade.cfg` and its command-line twin
+      `--arcade-link-lan a.b.c.d/n`: an IPv4 subnet, optional, the same
+      value on every cabinet. Rejected: a gateway (a switch-only cabinet
+      LAN may have none) and an interface IP (it differs per cabinet and
+      breaks "one config for every cabinet").
+    - Grammar, strict and fail-closed: four decimal octets 0..255 of 1-3
+      digits, `/`, a prefix of 1-2 digits in 8..30 (a /31 or /32 has no
+      directed broadcast; wider than /8 is not a LAN), nothing else, and
+      the host bits zero (192.168.1.5/24 is refused as ambiguous). One
+      parser, `NativeArcadeDiscovery_ParseLan` in the pure core, beside
+      `NativeArcadeDiscovery_GroupNameValid` (DISC-9); the options parser
+      calls it, and the config file reaches it only through
+      `NativeArcadeLinkOptions_ApplyArgs` over a synthetic argv (PK-5). It
+      is a link-group key like `group`: a per-line discovery-mode probe,
+      and `--arcade-link-lan` on argv makes the file's whole link group
+      ignored (PK-4). Unlike `group` it is valid in both modes; like
+      `group`, it needs `seat` (alone it is an incomplete link group).
+    - Discovery mode with a lan: the only beacon target is the lan's
+      directed broadcast (network | ~mask), and only while at least one
+      local interface (up, not loopback, as DISC-5 counts them) has an
+      IPv4 inside the lan (`NativeNetInterfaces_BuildLanTargets`). No
+      255.255.255.255 and no other interface's broadcast. Mechanism: the
+      one directed broadcast leaves the INADDR_ANY socket through the
+      interface with the on-link route for that subnet; the socket is
+      never bound to an interface address. Two NICs on the same subnet
+      remain risk 2's limit.
+    - The service drops a datagram whose source IPv4 is outside the lan
+      before the core: no table entry, not a peer, counted in the status
+      (`lanDropped`), never logged per datagram.
+    - No interface in the lan (or the enumeration fails): no target,
+      nothing sent, no beacon round counted; the host logs once on
+      entering that state, `[CTR Native] arcade discovery: no network
+      interface in lan 192.168.1.0/24; not beaconing, retrying`, and the
+      service retries at the normal interface refresh (300 ticks, still
+      held while a race runs, risk 10). When an interface appears (or
+      changes) one line names the lan and its address:
+      `[CTR Native] arcade discovery: lan 192.168.1.0/24 on interface
+      192.168.1.11; beaconing`. Never a fallback to all interfaces; this
+      replaces DISC-15's 255.255.255.255-only fallback when a lan is set.
+    - With explicit targets (DISC-18) there is no enumeration; every
+      target must be inside the lan (`NativeArcadeLinkOptions_ValidateMerged`
+      refuses otherwise, and the service's Open does too) and the source
+      filter still applies.
+    - Static mode with a lan: every `peer` must be inside it (the same
+      post-merge check). The link itself already accepts only its peer:
+      `NativeLockstepPeerLink_Poll` discards every datagram whose sender is
+      not exactly the link's peer address
+      (platform/native_lockstep_peer_link.c:359), and the listen-only link
+      of solo keeps only HELLOs from a listed candidate
+      (`NativeLockstepPeerLink_IsListedPeer`, :393, used at :438 from
+      native_lobby_state.c:241). Those are the only two receive paths on
+      the link socket, so with every candidate inside the lan (static
+      peers by the check above, the discovery pairing by the source
+      filter) no link traffic from outside the lan is ever read. The
+      netplay adapter, its include allow-list, and its library pins are
+      unchanged.
+    - Without a lan every DISC rule above is unchanged, byte for byte.
+    - Host-local link configuration only: not in the beacon, the group
+      hash, the match config, the fixture, identity, replay, checkpoints,
+      or canonical state (tests/native_arcade_discovery_isolation_test.cmake
+      rule 7). `main.c` prints `[CTR Native] arcade link: lan
+      192.168.1.0/24` at startup, after the unchanged
+      `arcade link: <seat> port <p>, <n> peers` line.
+    - The fleet setup script (C:\Arcade\scripts\setup-ctr-native.ps1)
+      will write `lan = 192.168.1.0/24` in a later change; C:\Arcade is not
+      changed here.
 
 ## 4. Slices
 
@@ -597,8 +670,11 @@ leave room.
    `-Profile Any`. A dismissed "allow this app" prompt can leave a Block
    rule for the exe, which the fleet script already removes (step 5).
 2. Multi-NIC hosts. Windows sends the limited broadcast out of one
-   interface only; DISC-5 adds every interface's directed broadcast. Two
-   NICs on the SAME subnet never link (DISC-6 limit; static `peer` there).
+   interface only; DISC-5 adds every interface's directed broadcast, which
+   also puts beacons on every other network. DISC-19's `lan` key pins
+   discovery to one subnet: only that subnet's broadcast, only while an
+   interface is in it, and only beacons from inside it. Two NICs on the
+   SAME subnet still never link (DISC-6 limit; static `peer` there).
 3. A third cabinet of the same group and identity. Each side pairs with its
    lowest-key peer, so two may pair and the third keeps trying a busy peer
    (CONNECTING, then WAITING, with solo offered). Documented limit; the
@@ -808,4 +884,26 @@ leave room.
   - Not covered live: the demo and the load passes that skip the render
     (risk 6).
   - Section 2.6 still describes the tick model as S1 found it.
+- DISC-19, the `lan` key (after S5, owner request): done. The core has the
+  one lan grammar (`ParseLan`) and `LanValid`, `LanContains`,
+  `LanBroadcast`; the interface list has the pure
+  `NativeNetInterfaces_BuildLanTargets`; the service's Open takes the lan
+  (prefix 0: none), drops sources outside it, beacons only to its
+  broadcast while an interface is in it, and reports each change of that
+  interface through `NativeArcadeDiscoveryService_TakeLanChange`, which
+  the host logs (the two DISC-19 lines); the status gained the lan, the
+  interface, and `lanDropped`, and a tick with no target counts no beacon
+  round. Options and config: `--arcade-link-lan` and `lan`, PK-4 and PK-5
+  as `group`, the post-merge check for targets and peers. `main.c` prints
+  the lan line. The template carries `# lan = 192.168.1.0/24` commented
+  out (the smoke still refuses an active one). Tests: the core's grammar
+  (every reject class), containment, and broadcast; the lan target build;
+  the service on loopback (127.0.0.0/8 with explicit targets pairs;
+  203.0.113.0/24, TEST-NET-3, with enumeration finds no interface, sends
+  nothing, and drops every beacon of a loopback peer, which never pairs);
+  options and config (key, flag, PK-4, the post-merge check, the
+  template); the host (the no-interface line once through a refresh, no
+  beacon round); isolation (the discovery rule 7 lan scan, the service's
+  filter and no-fallback pins, the options, config, and host pins). The
+  link needed no change: it already reads only its peer (DISC-19).
 - DISC-S6: not started.

@@ -52,6 +52,17 @@ their seats (the cabinet with the lower IP address is cabinet 1).
      link.
    - group = <name> keeps two installations on one network apart: only
      cabinets with the same group link. Both cabinets need the same group.
+   - lan = 192.168.1.0/24 (the arcade switch's subnet) is for a cabinet
+     with two network cards. Windows sends the search (to
+     255.255.255.255) through one card only, and without lan the search
+     also goes onto the other network. With lan the cabinet searches only
+     that subnet and hears only cabinets in it; a static peer must be in
+     it too. Both cabinets need the same value. If no card of the cabinet
+     is in the subnet, it logs
+       [CTR Native] arcade discovery: no network interface in lan 192.168.1.0/24; not beaconing, retrying
+     once, sends nothing, and looks again every 10 s; it never uses the
+     other card instead. When the card is back it logs
+       [CTR Native] arcade discovery: lan 192.168.1.0/24 on interface <its address>; beaconing
    - port = <port> sets this cabinet's link port (default 7001; never
      7000, the discovery port). Use the same port in the firewall rule.
    - A static peer turns the search off: seat = cab1 or cab2 (a different
@@ -89,6 +100,7 @@ arcade.cfg next to it. Among its first console lines it must show
   [CTR Native] Config file: <this folder>\arcade.cfg
   [CTR Native] Config groups from the file: link fullscreen render_scale texture_filter data_dir
   [CTR Native] arcade link: auto port 7001, 0 peers
+(with lan set, followed by "[CTR Native] arcade link: lan <its value>").
 These lines are on the console only, not in the log; the fullscreen window
 may hide the console (Alt+Tab to it). "Config file: none" means there is no
 arcade.cfg next to the exe (check for a hidden .txt extension), and the
