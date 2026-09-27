@@ -282,7 +282,7 @@ ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Observe)" "${obse
     "if (autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_RACES)"
     "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);"
     "race = &autopilot->races[autopilot->racesEnded];" "race->endReason = view->endReason;" "race->ended = 1u;"
-    "if (!NativeArcadeLinkAutopilot_EndAccepted(autopilot->racesEnded + 1u, view->endReason))"
+    "if (!NativeArcadeLinkAutopilot_RunEndAccepted(autopilot, autopilot->racesEnded + 1u, view->endReason))"
     "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_RACE_FAILED);"
     "autopilot->racesEnded++;"
     "if ((autopilot->racesEnded != autopilot->racesStarted) || (autopilot->racesValidated != autopilot->racesStarted))"
@@ -303,7 +303,7 @@ ctr_block_text("${module_source}" "${module_code}"
 ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Decide)" "${decide_block}"
     "case NATIVE_ARCADE_FLOW_SCREEN_RESULTS:"
     "(view->rowsEnabled != 0u) && (autopilot->racesEnded != 0u) &&"
-    "NativeArcadeLinkAutopilot_EndAccepted(autopilot->racesEnded, view->endReason))"
+    "NativeArcadeLinkAutopilot_RunEndAccepted(autopilot, autopilot->racesEnded, view->endReason))"
     "(autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_RACES) ? NATIVE_ARCADE_FLOW_ROW_EXIT")
 ctr_block_text("${module_source}" "${module_code}"
     "int NativeArcadeLinkAutopilot_FormatReport(const struct NativeArcadeLinkAutopilot *autopilot, char *buffer, size_t capacity, size_t *length)"
@@ -745,8 +745,8 @@ ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Observe, solo)" "
     "autopilot->result = NATIVE_ARCADE_LINK_AUTOPILOT_PASS;"
     "if ((view->screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (previous != NATIVE_ARCADE_FLOW_SCREEN_RESULTS))"
     "if ((autopilot->solo != 0u) && (autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_RACES))"
-    "if (!NativeArcadeLinkAutopilot_EndAccepted(autopilot->racesEnded + 1u, view->endReason))"
-    "if ((autopilot->solo != 0u) && (action == NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY))"
+    "if (!NativeArcadeLinkAutopilot_RunEndAccepted(autopilot, autopilot->racesEnded + 1u, view->endReason))"
+    "if (((autopilot->solo != 0u) || (autopilot->soloThenLink != 0u)) && (action == NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY))"
     "(confirmedRow != (uint8_t)(NATIVE_ARCADE_FLOW_ROW_LOBBY + 1u))"
     "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);"
     "autopilot->lobbyReturned = 1u;"
@@ -759,14 +759,18 @@ foreach(term IN ITEMS "lobbyReturned = 1u" "\"mode solo\\n\"" "wantedRow = NATIV
     endif()
 endforeach()
 ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Decide, solo)" "${decide_block}"
-    "case NATIVE_ARCADE_FLOW_SCREEN_LOBBY:" "(autopilot->solo != 0u) && (autopilot->racesStarted == 0u) && (view->soloOffered != 0u)"
-    "case NATIVE_ARCADE_FLOW_SCREEN_RESULTS:" "if (autopilot->solo != 0u)" "wantedRow = NATIVE_ARCADE_FLOW_ROW_LOBBY;")
+    "case NATIVE_ARCADE_FLOW_SCREEN_LOBBY:"
+    "((autopilot->solo != 0u) || (autopilot->soloThenLink != 0u)) && (autopilot->racesStarted == 0u) &&" "(view->soloOffered != 0u)"
+    "case NATIVE_ARCADE_FLOW_SCREEN_RESULTS:" "if ((autopilot->solo != 0u) ||" "wantedRow = NATIVE_ARCADE_FLOW_ROW_LOBBY;")
 ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_FormatReport, solo)" "${report_block}"
     "\"cab %u\\n\"" "if (autopilot->solo != 0u)" "\"mode solo\\n\"" "\"result %s (%u)\\n\"")
 
 ctr_require_order("${glue_source} (MainArcadeLinkAutopilot_Configure, solo)" "${configure_block}"
     "state->autopilot.desyncTick = options->desyncTick;" "state->autopilot.solo = options->solo;" "state->active = 1u;")
-ctr_count("${glue_code}" "options->solo" glue_solo_hits)
+# options->solo itself, not options->soloThenLink (';' is swapped for '@'
+# first: a match ending in ';' would split the CMake list).
+string(REPLACE ";" "@" glue_code_at "${glue_code}")
+ctr_count("${glue_code_at}" "options->solo([^A-Za-z]|$)" glue_solo_hits)
 ctr_count("${glue_code}" "NativeArcadeLinkAutopilot_RecordSoloStart\\(" glue_solo_start_hits)
 if(NOT glue_solo_hits EQUAL 1 OR NOT glue_solo_start_hits EQUAL 1)
     message(FATAL_ERROR "${prefix}: ${glue_source} must copy options->solo once, in Configure, and call NativeArcadeLinkAutopilot_RecordSoloStart once (found ${glue_solo_hits} and ${glue_solo_start_hits})")
@@ -851,7 +855,7 @@ ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Observe, one-race
     "if ((view->screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (previous != NATIVE_ARCADE_FLOW_SCREEN_RESULTS))"
     "if ((autopilot->oneRace != 0u) && (autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES))"
     "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);"
-    "if (!NativeArcadeLinkAutopilot_EndAccepted(autopilot->racesEnded + 1u, view->endReason))"
+    "if (!NativeArcadeLinkAutopilot_RunEndAccepted(autopilot, autopilot->racesEnded + 1u, view->endReason))"
     "(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_ONE_RACE_RACES))"
     "autopilot->exitConfirmed = 1u;"
     "if (action == NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)"
@@ -927,4 +931,158 @@ endforeach()
 foreach(term IN ITEMS "--arcade-link-peer" "'cab1', '--arcade" "'cab2', '--arcade" "--arcade-link-autopilot-freeze"
         "--arcade-link-autopilot-desync" "--arcade-link-autopilot-solo" "--capture-frame" "--exit-after-frame")
     ctr_forbid("tools/arcade-discovery-link-check.ps1" "${discovery_checker}" "${term}")
+endforeach()
+
+# Since SOLO risk 9 (docs/SOLO_CAB_MILESTONE.md): the solo-then-link mode.
+#  1f. the module parses --arcade-link-autopilot-solo-then-link as a flag that
+#      needs the autopilot and takes neither the solo nor the one-race flag
+#      nor a fault option; the run is two races (SOLO_THEN_LINK_RACES 2u);
+#      RunEndAccepted is EndAccepted outside the mode and its race 1 end
+#      (FINISHED) for both races in it, and it is the only caller of
+#      EndAccepted (so FINISHED is still decided on only there, 1c); Observe
+#      records the wake evidence (the first solo view with peerHeard), fails
+#      the linked session before its RETURN_TO_LOBBY and a solo race after
+#      it, refuses a third RESULTS entry, accepts one RETURN_TO_LOBBY, and
+#      passes RETURN_TO_TITLE only after it, two races, no rematch, and its
+#      own EXIT; Decide wants EXIT after race 2; FaultAt answers NONE in the
+#      mode; the report's "mode solo-then-link" line is written only in the
+#      mode, between the cab and result lines, and its "peer heard" line
+#      after the desync tick line;
+#  2e. the glue's Configure copies the flag right after the one-race flag and
+#      before activating, and logs the wake evidence once;
+#  4e. main.c's invalid-option message names the option, and main.c prints
+#      the solo-then-link notice;
+#  7e. the wake live gate is registered: arcade_solo_wake_link runs its
+#      checker on Windows with SKIP_RETURN_CODE 77 and the labels live and
+#      live-link; the checker runs cab1 on 7401 (peer 7402) in the
+#      solo-then-link mode, starts cab2 on 7402 (peer 7401) in the one-race
+#      mode only after cab1's solo race tick 0, passes the 1200-tick cap to
+#      both, requires "peer heard RACING", and never passes a fault option, a
+#      frame capture, or a discovery option.
+foreach(literal IN ITEMS "static const char k_soloThenLinkOption[] = \"--arcade-link-autopilot-solo-then-link\";"
+        "if (seenSoloThenLink && (!seen || seenSolo || seenOneRace || seenFreeze || seenDesync))" "candidate.soloThenLink = 1u;")
+    ctr_require_literal("${module_source}" "${module_code}" "${literal}")
+endforeach()
+ctr_count("${header_code}" "#define NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_THEN_LINK_RACES 2u\n" solo_then_link_races_hits)
+if(NOT solo_then_link_races_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${module_header} must define NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_THEN_LINK_RACES as 2u (the solo race and the linked race)")
+endif()
+ctr_block_text("${module_source}" "${module_code}"
+    "static int NativeArcadeLinkAutopilot_RunEndAccepted(const struct NativeArcadeLinkAutopilot *autopilot, uint32_t race, uint32_t endReason)"
+    run_accepted_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " run_accepted_flat "${run_accepted_block}")
+if(NOT run_accepted_flat STREQUAL "{ if (autopilot->soloThenLink != 0u) { return (race >= 1u) && (race <= NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_THEN_LINK_RACES) && NativeArcadeLinkAutopilot_EndAccepted(1u, endReason); } return NativeArcadeLinkAutopilot_EndAccepted(race, endReason); }")
+    message(FATAL_ERROR "${prefix}: NativeArcadeLinkAutopilot_RunEndAccepted must be EndAccepted, or its race 1 end for both races of the solo-then-link run (found '${run_accepted_flat}')")
+endif()
+# EndAccepted's definition and RunEndAccepted's two calls; every run decision
+# goes through RunEndAccepted (its definition, Observe's RESULTS entry, and
+# Decide's rows).
+ctr_count("${module_code}" "NativeArcadeLinkAutopilot_EndAccepted\\(" end_accepted_hits)
+ctr_count("${module_code}" "NativeArcadeLinkAutopilot_RunEndAccepted\\(" run_end_accepted_hits)
+if(NOT end_accepted_hits EQUAL 3 OR NOT run_end_accepted_hits EQUAL 3)
+    message(FATAL_ERROR "${prefix}: ${module_source} must call EndAccepted only from RunEndAccepted, and RunEndAccepted only from Observe and Decide (found ${end_accepted_hits} and ${run_end_accepted_hits})")
+endif()
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Observe, solo-then-link)" "${observe_block}"
+    "if (autopilot->soloThenLink != 0u)"
+    "if ((autopilot->peerHeardSeen == 0u) && (view->solo != 0u) && (view->peerHeard != 0u))"
+    "autopilot->peerHeardScreen = view->screen;"
+    "(autopilot->lobbyReturned == 0u) ? NativeArcadeLinkAutopilot_SoloLinked(view, action)"
+    "NativeArcadeLinkAutopilot_SoloAgain(view, action)"
+    "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);"
+    "if ((view->screen == NATIVE_ARCADE_FLOW_SCREEN_RESULTS) && (previous != NATIVE_ARCADE_FLOW_SCREEN_RESULTS))"
+    "if ((autopilot->soloThenLink != 0u) && (autopilot->racesEnded >= NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_THEN_LINK_RACES))"
+    "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_UNEXPECTED_RACE);"
+    "if (!NativeArcadeLinkAutopilot_RunEndAccepted(autopilot, autopilot->racesEnded + 1u, view->endReason))"
+    "(autopilot->soloThenLink != 0u) &&" "(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_THEN_LINK_RACES))"
+    "autopilot->exitConfirmed = 1u;"
+    "if ((autopilot->lobbyReturned != 0u) || (previous != NATIVE_ARCADE_FLOW_SCREEN_RESULTS) ||"
+    "autopilot->lobbyReturned = 1u;"
+    "if (action == NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE)"
+    "if (autopilot->soloThenLink != 0u)"
+    "if ((autopilot->exitConfirmed != 0u) && (autopilot->lobbyReturned != 0u) &&"
+    "(autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_THEN_LINK_RACES) && (autopilot->rematches == 0u)"
+    "NativeArcadeLinkAutopilot_Fail(autopilot, NATIVE_ARCADE_LINK_AUTOPILOT_SESSION_LOST);"
+    "(autopilot->exitConfirmed != 0u) && (autopilot->racesStarted == NATIVE_ARCADE_LINK_AUTOPILOT_RACES)")
+ctr_block_text("${module_source}" "${module_code}"
+    "static int NativeArcadeLinkAutopilot_SoloAgain(const struct NativeArcadeLinkHostView *view, uint32_t action)" solo_again_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " solo_again_flat "${solo_again_block}")
+if(NOT solo_again_flat STREQUAL "{ return (action == NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE) || (view->solo != 0u); }")
+    message(FATAL_ERROR "${prefix}: NativeArcadeLinkAutopilot_SoloAgain must be a START_SOLO_RACE or any solo view (found '${solo_again_flat}')")
+endif()
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_Decide, solo-then-link)" "${decide_block}"
+    "case NATIVE_ARCADE_FLOW_SCREEN_RESULTS:"
+    "((autopilot->soloThenLink != 0u) && (autopilot->racesEnded < NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_THEN_LINK_RACES))"
+    "wantedRow = NATIVE_ARCADE_FLOW_ROW_LOBBY;"
+    "if ((autopilot->soloThenLink != 0u) && (autopilot->racesEnded == NATIVE_ARCADE_LINK_AUTOPILOT_SOLO_THEN_LINK_RACES))"
+    "wantedRow = NATIVE_ARCADE_FLOW_ROW_EXIT;")
+ctr_block_text("${module_source}" "${module_code}"
+    "uint32_t NativeArcadeLinkAutopilot_FaultAt(const struct NativeArcadeLinkAutopilot *autopilot, uint32_t raceTick)" fault_at_block)
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_FaultAt, solo-then-link)" "${fault_at_block}"
+    "if ((autopilot == NULL) || (autopilot->done != 0u) || (autopilot->soloThenLink != 0u))"
+    "return NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_NONE;" "NATIVE_ARCADE_LINK_AUTOPILOT_FAULT_FREEZE")
+ctr_require_order("${module_source} (NativeArcadeLinkAutopilot_FormatReport, solo-then-link)" "${report_block}"
+    "\"cab %u\\n\"" "if (autopilot->soloThenLink != 0u)" "\"mode solo-then-link\\n\"" "\"result %s (%u)\\n\""
+    "\"desync tick %u\\n\"" "if (autopilot->soloThenLink != 0u)" "\"peer heard %s\\n\"" "\"race %u validated launch %u\"")
+foreach(term IN ITEMS "\"mode solo-then-link\\n\"" "\"peer heard %s\\n\"" "autopilot->peerHeardScreen = view->screen;")
+    string(FIND "${module_code}" "${term}" first_at)
+    string(FIND "${module_code}" "${term}" last_at REVERSE)
+    if(first_at EQUAL -1 OR NOT first_at EQUAL last_at)
+        message(FATAL_ERROR "${prefix}: ${module_source} must name '${term}' exactly once")
+    endif()
+endforeach()
+
+ctr_require_order("${glue_source} (MainArcadeLinkAutopilot_Configure, solo-then-link)" "${configure_block}"
+    "state->autopilot.oneRace = options->oneRace;" "state->autopilot.soloThenLink = options->soloThenLink;" "state->active = 1u;")
+ctr_count("${glue_code}" "options->soloThenLink" glue_solo_then_link_hits)
+if(NOT glue_solo_then_link_hits EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${glue_source} must copy options->soloThenLink once, in Configure (found ${glue_solo_then_link_hits})")
+endif()
+ctr_require_order("${glue_source} (MainArcadeLinkAutopilot_AfterTick, solo-then-link)" "${after_block}"
+    "NativeArcadeLinkAutopilot_Observe(&state->autopilot, &view, action)"
+    "if ((state->autopilot.peerHeardSeen != 0u) && (state->peerHeardLogged == 0u))" "state->peerHeardLogged = 1u;"
+    "\"peer heard on the solo %s screen\\n\"" "MainArcadeLinkAutopilot_Finish();")
+
+ctr_require_order("main.c (autopilot invalid option, solo-then-link)" "${invalid_block}"
+    "[--arcade-link-autopilot-solo-then-link (once, needs --arcade-link-autopilot, not with -solo, -one-race, -freeze, or -desync)]"
+    "return NativeConsole_Return(1);")
+ctr_require_literal("main.c" "${main_code}" "printf(\"[CTR Native] arcade link autopilot: solo-then-link mode\\n\");")
+
+string(FIND "${cmake}" "add_test(NAME arcade_solo_wake_link" wake_live_at)
+if(wake_live_at EQUAL -1)
+    message(FATAL_ERROR "${prefix}: CMakeLists.txt must register the arcade_solo_wake_link live test")
+endif()
+string(SUBSTRING "${cmake}" 0 ${wake_live_at} before_wake_live)
+string(FIND "${before_wake_live}" "if(WIN32)" wake_win32_at REVERSE)
+string(FIND "${before_wake_live}" "endif()" wake_endif_at REVERSE)
+if(wake_win32_at EQUAL -1 OR (NOT wake_endif_at EQUAL -1 AND wake_endif_at GREATER wake_win32_at))
+    message(FATAL_ERROR "${prefix}: arcade_solo_wake_link must be registered inside if(WIN32)")
+endif()
+string(SUBSTRING "${cmake}" ${wake_live_at} 700 wake_live_block)
+ctr_require_order("CMakeLists.txt (arcade_solo_wake_link)" "${wake_live_block}"
+    "COMMAND powershell -NoProfile -ExecutionPolicy Bypass"
+    "tools/arcade-solo-wake-link-check.ps1"
+    "-Executable \"$<TARGET_FILE:ctr_native>\""
+    "-TimeoutSeconds"
+    "set_tests_properties(arcade_solo_wake_link PROPERTIES"
+    "SKIP_RETURN_CODE 77" "TIMEOUT" "LABELS \"live;live-link\")")
+ctr_read_source("tools/arcade-solo-wake-link-check.ps1" wake_checker)
+foreach(literal IN ITEMS "'--arcade-link', \$Run.Cab, '--arcade-link-port', \$Run.Port, '--arcade-link-peer', \$Run.Peer"
+        "'--arcade-link-autopilot', \$Run.ReportPath, \$Run.ModeOption, '--arcade-link-autopilot-race-ticks', \$raceTickCap"
+        "\$raceTickCap = 1200\n"
+        "@{ Name = 'cab1'; Cab = 'cab1'; CabNumber = 1; Port = '7401'; Peer = '127.0.0.1:7402'; ModeOption = '--arcade-link-autopilot-solo-then-link' },"
+        "@{ Name = 'cab2'; Cab = 'cab2'; CabNumber = 2; Port = '7402'; Peer = '127.0.0.1:7401'; ModeOption = '--arcade-link-autopilot-one-race' })"
+        "Start-Run \$Cab1" "if (\$watch.Tick -ge 0) {" "Start-Run \$Cab2"
+        "'arcade link autopilot v3', 'cab 1', 'mode solo-then-link', 'result PASS (0)'"
+        "'arcade link autopilot v3', 'cab 2', 'mode one-race', 'result PASS (0)'"
+        "'peer heard RACING'" "'[CTR Native] arcade link autopilot: peer heard on the solo RACING screen'"
+        "@('race 1 validated', 'race 1 end reason FINISHED', 'race 2 agreed', 'race 2 validated', 'race 2 end reason FINISHED') 2"
+        "@('race 1 agreed', 'race 1 validated', 'race 1 end reason FINISHED') 1"
+        "Start-Process" "exit \$skipExitCode"
+        "--arcade-link-autopilot is available in internal builds only." "arcade link requires a known build and content identity."
+        "No displays available")
+    ctr_require_literal("tools/arcade-solo-wake-link-check.ps1" "${wake_checker}" "${literal}")
+endforeach()
+foreach(term IN ITEMS "--arcade-link-autopilot-freeze" "--arcade-link-autopilot-desync" "--capture-frame" "--exit-after-frame"
+        "--arcade-discovery" "'auto'" "--config")
+    ctr_forbid("tools/arcade-solo-wake-link-check.ps1" "${wake_checker}" "${term}")
 endforeach()

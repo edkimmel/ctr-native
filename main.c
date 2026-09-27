@@ -469,7 +469,7 @@ int main(int argc, char *argv[])
 	NativeArcadeLinkAutopilotOptions_SetDefaults(&arcadeLinkAutopilotOptions);
 	if (!NativeArcadeLinkAutopilotOptions_ApplyArgs(argc, argv, &arcadeLinkAutopilotOptions))
 	{
-		fprintf(stderr, "[CTR Native] invalid arcade link autopilot option; expected --arcade-link-autopilot <report path> (once) [--arcade-link-autopilot-race-ticks <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-freeze <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-desync <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-solo (once, needs --arcade-link-autopilot, not with -freeze or -desync)] [--arcade-link-autopilot-one-race (once, needs --arcade-link-autopilot, not with -solo, -freeze, or -desync)].\n");
+		fprintf(stderr, "[CTR Native] invalid arcade link autopilot option; expected --arcade-link-autopilot <report path> (once) [--arcade-link-autopilot-race-ticks <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-freeze <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-desync <1-18000> (once, needs --arcade-link-autopilot)] [--arcade-link-autopilot-solo (once, needs --arcade-link-autopilot, not with -freeze or -desync)] [--arcade-link-autopilot-one-race (once, needs --arcade-link-autopilot, not with -solo, -freeze, or -desync)] [--arcade-link-autopilot-solo-then-link (once, needs --arcade-link-autopilot, not with -solo, -one-race, -freeze, or -desync)].\n");
 		return NativeConsole_Return(1);
 	}
 #if !defined(CTR_INTERNAL)
@@ -722,6 +722,11 @@ int main(int argc, char *argv[])
 		if (arcadeLinkAutopilotOptions.oneRace != 0u)
 		{
 			printf("[CTR Native] arcade link autopilot: one-race mode\n");
+		}
+		/* The solo-then-link mode (docs/SOLO_CAB_MILESTONE.md risk 9). */
+		if (arcadeLinkAutopilotOptions.soloThenLink != 0u)
+		{
+			printf("[CTR Native] arcade link autopilot: solo-then-link mode\n");
 		}
 		fflush(stdout);
 	}

@@ -8,7 +8,11 @@
  * code. In the solo mode (--arcade-link-autopilot-solo,
  * docs/SOLO_CAB_MILESTONE.md SOLO-S4) it drives START, the solo offer, the
  * solo select, one solo race, and LOBBY instead, for the solo live gate
- * (tools/arcade-solo-race-check.ps1, ctest arcade_solo_race).
+ * (tools/arcade-solo-race-check.ps1, ctest arcade_solo_race). In the
+ * solo-then-link mode (--arcade-link-autopilot-solo-then-link,
+ * docs/SOLO_CAB_MILESTONE.md risk 9) it drives the solo race, LOBBY, then
+ * one linked race and EXIT, for the wake gate
+ * (tools/arcade-solo-wake-link-check.ps1, ctest arcade_solo_wake_link).
  *
  * Every decision is the pure platform/native_arcade_link_autopilot.c's; this
  * file reads the host view, the hook's enter window (the arcade-link
@@ -51,7 +55,9 @@ struct MainArcadeLinkAutopilotState
 	uint8_t active;
 	/* 1 once the report was written and the exit requested */
 	uint8_t finished;
-	uint8_t reserved[2];
+	/* solo-then-link: 1 once the wake evidence was logged */
+	uint8_t peerHeardLogged;
+	uint8_t reserved[1];
 	/* The pure run state (include/platform/native_arcade_link_autopilot.h). */
 	struct NativeArcadeLinkAutopilot autopilot;
 	char reportPath[NATIVE_ARCADE_LINK_AUTOPILOT_PATH_BYTES];
@@ -79,6 +85,9 @@ void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOpt
 	state->autopilot.solo = options->solo;
 	/* The one-race mode (DISC-S4): the linked run cut to race 1, then EXIT. */
 	state->autopilot.oneRace = options->oneRace;
+	/* The solo-then-link mode (docs/SOLO_CAB_MILESTONE.md risk 9): one solo
+	 * race, LOBBY, then one linked race and EXIT. */
+	state->autopilot.soloThenLink = options->soloThenLink;
 	memcpy(state->reportPath, options->reportPath, sizeof(state->reportPath));
 	state->reportPath[sizeof(state->reportPath) - 1u] = '\0';
 	state->active = 1u;
@@ -245,9 +254,21 @@ void MainArcadeLinkAutopilot_AfterTick(uint32_t action)
 	{
 		(void)NativeArcadeLinkAutopilot_Observe(&state->autopilot, NULL, action);
 	}
-	if ((action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY) && (state->autopilot.lobbyReturned != 0u))
+	/* Only on the RETURN_TO_LOBBY the autopilot accepted (a later one fails
+	 * the solo-then-link run with lobbyReturned still set). */
+	if ((action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_LOBBY) && (state->autopilot.lobbyReturned != 0u) &&
+		(state->autopilot.done == 0u))
 	{
 		Platform_Log(MAIN_ARCADE_LINK_AUTOPILOT_LOG "solo RESULTS: LOBBY confirmed, back in the LOBBY\n");
+	}
+	/* Solo-then-link (docs/SOLO_CAB_MILESTONE.md risk 9): the wake evidence,
+	 * once, among the race caller's per-tick lines (the gate reads the race
+	 * tick it falls on). */
+	if ((state->autopilot.peerHeardSeen != 0u) && (state->peerHeardLogged == 0u))
+	{
+		state->peerHeardLogged = 1u;
+		Platform_Log(MAIN_ARCADE_LINK_AUTOPILOT_LOG "peer heard on the solo %s screen\n",
+			NativeArcadeLinkAutopilot_ScreenName(state->autopilot.peerHeardScreen));
 	}
 	if (state->autopilot.done != 0u)
 	{

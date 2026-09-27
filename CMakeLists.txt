@@ -584,7 +584,9 @@ target_link_libraries(ctr_native_arcade_link_host PUBLIC ctr_native_arcade_netpl
 # (NativeArcadeLinkAutopilot_FaultAt), which the race caller carries out
 # next to its per-tick digest line. Since SOLO-S4 (docs/SOLO_CAB_MILESTONE.md)
 # it also parses --arcade-link-autopilot-solo and drives the solo mode (one
-# solo race, then LOBBY) for the arcade_solo_race gate. Uses only the host
+# solo race, then LOBBY) for the arcade_solo_race gate, and since SOLO risk 9
+# --arcade-link-autopilot-solo-then-link (one solo race, LOBBY, then one
+# linked race) for the arcade_solo_wake_link gate. Uses only the host
 # view and flow headers, so it links nothing. Linked into ctr_native, whose main.c parses it and whose
 # unity-included game glue (game/MAIN/MainArcadeLinkAutopilot.c) runs it in
 # internal builds.
@@ -2168,7 +2170,8 @@ if(BUILD_TESTING)
     # only under its own directory of the build tree; the link gates use
     # distinct loopback ports (arcade_link_launch 7101/7102,
     # package_arcade_smoke link 7001/7002 and discovery 7003/7004, arcade_solo_race
-    # 7201-7204, arcade_discovery_link 7301-7304; the fast suite's socket
+    # 7201-7204, arcade_discovery_link 7301-7304, arcade_solo_wake_link
+    # 7401/7402; the fast suite's socket
     # tests use 48000-48600, and the discovery service test 48610-48629); each
     # capture reads the game's own window framebuffer, not the desktop.  What they still share is read-only or
     # diagnostic: every run from the build tree reads the developer's
@@ -2335,6 +2338,44 @@ if(BUILD_TESTING)
         set_tests_properties(arcade_solo_race PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 420
+            LABELS "live;live-link")
+
+        # The solo wake link gate (docs/SOLO_CAB_MILESTONE.md risk 9: a peer
+        # wakes during solo, then links from the LOBBY): cab1 (127.0.0.1 port
+        # 7401, peer 7402) starts alone with --arcade-link-autopilot
+        # --arcade-link-autopilot-solo-then-link, takes the solo offer, and
+        # races solo; the check starts cab2 (port 7402, peer 7401,
+        # --arcade-link-autopilot-one-race) only once cab1's stdout shows its
+        # solo race tick 0. cab2's HELLO must be heard by cab1's listen-only
+        # link during the solo race ("peer heard RACING"); after the solo
+        # RESULTS cab1 takes LOBBY, links with cab2 from there, and both race
+        # one linked race and EXIT. Both use a 1200-tick race cap: cab2 must
+        # reach its LOBBY inside cab1's solo race, and with 900 ticks the
+        # measured margin was only 1.67x (Debug: cab2 started at cab1's solo
+        # race tick 9 or later, 25 s after cab1, and was heard at race tick
+        # 542, so its start to LOBBY took at most 533 race ticks, 17.8 s,
+        # against 891 race ticks, 29.7 s, of solo race left; the test took
+        # 102 s). With 1200 ticks: cab2 started at solo race tick 9 or later,
+        # 25.8 s after cab1, and was heard at race tick 555 (at most 546 race
+        # ticks, 18.2 s, against 1191, 39.7 s: margin 2.18x); cab1 ran 121 s
+        # and the test 122.5 s, so the checker's 210 s and the TIMEOUT 240
+        # leave about 1.7x and 2x. The check
+        # requires, per process, exit 0, its report, and its stdout (cab1: a
+        # solo launch, then a linked one, each validated, FINISHED, and with
+        # contiguous per-tick lines), and across the two, cab1's race 2
+        # against cab2's race 1: the same agreed match, digests, drive end,
+        # and per-tick V4 digests. Needs an internal build and a known build
+        # identity too. Reports and logs are written only under the build
+        # tree.
+        add_test(NAME arcade_solo_wake_link
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/arcade-solo-wake-link-check.ps1"
+                -Executable "$<TARGET_FILE:ctr_native>"
+                -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_solo_wake_link/$<CONFIG>"
+                -TimeoutSeconds 210)
+        set_tests_properties(arcade_solo_wake_link PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 240
             LABELS "live;live-link")
 
         # The discovery live link gate (docs/DISCOVERY_MILESTONE.md DISC-12,

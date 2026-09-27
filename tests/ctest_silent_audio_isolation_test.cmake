@@ -10,7 +10,7 @@
 #
 # 1. This script itself runs with SDL_AUDIO_DRIVER=dummy.
 # 2. `ctest --show-only=json-v1` for this build and configuration lists this
-#    test and the eight live game tests (each labelled "live"), so an empty or
+#    test and the nine live game tests (each labelled "live"), so an empty or
 #    partial listing cannot pass.
 # 3. Every listed test has an ENVIRONMENT entry that is exactly
 #    SDL_AUDIO_DRIVER=dummy, no other SDL_AUDIO_DRIVER entry, and no
@@ -67,6 +67,7 @@ set(required_live_tests
     arcade_roster_track_sweep
     arcade_link_launch
     arcade_solo_race
+    arcade_solo_wake_link
     arcade_discovery_link
     package_arcade_smoke)
 
