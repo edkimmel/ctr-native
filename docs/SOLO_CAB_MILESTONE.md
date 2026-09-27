@@ -921,7 +921,10 @@ its own measurement and decision.
   and the V4 digest split at race tick 1850. The LINK path therefore keeps
   every `DecalMP_01` entry write. The isolation test pins exactly that:
   those writes run, unguarded, in every mode. It does not pin the driver
-  count or the struct offsets this bullet relies on.
+  count or the struct offsets this bullet relies on. Since fixed (last
+  bullet): the native check rejects every candidate for driverID >= 4
+  before the `rect` reads, so it no longer reads DecalMP; the entry writes
+  are still kept.
 - LINK is not retail in the entry writes of the impostor render, which run
   only for a kart with `PUSHBUFFER_EXISTS`. `DecalMP_02` holds the entry
   timer at 1000 (its else branch) instead of counting it, and LINK never
@@ -951,8 +954,9 @@ its own measurement and decision.
   `PickupLetterHUD.numCollected`) and are drawn only for humans. Two LINK
   cabinets both read zeros, so this is no LINK-vs-LINK desync. That the
   path is presentation-only relies on no later simulation code in that
-  tick reading those GTE registers before setting them. The retail-bug fix
-  is a separate task (last bullet).
+  tick reading those GTE registers before setting them. Since fixed (last
+  bullet): the native branch returns for a bot after the cooldown and
+  count writes, before `RB_Pickup_SetCamera`, so no bot reads DecalMP here.
 - "The bot 6 and 7 slots do not exist" holds for 2P only. In 1P (8
   drivers) `DecalMP_01` does not run, and `MainInit_FinalizeInit`
   (game/MAIN/MainInit.c:460-467) resets only each entry's `inst`, timer,
@@ -964,7 +968,8 @@ its own measurement and decision.
   process has history-dependent bot-6 missile targeting (and the crate
   path above reads other stale entry bytes for bots 6 and 7); LINK leaves
   them 0. The ONE_CAB evidence was a fresh process. This is no
-  LINK-vs-LINK hazard: solo has no peer.
+  LINK-vs-LINK hazard: solo has no peer. Since the fix (last bullet)
+  native reads none of these bytes for bots 4-7.
 - Evidence (internal build, `--arcade-roster-proof`, seed 0x5EED, 3600 race
   ticks, a temporary env override of the accessor, not committed): TWO_CAB
   (2P, autopilot) retail against forced gave byte-identical reports, every
@@ -981,14 +986,17 @@ its own measurement and decision.
   per-boot image base. Two retail builds split at race tick 2088. Two
   cabinets on different bases can pick different bot-5 missile targets
   (VehPickupItem.c:490); the live digest would then abort the race
-  (detected, not silent). This affects the current arcade build, forced
-  LOD or not. On PS1 every candidate is rejected: `rect.h` is negative as
-  s16 for a 0x800Axxxx pointer, and bot 4's `rect.w` is 0. Recommended
-  separate retail-bug task (reviewer pass, trial branch, re-baselined
-  fixtures): in `VehPickupItem_MissileGetTargetDriver`, reject every
-  candidate when `driver->driverID >= 4` (no camera PushBuffer; matches
-  PS1), paired with an `ACTION_BOT` guard in the weapon branch of
-  `RB_CrateFruit_ThCollide` matching :160 and :458.
+  (detected, not silent). This affected the arcade build, forced LOD or
+  not. On PS1 every candidate is rejected: `rect.h` is negative as s16 for
+  a 0x800Axxxx pointer, and bot 4's `rect.w` is 0. Fixed as a retail bug
+  under `CTR_NATIVE`: `VehPickupItem_MissileGetTargetDriver` rejects every
+  candidate when `driver->driverID >= 4` (no camera PushBuffer), after the
+  per-candidate GTE work and before the `rect` reads. That matches PS1 for
+  bots 4 and 5 in 1P and 2P; for bots 6 and 7 (4P, or 1P with 8 drivers)
+  PS1 read render state. The weapon branch of `RB_CrateFruit_ThCollide`
+  returns for an `ACTION_BOT` owner before `RB_Pickup_SetCamera`, keeping
+  the cooldown and count writes. Guarded by
+  tests/veh_pickup_missile_target_bot_bounds_isolation_test.cmake.
 
 ### 8.5 Cost
 

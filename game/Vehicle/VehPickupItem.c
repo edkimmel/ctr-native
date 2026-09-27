@@ -86,6 +86,7 @@ enum
 	MISSILE_TARGET_SCREEN_RIGHT_MARGIN = 0x1e,
 	MISSILE_TARGET_SCREEN_TOP = 0x15,
 	MISSILE_TARGET_SCREEN_BOTTOM_MARGIN = 0x14,
+	MISSILE_TARGET_CAMERA_COUNT = 4,
 };
 
 enum
@@ -167,6 +168,7 @@ CTR_STATIC_ASSERT((s32)STATIC_UKAUKA - 1 == (s32)STATIC_AKUAKU);
 CTR_STATIC_ASSERT((s32)STATIC_AKUAKU + MASK_SOUND_ID_OFFSET_FROM_MODEL == 0x53);
 CTR_STATIC_ASSERT((s32)STATIC_UKAUKA + MASK_SOUND_ID_OFFSET_FROM_MODEL == 0x54);
 CTR_STATIC_ASSERT(MISSILE_TARGET_DRIVER_COUNT == len(((struct GameTracker *)0)->drivers));
+CTR_STATIC_ASSERT(MISSILE_TARGET_CAMERA_COUNT == len(((struct GameTracker *)0)->pushBuffer));
 CTR_STATIC_ASSERT((s32)SHOOT_NOW_BACKWARD == (s32)POTION_THROW_BACKWARD);
 CTR_STATIC_ASSERT((s32)MINE_HITBOX_FRUIT_MODEL == (s32)PU_FRUIT_CRATE);
 CTR_STATIC_ASSERT((s32)MINE_HITBOX_RANDOM_MODEL == (s32)PU_RANDOM_CRATE);
@@ -477,6 +479,25 @@ struct Driver *VehPickupItem_MissileGetTargetDriver(struct Driver *driver)
 		{
 			continue;
 		}
+#ifdef CTR_NATIVE
+		// NOTE: Retail bounds the candidate by pushBuffer[driverID].rect.w and
+		// .rect.h below, but there are only four pushBuffers, so a bot with
+		// driverID >= 4 reads past pushBuffer[3] into gGT->DecalMP. Bot 4 reads
+		// DecalMP[0].pb.rot.y/.rot.z (never written, 0) and bot 5 the low and
+		// high halves of the DecalMP[1].inst pointer (NULL in 1P, a KSEG0
+		// 0x80xxxxxx Instance in 2P: negative as s16). Either way the PS1
+		// rejects every candidate. On the host bot 5's rect.h is the high half
+		// of a heap pointer, positive and different per boot, so bot 5 could
+		// pick targets and desync two cabinets. Native rejects every candidate
+		// for driverID >= 4 here, after the per-candidate GTE work, as the PS1
+		// does for bots 4 and 5 in 1P and 2P. Bots 6 and 7 (4P, or 1P with
+		// eight drivers) read DecalMP render state on the PS1 instead; native
+		// rejects every candidate for them too.
+		if (driver->driverID >= MISSILE_TARGET_CAMERA_COUNT)
+		{
+			continue;
+		}
+#endif
 		if (screenX >= GAME_TRACKER->pushBuffer[driver->driverID].rect.w - MISSILE_TARGET_SCREEN_RIGHT_MARGIN)
 		{
 			continue;

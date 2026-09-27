@@ -342,6 +342,22 @@ int RB_CrateFruit_ThCollide(struct Thread *crateThread, struct Thread *colliding
 				driver->PickupWumpaHUD.cooldown = 5;
 				driver->PickupWumpaHUD.numCollected = newWumpa;
 
+#ifdef CTR_NATIVE
+				// NOTE: Retail also runs the HUD fly-in block below for a bot's
+				// weapon: RB_Pickup_SetCamera and rect.x/rect.y index
+				// pushBuffer[driverID], and there are only four, so bots 4-7
+				// read gGT->DecalMP. For bots 6 and 7 (eight drivers, two or
+				// more players) the loaded matrix covers a host pointer
+				// (DecalMP[2].inst, DecalMP[2].pb.ptrOT), leaving
+				// host-dependent GTE state. The fruit HUD is
+				// drawn only for humans (UI_RenderFrame), so native skips the
+				// block for every bot and keeps the cooldown and count above.
+				if ((driver->actionsFlagSet & ACTION_BOT) != 0)
+				{
+					return 1;
+				}
+#endif
+
 				posWorld.x = (s16)driver->instSelf->matrix.t[0];
 				posWorld.y = (s16)driver->instSelf->matrix.t[1];
 				posWorld.z = (s16)driver->instSelf->matrix.t[2];

@@ -2578,6 +2578,13 @@ if(BUILD_TESTING)
     add_test(NAME veh_pickup_clock_null_slot_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/veh_pickup_clock_null_slot_isolation_test.cmake")
 
+    # Bots past the four cameras (VehPickupItem_MissileGetTargetDriver and the
+    # RB_CrateFruit_ThCollide weapon branch): the native build rejects every
+    # missile candidate for driverID >= 4 before the pushBuffer rect reads and
+    # skips the crate HUD camera block for bots (host-pointer reads).
+    add_test(NAME veh_pickup_missile_target_bot_bounds_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/veh_pickup_missile_target_bot_bounds_isolation_test.cmake")
+
     add_executable(native_replay_scheduler_seam_test tests/native_replay_scheduler_seam_test.c)
     set_target_properties(native_replay_scheduler_seam_test PROPERTIES
         C_STANDARD 17
