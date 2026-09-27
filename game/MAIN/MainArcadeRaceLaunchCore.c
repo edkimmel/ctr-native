@@ -311,10 +311,14 @@ int MainArcadeRaceLaunchCore_Step(struct MainArcadeRaceLaunchCore *core, const s
 	}
 	case MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_DRIVE:
 	{
-		/* Every end of the drive phase is its driveEnded frame. */
+		/* Every end of the drive phase is its driveEnded frame. The flow
+		 * leaving RACING has no drive result: flowLeftRacing names it, with
+		 * the last race tick driven, for the caller's log. */
 		if (input->hostRacing == 0u)
 		{
 			output->driveEnded = 1u;
+			output->flowLeftRacing = 1u;
+			output->raceTick = core->raceTick;
 			MainArcadeRaceLaunchCore_End(core, input->loadingStage, output);
 			break;
 		}

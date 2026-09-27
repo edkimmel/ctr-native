@@ -100,7 +100,9 @@
  * a result that is not a DRIVE_RESULT_* value is refused and stays due. Every
  * end of the drive phase, the three above and the flow leaving RACING or the
  * setup failing on a drive frame, sets driveEnded (an event on that frame
- * only): the caller ends the race's digest there. After an end no later
+ * only): the caller ends the race's digest there. The flow leaving RACING
+ * has no drive result, so it also sets flowLeftRacing, with raceTick the
+ * last race tick driven (the caller logs that end). After an end no later
  * frame of that race sets driveStep, so the caller never steps or holds the
  * drive again before the next race's launch; the neutral pads are installed
  * from the end frame until the clear.
@@ -347,8 +349,15 @@ struct MainArcadeRaceLaunchCoreOutput
 	uint8_t installCommitted;
 	/* Event: the drive phase ended on this frame (end the race's digest). */
 	uint8_t driveEnded;
-	uint8_t reserved[2];
-	/* The race tick of this frame's driveStep (0 otherwise). */
+	/* Event: the drive phase ended on this frame because the flow left
+	 * RACING (hostRacing 0 in the drive phase), with no drive result: set
+	 * only with driveEnded, and never on a drive result's end, a failure's,
+	 * or a wait phase's. The caller logs that end (its only log line). */
+	uint8_t flowLeftRacing;
+	uint8_t reserved[1];
+	/* The race tick of this frame's driveStep; on a flowLeftRacing frame the
+	 * race tick of the drive phase's last driveStep frame (the last race
+	 * tick driven); 0 otherwise. */
 	uint32_t raceTick;
 };
 

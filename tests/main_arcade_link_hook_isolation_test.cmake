@@ -1047,7 +1047,8 @@ endif()
 
 # 16d. The core's decisions are applied in its order, each only when the core
 #      sets it: leave the title, report the failure (a DRIVE_FAILED only
-#      logged: the drive tick reported it, 16j) or the finish, end the race's
+#      logged: the drive tick reported it, 16j) or the finish, the drive end
+#      line of a flow that left RACING (flowLeftRacing), end the race's
 #      digest on driveEnded, the return step, the committed pads of a GO or
 #      else the neutral pads, the pad clear, and the Disarm.
 ctr_find_block("${caller_source_path}" "${caller_code}" "static void MainArcadeRaceLaunch_Apply(" apply_begin apply_end)
@@ -1058,6 +1059,7 @@ ctr_require_order("${caller_source_path} (MainArcadeRaceLaunch_Apply)" "${apply_
     "if (output->reportFailure != 0u)"
     "if (output->failure != MAIN_ARCADE_RACE_LAUNCH_CORE_FAILURE_DRIVE_FAILED)" "NativeArcadeLinkHost_ReportRaceFailure();"
     "else if (output->reportFinished != 0u)"
+    "if (output->flowLeftRacing != 0u)" "drive end: flow left RACING at race tick %u"
     "if (output->driveEnded != 0u)" "MainArcadeRaceDigest_EndRace()"
     "if (output->requestReturn != 0u)" "MainArcadeRaceLaunch_RequestReturn(gGT);"
     "if (output->installCommitted != 0u)" "MainArcadeRaceLaunch_InstallCommitted(output->raceNumber, output->raceTick);"
@@ -1079,6 +1081,26 @@ foreach(pair
     math(EXPR guard_length "${guard_end} - ${guard_begin} + 1")
     string(SUBSTRING "${apply_block}" ${guard_begin} ${guard_length} guard_block)
     ctr_require_literal("${caller_source_path} (${guard})" "${guard_block}" "${call}")
+endforeach()
+# The flow leaving RACING in the drive phase has no drive result, so
+# MainArcadeRaceLaunch_DriveEnd never logs that end (docs/LOCKSTEP_RACE_MILESTONE.md
+# LR-S13): the core's flowLeftRacing block, right before the digest's end
+# (the order above), is that drive end line alone, in exactly this format,
+# with the core's raceTick (the last race tick driven); the flag and the
+# format are named nowhere else in the caller.
+ctr_find_block("${caller_source_path} (MainArcadeRaceLaunch_Apply)" "${apply_block}" "if (output->flowLeftRacing != 0u)" flow_left_begin flow_left_end)
+math(EXPR flow_left_length "${flow_left_end} - ${flow_left_begin} + 1")
+string(SUBSTRING "${apply_block}" ${flow_left_begin} ${flow_left_length} flow_left_block)
+string(REGEX REPLACE "[ \t\r\n]+" " " flow_left_flat "${flow_left_block}")
+if(NOT flow_left_flat STREQUAL "{ Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG \"race %u drive end: flow left RACING at race tick %u\\n\", (unsigned)output->raceNumber, (unsigned)output->raceTick); }")
+    message(FATAL_ERROR "arcade link hook isolation: the flowLeftRacing block of ${caller_source_path} must be its drive end line only (found '${flow_left_flat}')")
+endif()
+foreach(term IN ITEMS "flowLeftRacing" "flow left RACING")
+    string(FIND "${caller_code}" "${term}" term_first)
+    string(FIND "${caller_code}" "${term}" term_last REVERSE)
+    if(term_first EQUAL -1 OR NOT term_first EQUAL term_last)
+        message(FATAL_ERROR "arcade link hook isolation: ${caller_source_path} must name '${term}' exactly once, in Apply's flowLeftRacing block")
+    endif()
 endforeach()
 foreach(name IN ITEMS MainArcadeRaceLaunch_LeaveTitle MainArcadeRaceLaunch_RequestReturn MainArcadeRaceLaunch_InstallPads
         MainArcadeRaceLaunch_InstallCommitted MainArcadeRaceSetup_Disarm NativeArcadeLinkHost_ReportRaceFailure

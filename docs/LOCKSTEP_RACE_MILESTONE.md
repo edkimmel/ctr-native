@@ -2481,6 +2481,9 @@ SETUP_FAILED. The caller's Apply calls MainArcadeRaceDigest_EndRace on it
 digest did not end (<failure>)" when it fails, which is expected after a
 latched projection failure (the next race tick 0 resets the runtime
 anyway). No end outside the drive phase sets it, because no digest began.
+The flow seen off RACING, the one end with no drive result, also sets
+flowLeftRacing (with raceTick the last race tick driven), and Apply logs
+it as that race's drive end line before the digest's end (LR-76).
 
 LR-63 The drive tick (LR-S10 part 2). MainArcadeRaceLaunch_Drive runs, on
 each driveStep frame, in this order:
@@ -3070,9 +3073,10 @@ the two cabinets.
   tick from 0, in order, with no duplicate, and up to the race's drive end
   tick exactly (the drive projects and logs its end tick before it ends);
   cab2's race 3 has no end and runs to its last flushed line (the kill cuts
-  the buffer; a cut line fails the full-line pattern and is not counted),
-  and a race 2 with no drive end runs to its last line, which must lie in
-  race tick 300..303 (the race 2 bullet below). For every race tick both
+  the buffer; a cut line fails the full-line pattern and is not counted).
+  A race 2 that ended on the flow leaving RACING runs to the race tick its
+  "flow left RACING" drive end names, which must lie in race tick 300..303
+  (the race 2 bullet below). For every race tick both
   cabinets logged in the k-th race, the digest text after "digests" is
   equal.
 - Race 1. At most one drive end line per cabinet and race, and none of a
@@ -3099,39 +3103,47 @@ the two cabinets.
   have reason 3 or 2. Every out-of-sync line's local and remote digests,
   parsed as 64-bit values, XOR to exactly 1: the injection flips bit 0 of
   the CONTROL domain digest alone (LR-73), and the line carries that
-  domain's digests (LR-70); a line that fails this is no detection. Each
-  race 2 drive end is "outcome", but a cabinet may have none: when its host
-  Tick (the adapter's own poll, LR-70) finds the divergence, the flow
-  leaves RACING on that Tick and the launch core ends the drive phase on
-  hostRacing 0 with no drive result and no drive end line
-  (game/MAIN/MainArcadeRaceLaunchCore.c:315-319). The first measured run
-  did exactly that on cab2 (its race 2 per-tick lines end at race tick 300,
-  and its ended and out-of-sync lines follow the injection line of that
-  same tick). So a race 2 without a drive end line passes only on a
-  detecting cabinet (its out-of-sync line and reason 3), and, having no end
-  tick to bound them, its race 2 per-tick lines must end at a race tick in
-  300..300 + D + 1 (303; the checker's desyncDetectionTicks, D + 1): the
-  divergence of frame x is found before the detecting cabinet takes frame
-  x + D + 1 (LR-12's desync row), the drive tick of race tick t logs its
-  line before its race step, which takes frame t, and the cabinet compares
-  frame x only after its race step recorded x, so the last line lies in
-  x..x + D + 1. Races 1 and 3 on cab1 and race 1 on cab2 must have a drive
-  end line, since their drives end them (the finish, the stall timeout).
-- Open observability item (recorded, not closed; the LR-S13 review): the
-  missing race 2 drive end line itself. On that path the core sets
-  driveEnded with no drive result (MainArcadeRaceLaunchCore.c:315-319), so
-  the caller's MainArcadeRaceLaunch_DriveEnd, which writes every "drive
-  end" line, never runs, and the log names neither the end nor its race
-  tick. The gate accepts it, because nothing but the line is missing: LR-62
-  lists the flow seen off RACING as a driveEnded source, and Apply still
-  calls MainArcadeRaceDigest_EndRace on it, so the race's digest ends as on
-  every other end; the checker bounds that race's per-tick lines instead.
-  Product code is not changed for it. Closing it would need one log line
-  on that path (the caller logging, when driveEnded comes with no drive
-  result, the end and its race tick) plus a pin of it in
-  main_arcade_link_hook_isolation, and then the gate could require a race 2
-  end line on both cabinets again. It sits next to LR-70's closing-Tick
-  risk (LR-S13's result).
+  domain's digests (LR-70); a line that fails this is no detection. Both
+  cabinets must have a race 2 drive end line. It is "outcome", or, only on
+  a detecting cabinet (its out-of-sync line and reason 3), "flow left
+  RACING at race tick <t>": when its host Tick (the adapter's own poll,
+  LR-70) finds the divergence, the flow leaves RACING on that Tick and the
+  launch core ends the drive phase on hostRacing 0 with no drive result
+  (game/MAIN/MainArcadeRaceLaunchCore.c, PHASE_DRIVE), which the caller
+  logs as that line (the observability item below). The first measured
+  run took that path on cab2 (its race 2 per-tick lines end at race tick
+  300, and its ended and out-of-sync lines follow the injection line of
+  that same tick). t is the last race tick driven, so that cabinet's race
+  2 per-tick lines are 0..t, and t must lie in 300..300 + D + 1 (303; the
+  checker's desyncDetectionTicks, D + 1): the divergence of frame x is
+  found before the detecting cabinet takes frame x + D + 1 (LR-12's desync
+  row), the drive tick of race tick t logs its line before its race step,
+  which takes frame t, and the cabinet compares frame x only after its
+  race step recorded x, so t lies in x..x + D + 1. Any other kind fails.
+  Races 1 and 3 on cab1 and race 1 on cab2 must have a drive end line too,
+  since their drives end them (the finish, the stall timeout); a "flow left
+  RACING" end there fails (race 1 accepts only "end of race" and "finish
+  grace", cab1's race 3 only "outcome").
+- The observability item (closed; opened by the LR-S13 review): the race 2
+  drive end line of a cabinet whose host Tick found the divergence. On
+  that path the core sets driveEnded with no drive result, so the caller's
+  MainArcadeRaceLaunch_DriveEnd, which writes every other "drive end" line,
+  never runs. The core now also sets flowLeftRacing on exactly that end
+  (hostRacing 0 in the drive phase; never on a drive result's end, a
+  failure's, or a wait phase's), with raceTick the race tick of the drive
+  phase's last driveStep frame, the last race tick whose drive tick ran
+  and logged its per-tick line; no other output or phase changes. Apply
+  logs, right before it ends the race's digest (MainArcadeRaceDigest_EndRace,
+  as on every end, LR-62):
+
+      [CTR Native] arcade link: race <n> drive end: flow left RACING at race tick <t>
+
+  <n> is the launch number, as on every drive end line. The gate now
+  requires a race 2 drive end line on both cabinets (the rule above).
+  Pinned by main_arcade_link_hook_isolation 16d (the block's order in
+  Apply, before the digest's end, its exact body and format, and the flag
+  and text named once) and main_arcade_race_launch_core_unit (the flag on
+  that end only, with its race tick, and zero on every other end).
 - Race 3. Both cabinets validated it; cab1's drive end is "outcome" and its
   third ended line reason 2; cab2 has no race 3 drive end. cab1's hold line
   at its race 3 end tick is the stall timeout: at least 90 periods (LR-44:
@@ -5883,7 +5895,8 @@ Part B result: the three-race run and the gate (LR-75, LR-76).
     still calls MainArcadeRaceDigest_EndRace on it; the checker bounds that
     race's per-tick lines to race tick 300..303 instead. Closing it needs
     one log line on that path plus a hook isolation pin; product code is
-    unchanged.
+    unchanged. Closed later: the "flow left RACING at race tick <t>" drive
+    end line, required by the gate (LR-S13's race 2 rule).
   - recorded, not closed: LR-60's race tick cap is still checked across
     cabinets only by the gate. The option is internal-only and host-local
     (not in the match config or on the wire); the gate requires the same

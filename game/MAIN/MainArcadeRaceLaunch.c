@@ -993,6 +993,13 @@ static void MainArcadeRaceLaunch_Apply(struct GameTracker *gGT, const struct Mai
 		/* The host takes it through the core's raceFinishedInput latch. */
 		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u finished\n", (unsigned)output->raceNumber);
 	}
+	/* The flow left RACING with no drive result, so DriveEnd never logged
+	 * this end: its drive end line, with the last race tick driven. */
+	if (output->flowLeftRacing != 0u)
+	{
+		Platform_Log(MAIN_ARCADE_RACE_LAUNCH_LOG "race %u drive end: flow left RACING at race tick %u\n", (unsigned)output->raceNumber,
+			(unsigned)output->raceTick);
+	}
 	/* The race's digest ends with its drive: the next race loads a level
 	 * that can reuse addresses. */
 	if (output->driveEnded != 0u)

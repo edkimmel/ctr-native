@@ -89,9 +89,8 @@ param(
 #   - the per-tick digest lines (LR-74): per cabinet and race, one line per
 #     race tick, contiguous from race tick 0 with no duplicate, up to the
 #     race's drive end tick exactly (cab2's killed race 3: up to its last
-#     flushed line; a race 2 with no drive end: up to its last line, whose
-#     race tick is bounded as in race 2 below); for every race tick both
-#     cabinets logged in the k-th race the digest text is equal;
+#     flushed line); for every race tick both cabinets logged in the k-th
+#     race the digest text is equal;
 #   - race 1: one drive end per cabinet, "end of race" or "finish grace"
 #     (recorded), equal kind and tick; both "ended (reason 1)"; no "out of
 #     sync" line; cab2 has exactly one "race <n> race tick 600 froze 45 tick
@@ -105,10 +104,11 @@ param(
 #     its race 2 ended line) and ends race 2 with reason 3 (DESYNC); the other
 #     ends it with reason 3 or 2 (PEER_TIMEOUT); each out-of-sync line's
 #     local and remote digests differ in bit 0 alone (local XOR remote is 1);
-#     each race 2 drive end is "outcome", and a cabinet with none (its host
-#     tick found the divergence and the flow left RACING there) must be a
-#     detecting one whose race 2 per-tick lines end at a race tick in
-#     300..300 + D + 1; no out-of-sync line outside race 2;
+#     both cabinets have a race 2 drive end: "outcome", or "flow left RACING
+#     at race tick <t>" (its host tick found the divergence and the flow left
+#     RACING there, with no drive result), which only a detecting cabinet
+#     may have, with t in 300..300 + D + 1 (its per-tick lines 0..t); no
+#     out-of-sync line outside race 2;
 #   - race 3: both cabinets validated it; cab1's drive end is "outcome", its
 #     race 3 ended line reason 2, and its hold line at that end tick shows
 #     the stall timeout: at least 90 tick periods (LR-44: the timeout is
@@ -162,13 +162,15 @@ $freezePeriods = 45
 # not yet there when cab2 froze and a bundle is late).
 $inputDelay = 2
 # The latest race tick past the desync tick x at which a cabinet whose host
-# Tick found the divergence can still have logged a race 2 per-tick line:
-# D + 1.  The divergence of frame x is found before the detecting cabinet
-# takes frame x + D + 1, since that take needs the bundle that carries frame
-# x's digest (LR-11; LR-12's desync row), and the drive tick of race tick t
-# logs its per-tick line before its race step, which takes frame t.  So the
-# last line is at most x + D + 1; it is at least x, because the cabinet
-# compares frame x only once its own race step recorded x, after x's line.
+# Tick found the divergence can still have driven race 2 (its "flow left
+# RACING at race tick <t>" drive end, whose t is the last race tick driven,
+# the last per-tick line): D + 1.  The divergence of frame x is found before
+# the detecting cabinet takes frame x + D + 1, since that take needs the
+# bundle that carries frame x's digest (LR-11; LR-12's desync row), and the
+# drive tick of race tick t logs its per-tick line before its race step,
+# which takes frame t.  So t is at most x + D + 1; it is at least x, because
+# the cabinet compares frame x only once its own race step recorded x, after
+# x's line.
 $desyncDetectionTicks = $inputDelay + 1
 $holdBannerGracePeriods = 10
 # Race 3's kill: cab2 is killed once its stdout shows this race tick of its
@@ -895,17 +897,19 @@ try {
         }
         $driveEnds[$run.Name] = $ends.Values
     }
-    # Which races have a drive end: race 1 on both and race 3 on cab1 (their
-    # drives end them: the finish, the stall timeout); none in cab2's race 3
-    # (killed). Race 2 may have none: when a cabinet's host Tick (the
-    # adapter's own poll) finds the divergence, the flow leaves RACING there
-    # and the launch core ends the drive phase on hostRacing 0 without a drive
-    # result or line (game/MAIN/MainArcadeRaceLaunchCore.c, PHASE_DRIVE); the
-    # race 2 checks below then require that cabinet to be a detecting one.
+    # Which races have a drive end: races 1 and 2 on both and race 3 on cab1;
+    # none in cab2's race 3 (killed). Race 1 and cab1's race 3 end in their
+    # drives (the finish, the stall timeout). Race 2 ends in the drive
+    # ("outcome"), or, when a cabinet's host Tick (the adapter's own poll)
+    # finds the divergence, on the flow leaving RACING there: the launch core
+    # then ends the drive phase with no drive result, and the caller logs
+    # that end as "flow left RACING at race tick <t>"
+    # (game/MAIN/MainArcadeRaceLaunch.c, Apply); the race 2 checks below
+    # allow it only on a detecting cabinet.
     for ($k = 0; $k -lt $races; $k++) {
         foreach ($name in @('cab1', 'cab2')) {
             $has = $null -ne $driveEnds[$name][$k]
-            if ((($k -eq 0) -or (($k -eq 2) -and ($name -eq 'cab1'))) -and -not $has) {
+            if ((($k -le 1) -or (($k -eq 2) -and ($name -eq 'cab1'))) -and -not $has) {
                 [void]$failures.Add("run ${name}: race $($k + 1) (launch $($logs[$name].Validated[$k].Launch)) has no drive end line on stdout")
             }
             elseif (($k -eq 2) -and ($name -eq 'cab2') -and $has) {
@@ -985,15 +989,14 @@ try {
     foreach ($problem in $problems) {
         [void]$failures.Add($problem)
     }
-    # A race 2 with no drive end line has no end tick to bound its per-tick
-    # lines: they must end in desyncTick..desyncTick + D + 1
-    # ($desyncDetectionTicks, above).
+    # A race 2 that ended on the flow leaving RACING: its end tick, the last
+    # race tick driven (its per-tick lines are 0..that tick, above), must lie
+    # in desyncTick..desyncTick + D + 1 ($desyncDetectionTicks, above).
     foreach ($name in @('cab1', 'cab2')) {
-        $two = $tickDigests[$name][1]
-        if (($null -eq $driveEnds[$name][1]) -and ($null -ne $two)) {
-            $lastTick = $two.Count - 1
-            if (($lastTick -lt $desyncTick) -or ($lastTick -gt ($desyncTick + $desyncDetectionTicks))) {
-                [void]$failures.Add("race 2: ${name} has no drive end line, and its per-tick digest lines end at race tick $lastTick, expected $desyncTick..$($desyncTick + $desyncDetectionTicks) (the desync tick to D + 1 past it)")
+        $end = $driveEnds[$name][1]
+        if (($null -ne $end) -and ($end.Kind -eq 'flow left RACING')) {
+            if (($end.Tick -lt $desyncTick) -or ($end.Tick -gt ($desyncTick + $desyncDetectionTicks))) {
+                [void]$failures.Add("race 2: ${name}'s drive end is '$($end.Text)', expected a race tick in $desyncTick..$($desyncTick + $desyncDetectionTicks) (the desync tick to D + 1 past it)")
             }
         }
     }
@@ -1101,23 +1104,24 @@ try {
         [void]$failures.Add("race 2: no cabinet logged 'out of sync at race tick $desyncTick domains 0x1' for its race 2 and ended it with reason 3 (DESYNC)")
     }
     # Each race 2 end is the drive's "outcome" (a stall timeout, or a
-    # divergence its poll or record found), or, with no drive end line, a
-    # divergence the host Tick found: that cabinet must be a detecting one.
+    # divergence its poll or record found), or "flow left RACING" (a
+    # divergence the host Tick found, the flow leaving RACING with no drive
+    # result): that cabinet must be a detecting one. Both have one (above).
     $race2Ends = @{}
     foreach ($name in @('cab1', 'cab2')) {
         $end = $driveEnds[$name][1]
-        if ($null -ne $end) {
-            if ($end.Kind -ne 'outcome') {
-                [void]$failures.Add("race 2: ${name}'s drive end is '$($end.Text)', expected 'outcome'")
+        if ($null -eq $end) {
+            continue
+        }
+        if ($end.Kind -eq 'flow left RACING') {
+            if ($detecting -notcontains $name) {
+                [void]$failures.Add("race 2: ${name}'s drive end is '$($end.Text)', but it did not detect the divergence (an out-of-sync line and reason 3)")
             }
-            $race2Ends[$name] = "drive end $($end.Text)"
         }
-        elseif ($detecting -notcontains $name) {
-            [void]$failures.Add("race 2: ${name} has no drive end line and did not detect the divergence (an out-of-sync line and reason 3)")
+        elseif ($end.Kind -ne 'outcome') {
+            [void]$failures.Add("race 2: ${name}'s drive end is '$($end.Text)', expected 'outcome' or, on a detecting cabinet, 'flow left RACING'")
         }
-        else {
-            $race2Ends[$name] = "no drive end (its host tick found the divergence; its per-tick lines end at race tick $($tickDigests[$name][1].Count - 1))"
-        }
+        $race2Ends[$name] = "drive end $($end.Text)"
     }
     Write-Output ("race 2: cab2 flipped its CONTROL digest of race tick {0}; detected (out of sync, reason 3) by: {1}" -f $desyncTick, ($detecting -join ', '))
     foreach ($name in @('cab1', 'cab2')) {

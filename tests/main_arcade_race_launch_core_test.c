@@ -176,6 +176,7 @@ struct Harness
 	uint32_t driveSteps;  /* driveStep frames so far */
 	uint32_t commits;     /* installCommitted frames so far */
 	uint32_t driveEnds;   /* driveEnded frames so far */
+	uint32_t flowLefts;   /* flowLeftRacing frames so far */
 	uint8_t driveEndSeen; /* a driveEnded frame since the last race tick 0 */
 	uint32_t neutralAfterEnd; /* neutral-pad frames from a driveEnded frame on (LR-12) */
 };
@@ -206,7 +207,7 @@ static int FrameDrive(struct Harness *h, const Input *input, uint32_t result, ui
 		CHECK(out->leaveTitle == 0u && out->installPads == 0u && out->clearPads == 0u && out->reportFinished == 0u && out->reportFailure == 0u &&
 		      out->requestReturn == 0u && out->disarm == 0u && out->validated == 0u && out->raceTickZero == 0u && out->failure == F_NONE &&
 		      out->raceFinishedInput == 0u);
-		CHECK(out->driveStep == 0u && out->installCommitted == 0u && out->driveEnded == 0u && out->raceTick == 0u);
+		CHECK(out->driveStep == 0u && out->installCommitted == 0u && out->driveEnded == 0u && out->flowLeftRacing == 0u && out->raceTick == 0u);
 		CHECK(h->core.phase == P_LAUNCH_RESULT);
 		CHECK(MainArcadeRaceLaunchCore_LaunchResult(&h->core, result, out) == 1);
 		CHECK(out->armAndLaunch == 1u);
@@ -231,13 +232,13 @@ static int FrameDrive(struct Harness *h, const Input *input, uint32_t result, ui
 		CHECK(h->driveOpen != 0u);
 		CHECK(input->hostRacing == 1u && input->setupStatus == S_VALIDATED);
 		CHECK(out->raceTick == ((out->raceTickZero != 0u) ? 0u : h->lastTick + 1u));
-		CHECK(out->installPads == 1u && out->installCommitted == 0u && out->driveEnded == 0u);
+		CHECK(out->installPads == 1u && out->installCommitted == 0u && out->driveEnded == 0u && out->flowLeftRacing == 0u);
 		CHECK(out->reportFinished == 0u && out->reportFailure == 0u && out->requestReturn == 0u);
 		CHECK(h->core.phase == P_DRIVE && h->core.driveDue == 1u && h->core.raceTick == out->raceTick);
 		h->lastTick = out->raceTick;
 		h->driveSteps++;
 		CHECK(MainArcadeRaceLaunchCore_DriveResult(&h->core, driveResult, out) == 1);
-		CHECK(out->driveStep == 1u && out->raceTick == h->lastTick);
+		CHECK(out->driveStep == 1u && out->raceTick == h->lastTick && out->flowLeftRacing == 0u);
 		CHECK(h->core.driveDue == 0u);
 		if (driveResult == D_GO)
 		{
@@ -254,7 +255,8 @@ static int FrameDrive(struct Harness *h, const Input *input, uint32_t result, ui
 	}
 	else
 	{
-		CHECK(out->raceTick == 0u && out->installCommitted == 0u);
+		/* A flowLeftRacing frame carries the last race tick driven. */
+		CHECK(out->raceTick == ((out->flowLeftRacing != 0u) ? h->lastTick : 0u) && out->installCommitted == 0u);
 		CHECK(h->core.driveDue == 0u);
 	}
 	if (out->installCommitted != 0u)
@@ -289,7 +291,16 @@ static int FrameDrive(struct Harness *h, const Input *input, uint32_t result, ui
 	      Bit(out->reportFailure) && Bit(out->requestReturn) && Bit(out->disarm) && Bit(out->validated) && Bit(out->raceTickZero));
 	CHECK(Bit(out->raceFinishedInput) && Bit(out->driveStep) && Bit(out->installCommitted) && Bit(out->driveEnded));
 	CHECK(!(out->installPads != 0u && out->installCommitted != 0u));
-	CHECK(out->reserved[0] == 0u && out->reserved[1] == 0u);
+	CHECK(Bit(out->flowLeftRacing));
+	CHECK(out->reserved[0] == 0u);
+	/* flowLeftRacing marks exactly the drive phase's end on the flow leaving
+	 * RACING: driveEnded with no drive step, off RACING, and no report. */
+	CHECK((out->flowLeftRacing != 0u) == ((out->driveEnded != 0u) && (out->driveStep == 0u) && (input->hostRacing == 0u)));
+	CHECK((out->flowLeftRacing == 0u) || ((out->reportFinished == 0u) && (out->reportFailure == 0u)));
+	if (out->flowLeftRacing != 0u)
+	{
+		h->flowLefts++;
+	}
 	CHECK((out->reportFailure != 0u) == (out->failure != F_NONE));
 	CHECK(out->raceNumber < 16u);
 
@@ -599,7 +610,8 @@ static int TestLayout(void)
 	CHECK(offsetof(Output, driveStep) == 19u);
 	CHECK(offsetof(Output, installCommitted) == 20u);
 	CHECK(offsetof(Output, driveEnded) == 21u);
-	CHECK(offsetof(Output, reserved) == 22u);
+	CHECK(offsetof(Output, flowLeftRacing) == 22u);
+	CHECK(offsetof(Output, reserved) == 23u);
 	CHECK(offsetof(Output, raceTick) == 24u);
 	CHECK(sizeof(Output) == 28u);
 	return 0;
@@ -1462,7 +1474,7 @@ static int TestSetupFailedLater(uint32_t when)
 	RUN(Quiet(&h, &running, when - 1u));
 	RUN(Frame(&h, &failed, R_NONE, &out));
 	CHECK(out.reportFailure == 1u && out.failure == F_SETUP && out.reportFinished == 0u && out.raceNumber == 1u);
-	CHECK(out.driveStep == 0u && out.driveEnded == 1u && out.installCommitted == 0u);
+	CHECK(out.driveStep == 0u && out.driveEnded == 1u && out.flowLeftRacing == 0u && out.raceTick == 0u && out.installCommitted == 0u);
 	CHECK(out.requestReturn == 1u && out.installPads == 1u && out.clearPads == 0u);
 	/* No drive step after the end, even with the setup VALIDATED on RACING
 	 * again (the harness fails a drive step with the phase closed). */
@@ -1538,6 +1550,11 @@ static int TestFlowLeftRacing(uint32_t phase)
 	CHECK(out.reportFailure == 0u && out.reportFinished == 0u && out.failure == F_NONE && out.disarm == 0u);
 	CHECK(out.installPads == 1u && out.clearPads == 0u && out.driveStep == 0u);
 	CHECK(out.driveEnded == ((phase == P_DRIVE) ? 1u : 0u));
+	/* Only the drive phase's end is flowLeftRacing, with its last race tick
+	 * (race tick 0 and 40 more); a wait phase's end is neither. */
+	CHECK(out.flowLeftRacing == ((phase == P_DRIVE) ? 1u : 0u));
+	CHECK(out.raceTick == ((phase == P_DRIVE) ? 40u : 0u));
+	CHECK(h.flowLefts == ((phase == P_DRIVE) ? 1u : 0u));
 	CHECK(h.core.phase == P_ENDED);
 	if (phase == P_WAIT_VALIDATED)
 	{
@@ -1576,7 +1593,7 @@ static int TestFlowLeftOnDriveFrame(void)
 	RUN(Quiet(&h, &running, DRIVE_TICKS - 1u));
 	CHECK(h.core.raceTick == DRIVE_TICKS - 1u && h.core.phase == P_DRIVE);
 	RUN(Frame(&h, &left, R_NONE, &out));
-	CHECK(out.driveStep == 0u && out.driveEnded == 1u && out.raceTick == 0u);
+	CHECK(out.driveStep == 0u && out.driveEnded == 1u && out.flowLeftRacing == 1u && out.raceTick == DRIVE_TICKS - 1u);
 	CHECK(out.reportFinished == 0u && out.reportFailure == 0u && out.failure == F_NONE && out.raceNumber == 1u);
 	CHECK(out.requestReturn == 1u && out.installPads == 1u && out.clearPads == 0u && out.disarm == 0u);
 	CHECK(h.core.phase == P_ENDED && h.reported[1] == 0u);
@@ -2073,6 +2090,7 @@ static int TestDriveResultCallerPattern(void)
 	uint32_t seen[D_OUTCOME + 1u];
 	uint32_t driveSteps = 0u;
 	uint32_t endsWithoutResult = 0u;
+	uint32_t flowLeftEnds = 0u;
 	Output out;
 
 	memset(seen, 0, sizeof(seen));
@@ -2096,16 +2114,24 @@ static int TestDriveResultCallerPattern(void)
 			CHECK(MainArcadeRaceLaunchCore_DriveResult(&core, result, &out) == 1);
 			CHECK(core.driveDue == 0u);
 			CHECK(out.driveEnded == ((result == D_GO) ? 0u : 1u));
+			CHECK(out.flowLeftRacing == 0u);
 			seen[result]++;
 			driveSteps++;
 		}
 		else if (out.driveEnded != 0u)
 		{
 			endsWithoutResult++;
+			/* Off RACING: flowLeftRacing; the setup failing on RACING: not. */
+			CHECK(out.flowLeftRacing == ((input.hostRacing == 0u) ? 1u : 0u));
+			flowLeftEnds += out.flowLeftRacing;
+		}
+		else
+		{
+			CHECK(out.flowLeftRacing == 0u);
 		}
 	}
 	CHECK(driveSteps > 10000u && seen[D_GO] != 0u && seen[D_FINISHED] != 0u && seen[D_FAILED] != 0u && seen[D_OUTCOME] != 0u);
-	CHECK(endsWithoutResult != 0u);
+	CHECK(endsWithoutResult != 0u && flowLeftEnds != 0u);
 	return 0;
 }
 
