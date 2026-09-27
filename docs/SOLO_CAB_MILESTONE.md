@@ -1344,6 +1344,115 @@ per-run slowdown of about 5 s would cross it; ONE_CAB same-seed identity
 stays gated on track 3 (`arcade_roster_determinism_one_cab`, F = G bytes).
 Gating it is `-Pairs both` with TIMEOUT at least 920.
 
+### Battle-only gap (RB_Player.c:87)
+
+Analysed from the code and deferred. The owner kept the canonical rule
+unchanged. There was no live run.
+
+The chain. A hit on a human (`VehPickState_NewState`,
+game/Vehicle/VehPickState.c:48) queues a damage init and never touches the
+suffix pointers `funcPtrs[1..12]`: Tumble for a blast (:182), PlantEaten for
+a mask grab (:200), SpinFirst for spin, squish or burn (:246), or nothing on
+a spin re-hit (:240-242). It then clears `kartState` to `KS_NORMAL` (:299).
+With an attacker and no `END_OF_RACE` (:308) it calls `RB_Player_KillPlayer`
+(:330), which returns unless `BATTLE_MODE` is set (game/231/RB_Player.c:7-10)
+and, past the `POINT_LIMIT` branch, `LIFE_LIMIT` (:67-70). When the
+victim's last life goes (:72-78), it overwrites the queued init with
+`VehStuckProc_RIP_Init` (:87). This leaves init 5
+(game/MAIN/MainCanonicalDrivers.c:35), kartState 0, and whatever suffix ran
+before the hit.
+
+When extraction sees it. A crash hit is queued in `pendingDamageType`.
+`VehPickupItem_ShootOnCirclePress` (game/Vehicle/VehPickupItem.c:1519)
+applies it at game/MAIN/MainFrame.c:305, before the driver stages
+(:311-328) of the same frame. So RIP_Init runs at once: `PlantEaten_Init`
+sets kartState 5 and clears the init (game/Vehicle/VehStuckProc.c:880,
+:922), which gives behavior 13 with kartState 5 (PLANT_EATEN, accepted).
+A weapon hit goes through `RB_Hazard_HurtDriver`, for example
+game/231/RB_Burst.c:87-100, RB_GenericMine.c:177 and :252, and
+RB_TNT.c:220. It runs in a later thread bucket (MainFrame.c:334), after
+the driver stages, so the tuple is still queued at the tick boundary where
+`MainCanonicalDrivers_ExtractDriverActive` (MainCanonicalDrivers.c:596)
+resolves it. Bot victims take `BOTS_ChangeState` instead
+(game/231/RB_Hazard.c:9-17) and are NONE-only anyway.
+
+The contract (platform/native_canonical_driver_behavior.c). For init 5
+with kartState 0, `AllowedActiveTagMask` (:70-113) adds no queued-init NONE:
+that is only for inits 6..8 (:90) and for init 1 with kartState 4 (:91). A
+suffix passes only if it expects kartState 0 or `IsSpinReHit` (:59-62,
+which excludes only inits 6..8) admits it (:109):
+
+| Suffix | Live at the hit | Expects | (init 5, suffix, kartState 0) |
+|---|---|---|---|
+| 1 driving | yes | 0 | behavior 86, accepted, NONE |
+| 4, 5 drift (PowerSlide) | yes | 2 (:98) | behaviors 89, 90, rejected |
+| 6 slam (SlamWall, `KS_CRASHING`) | yes | 1 (:99) | behavior 91, rejected |
+| 7..10 spin | yes | 3 | behaviors 92..95, accepted, SPIN |
+| 15 tumble (`KS_BLASTED`) | by a non-blast hit (below) | 6 (:104) | behavior 100, rejected |
+| 14 rev engine | not traced (mask respawn, VehStuckProc.c:747) | 4 | behavior 99, rejected if reached |
+| 11..13 mask grab, plant | no: `KS_MASK_GRABBED` returns first (VehPickState.c:65-68) | 5 | - |
+| 2, 3, 16 freeze, anti-vshift, warp | no: adventure hub, Aku hint or crystal challenge only (MainFrame.c:791, UI_RenderFrame.c:985, game/232/AH_*) | 11, 9, 10 | - |
+
+A blast returns on `KS_BLASTED` (VehPickState.c:152), but spin, squish and
+burn do not. A tumbling driver gets no invincibility until `Driving_Init`
+(game/Vehicle/VehPhysProc.c:1707-1709). So the premise holds: the rejected
+tuples are drift (89, 90) and slam (91), plus tumble (100) and possibly rev
+engine (99). The spin suffixes are accepted as SPIN, not rejected.
+
+Reachability: none in an arcade race. The arcade race setup plan sets
+`gameMode1 = (before & TRANSIENT) | ARCADE_MODE`
+(game/MAIN/MainArcadeRaceSetupPlan.c:200-201, :243; masks
+MainArcadeRaceSetupPlan.h:359-369). The adapter stores it at
+game/MAIN/MainArcadeRaceSetup.c:137, and the same plan serves both
+profiles. `BATTLE_MODE` (0x20) and `LIFE_LIMIT` (0x8000) are not transient,
+so the plan clears both. The only `BATTLE_MODE` setter is the battle menu
+row (game/230/MM_MenuFlow.c:253). The match config must also carry
+`gameMode1` 0 (platform/native_arcade_bot_rules.c:458; link fixture
+platform/native_arcade_link_options.c:415).
+
+The other RIP_Init writer, game/233/CS_Camera.c:234 (`drivers[0]`), is the
+adventure podium camera (`CS_Camera_ThTick_Podium`), not a cutscene in a
+race. Only `CS_Podium_FullScene_Init` spawns it
+(game/233/CS_Podium.c:743). game/MAIN/MainInit.c:670-676 calls that only
+under `ADVENTURE_ARENA` with a podium reward, and the arcade plan clears
+`ADVENTURE_ARENA`. It is unreachable in arcade races.
+
+What a fix would need (not implemented):
+
+- Treat init 5 as a queued init. That means `init>=5&&init<=8` at :90 and
+  the same precedence in `ResolveActualActiveTag` (:138), so that
+  (init 5, any suffix, kartState 0) is NONE.
+- Exclude init 5 from `IsSpinReHit` (:61). Otherwise behaviors 92..95 with
+  kartState 0 would allow both NONE and SPIN. That is two encodings of one
+  state, and `ResolveActiveTag` (:114) refuses a non-singleton mask.
+- Ambiguity and review risks:
+  - This changes an accepted encoding: 92..95 with kartState 0 move from
+    SPIN to NONE, which drops the Spinning bytes.
+  - The CS_Camera.c:234 podium write would get the same NONE for any
+    suffix.
+  - A reviewer must confirm that dropping the suffix union is lossless.
+    RIP_Init runs `PlantEaten_Init`, which writes kartState and
+    `EatenByPlant.boolInited` (VehStuckProc.c:880-882), not the whole
+    union. Inits 6..8 already make the same trade.
+- Tests that would change: tests/native_canonical_driver_behavior_test.c.
+  - `LegacyValidateState` (:22) and `ActualTagOracle` (:63) would use the
+    6..8 bounds as 5..8.
+  - The queued-init loops (:115, :200, :239) would also start at init 5.
+  - `TestSpinReHitRows` lists init 5 as a steady spin re-hit init (:157,
+    comment :153-156).
+  - The drift loop asserts that (init 5, 4/5, kartState 0) is rejected
+    (:208-214).
+  - tests/main_canonical_drivers_binding_test.c needs new rows. Its spin
+    re-hit rows use init 10 (:523, :1052, :1335), and its RIP row is
+    behavior 98 with kartState 5 (:1360); none of these change.
+- It needs a `reviewer` pass because it changes the canonical acceptance
+  contract.
+
+Deferred because it cannot happen in an arcade race (no `BATTLE_MODE` or
+`LIFE_LIMIT`, and no podium) and it changes the canonical acceptance
+contract for no arcade gain. Revisit it if battle mode reaches the
+cabinets.
+
 ### Race finish (6000 ticks)
 
 Before this run, no gate reached a race finish except on track 3. At the
