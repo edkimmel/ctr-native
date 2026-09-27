@@ -864,7 +864,7 @@ Tasks 7 and 8 and v1 packaging are complete.
   clean tree (`docs/PACKAGING.md`, defaults PK-1..PK-10, and the Packaging
   section above). Its smoke test, `package_arcade_smoke`, races three times
   from the package folder, with no memcard save present.
-- The suite is 169 tests: the full run with `-j 8` takes about 280 s, and
+- The suite is 179 tests: the full run with `-j 8` takes about 280 s, and
   `-LE live -j 8` about 35 s. Live tests carry area labels (`live-link`,
   `live-roster`, `live-render`, `live-package`). Per-change checks use the
   fast suite plus the affected area; the full suite runs once per
@@ -894,36 +894,50 @@ open source.
    two-cabinet live test of "peer wakes during solo, then links"; unit
    tests only.
 2. Automatic discovery (stretch goal 8; `docs/DISCOVERY_MILESTONE.md`,
-   DISC-1..18). Done: S1-S4. With `seat = auto` and no `peer`, two
-   cabinets find each other by UDP beacon on port 7000 (limited broadcast
-   plus each NIC's subnet broadcast), elect seats (the lower IPv4:port is
-   cab1), link and race. `group` (default `ctr-native`) and an identity
-   digest keep unrelated installs apart. A static `peer` still runs
-   exactly as before. The live test `arcade_discovery_link` proves it over
-   loopback with explicit targets; real broadcast is unproven. Next:
-   - DISC-S5: one `arcade.cfg` template with `seat = auto`, a two-copy
-     package smoke, and README/PACKAGING (PK-3/5/8/9).
-   - Close the open risks: the NIC re-read every 300 ticks on the game
-     thread (skip it during races), and beacons stopping while the host
-     does not tick (attract demo, intro, loads).
-   - C:Arcade follow-up (DISC-17), in `setup-ctr-native.ps1`: the
-     firewall becomes one rule for the program, UDP 7000,7001 from
-     LocalSubnet, and the cfg writer writes `seat = auto`.
-   - DISC-S6: the physical two-cabinet acceptance: pairing at boot,
-     .11 as cab1, one race, solo with a cabinet off, relink when it is
-     powered back on.
-3. Small cabinet polish, queued behind 1 and 2:
-   - Skip the Sony and Naughty Dog boot splashes on arcade/link configs.
-     Boot still runs all of StateZero's init, and levelID goes straight to
-     MAIN_MENU_LEVEL (`game/MAIN/MainMain.c:744`).
-   - Always draw other karts as full 3D in arcade races. The far LOD looks
-     like stacked sprites in the split screen. The LOD choice is
-     presentation-only; see `MainFrame_RenderFrame.c:750-753` and
-     `RenderBucket_QueueExecute.c:1213-1269`, to be verified.
-4. Shelved (owner): stretch goals 9 and 10 (Oxide Station, unlock
+   DISC-1..19). Done: S1-S5 and the open risks. The package ships a
+   single `arcade.cfg` with `seat = auto`. Two cabinets find each other
+   by UDP beacon on port 7000, elect seats (the lower IPv4:port is cab1),
+   and link on 7001. Other settings:
+   - `lan = a.b.c.d/n` (DISC-19) pins discovery to one NIC's subnet;
+     the cabinets use 192.168.1.0/24.
+   - `group` and an identity digest keep unrelated installs apart.
+   - A static `peer` still works.
+   - Beacons continue in attract and during loads (IdleTick); the NIC
+     refresh is held during races.
+   Real broadcast, the NIC list, and the lan filter are proven only by
+   unit and loopback tests. Next:
+   - The C:\Arcade follow-up in `setup-ctr-native.ps1`:
+     - the cfg writer writes `seat = auto`, `lan = 192.168.1.0/24`, and
+       no peer or port;
+     - the firewall is one rule for the program, UDP 7000,7001 from
+       LocalSubnet;
+     - the usage comment at :37 needs updating.
+     Commit it; do not sync without the owner.
+   - DISC-S6: physical acceptance. The cabinets pair at boot, .11 is
+     cab1, one race runs, solo works with a cabinet off, and they relink
+     when it is powered back on. This needs the owner.
+3. Cabinet polish: done. In LINK mode the boot skips the SCEA,
+   copyright, and crate intro, which saves about 27 s. Every kart and
+   model draws at its top LOD tier, with the 2P-4P kart impostor
+   (DecalMP) off. A retail-vs-forced roster digest check is byte-identical.
+   Owner checks are pending: the crate song plays briefly over black, and
+   top-LOD primMem was measured on track 3 only (peak 115120 of 139008).
+4. Retail bug fixes found by the linked races:
+   - Fixed (`c6ed69c0b`): the N. Tropy clock wrote `clockFlash` through
+     an empty driver slot, `VehPickupItem.c:865`. It crashed both
+     cabinets on the same frame in a 6-driver linked race. The live
+     tests are pending.
+   - HIGH, open: `VehPickupItem_MissileGetTargetDriver`
+     (`VehPickupItem.c:480`, `:490`) reads `gGT->pushBuffer[driverID]`
+     out of bounds for bots 4 and 5. In 2P the value depends on the
+     per-boot image base, so two cabinets can pick different missile
+     targets and desync (the live digest aborts the race).
+     `RB_CrateFruit_ThCollide` (`RB_Crate.c:338-355`) has the same kind
+     of read.
+5. Shelved (owner): stretch goals 9 and 10 (Oxide Station, unlock
    everything and Turbo Track). Dropped (owner): 11 (16:9) and 13
    (per-cabinet full screen). Not prioritised: 12 (G29 force feedback).
-5. Open items, none blocking:
+6. Open items, none blocking:
    - Task 8:
      - A divergence found only by the Tick that closes the link while
        leaving RESULTS is not logged (LR-70).
