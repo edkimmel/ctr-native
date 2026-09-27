@@ -1572,6 +1572,13 @@ if(BUILD_TESTING)
     add_test(NAME main_arcade_link_boot_intro_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_boot_intro_isolation_test.cmake")
 
+    # Arcade-link top LOD tier (docs/SOLO_CAB_MILESTONE.md section 8): the
+    # accessor's two CTR_NATIVE render call sites (QueueDraw's model header
+    # and DecalMP_01's kart impostor), the unchanged retail LOD walk and its
+    # cull, the read-only top-tier pick, and no model-header write.
+    add_test(NAME main_arcade_link_top_lod_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_top_lod_isolation_test.cmake")
+
     # Arcade-link menu sound decision (docs/GAME_LOOP_UI_MILESTONE.md
     # section 3.1): every SND rule and its negatives, pure.
     add_executable(main_arcade_link_sound_test tests/main_arcade_link_sound_test.c)

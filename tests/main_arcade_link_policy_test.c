@@ -860,6 +860,30 @@ static int TestSkipBootIntro(void)
 	return 0;
 }
 
+/* The top LOD tier (docs/SOLO_CAB_MILESTONE.md section 8): LINK only. */
+static int TestForceTopLod(void)
+{
+	uint32_t mode;
+
+	CHECK(MainArcadeLinkPolicy_ForceTopLod(MODE_LINK) == 1);
+	CHECK(MainArcadeLinkPolicy_ForceTopLod(MODE_OFF) == 0);
+	CHECK(MainArcadeLinkPolicy_ForceTopLod(MODE_PREVIEW) == 0);
+	/* Any unknown mode keeps the retail LOD. */
+	CHECK(MainArcadeLinkPolicy_ForceTopLod(3u) == 0);
+	CHECK(MainArcadeLinkPolicy_ForceTopLod(0xFFFFFFFFu) == 0);
+	CHECK(MainArcadeLinkPolicy_ForceTopLod(0x80000001u) == 0);
+	for (mode = 0u; mode < 64u; mode++)
+	{
+		CHECK(MainArcadeLinkPolicy_ForceTopLod(mode) == ((mode == MODE_LINK) ? 1 : 0));
+		/* The same gate as the boot-intro skip: one LINK-only rule. */
+		CHECK(MainArcadeLinkPolicy_ForceTopLod(mode) == MainArcadeLinkPolicy_SkipBootIntro(mode));
+	}
+	/* Pure: the same answer on every call. */
+	CHECK(MainArcadeLinkPolicy_ForceTopLod(MODE_LINK) == 1);
+	CHECK(MainArcadeLinkPolicy_ForceTopLod(MODE_OFF) == 0);
+	return 0;
+}
+
 int main(void)
 {
 	if (TestLayout() != 0) return 1;
@@ -878,6 +902,7 @@ int main(void)
 	if (TestHeldReported() != 0) return 1;
 	if (TestReturnStep() != 0) return 1;
 	if (TestSkipBootIntro() != 0) return 1;
+	if (TestForceTopLod() != 0) return 1;
 	printf("main_arcade_link_policy_test: ok\n");
 	return 0;
 }

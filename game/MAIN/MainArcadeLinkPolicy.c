@@ -146,3 +146,9 @@ int MainArcadeLinkPolicy_SkipBootIntro(uint32_t hostMode)
 {
 	return (hostMode == MAIN_ARCADE_LINK_POLICY_MODE_LINK) ? 1 : 0;
 }
+
+/* The top LOD tier: LINK mode only. */
+int MainArcadeLinkPolicy_ForceTopLod(uint32_t hostMode)
+{
+	return (hostMode == MAIN_ARCADE_LINK_POLICY_MODE_LINK) ? 1 : 0;
+}

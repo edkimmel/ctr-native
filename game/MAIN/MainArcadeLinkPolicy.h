@@ -217,4 +217,14 @@ int MainArcadeLinkPolicy_ReturnStep(uint8_t *pending, uint8_t returnAction, uint
  */
 int MainArcadeLinkPolicy_SkipBootIntro(uint32_t hostMode);
 
+/*
+ * The arcade-link top LOD tier (docs/SOLO_CAB_MILESTONE.md section 8): 1 when
+ * every instance is drawn at its model's top LOD tier and no kart is drawn
+ * through the multiplayer impostor (DecalMP), else 0. Only LINK mode (static
+ * seats, seat auto, solo included) forces it. OFF, PREVIEW, and any unknown
+ * mode keep the retail LOD, so default runs, previews, the roster proof, and
+ * replay fixtures are untouched. Presentation only.
+ */
+int MainArcadeLinkPolicy_ForceTopLod(uint32_t hostMode);
+
 #endif

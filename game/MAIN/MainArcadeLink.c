@@ -467,6 +467,11 @@ int MainArcadeLink_SkipBootIntro(void)
 	return MainArcadeLinkPolicy_SkipBootIntro(NativeArcadeLinkHost_Mode());
 }
 
+int MainArcadeLink_ForceTopLod(void)
+{
+	return MainArcadeLinkPolicy_ForceTopLod(NativeArcadeLinkHost_Mode());
+}
+
 int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 {
 	struct MainArcadeLinkPolicyInput input;

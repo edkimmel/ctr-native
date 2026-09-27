@@ -45,4 +45,13 @@ int MainArcadeLink_TitleMenuReady(const struct GameTracker *gGT, const struct Ga
  */
 int MainArcadeLink_SkipBootIntro(void);
 
+/*
+ * The arcade-link top LOD tier (docs/SOLO_CAB_MILESTONE.md section 8):
+ * MainArcadeLinkPolicy_ForceTopLod on the host mode, which main.c fixes
+ * before the first StateZero. 1 in LINK mode only. Reads only; changes
+ * nothing. Called only from the render path: RenderBucket_QueueDraw (the
+ * model header drawn) and DecalMP_01 (the multiplayer kart impostor).
+ */
+int MainArcadeLink_ForceTopLod(void);
+
 #endif

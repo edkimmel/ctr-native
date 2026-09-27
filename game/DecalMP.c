@@ -1,6 +1,10 @@
 
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeLink.h"
+#endif
+
 struct DecalMPEntry
 {
 	s16 timer;
@@ -35,6 +39,21 @@ void DecalMP_01(struct GameTracker *gGT)
 		return;
 	}
 
+#if defined(CTR_NATIVE)
+	/* Arcade-link top LOD tier (docs/SOLO_CAB_MILESTONE.md section 8): in
+	 * LINK mode no kart is drawn through the multiplayer impostor, the small
+	 * offscreen image of a far kart that is redrawn only every other frame and
+	 * shown as a textured quad. Each kart keeps PIXEL_LOD, the retail
+	 * multiplayer distance scale-up (RenderBucket_BuildM3x3), but gets no
+	 * PUSHBUFFER_EXISTS and keeps its own camera pushBuffer, so it is drawn in
+	 * 3D in every view every frame; DecalMP_02 and DecalMP_03 then pass over
+	 * its entry. Every entry write below still runs: the retail missile
+	 * target check reads a bot's gGT->pushBuffer[driverID] past the four
+	 * cameras (VehPickupItem_MissileGetTargetDriver), and for bot 5 that is
+	 * the inst pointer of entry 1. */
+	const int forceTopLod = MainArcadeLink_ForceTopLod();
+#endif
+
 	int entryIndex = 0;
 
 	for (int cameraID = 0; cameraID < gGT->numPlyrCurrGame; cameraID++)
@@ -50,7 +69,11 @@ void DecalMP_01(struct GameTracker *gGT)
 			}
 
 			struct Instance *inst = driver->instSelf;
+#if defined(CTR_NATIVE)
+			inst->flags |= (forceTopLod != 0) ? PIXEL_LOD : (PUSHBUFFER_EXISTS | PIXEL_LOD);
+#else
 			inst->flags |= PUSHBUFFER_EXISTS | PIXEL_LOD;
+#endif
 
 			if (driverID == cameraID)
 			{
@@ -77,7 +100,12 @@ void DecalMP_01(struct GameTracker *gGT)
 			entry->pb.cameraID = pb->cameraID;
 
 			struct InstDrawPerPlayer *idpp = DecalMP_GetIdpp(inst, cameraID);
-			idpp->pushBuffer = &entry->pb;
+#if defined(CTR_NATIVE)
+			if (forceTopLod == 0)
+#endif
+			{
+				idpp->pushBuffer = &entry->pb;
+			}
 			entry->inst = inst;
 		}
 	}

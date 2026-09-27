@@ -819,3 +819,132 @@ Checked:
 tests/main_arcade_link_boot_intro_isolation_test.cmake pins the structure:
 the three guarded call sites, StateZero's load and lease order, the exact
 gated blocks, the retail START-skip path, and that no pad word is written.
+
+## 8. Top LOD tier (arcade link)
+
+Owner request: in the linked split screen, the other karts show as "a
+stacked set of sprites" before they pop in as 3D models. They should always
+be 3D, and more generally every LOD should pick its top tier. The fix must be
+presentation-only, and the model data must not be edited. The model headers
+are live data: `CS_OPCODE_SET_VISIBLE_LOD` writes `maxDistanceLOD`
+(game/233/CS_Thread.c:647, 651).
+
+The gate is the pure `MainArcadeLinkPolicy_ForceTopLod(hostMode)`
+(game/MAIN/MainArcadeLinkPolicy.c, 1 for LINK only, the same rule as
+section 7), read only through `MainArcadeLink_ForceTopLod()`
+(game/MAIN/MainArcadeLink.c). No link option, PREVIEW,
+`--arcade-roster-proof`, and the replay fixtures keep the retail LOD.
+
+### 8.1 What drew the sprite karts
+
+The sprites are the retail multiplayer kart impostor (DecalMP). No native
+rendering bug was found in it. In 2P-4P, `DecalMP_01` (game/DecalMP.c) sets
+`PUSHBUFFER_EXISTS | PIXEL_LOD` on every kart. It also points each kart's
+per-camera `pushBuffer` at a DecalMP entry: a copy of that camera's
+PushBuffer. `RenderBucket_UpdatePushBufferMetadata`
+(game/RenderBucket/RenderBucket_QueueExecute.c:1720-1746) keeps
+`PUSHBUFFER_EXISTS` only while the kart's projected box fits in 96x64 and is
+fully on screen. The kart is then drawn into its own OT range, onto a 96x64
+VRAM rectangle (`PushBuffer_SetDrawEnv_DecalMP`, `isbg` 0, so the rectangle
+is never cleared). `DecalMP_03` shows that rectangle as a textured quad, and
+`DecalMP_02` redraws it only on some frames. A kart larger than 96x64 on
+screen is drawn in 3D: that is the pop. The native renderer reloads the
+offscreen target from VRAM and packs it back
+(`NativeRenderer_SetOffscreenState`, platform/native_renderer.c). That keeps
+the PS1 no-clear behaviour, so earlier silhouettes can stay inside the
+rectangle. This was not compared against hardware. The retail impostor is
+left unchanged outside LINK.
+
+### 8.2 What LINK changes (two render call sites)
+
+1. `RenderBucket_QueueDraw`: the retail LOD walk
+   (`RenderBucket_SelectModelHeader`, :1216-1272) runs unchanged. That
+   includes its cull: a draw past every header's range sets `lodExhausted`
+   and draws nothing. Only when the walk found a header,
+   `RenderBucket_ForceTopLodHeader` (:1991) replaces it with the top tier.
+   The top tier is the first header with a nonzero `maxDistanceLOD`
+   (normally `headers[0]`), which keeps a cutscene's
+   `CS_OPCODE_SET_VISIBLE_LOD` choice. `idpp->mh` and `idpp->lodIndex` store
+   the top tier. The renderer-driven animation advance
+   (`RenderBucket_AdvanceInstanceAnimWord`, which writes `Instance.animFrame`)
+   keeps the retail tier's frame count (:2149-2161).
+2. `DecalMP_01`: each kart keeps `PIXEL_LOD` (the retail multiplayer
+   distance scale-up in `RenderBucket_BuildM3x3`, :1361) but gets no
+   `PUSHBUFFER_EXISTS`. Its camera `pushBuffer` is not redirected, so it is
+   drawn in 3D in every view on every frame. Every entry write still runs;
+   see 8.4 for why.
+
+### 8.3 Every LOD threshold found
+
+| Threshold | Where | Gates besides mesh detail | LINK |
+|---|---|---|---|
+| Model header walk, `(u16)maxDistanceLOD` against the projected depth | RenderBucket_QueueExecute.c:1216-1272 | Draw-distance cull when every header is exhausted; the header's frame count bounds the `animFrame` advance (:1841) | Top tier drawn; cull and anim frame count kept |
+| DecalMP impostor, 96x64 fit | RenderBucket_QueueExecute.c:1740; game/DecalMP.c | DecalMP entry memory, which the retail missile check reads (8.4) | Impostor off; entry writes kept |
+| Tire LOD, `idpp->lodIndex <= lodThreshold` (2 in 1P/2P, 0 in 3P/4P) | game/DrawTires.c:51, 585, 662, 1146 | Nothing (tire prims only) | Follows the top tier (tires on every drawn kart) |
+| `sdata->LOD[]` = {1,2,4,4,8,8,8,8} as `lodMask` | game/zGlobal_SDATA.c:246; MainFrame_RenderFrame.c:756-759; QueueExecute.c:2075 | Not a mesh LOD: instance flag bits 0-3 choose which instances exist per player count (a cull), and it gates the anim advance | Unchanged |
+| Level BSP near/far slot (1P `bspLodDistanceThreshold`, 2P 0x1540; none in 3P/4P) | game/RenderLevel/RenderLists.c:137, 242; MainFrame_RenderFrame.c:974, 990 | Subdivision tier of BSP leaves; the primMem budget is tuned to it | Unchanged |
+| Level texture and subdivision depths (`textureLodDepthThreshold0/1`, `topLevelNear`, `recursiveNear`) | MainFrame_RenderFrame.c:975-978, 991-994; game/227/227_00_DrawLevelOvr2P.c:8-11 and the 228/229 overlays | Same primMem budget | Unchanged |
+| Per-player-count LEV file (`levelLOD`) | game/LOAD/LOAD_TenStages.c:190-199 | Geometry, collision, nav: simulation | Unchanged |
+| Driver model pack HI/MED/LOW | game/LOAD/LOAD_Assets.c:80-190 | Pack layout and memory; drivers' animation frame counts (headers[0], VehFrame.c:59) | Unchanged |
+| Quadblock collision LOD (`COLL_SEARCH_HIGH_LOD`) | game/COLL.c:1011, 2042 | Collision: simulation | Unchanged |
+| Exhaust particle set per player count | game/Vehicle/VehEmitter.c:156-171 | Particle spawn and RNG in the driver tick: simulation | Unchanged |
+
+The level geometry tiers are left alone. Instances are drawn before the
+level, and the per-level primMem budget (MainInit.c:85-159, allocated from
+MEMPACK) is sized for the retail tiers. Forcing every BSP leaf to the
+subdivided tier risks exhausting primMem, which would drop level geometry at
+the guard. Growing the budget would move the MEMPACK layout. That would need
+its own measurement and decision.
+
+### 8.4 Nothing digested changes
+
+- Static: `idpp->mh`, `idpp->lodIndex`, `PIXEL_LOD`, `PUSHBUFFER_EXISTS`,
+  and the idpp `pushBuffer` are not read by the V4 projection or the race
+  digest. `MainCanonicalDrivers` reads only `inst->thread` from an Instance;
+  `MainArcadeRaceDigest` reads GameTracker counters and RNG. The checkpoint
+  only relocates idpp pointers in its memory image
+  (platform/native_checkpoint.c:727-738), and the next render rewrites them.
+  Nothing new goes into checkpoints, replay, or canonical state.
+- A retail coupling had to be kept: `VehPickupItem_MissileGetTargetDriver`
+  (game/Vehicle/VehPickupItem.c:480, 490) checks a bot's target against
+  `gGT->pushBuffer[driverID].rect` for any driverID. The array has four
+  cameras, and `gGT->DecalMP` follows it (include/namespace_Main.h:336,
+  369), so bots 4-7 read DecalMP entry bytes. In a 2P race (6 drivers)
+  those are entry 0's never-written `pb.rot` (bot 4) and entry 1's `inst`
+  pointer (bot 5, as its rect width and height). A first version that
+  skipped the entry writes diverged: bot 5 took a different missile target
+  and the V4 digest split at race tick 1850. The LINK path therefore keeps
+  every entry write. Only the flag and the redirect differ. The entry fields
+  written by the impostor render (timer, `boolUpdatedThisFrame`,
+  `renderW/H`, `lodIndex`, the pb OT and screen fields) alias no rect width
+  or height read by bots 4 and 5. The bot 6 and 7 slots, which would alias
+  them, do not exist in 2P arcade (`MainInit_Drivers`, 6 drivers). Pinned
+  by the isolation test.
+- Evidence (internal build, `--arcade-roster-proof`, seed 0x5EED, 3600 race
+  ticks, a temporary env override of the accessor, not committed): TWO_CAB
+  (2P, autopilot) retail against forced gave byte-identical reports, every
+  per-tick control, rng, drivers, and V4 digest. ONE_CAB (1P) did too. With
+  the missile check neutralised, the first version was identical too, so
+  that read was the only coupling seen.
+- Out of scope, found here: bot 5's rect in that check is the low and high
+  16 bits of a host Instance pointer (0x3C08/0x00AE in one run). Its
+  missile targeting in 2P therefore depends on where the image loads
+  (the build layout moved it: two retail builds split at race tick 2088;
+  `/DYNAMICBASE` is on). This affects the current arcade build, forced LOD
+  or not.
+
+### 8.5 Cost
+
+In the TWO_CAB run on track 3, peak primMem per 600-frame window was
+83888-95832 of 139008 bytes with the retail LOD. It was 93260-115120 with
+the top tier and 3D karts, with no frame within 128 bytes of the guard. The
+2P budget varies by track (`data.primMem_SizePerLEV_2P`). A track whose
+retail peak is already near its budget could drop late primitives at the
+guard. Instances are drawn before the level, so that would show as missing
+level geometry. Only track 3 was measured.
+
+tests/main_arcade_link_top_lod_isolation_test.cmake pins the structure. It
+checks the two guarded call sites, the unchanged walk and its cull, the
+read-only top-tier pick, the retail animation frame count, the kept DecalMP
+entry writes, and that `maxDistanceLOD` has no writer but the cutscene
+opcode.

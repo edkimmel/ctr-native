@@ -1,5 +1,8 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeLink.h"
+#endif
 
 struct RenderBucketEntry
 {
@@ -1972,10 +1975,55 @@ static struct ModelFrame *RenderBucket_GetFrame(struct Instance *inst, struct Mo
 	return currentFrame;
 }
 
+#if defined(CTR_NATIVE)
+/*
+ * Arcade-link top LOD tier (docs/SOLO_CAB_MILESTONE.md section 8), LINK mode
+ * only: the header drawn in place of retailMh, the header the retail LOD walk
+ * (RenderBucket_SelectModelHeader) found for this draw. The top tier is the
+ * header a projected distance of 0 selects: the first one with a nonzero
+ * maxDistanceLOD, normally headers[0]. The cutscene opcode
+ * CS_OPCODE_SET_VISIBLE_LOD (game/233/CS_Thread.c) zeroes the headers above
+ * the tier it shows, so a cutscene keeps its chosen tier. The retail walk
+ * still runs first, so a draw past every header's range stays culled. A top
+ * header without a frame for the instance's animation (sparse host-side
+ * data) keeps the retail tier. Reads only.
+ */
+static struct ModelHeader *RenderBucket_ForceTopLodHeader(struct Instance *inst, struct ModelHeader *retailMh, int *lodIndex)
+{
+	struct ModelHeader *top = inst->model->headers;
+	struct ModelFrame *topNextFrame;
+	int topDeltaArray;
+	int topLastFrame;
+	int topIndex = 0;
+
+	while ((top != retailMh) && ((u16)top->maxDistanceLOD == 0))
+	{
+		top++;
+		topIndex++;
+	}
+
+	if (top == retailMh)
+	{
+		return retailMh;
+	}
+
+	if (RenderBucket_GetFrame(inst, top, &topNextFrame, &topDeltaArray, &topLastFrame) == 0)
+	{
+		return retailMh;
+	}
+
+	*lodIndex = topIndex;
+	return top;
+}
+#endif
+
 static struct RenderBucketEntry *RenderBucket_QueueDraw(struct Instance *inst, struct RenderBucketEntry *rbi, int playerIndex, u32 lodMask, int gameMode1,
                                                         struct RenderBucketQueueState *queueState)
 {
 	struct ModelHeader *mh;
+#if defined(CTR_NATIVE)
+	struct ModelHeader *retailMh;
+#endif
 	struct ModelFrame *frame;
 	struct ModelFrame *nextFrame;
 	struct InstDrawPerPlayer *idpp;
@@ -2070,6 +2118,16 @@ static struct RenderBucketEntry *RenderBucket_QueueDraw(struct Instance *inst, s
 		return rbi;
 	}
 
+#if defined(CTR_NATIVE)
+	/* Arcade-link top LOD tier (docs/SOLO_CAB_MILESTONE.md section 8): in
+	 * LINK mode draw the top tier of a header the retail walk found. */
+	retailMh = mh;
+	if (MainArcadeLink_ForceTopLod() != 0)
+	{
+		mh = RenderBucket_ForceTopLodHeader(inst, retailMh, &lodIndex);
+	}
+#endif
+
 	idpp->mh = mh;
 	idpp->lodIndex = lodIndex;
 	normalDepthBias = RenderBucket_SignExtendByte(inst->depthBiasNormal);
@@ -2086,6 +2144,17 @@ static struct RenderBucketEntry *RenderBucket_QueueDraw(struct Instance *inst, s
 	{
 		idpp->instFlags = queuedFlags;
 		return rbi;
+	}
+
+	if (mh != retailMh)
+	{
+		/* Arcade-link top LOD tier: the animation advance below writes
+		 * Instance.animFrame, so it keeps the frame count of the retail tier
+		 * (-1, no advance, wherever the retail tier has no frame). */
+		struct ModelFrame *retailNextFrame;
+		int retailDeltaArray;
+
+		(void)RenderBucket_GetFrame(inst, retailMh, &retailNextFrame, &retailDeltaArray, &lastFrameAdvance);
 	}
 #endif
 
