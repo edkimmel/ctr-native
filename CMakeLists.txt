@@ -1579,6 +1579,13 @@ if(BUILD_TESTING)
     add_test(NAME main_arcade_link_top_lod_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_top_lod_isolation_test.cmake")
 
+    # Arcade-link primitive memory (docs/SOLO_CAB_MILESTONE.md section 8.5):
+    # the retail MEMPACK allocation unchanged, the LINK-only native accessor
+    # called last in MainInit_PrimMem, the five fields it rebinds to its
+    # static host buffers, and no checkpoint capture in arcade-link mode.
+    add_test(NAME main_arcade_link_prim_mem_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/main_arcade_link_prim_mem_isolation_test.cmake")
+
     # Arcade-link menu sound decision (docs/GAME_LOOP_UI_MILESTONE.md
     # section 3.1): every SND rule and its negatives, pure.
     add_executable(main_arcade_link_sound_test tests/main_arcade_link_sound_test.c)

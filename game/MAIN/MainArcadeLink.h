@@ -57,4 +57,19 @@ int MainArcadeLink_SkipBootIntro(void);
  */
 int MainArcadeLink_ForceTopLod(void);
 
+/*
+ * The arcade-link primitive memory (docs/SOLO_CAB_MILESTONE.md section 8.5).
+ * Called only from MainInit_PrimMem, right after its two retail
+ * MainDB_PrimMem calls. In LINK mode it points each draw buffer's primMem
+ * (start, cursor, end, guardEnd, capacityBytes) at a static host buffer of
+ * MainArcadeLinkPolicy_PrimitiveBytes bytes, which is larger than any retail
+ * per-level size. The retail MEMPACK block stays reserved and its start stays
+ * in the struct, so the MEMPACK layout and every simulation object in it are
+ * unchanged. Any other mode leaves both draw buffers retail. Re-run on every
+ * level load. Presentation only: primMem holds GPU primitives, which nothing
+ * digested reads. Arcade-link mode rejects replay record and playback and
+ * disables quick states, so no saved state ever holds the host pointers.
+ */
+void MainArcadeLink_GrowPrimMem(struct GameTracker *gGT);
+
 #endif

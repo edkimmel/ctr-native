@@ -896,8 +896,8 @@ The level geometry tiers are left alone. Instances are drawn before the
 level, and the per-level primMem budget (MainInit.c:85-159, allocated from
 MEMPACK) is sized for the retail tiers. Forcing every BSP leaf to the
 subdivided tier risks exhausting primMem, which would drop level geometry at
-the guard. Growing the budget would move the MEMPACK layout. That would need
-its own measurement and decision.
+the guard. Section 8.5 measures the top tier's cost and gives LINK larger
+primMem buffers without moving the MEMPACK layout.
 
 ### 8.4 Nothing digested changes
 
@@ -1023,13 +1023,113 @@ its own measurement and decision.
 
 ### 8.5 Cost
 
-In the TWO_CAB run on track 3, peak primMem per 600-frame window was
-83888-95832 of 139008 bytes with the retail LOD. It was 93260-115120 with
-the top tier and 3D karts, with no frame within 128 bytes of the guard. The
-2P budget varies by track (`data.primMem_SizePerLEV_2P`). A track whose
-retail peak is already near its budget could drop late primitives at the
-guard. Instances are drawn before the level, so that would show as missing
-level geometry. Only track 3 was measured.
+Peak primMem per frame (`cursor - start` at the end of
+`MainFrame_RenderFrame`, before `RenderSubmit`; the cursor only grows within
+a frame), 2P, every track of the match select pool
+(platform/native_match_select_rules.c:19). The budget is
+`data.primMem_SizePerLEV_2P[track] << 10` (game/zGlobal_DATA.c:4480);
+guardEnd is 256 bytes below it. "Dropped" counts frames on which the level
+draw stopped at its primMem preflight. The last column is the top tier with
+the LINK buffers below, so it is the unclipped demand.
+
+| Track | 2P budget | Retail LOD peak | Top LOD peak | % of budget | Margin to guardEnd | Dropped | Top LOD, LINK buffer |
+|---|---|---|---|---|---|---|---|
+| 0 Dingo Canyon (a) | 225280 | 93860 | 106076 | 47.1% | 118948 | 0 | - |
+| 1 Dragon Mines | 122880 | 84168 | 94476 | 76.9% | 28148 | 0 | - |
+| 2 Blizzard Bluff | 163840 | 113632 | 136836 | 83.5% | 26748 | 0 | 136836 |
+| 3 Crash Cove | 139264 | 95832 | 115120 | 82.7% | 23888 | 0 | 115120 |
+| 4 Tiger Temple | 122880 | 103836 | 116140 | 94.5% | 6484 | 89 | 124304 |
+| 5 Papu's Pyramid | 122880 | 103736 | 115404 | 93.9% | 7220 | 79 | 123364 |
+| 6 Roo's Tubes | 174080 | 104356 | 114588 | 65.8% | 59236 | 0 | - |
+| 7 Hot Air Skyway | 128000 | 95748 | 103920 | 81.2% | 23824 | 0 | - |
+| 8 Sewer Speedway | 122880 | 89188 | 88800 | 72.3% | 33824 | 0 | - |
+| 9 Mystery Caves | 122880 | 102320 | 112744 | 91.8% | 9880 | 0 | 112744 |
+| 10 Cortex Castle | 141312 | 104960 | 108436 | 76.7% | 32620 | 0 | - |
+| 11 N. Gin Labs | 124928 | 107376 | 116884 | 93.6% | 7788 | 2 | 117532 |
+| 12 Polar Pass (a) | 129024 | 83972 | 91876 | 71.2% | 36892 | 0 | - |
+| 14 Coco Park | 225280 | 90828 | 107388 | 47.7% | 117636 | 0 | - |
+| 15 Tiny Arena | 148480 | 108044 | 119076 | 80.2% | 29148 | 0 | 119076 |
+| 16 Slide Coliseum | 122880 | 100104 | 115528 | 94.0% | 7096 | 23 | 122300 |
+
+- The retail LOD never dropped; its highest peak is 84.5% (track 4).
+- With the top tier in the retail budget, five tracks passed 85% and four
+  dropped level geometry (4, 5, 11, 16). Tracks 4 and 5 need more than
+  their retail budget. No frame ended past guardEnd. Track 3 repeats the
+  earlier track-3 numbers exactly. Peaks are single frames, so track 8's
+  retail peak can sit above its top-tier peak.
+- On tracks 4 and 5 the roster reports (every per-tick digest line) were
+  byte-identical for the retail LOD, the top tier, and the top tier with
+  the LINK buffers: the drops and the growth are presentation only.
+- Method (not committed; repeat it to re-measure): an internal build,
+  `--arcade-roster-proof` TWO_CAB, seed 0x5EED, dwell 0, 3600 race ticks,
+  `--arcade-roster-proof-autopilot`, eight processes at once, with
+  temporary local edits: an env override of both choices' `trackID` in
+  `NativeArcadeRosterProof_BuildTwoCabConfig`; an env override making
+  `MainArcadeLink_ForceTopLod()` return 1 (and, for the last column,
+  `MainArcadeLink_GrowPrimMem` use LINK); a per-frame peak log before
+  `RenderSubmit`; and a failure counter in the two
+  `DrawLevelOvr1P_Has*PrimReserve` helpers. (a) On tracks 0 and 12 the
+  proof stops with DRIVERS_FAILED at race tick 377 and 946 (the drivers
+  extraction), with the retail LOD too. For these two tracks a further
+  temporary edit kept the race and the autopilot running without tick
+  lines.
+
+Overflow behaviour (retail code, unchanged):
+
+- Most writers check guardEnd and skip the primitive: the shared allocator
+  (game/prim.c:6), the instance draw per triangle
+  (game/RenderBucket/RenderBucket_QueueExecute.c:2875 and nine more checks
+  to :3832), particles (Particle.c:1131), shadows (VehGroundShadow.c:155),
+  skids (VehGroundSkids.c:79), the fades (PushBuffer.c:202, :262), boxes
+  (CTR/CTR_Box.c:24-117), menus (RECTMENU.c:65, :119), and some HUD
+  pieces (UI_Meter.c:174, UI_RaceHud.c:175, UI_RenderFrame.c:703,
+  FLARE.c:50).
+- The level draw checks `end` before each block with a reserve (0xd68 to
+  0x2700, game/226/226_00_DrawLevelOvr1P.c:36-41, :3207-3218), plus 0xd00
+  in 2P (game/227/227_00_DrawLevelOvr2P.c:6, :264). On a failed check
+  `DrawLevelOvr2P` returns, and the rest of the level is not drawn that
+  frame. Instances are drawn before the level (MainFrame_RenderFrame.c:173,
+  :193), so an overflow shows as missing level geometry.
+- Other writers do not check at all: tires (DrawTires.c:499, :1064, right
+  after the instances), heat particles (Torch.c:497), and, after the level,
+  the skybox glow (CAM.c:73-133), `DecalMP_03` (DecalMP.c:239), the HUD
+  icon quads (DecalHUD.c:28-256, e.g. DotLights), the split-screen lines
+  (MainFrame_RenderFrame.c:1149-1245), `CAM_ClearScreen` (CAM.c:304), and
+  the checkered flag (RaceFlag.c:556). Early writers (weather, confetti,
+  stars, most HUD) do not check either.
+- So in the measured overflow only late primitives are dropped (level
+  geometry, graphics only). A write past `end` is still possible: if the
+  instances fill to guardEnd, the tires, heat particles, and late writers
+  write past `end` unchecked. Past db[0]'s end is db[1]'s primMem, and past
+  db[1]'s is db[0]'s OT (MainInit_PrimMem, then MainInit_OTMem;
+  LOAD/LOAD_TenStages.c:210-211). Those are render buffers, not simulation
+  objects, but a clobbered OT link can derail the GPU walk. No measured
+  frame came near it. Also retail: while paused, `ElimBG` lowers `end` by
+  0xc800 without moving guardEnd (ElimBG.c:92-97).
+
+LINK primMem (the fix for the drops). `MainInit_PrimMem` still makes both
+retail MEMPACK allocations of the retail size (`MainDB_PrimMem`
+unchanged), so the MEMPACK layout and every simulation object after them
+are unchanged. Then, under `CTR_NATIVE`, `MainArcadeLink_GrowPrimMem`
+(game/MAIN/MainArcadeLink.c) points each draw buffer's start, cursor,
+end, guardEnd, and capacityBytes at a static 256 KiB host buffer
+(`MainArcadeLinkPolicy_PrimitiveBytes`: LINK -> 0x40000, never below the
+retail size; any other mode keeps the retail size). The retail blocks stay
+reserved and unused. The per-frame GPU link ranges use start and
+capacityBytes (MainFrame.c:18), so they cover the new buffers. LINK only,
+the gate of the top tier that needs it, so every other mode (the roster
+proof, replay, previews) keeps the retail buffers. The checkpoint
+relocates primMem pointers only inside its address ranges
+(platform/native_checkpoint.c:665-676), so a host pointer would survive
+only an in-process restore. Arcade-link mode rejects replay record and
+playback (main.c) and refuses both quick-state hotkeys
+(platform/native_platform.c), so nothing captures one. One corner remains:
+if the host falls back from LINK to OFF mid-level (the defensive branch of
+`NativeArcadeLinkHost_AbortToTitle`), the buffers stay bound until the next
+level load while quick states are allowed again. With the LINK buffers the
+highest measured peak is 136836 bytes, 52% of 262144.
+tests/main_arcade_link_prim_mem_isolation_test.cmake pins the structure,
+and tests/main_arcade_link_policy_test.c the size rule.
 
 tests/main_arcade_link_top_lod_isolation_test.cmake pins the structure. It
 checks the two guarded call sites, the unchanged walk and its cull, the

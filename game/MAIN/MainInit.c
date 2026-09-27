@@ -4,6 +4,10 @@
 #include "MAIN/MainArcadeRaceSetup.h"
 #endif
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeLink.h"
+#endif
+
 #ifdef CTR_NATIVE
 static void MainInit_InitVisMemBspListNodes(struct VisMem *visMem, struct mesh_info *mesh)
 {
@@ -156,6 +160,15 @@ void MainInit_PrimMem(struct GameTracker *gGT)
 
 	MainDB_PrimMem(&gGT->db[0].primMem, size);
 	MainDB_PrimMem(&gGT->db[1].primMem, size);
+
+#if defined(CTR_NATIVE)
+	// NOTE: the arcade-link top LOD tier outgrows the retail per-level size on
+	// several 2P tracks and drops level geometry at the level draw's primMem
+	// preflight (docs/SOLO_CAB_MILESTONE.md section 8.5). LINK mode only, it
+	// moves both draw buffers to larger host buffers; the retail MEMPACK
+	// allocations above stay, so the MEMPACK layout is unchanged.
+	MainArcadeLink_GrowPrimMem(gGT);
+#endif
 }
 
 void MainInit_JitPoolsReset(struct GameTracker *gGT)

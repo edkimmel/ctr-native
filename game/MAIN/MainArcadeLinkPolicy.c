@@ -152,3 +152,13 @@ int MainArcadeLinkPolicy_ForceTopLod(uint32_t hostMode)
 {
 	return (hostMode == MAIN_ARCADE_LINK_POLICY_MODE_LINK) ? 1 : 0;
 }
+
+/* The primMem bytes: LINK grows to the LINK size, never shrinks. */
+uint32_t MainArcadeLinkPolicy_PrimitiveBytes(uint32_t hostMode, uint32_t retailBytes)
+{
+	if ((hostMode == MAIN_ARCADE_LINK_POLICY_MODE_LINK) && (retailBytes < MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES))
+	{
+		return MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES;
+	}
+	return retailBytes;
+}

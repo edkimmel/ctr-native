@@ -884,6 +884,66 @@ static int TestForceTopLod(void)
 	return 0;
 }
 
+/* The LINK primMem size (docs/SOLO_CAB_MILESTONE.md section 8.5): LINK grows
+ * one draw buffer to MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES, never below
+ * the retail size; every other mode keeps the retail size exactly. */
+static int TestPrimitiveBytes(void)
+{
+	/* Every retail per-level primMem size MainInit_GetPrimMemSize
+	 * (game/MAIN/MainInit.c) can return: the distinct KiB values of the 1P,
+	 * 2P, and 4P tables (game/zGlobal_DATA.c primMem_SizePerLEV_*) and its
+	 * fixed sizes (menu, 3P/4P and 2P default, adventure arena, intro, 1P
+	 * default). */
+	static const uint32_t retailBytes[] = {
+		0x5fu << 10, 0x67u << 10, 0x6eu << 10,
+		0xdcu << 10, 0x78u << 10, 0xa0u << 10, 0x88u << 10, 0xaau << 10, 0x7du << 10, 0x8au << 10, 0x7au << 10, 0x7eu << 10, 0x91u << 10,
+		0x96u << 10,
+		0x25800u, 0x1e000u, 0x1c000u, 0x17c00u,
+	};
+	const uint32_t linkBytes = MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES;
+	uint32_t mode;
+
+	/* A whole number of words, and room for the 0x100-byte guard. */
+	CHECK((linkBytes % 4u) == 0u);
+	CHECK(linkBytes > 0x100u);
+	/* The largest measured top-LOD 2P peak (136836 bytes, track 2) plus the
+	 * 2P level draw's largest preflight (reserve 0x2700 + bias 0xd00) fits
+	 * with room to spare. */
+	CHECK(linkBytes >= 136836u + 0x2700u + 0xd00u);
+	for (size_t i = 0; i < sizeof(retailBytes) / sizeof(retailBytes[0]); i++)
+	{
+		const uint32_t retail = retailBytes[i];
+
+		/* Larger than every retail size, so LINK always grows. */
+		CHECK(linkBytes > retail);
+		CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_LINK, retail) == linkBytes);
+		CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_LINK, retail) >= retail);
+		CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_OFF, retail) == retail);
+		CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_PREVIEW, retail) == retail);
+		for (mode = 0u; mode < 64u; mode++)
+		{
+			const uint32_t bytes = MainArcadeLinkPolicy_PrimitiveBytes(mode, retail);
+
+			CHECK(bytes >= retail);
+			CHECK(bytes == ((mode == MODE_LINK) ? linkBytes : retail));
+			/* The same LINK-only gate as the top LOD tier it pays for. */
+			CHECK((bytes != retail) == (MainArcadeLinkPolicy_ForceTopLod(mode) == 1));
+		}
+		/* Any unknown mode keeps the retail size. */
+		CHECK(MainArcadeLinkPolicy_PrimitiveBytes(0xFFFFFFFFu, retail) == retail);
+		CHECK(MainArcadeLinkPolicy_PrimitiveBytes(0x80000001u, retail) == retail);
+	}
+	/* Never shrinks: a size at or above the LINK size is kept in LINK too. */
+	CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_LINK, linkBytes) == linkBytes);
+	CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_LINK, linkBytes + 4u) == linkBytes + 4u);
+	CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_LINK, 0xFFFFFFFFu) == 0xFFFFFFFFu);
+	CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_OFF, linkBytes + 4u) == linkBytes + 4u);
+	/* Pure: the same answer on every call. */
+	CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_LINK, 0x88u << 10) == linkBytes);
+	CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_OFF, 0x88u << 10) == (0x88u << 10));
+	return 0;
+}
+
 int main(void)
 {
 	if (TestLayout() != 0) return 1;
@@ -903,6 +963,7 @@ int main(void)
 	if (TestReturnStep() != 0) return 1;
 	if (TestSkipBootIntro() != 0) return 1;
 	if (TestForceTopLod() != 0) return 1;
+	if (TestPrimitiveBytes() != 0) return 1;
 	printf("main_arcade_link_policy_test: ok\n");
 	return 0;
 }

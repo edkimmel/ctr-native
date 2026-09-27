@@ -472,6 +472,45 @@ int MainArcadeLink_ForceTopLod(void)
 	return MainArcadeLinkPolicy_ForceTopLod(NativeArcadeLinkHost_Mode());
 }
 
+/*
+ * The LINK primitive memory (docs/SOLO_CAB_MILESTONE.md section 8.5): one
+ * host buffer per draw buffer, used instead of the retail MEMPACK block only
+ * in LINK mode. Static, so no pointer into it ever moves.
+ */
+static u32 s_mainArcadeLinkPrimMem[2][MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES / sizeof(u32)];
+
+void MainArcadeLink_GrowPrimMem(struct GameTracker *gGT)
+{
+	uint32_t hostMode = NativeArcadeLinkHost_Mode();
+
+	if (gGT == NULL)
+	{
+		return;
+	}
+	for (int dbIndex = 0; dbIndex < 2; dbIndex++)
+	{
+		struct PrimMem *primMem = &gGT->db[dbIndex].primMem;
+		const u32 bytes = MainArcadeLinkPolicy_PrimitiveBytes(hostMode, primMem->capacityBytes);
+
+		if ((primMem->start == NULL) || (bytes <= primMem->capacityBytes) || (bytes > sizeof(s_mainArcadeLinkPrimMem[dbIndex])))
+		{
+			continue;
+		}
+
+		u8 *start = (u8 *)&s_mainArcadeLinkPrimMem[dbIndex][0];
+		u8 *end = start + ((bytes >> 2) << 2);
+
+		/* The same fields and guard as MainDB_PrimMem (game/MAIN/MainDB.c).
+		 * The retail MEMPACK block stays reserved and its start stays in the
+		 * struct, so the MEMPACK layout is unchanged. */
+		primMem->capacityBytes = bytes;
+		primMem->cursor = start;
+		primMem->start = start;
+		primMem->end = end;
+		primMem->guardEnd = end - 0x100;
+	}
+}
+
 int MainArcadeLink_Frame(struct GameTracker *gGT, struct GamepadSystem *gGS)
 {
 	struct MainArcadeLinkPolicyInput input;

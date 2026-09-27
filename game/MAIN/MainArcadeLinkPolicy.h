@@ -227,4 +227,18 @@ int MainArcadeLinkPolicy_SkipBootIntro(uint32_t hostMode);
  */
 int MainArcadeLinkPolicy_ForceTopLod(uint32_t hostMode);
 
+/*
+ * The arcade-link primitive memory (docs/SOLO_CAB_MILESTONE.md section 8.5):
+ * the bytes of one draw buffer's primMem. In LINK mode, which draws the top
+ * LOD tier, it is the larger of the retail per-level size and
+ * MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES; OFF, PREVIEW, and any unknown
+ * mode keep the retail size exactly. Never less than the retail size. The
+ * constant is at least the largest retail size (the 2P table's 0xdc KiB) and
+ * is also the size of the host buffers the thin accessor binds.
+ * Presentation only.
+ */
+#define MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES 0x40000u
+
+uint32_t MainArcadeLinkPolicy_PrimitiveBytes(uint32_t hostMode, uint32_t retailBytes);
+
 #endif
