@@ -864,7 +864,7 @@ Tasks 7 and 8 and v1 packaging are complete.
   clean tree (`docs/PACKAGING.md`, defaults PK-1..PK-10, and the Packaging
   section above). Its smoke test, `package_arcade_smoke`, races three times
   from the package folder, with no memcard save present.
-- The suite is 179 tests: the full run with `-j 8` takes about 280 s, and
+- The suite is 181 tests: the full run with `-j 8` takes about 280 s, and
   `-LE live -j 8` about 35 s. Live tests carry area labels (`live-link`,
   `live-roster`, `live-render`, `live-package`). Per-change checks use the
   fast suite plus the affected area; the full suite runs once per
@@ -923,20 +923,30 @@ open source.
    copyright, and crate intro, which saves about 27 s. Every kart and
    model draws at its top LOD tier, with the 2P-4P kart impostor
    (DecalMP) off. A retail-vs-forced roster digest check is byte-identical.
-   Owner checks are pending: the crate song plays briefly over black, and
-   top-LOD primMem was measured on track 3 only (peak 115120 of 139008).
-4. Retail bug fixes found by the linked races:
-   - Fixed (`c6ed69c0b`): the N. Tropy clock wrote `clockFlash` through
-     an empty driver slot, `VehPickupItem.c:865`. It crashed both
-     cabinets on the same frame in a 6-driver linked race. The live
-     tests are pending.
-   - HIGH, open: `VehPickupItem_MissileGetTargetDriver`
-     (`VehPickupItem.c:480`, `:490`) reads `gGT->pushBuffer[driverID]`
-     out of bounds for bots 4 and 5. In 2P the value depends on the
-     per-boot image base, so two cabinets can pick different missile
-     targets and desync (the live digest aborts the race).
-     `RB_CrateFruit_ThCollide` (`RB_Crate.c:338-355`) has the same kind
-     of read.
+   - LINK primMem: the draw buffers point at static 256 KiB host
+     buffers. Across all 16 tracks the worst peak is 52% of the buffer;
+     the retail buffer dropped level geometry on tracks 4, 5, 11, and 16.
+   - The crate song no longer plays over black (not yet heard by the
+     owner). `docs/SOLO_CAB_MILESTONE.md` sections 7-8 have the details.
+4. Retail bug fixes found by the linked races (`docs/SOLO_CAB_MILESTONE.md`
+   section 8.4):
+   - Fixed and live-proven: the N. Tropy clock wrote `clockFlash`
+     through an empty driver slot (`VehPickupItem.c:865`), which crashed
+     both cabinets in a 6-driver race. Roster runs L and M
+     (`--arcade-roster-proof-clock`) fire a clock with empty slots.
+   - Fixed: `VehPickupItem_MissileGetTargetDriver` read
+     `pushBuffer[driverID]` out of bounds for bots 4 and 5. On native,
+     bot 5's value followed ASLR and could desync two cabinets. Bots with
+     driverID >= 4 now reject every candidate, as PS1 does in practice.
+     The crate weapon branch returns early for bot owners.
+   - OPEN, HIGH: on tracks 0 (Dingo Canyon) and 12 (Polar Pass), the
+     TWO_CAB roster proof stops with DRIVERS_FAILED ("the drivers
+     extraction failed") at race ticks 377 and 946, with retail LOD too.
+     A linked race uses the same V4 projection, so it would likely end
+     as RACE ERROR on those tracks. No gate covers tracks other than 3.
+   - Open, render-only: `BOTS.c:2324-2341` writes `pushBuffer[driverID]`
+     into DecalMP entries for bots 4 and above. Guard it with
+     `driverID < 4`.
 5. Shelved (owner): stretch goals 9 and 10 (Oxide Station, unlock
    everything and Turbo Track). Dropped (owner): 11 (16:9) and 13
    (per-cabinet full screen). Not prioritised: 12 (G29 force feedback).
