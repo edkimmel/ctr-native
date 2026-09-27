@@ -947,20 +947,30 @@ open source.
    bot karts stay full 3D. `ctr-arcade-78c1376c5c32` adds logging and
    tests only and is not deployed. The session report is
    `docs/SESSION_REPORT_2026-09-27.md`.
-   - NEXT (owner-observed): 3D terrain still uses level LOD. The level
-     BSP near/far slot and the texture/subdivision depths are retail
-     (`docs/SOLO_CAB_MILESTONE.md` section 8.3). With LINK's 256 KiB
-     primMem (52% worst peak), forcing the near tier in LINK may fit.
-     Measure it on all 16 tracks and keep it presentation-only;
-     collision and the LEV file are simulation.
+   - Terrain LOD (owner-observed), done in `e94c6471b` with reduced
+     verification: the build and the fast suite (178/178). In LINK the
+     level BSP near/far slot, `textureLodDepthThreshold0/1`, and
+     `topLevelNear` are forced to the near tier through
+     `MainArcadeLinkPolicy_LevelLodThreshold` (0x40000000).
+     - LINK primMem is now 1 MiB per draw buffer. The worst measured peak
+       is 45% (Slide Coliseum), over tracks 4, 5, 11, and 16, with no
+       dropped geometry.
+     - `recursiveNear` stays retail. Forcing it overflowed primMem and
+       crashed the renderer at `MAX_VERTEX_BUFFER_SIZE` on tracks 4 and
+       16.
+     - The package is `ctr-arcade-e94c6471b722` (exe `54ABE156...AA47B4B2C974`);
+       it is not deployed.
+     - Open: the two-cab determinism test was not run. The roster proof
+       runs in OFF mode, so this change does not reach it; the forced-LINK
+       proof runs passed, but their digests were not compared. No
+       isolation test pins the four new call sites; the first attempt
+       was too slow. 1P, 3P, and 4P LINK were not measured.
 4. Cabinet polish: done. In LINK mode the boot skips the SCEA,
    copyright, and crate intro (about 27 s), and the crate song no longer
    plays over black. Every kart and model draws at its top LOD tier, with
    the 2P-4P kart impostor (DecalMP) off; a retail-vs-forced roster digest
-   check is byte-identical. The LINK draw buffers use static 256 KiB host
-   buffers, with a worst peak of 52% across all 16 tracks. See
-   `docs/SOLO_CAB_MILESTONE.md` sections 7-8. On the cabinets the owner
-   confirmed bot karts stay 3D; terrain LOD is item 3's NEXT.
+   check is byte-identical. See `docs/SOLO_CAB_MILESTONE.md` sections
+   7-8. On the cabinets the owner confirmed bot karts stay 3D.
 5. Retail bug fixes found by the linked races (`docs/SOLO_CAB_MILESTONE.md`
    sections 8.4 and 9). All are fixed and live-proven:
    - The N. Tropy clock wrote `clockFlash` through an empty driver slot,
