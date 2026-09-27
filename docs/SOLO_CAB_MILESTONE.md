@@ -1370,16 +1370,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/arcade-roster-track-sw
 | 14 | Coco Park | a==b | 4021 | 3970 | 4021 | finished |
 | 9 | Mystery Caves | a==b | 5515 | 5515 | 5505 | finished |
 | 2 | Blizzard Bluff | a==b | 4202 | 4202 | 4197 | finished |
-| 8 | Sewer Speedway | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
+| 8 | Sewer Speedway | a==b | -1 | -1 | -1 | autopilot: pinned on a wall |
 | 0 | Dingo Canyon | a==b | 4007 | 4007 | 3922 | finished |
 | 5 | Papu's Pyramid | a==b | 4795 | 4780 | 4795 | finished |
 | 1 | Dragon Mines | a==b | 4063 | 4060 | 4063 | finished |
-| 12 | Polar Pass | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
-| 10 | Cortex Castle | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
-| 15 | Tiny Arena | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
-| 7 | Hot Air Skyway | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
-| 11 | N. Gin Labs | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
-| 16 | Slide Coliseum | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
+| 12 | Polar Pass | a==b | -1 | -1 | -1 | tick cap |
+| 10 | Cortex Castle | a==b | -1 | -1 | -1 | autopilot: fall and respawn loop |
+| 15 | Tiny Arena | a==b | -1 | -1 | -1 | tick cap |
+| 7 | Hot Air Skyway | a==b | -1 | -1 | -1 | tick cap |
+| 11 | N. Gin Labs | a==b | -1 | -1 | -1 | autopilot: fall and respawn loop |
+| 16 | Slide Coliseum | a==b | -1 | -1 | -1 | tick cap |
 
 The ticks are race ticks from the stdout autopilot lines, the same in runs
 a and b (the sweep also requires equal summaries). -1 means never within
@@ -1394,11 +1394,89 @@ that do not finish (7, 8, 10, 11, 12, 15, 16) show no game issue: PASS
 6000/6000, a==b, no FAIL, no crash, and no "player finished" line for
 either human, so neither is ahead of the other.
 
-The proof logs no lap or restart-point progress (stdout has only the
-finish lines and the summary, and the report holds digests), so this
-evidence cannot tell a stalled or looping autopilot apart from a race
-longer than the cap. On the other tracks, the autopilot's 3-lap races take
-3608 to 5515 race ticks, and the slowest (Mystery Caves) ends 485 ticks
-under the cap. So a longer track at the same pace plausibly runs past
-6000. Telling the two causes apart needs a higher cap or a progress log;
-nothing here is a game issue.
+The proof logs no lap or restart-point progress, so the classifications
+come from a progress diagnostic, which was temporary and is not committed
+(reverted, and the Debug build rebuilt at HEAD).
+`MainArcadeRosterProof_AutopilotStep` logged to stdout, read-only, every
+300 race ticks and on every `lapIndex` change for players 0 and 1: lap,
+`distanceToFinish_curr`, position, speed, `kartState`, `actionsFlagSet`,
+and the autopilot's restart-point target. The autopilot cap
+(`NATIVE_ARCADE_ROSTER_PROOF_AUTOPILOT_MAX_TICKS`, the tick option's
+4-digit parse, and the sweep's two-cab `MaxTicks`) was raised to 14000. The
+seven tracks and track 9 (baseline) ran once each, 8 at a time: 520 s,
+every run PASS 14000/14000.
+
+```sh
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/arcade-roster-track-sweep.ps1 \
+    -Executable build-msvc-x86/Debug/ctr_native.exe \
+    -OutputDirectory C:/re-tools/ctr-native/build-msvc-x86/arcade_roster_finish_diag \
+    -Profile two-cab -Pairs none -Ticks 14000 -Tracks 8,12,10,15,7,11,16,9 -Parallel 8 -TimeoutSeconds 2400
+```
+
+Which race this is: the proof config carries the build identity, and a
+dirty tree runs under the fixed proof build identity. So the diagnostic
+build does not replay the 37d54726f record's race. Its setup seed is
+0x5218508ABCA49688 (the record's is 0xB5C373CFEF03CDEF), and its tick lines
+differ from the 6000-tick record's from tick 0 (rng, drivers, v4). It does
+replay the race of the 1800-tick identity record above, which was also
+built from a dirty tree. On all 8 tracks the config digest is equal (the
+tick count is not in it), and the first 1800 tick lines are byte-identical,
+so neither the log nor the raised cap perturbs the simulation. The causes
+below come from the steering and the track geometry, not the seed, but the
+ticks are this race's.
+
+| Track | Name | END_OF_RACE | p0 laps end | p1 laps end | Lap (distance units) | Cause |
+|---|---|---|---|---|---|---|
+| 9 | Mystery Caves | 5485 | 1867, 3590, 5314 | 1874, 3684, 5485 | ~92,600 | baseline |
+| 16 | Slide Coliseum | 6135 | 2079, 4096, 6029 | 2124, 4084, 6135 | ~92,200 | tick cap |
+| 7 | Hot Air Skyway | 7740 | 2666, 5224, 7740 | 2676, 5210, 7711 | ~129,900 | tick cap |
+| 12 | Polar Pass | 7833 | 2713, 5304, 7833 | 2642, 5172, 7719 | ~122,700 | tick cap |
+| 15 | Tiny Arena | 9474 | 3216, 6272, 9425 | 3185, 6210, 9474 | ~142,300 | tick cap |
+| 8 | Sewer Speedway | -1 | none | none | - | autopilot: wall |
+| 10 | Cortex Castle | -1 | none | 2294, 4416 | - | autopilot: falls |
+| 11 | N. Gin Labs | -1 | none | none | - | autopilot: falls |
+
+Tick cap (16, 7, 12, 15): both humans finish every lap at a steady pace,
+1933 to 3264 race ticks per lap. No sample shows wall contact or a respawn.
+The laps of 7, 12 and 15 are 1.3 to 1.5 times as long as Mystery Caves',
+at about the same pace (44 to 52 distance units per race tick, against 51
+to 54). Slide Coliseum's lap is as long as Mystery Caves', driven at 45 to
+48 units per tick. The races end 135 to 3474 ticks past 6000.
+
+Sewer Speedway (8), pinned on a wall: by race tick 900 both humans stop in
+lap 0 near x -3350 / -3480, z -20490, y 1 (distanceToFinish about 58,850 /
+58,750), and they stay there to race tick 14000, creeping less than 100
+units along the wall. From race tick 900 on, every sample shows speed 373
+to 689 (cruise is about 13,000),
+`ACTION_DRIVING_AGAINST_WALL`, and CROSS held without steering. The
+target, restart point 78, is at (-3073, 799, -20615), 800 units above the
+kart. The autopilot steers in x/z only and cannot reverse or unstick, so it
+drives straight into the wall under the upper route.
+
+Cortex Castle (10), fall and respawn loop: from about race tick 1800 in
+lap 0 (distanceToFinish 23,500 to 25,000 of about 105,000), player 0 falls
+at x -9051, z -1110, from about y 2500. Aku Aku picks it up (`kartState` 5,
+mask flag), it respawns at (-9913, ~2400, -2304), and it drives back into
+the same drop. It never passes restart point 104 (-9216, 2688, -384), and
+the loop repeats to race tick 14000. Player 1 passes the spot twice (laps
+end 2294 and 4416), then falls into the same loop on lap 3 by race tick
+6600. Every respawn completes (`kartState` 5, then 4, then 0, driving), so
+the game recovers the kart; the autopilot's line takes it off the edge.
+
+N. Gin Labs (11), fall and respawn loop: the same pattern for both humans,
+from about race tick 1500 in lap 0. Player 0 falls at (18198, 26580), short
+of restart point 97 (18624, 384, 26688), and respawns at
+(17856, ~200, 27072). Player 1 falls at (18394, 25025), short of point 102
+(16896, 768, 24192), and respawns at (18624, ~580, 25152). The samples
+catch the karts falling as low as y -1389 (player 1) and -2394 (player 0),
+and the loop repeats to race tick 14000.
+
+Conclusion: nothing here is a game issue. Every run is PASS 14000/14000
+with no FAIL, and laps, finishes and Aku Aku respawns work on every track.
+Four tracks are tick cap: their 3 laps take more than 6000 race ticks.
+Three are autopilot quality: a wall on 8, and falls on 10 and 11. Of the
+required tracks, Polar Pass (12) finishes at 7833 and Slide Coliseum (16)
+at 6135, both past the 6000 cap. A two-cabinet finish on them needs a
+higher autopilot cap (the report's tick-line array is sized by it). Tracks
+8, 10 and 11 need an autopilot that follows the route in 3D and keeps off
+the drops.
