@@ -13,7 +13,11 @@
 #     before any run;
 #   - the smoke refuses a package arcade.cfg that sets a port, a peer, a
 #     group, a lan, or a seat other than auto, before any run, and runs the
-#     discovery gate in config mode (DISC-S5).
+#     discovery gate in config mode (DISC-S5);
+#   - the operator notes README.txt keep their operator-critical lines (the
+#     data supply, seat = auto, the memcard and config ownership, the lan and
+#     port overrides, the firewall rule on 7000 and 7001, the startup lines,
+#     the solo race) and agree with arcade.cfg's values.
 # WORK_DIR must lie under REPO_DIR/build-msvc-x86 (the stage mode refuses
 # anything else).
 
@@ -352,6 +356,88 @@ string(FIND "${smoke_text}" "Join-Path $PSScriptRoot 'arcade-link-launch-check.p
 if(NOT static_gate_at EQUAL -1)
     message(FATAL_ERROR "package stage: tools/package-arcade-smoke.ps1 must not run tools/arcade-link-launch-check.ps1")
 endif()
+
+# 12. The operator notes (tools/package/README.txt, staged verbatim, case 1)
+# keep the lines a cabinet's operator depends on, word for word (a rewrap is
+# allowed: runs of whitespace compare as one space), and the values they
+# state agree with tools/package/arcade.cfg.
+file(READ "${REPO_DIR}/tools/package/README.txt" readme_text)
+string(REGEX REPLACE "[ \t\r\n]+" " " readme_text "${readme_text}")
+foreach(literal IN ITEMS
+        # The data supply: no retail data shipped, the operator's own ctr-u.bin.
+        "The package contains NO game data. Put your own raw NTSC-U disc image, named ctr-u.bin, in a folder on each cabinet, for example C:\\ctr-data (the folder arcade.cfg names in data_dir)."
+        "For a linked cabinet the folder holds ONLY ctr-u.bin: delete any extracted game files (BIGFILE.BIG and the rest) beside it."
+        "Both cabinets need the same ctr-u.bin."
+        # The shipped config and seat election.
+        "Both use the same arcade.cfg, as shipped: seat = auto."
+        # The per-cabinet memcard, log, and config.
+        "memcards\\ and the log belong to one cabinet, and so does arcade.cfg once you edit it: leave them out of any folder sync between the cabinets."
+        "Never copy a memcards\\ save to a cabinet."
+        "Extracting a new package over this folder overwrites arcade.cfg: keep a copy of an edited one and put it back afterwards."
+        "Keep fullscreen = 1."
+        # The optional overrides an operator may set.
+        "- lan = 192.168.1.0/24 (the arcade switch's subnet) is for a cabinet with two network cards."
+        "Both cabinets need the same value, and it must equal the arcade card's subnet exactly, the same network and the same prefix"
+        "- port = <port> sets this cabinet's link port (default 7001; never 7000, the discovery port). Use the same port in the firewall rule."
+        # The firewall (PK-9).
+        "allow the discovery port 7000 and the link port 7001 for this exe from the local network (the same rule on both cabinets):"
+        "New-NetFirewallRule -DisplayName \"CTR arcade link\" -Direction Inbound -Protocol UDP -LocalPort 7000,7001 -RemoteAddress LocalSubnet -Program \"$PWD\\ctr_native.exe\" -Profile Any -Action Allow"
+        "Get-NetFirewallApplicationFilter -Program \"$PWD\\ctr_native.exe\" | Get-NetFirewallRule | Where-Object Action -eq 'Block'"
+        # The same build and disc, and the startup lines that prove the config.
+        "the link refuses two different builds or disc images (\"LINK REFUSED: SETTINGS DO NOT MATCH\")."
+        "[CTR Native] Config file: <this folder>\\arcade.cfg"
+        "[CTR Native] arcade link: auto port 7001, 0 peers"
+        # The solo race.
+        "WAITING FOR OTHER CABINET and PRESS START TO RACE SOLO."
+        "Solo needs no setting: arcade.cfg has no key for it.")
+    string(FIND "${readme_text}" "${literal}" literal_at)
+    if(literal_at EQUAL -1)
+        message(FATAL_ERROR "package stage: tools/package/README.txt lacks the operator line '${literal}'")
+    endif()
+endforeach()
+# The values README.txt states against the shipped arcade.cfg: the seat, the
+# data folder, fullscreen, the link and discovery ports, and the lan example.
+file(READ "${REPO_DIR}/tools/package/arcade.cfg" cfg_text)
+string(REPLACE "\r" "" cfg_text "${cfg_text}")
+function(cfg_value pattern out_var)
+    if(NOT cfg_text MATCHES "${pattern}")
+        message(FATAL_ERROR "package stage: tools/package/arcade.cfg does not match '${pattern}'")
+    endif()
+    set(${out_var} "${CMAKE_MATCH_1}" PARENT_SCOPE)
+endfunction()
+function(readme_value pattern out_var)
+    if(NOT readme_text MATCHES "${pattern}")
+        message(FATAL_ERROR "package stage: tools/package/README.txt does not match '${pattern}'")
+    endif()
+    set(${out_var} "${CMAKE_MATCH_1}" PARENT_SCOPE)
+endfunction()
+foreach(entry IN ITEMS
+        "seat|\nseat = ([^\n]*)\n|as shipped: seat = ([a-z0-9]+)\\."
+        "data_dir|\ndata_dir = ([^\n]*)\n|for example ([^ ]+) \\(the folder arcade\\.cfg names in data_dir\\)"
+        "fullscreen|\nfullscreen = ([^\n]*)\n|Keep fullscreen = ([0-9]+)\\."
+        "render_scale|\nrender_scale = ([^\n]*)\n|shipped ([0-9]+)\\) and texture_filter"
+        "texture_filter|\ntexture_filter = ([^\n]*)\n|texture_filter \\(nearest or bilinear. shipped ([a-z]+)\\)"
+        "link port|\n# port = ([0-9]+)\n|link port \\(default ([0-9]+). never "
+        "link port default|the default is ([0-9]+)\\.|arcade link: auto port ([0-9]+),"
+        "firewall link port|\n# port = ([0-9]+)\n|-LocalPort [0-9]+,([0-9]+) "
+        "discovery port|discovery port, ([0-9]+)\\.|never ([0-9]+), the discovery port"
+        "firewall discovery port|discovery port, ([0-9]+)\\.|-LocalPort ([0-9]+),"
+        "lan example|\n# lan = ([^\n]*)\n|- lan = ([^ ]+) \\(the arcade switch's subnet\\)")
+    # A ';' would split the entry: the patterns match one with '.'.
+    string(REPLACE "|" ";" entry "${entry}")
+    list(LENGTH entry entry_fields)
+    if(NOT entry_fields EQUAL 3)
+        message(FATAL_ERROR "package stage: README/arcade.cfg entry '${entry}' has ${entry_fields} fields, expected 3")
+    endif()
+    list(GET entry 0 entry_name)
+    list(GET entry 1 cfg_pattern)
+    list(GET entry 2 readme_pattern)
+    cfg_value("${cfg_pattern}" cfg_found)
+    readme_value("${readme_pattern}" readme_found)
+    if(NOT cfg_found STREQUAL readme_found)
+        message(FATAL_ERROR "package stage: README.txt states ${entry_name} '${readme_found}', arcade.cfg '${cfg_found}'")
+    endif()
+endforeach()
 
 file(REMOVE_RECURSE "${work_dir}")
 message(STATUS "package stage: PASS")

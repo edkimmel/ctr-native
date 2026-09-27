@@ -619,7 +619,9 @@ framebuffer, not the desktop), under
 one-cab` (runs F-J plus its own A, the base of the cross-profile checks);
 together they run every check of the unsplit eleven-run proof (`-Group all`,
 still the script's default), each prints which checks it ran, and the fast
-test `arcade_roster_proof_groups` pins the split. They write under
+test `arcade_roster_proof_groups` pins the split and its registration
+(both groups, `-Group`, and `-Ticks` above the hold and clock ticks). They
+write under
 `build-msvc-x86\arcade_roster_proof\<group>\<config>`. The
 `arcade_roster_track_sweep` test runs `tools/arcade-roster-track-sweep.ps1`
 (docs/SOLO_CAB_MILESTONE.md section 9): one roster proof per arcade

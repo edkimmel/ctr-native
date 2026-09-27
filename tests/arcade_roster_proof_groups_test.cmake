@@ -11,7 +11,16 @@
 #   - every group lists "track 3" (the arcade-link fixture's track) without
 #     -Track, and "track 5" with -Track 5; a -Track outside 0..255 is
 #     rejected;
-#   - an unknown group is rejected.
+#   - an unknown group is rejected;
+#   - CMakeLists.txt registers the split: one foreach over exactly
+#     "two-cab one-cab" whose add_test (the only
+#     arcade_roster_determinism_ add_test in the file) runs the checker on
+#     ctr_native with -Group ${roster_group}, its own output directory, and
+#     -Ticks above both of the checker's fixed ticks (run K's $holdTick 300
+#     and runs L and M's $clockTick 600: at or below either, the checker
+#     skips those runs with a note and still passes), with SKIP_RETURN_CODE
+#     77 and LABELS "live;live-roster" (the RESOURCE_LOCKs are pinned by
+#     tests/arcade_roster_track_sweep_plan_test.cmake).
 
 if(NOT REPO_DIR)
     message(FATAL_ERROR "roster proof groups: REPO_DIR is required")
@@ -151,4 +160,84 @@ if(bad_result EQUAL 0)
     message(FATAL_ERROR "roster proof groups: -Group three-cab was accepted:\n${bad_output}${bad_error}")
 endif()
 
-message(STATUS "roster proof groups: PASS (${all_count} checks; two-cab and one-cab together run all of them)")
+# The live ctests' registration in CMakeLists.txt: the foreach over the
+# split's groups and the add_test and properties inside it.
+set(cmake_lists "${REPO_DIR}/CMakeLists.txt")
+if(NOT EXISTS "${cmake_lists}")
+    message(FATAL_ERROR "roster proof groups: missing ${cmake_lists}")
+endif()
+file(READ "${cmake_lists}" cmake_source)
+string(REPLACE "\r" "" cmake_source "${cmake_source}")
+set(foreach_header "foreach(roster_group IN ITEMS ")
+string(FIND "${cmake_source}" "${foreach_header}" foreach_at)
+if(foreach_at EQUAL -1)
+    message(FATAL_ERROR "roster proof groups: CMakeLists.txt has no '${foreach_header}...' registering the roster determinism groups")
+endif()
+string(SUBSTRING "${cmake_source}" ${foreach_at} -1 foreach_tail)
+string(FIND "${foreach_tail}" "endforeach()" foreach_end)
+if(foreach_end EQUAL -1)
+    message(FATAL_ERROR "roster proof groups: the roster_group foreach in CMakeLists.txt has no endforeach()")
+endif()
+string(SUBSTRING "${foreach_tail}" 0 ${foreach_end} foreach_block)
+if(NOT foreach_block MATCHES "^foreach\\(roster_group IN ITEMS ([^)]*)\\)")
+    message(FATAL_ERROR "roster proof groups: the roster_group foreach header is malformed:\n${foreach_block}")
+endif()
+string(STRIP "${CMAKE_MATCH_1}" registered_groups)
+if(NOT registered_groups STREQUAL "two-cab one-cab")
+    message(FATAL_ERROR "roster proof groups: CMakeLists.txt registers the groups '${registered_groups}', expected exactly 'two-cab one-cab' (the split, both and no other)")
+endif()
+string(REGEX MATCHALL "add_test\\(NAME arcade_roster_determinism_" registrations "${cmake_source}")
+list(LENGTH registrations registration_count)
+if(NOT registration_count EQUAL 1)
+    message(FATAL_ERROR "roster proof groups: CMakeLists.txt has ${registration_count} arcade_roster_determinism_ add_tests, expected the one inside the roster_group foreach")
+endif()
+if(NOT foreach_block MATCHES "string\\(REPLACE \"-\" \"_\" roster_suffix \"\\\${roster_group}\"\\)")
+    message(FATAL_ERROR "roster proof groups: the roster_group foreach no longer derives roster_suffix from roster_group:\n${foreach_block}")
+endif()
+if(NOT foreach_block MATCHES "add_test\\(NAME arcade_roster_determinism_\\\${roster_suffix}[ \t\n]+COMMAND([^)]*)\\)")
+    message(FATAL_ERROR "roster proof groups: no add_test(NAME arcade_roster_determinism_\${roster_suffix} ...) inside the roster_group foreach:\n${foreach_block}")
+endif()
+set(group_command "${CMAKE_MATCH_1}")
+foreach(argument IN ITEMS
+        "-File \"\${CMAKE_SOURCE_DIR}/tools/arcade-roster-proof-check.ps1\""
+        "-Executable \"$<TARGET_FILE:ctr_native>\""
+        "-OutputDirectory \"\${CMAKE_BINARY_DIR}/arcade_roster_proof/\${roster_group}/$<CONFIG>\""
+        "-Group \${roster_group}")
+    string(REGEX REPLACE "[ \t\n]+" " " normalized_command "${group_command}")
+    string(FIND "${normalized_command} " "${argument} " argument_at)
+    if(argument_at EQUAL -1)
+        message(FATAL_ERROR "roster proof groups: the roster determinism add_test lacks '${argument}':${group_command}")
+    endif()
+endforeach()
+# -Ticks: an integer above run K's hold tick and runs L and M's clock tick,
+# read from the checker, or the checker drops those runs (with a note) and
+# the ctest still passes.
+if(NOT group_command MATCHES "[ \t\n]-Ticks[ \t\n]+([^ \t\n]+)")
+    message(FATAL_ERROR "roster proof groups: the roster determinism add_test registers no -Ticks:${group_command}")
+endif()
+set(registered_ticks "${CMAKE_MATCH_1}")
+if(NOT registered_ticks MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "roster proof groups: the roster determinism add_test registers -Ticks '${registered_ticks}', not an integer")
+endif()
+file(READ "${roster_script}" roster_source)
+foreach(fixed IN ITEMS holdTick clockTick)
+    if(NOT roster_source MATCHES "\n\\$${fixed} = ([0-9]+)")
+        message(FATAL_ERROR "roster proof groups: tools/arcade-roster-proof-check.ps1 has no '$${fixed} = N' line")
+    endif()
+    set(checker_${fixed} "${CMAKE_MATCH_1}")
+    if(registered_ticks LESS_EQUAL checker_${fixed})
+        message(FATAL_ERROR "roster proof groups: the roster determinism groups register -Ticks ${registered_ticks}, not above the checker's $${fixed} ${checker_${fixed}}: its runs would be skipped")
+    endif()
+endforeach()
+if(checker_holdTick LESS 300 OR checker_clockTick LESS 600)
+    message(FATAL_ERROR "roster proof groups: the checker's hold tick ${checker_holdTick} or clock tick ${checker_clockTick} fell below the documented 300 and 600")
+endif()
+if(NOT foreach_block MATCHES "set_tests_properties\\(arcade_roster_determinism_\\\${roster_suffix} PROPERTIES([^)]*)\\)")
+    message(FATAL_ERROR "roster proof groups: no set_tests_properties for arcade_roster_determinism_\${roster_suffix} inside the roster_group foreach")
+endif()
+set(group_properties "${CMAKE_MATCH_1}")
+if(NOT group_properties MATCHES "[ \t\n]SKIP_RETURN_CODE 77[ \t\n]" OR NOT group_properties MATCHES "[ \t\n]LABELS \"live;live-roster\"")
+    message(FATAL_ERROR "roster proof groups: the roster determinism groups must be SKIP_RETURN_CODE 77 and LABELS \"live;live-roster\":${group_properties}")
+endif()
+
+message(STATUS "roster proof groups: PASS (${all_count} checks; two-cab and one-cab together run all of them; registered ${registered_groups} at -Ticks ${registered_ticks})")

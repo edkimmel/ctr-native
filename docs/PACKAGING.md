@@ -456,7 +456,11 @@ alone with
 `package_arcade_stage` (not live) checks the stage mode, the argument checks
 of the smoke and of both gate scripts with a dummy exe, and the smoke's
 refusal of a package `arcade.cfg` that sets a port, a peer, a group, a lan, or a
-seat other than `auto`.
+seat other than `auto`. It also pins the operator-critical lines of
+`README.txt` word for word (the data supply, `seat = auto`, the memcard and
+config ownership, the lan and port overrides, the PK-9 firewall rule, the
+startup lines, the solo race) and checks the values they state against
+`arcade.cfg`.
 
 To smoke-test a real package folder, with a clean tree:
 
