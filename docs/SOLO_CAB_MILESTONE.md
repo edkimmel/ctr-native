@@ -749,8 +749,23 @@ every other mode:
    `isCutsceneOver`). Only the minimum-time gate
    (`CS_ND_CRATE_SKIP_MIN_FRAME32`, about 5.8 s) is bypassed, for
    `NAUGHTY_DOG_CRATE` only. No pad tap is injected. Credits and endings
-   are untouched. On the next frame the crate's load request sets LOADING
-   (the ND crate case in CTR_Main), so the skip fires once.
+   are untouched. The skip fires once. The skip path returns 1 from
+   `CS_Thread_UseOpcode`, so `CS_Thread_ThTick` sets `THREAD_FLAG_DEAD` on
+   the camera thread in that same tick (game/233/CS_Thread.c:1563-1565),
+   before any LOADING frame. As a second layer, on the next frame the
+   crate's load request sets LOADING (the `NAUGHTY_DOG_CRATE` case,
+   game/MAIN/MainMain.c:226-229), and a LOADING frame skips
+   `MainFrame_GameLogic` and so every thread tick (MainMain.c:498-507).
+   The crate camera script (`R233.creditsOpcodeData` from offset 0x18)
+   opens with a sync marker, and its first real opcode is PLAY_XA
+   (category 1, XA 0x51; game/233/R233.c:2333). In LINK the skip runs
+   before opcode dispatch on the first tick, so that XA never starts,
+   where a retail START skip fades it out (`CDSYS_XAPauseRequest` is a
+   no-op on an idle XA). The end state is equivalent: `XA_State` stays
+   idle; `XA_Playing_Category` is read only when the XA is not idle
+   (game/HOWL/HOWL_AudioState.c:209) and `XA_Playing_Index` is never read;
+   `XA_PauseFrame` stays 0, so its readers (HOWL_AudioState.c:297, 308,
+   406, 417) just pass their 9-frame check sooner.
 
 Why not load the main menu at boot? That was rejected as unsafe. The
 first-boot branch of stage 0 skips `MEMPACK_SwapPacks` and
@@ -770,13 +785,36 @@ Checked:
 - The arcade-link hook: the title is reached through the retail main-menu
   load, so its intro and `MainArcadeLinkPolicy_TitleMenuReady`'s
   menu-ready frame are unchanged.
-- RNG: the crate's `MixRNG_Scramble` calls (game/233/CS_Thread.c) no
-  longer run. They only move `sdata->randomNumber`, which the race setup
-  reseeds from the agreed seed before every linked or solo race
-  (game/MAIN/MainArcadeRaceSetupCore.c:356,
-  game/MAIN/MainArcadeRaceSetup.c:163-164). This is the same menu-history
-  independence the roster proof relies on. The live link tests are the
-  proof.
+- RNG and boot counters: the crate's later per-tick `MixRNG_Scramble`
+  calls stop. Some still run in LINK: the init-time draw in
+  `CS_Thread_Init` (game/233/CS_Thread.c:1815) for the camera thread and
+  every box and kart thread (game/233/CS_Cutscene.c:10, 39-57), the one in
+  `CS_Thread_LInB` (CS_Thread.c:1514) for any crate instance born through
+  it, the camera's random clear-box draw on the first tick
+  (CS_Thread.c:314), which comes before the skip check (CS_Thread.c:337),
+  and whatever the box and kart threads draw on their own first tick.
+  These only move `sdata->randomNumber`. The skipped VSync-pumped waits
+  (the SCEA XA wait in StateZero and the copyright hold in stage 0) also
+  no longer advance the `MainDrawCb_Vsync` counters `frameTimer_VsyncCallback`,
+  `frameTimer_Confetti`, and `rcntTotalUnits` (game/MAIN/MainDrawCb.c:22-32).
+  They never moved the audio RNG: its only writers are `Garage_PlayFX`,
+  `Level_RandomFX`, and `Voiceline_RequestPlay`, none reached at boot. The
+  race setup pins `randomNumber` (from the agreed seed), both `advRng`
+  states, the PSX `rand` seed, `audioRNG`, `timer`, `frameTimerConfetti`,
+  `rcntTotalUnits`, and `clockFrameStart` before every linked or solo
+  race (game/MAIN/MainArcadeRaceSetupCore.c:346-360, applied in
+  game/MAIN/MainArcadeRaceSetup.c:163-189). `frameTimer_VsyncCallback` is
+  not pinned; the race digest reads it only as a delta from race start
+  (game/MAIN/MainArcadeRaceDigest.c:97, 114). This is the same
+  menu-history independence the roster proof relies on. The live link
+  tests are the proof.
+- Known cosmetic effect: `Music_SetIntro` and `CseqMusic_Start`
+  (game/MAIN/MainMain.c:795-797) still start the ND-crate song in
+  StateZero. The crate load keeps music playing
+  (`boolPlayMusicDuringLoading`, game/LOAD/LOAD_TenStages.c:51), so in
+  LINK the song plays over a black screen during the crate load until
+  `CseqMusic_StopAll` on the first crate tick (CS_Thread.c:377). Nothing
+  carries over to the title. An owner listen is pending.
 
 tests/main_arcade_link_boot_intro_isolation_test.cmake pins the structure:
 the three guarded call sites, StateZero's load and lease order, the exact
