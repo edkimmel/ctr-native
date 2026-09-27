@@ -774,11 +774,12 @@ void StateZero()
 	LOAD_VramFile(sdata->ptrBigfile1, 0x1fd, NULL, &vramSize, -1);
 #if defined(CTR_NATIVE)
 	/* Arcade-link boot-intro skip (docs/SOLO_CAB_MILESTONE.md section 7):
-	 * in LINK mode the SCEA TIM still loads but is not displayed, and the
-	 * "Start your engines" XA below is neither played nor waited on. Every
-	 * load, howl and music init, memcard init, and lease call here runs as
-	 * retail, and the level is still the ND crate, loaded by the ten-stage
-	 * loader as on every boot. */
+	 * in LINK mode the SCEA TIM still loads but is not displayed, the
+	 * ND-crate song below is loaded but not started, and the "Start your
+	 * engines" XA below is neither played nor waited on. Every load, howl
+	 * and music init, memcard init, and lease call here runs as retail, and
+	 * the level is still the ND crate, loaded by the ten-stage loader as on
+	 * every boot. */
 	const int skipBootIntro = MainArcadeLink_SkipBootIntro();
 
 	if (skipBootIntro == 0)
@@ -794,7 +795,21 @@ void StateZero()
 
 	Music_SetIntro();
 	CseqMusic_StopAll();
-	CseqMusic_Start(CSEQ_SONG_LEVEL, 0, NULL, 0, 0);
+#if defined(CTR_NATIVE)
+	/* Arcade-link boot-intro skip: the crate's first tick stops every song
+	 * (CS_Thread.c START-skip path), so the song would only play over black
+	 * during the crate load. Music_SetIntro above still loads bank 33 and
+	 * the song, and Music_Start(0) below still sets the cseqBoolPlay and
+	 * cseqHighestIndex bookkeeping, so the main-menu load (stage 4
+	 * Music_Restart, stage 5 Music_Stop) and the title music start as
+	 * retail. What differs is audio-only: stale song-pool and sequence
+	 * fields (rewritten by the next CseqMusic_Start before any read) and
+	 * the SPU free-channel order. */
+	if (skipBootIntro == 0)
+#endif
+	{
+		CseqMusic_Start(CSEQ_SONG_LEVEL, 0, NULL, 0, 0);
+	}
 	Music_Start(0);
 
 #if defined(CTR_NATIVE)

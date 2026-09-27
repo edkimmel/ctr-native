@@ -731,9 +731,13 @@ each inside `#if defined(CTR_NATIVE)`, with the retail code in place for
 every other mode:
 
 1. StateZero (game/MAIN/MainMain.c): the SCEA TIM still loads but is not
-   displayed, and the XA is neither played nor waited on. Every load, the
-   howl and music init, the memcard init, and the four topology-lease calls
-   run as before, in the same order. Skipping the play leaves no XA state
+   displayed, the ND-crate song is loaded but not started (only
+   `CseqMusic_Start(CSEQ_SONG_LEVEL, ...)` is gated; see the crate-song
+   bullet under "Checked"), and the XA is neither played nor waited on.
+   Every load, the howl and music init (`Music_SetIntro`,
+   `CseqMusic_StopAll`, `Music_Start(0)`), the memcard init, and the four
+   topology-lease calls run as before, in the same order. Skipping the
+   play leaves no XA state
    that matters later. CDSYS_Init (from LOAD_InitCD) has already left
    `XA_State` idle and `XA_PauseFrame` 0, the values the retail play leaves
    when it ends here (`frameTimer_MainFrame_ResetDB` is still 0 in
@@ -808,13 +812,52 @@ Checked:
   (game/MAIN/MainArcadeRaceDigest.c:97, 114). This is the same
   menu-history independence the roster proof relies on. The live link
   tests are the proof.
-- Known cosmetic effect: `Music_SetIntro` and `CseqMusic_Start`
-  (game/MAIN/MainMain.c:795-797) still start the ND-crate song in
-  StateZero. The crate load keeps music playing
-  (`boolPlayMusicDuringLoading`, game/LOAD/LOAD_TenStages.c:51), so in
-  LINK the song plays over a black screen during the crate load until
-  `CseqMusic_StopAll` on the first crate tick (CS_Thread.c:377). Nothing
-  carries over to the title. An owner listen is pending.
+- The crate song: retail StateZero runs `Music_SetIntro`,
+  `CseqMusic_StopAll`, `CseqMusic_Start(CSEQ_SONG_LEVEL, 0, NULL, 0, 0)`,
+  and `Music_Start(0)`. The crate load keeps music playing
+  (`boolPlayMusicDuringLoading`, game/LOAD/LOAD_TenStages.c:51), and in
+  LINK the first crate tick stops every song (`CseqMusic_StopAll`,
+  game/233/CS_Thread.c:377), so the song could only play over a black
+  screen. In LINK, StateZero therefore skips only the `CseqMusic_Start`;
+  the crate load is now silent and the title music starts as before.
+  What each call does:
+  - `Music_SetIntro` (game/HOWL/HOWL_Music.c:3-20) zeroes
+    `audioDefaults[7]`, loads bank 33, and loads `HOWL_SONG_ND_CRATE`.
+    It still runs, so the loaded audio state is unchanged.
+  - `CseqMusic_Start` (game/HOWL/HOWL_CseqMusic.c:3-41) takes the first
+    free `songPool` slot and calls `SongPool_Start`
+    (game/HOWL/HOWL_SongPool.c:42-181), which writes that slot's flags,
+    id, tempo, volume, and sequence list, and claims one `songSeq` entry
+    per sequence. The per-frame `Channel_ParseSongToChannels`
+    (game/HOWL/HOWL_Channel.c:311-329) then plays notes, moving SPU
+    channels between `channelFree` and `channelTaken`. It touches no RNG
+    (the `audioRNG` writers are only `Garage_PlayFX`, `Level_RandomFX`,
+    and `Voiceline_RequestPlay`) and no game state.
+  - `Music_Start(0)` (HOWL_Music.c:534-540) is bookkeeping only:
+    `cseqBoolPlay = true`, `cseqHighestIndex = 0`. It starts nothing
+    audible and still runs, so the flags read later are as retail.
+  Nothing later depends on the song having been started. Every
+  song-pool and sequence reader checks the slot's playing bit first
+  (`CseqMusic_*`, `SongPool_StopAllCseq`, `Channel_ParseSongToChannels`),
+  and the only reader of `timeSpentPlaying`, the stage-0 copyright hold
+  (LOAD_TenStages.c:88), is already skipped in LINK. The crate's
+  `CseqMusic_StopAll` finds no live slot, where retail frees slot 0; both
+  leave every slot free. The main-menu load then runs as after a retail
+  skip: stage 4 `Music_Restart` (LOAD_TenStages.c:305) is a no-op on the
+  free slot in both cases, stage 5 `Music_Stop` (LOAD_TenStages.c:359)
+  reads the same `cseqBoolPlay`/`cseqHighestIndex` and resets them, and
+  stage 8 sets `AUDIO_GARAGE_ENTRY` (LOAD_TenStages.c:633-638; the crate
+  latched state 4, which `Audio_SetState` ignores), whose
+  `Music_Adjust(0, ...)` (game/HOWL/HOWL_AudioState.c:26-32,
+  HOWL_Music.c:435-468) starts the title song in slot 0, the same free
+  slot, rewriting every field `SongPool_Start` sets. What differs is
+  audio-only: the stale fields of `songPool[0]` and the crate's
+  `songSeq` entries (rewritten before any read), and the order of
+  `channelFree`, which only picks the SPU voice for later sounds.
+  `OtherFX_Play` returns a `CountSounds` handle, not a channel
+  (game/HOWL/HOWL_OtherFX.c:118-119). None of this is in the race setup
+  pins, the race digest, or the replay state; the race setup pins
+  `audioRNG` regardless (game/MAIN/MainArcadeRaceSetupCore.c:346-360).
 
 tests/main_arcade_link_boot_intro_isolation_test.cmake pins the structure:
 the three guarded call sites, StateZero's load and lease order, the exact

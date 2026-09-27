@@ -1,7 +1,8 @@
 # Structural isolation for the arcade-link boot-intro skip
 # (docs/SOLO_CAB_MILESTONE.md section 7). In LINK mode only, the cabinet boots
-# straight to the title: StateZero skips the SCEA display and the "Start your
-# engines" XA (play and wait), the first-boot branch of LOAD_TenStages stage 0
+# straight to the title: StateZero skips the SCEA display, the start of the
+# ND-crate song, and the "Start your engines" XA (play and wait), the
+# first-boot branch of LOAD_TenStages stage 0
 # skips the copyright display and its intro-song hold, and the Naughty Dog
 # crate ends through the retail START skip on its first camera tick, with
 # only the minimum-time gate bypassed and no pad tap injected. The decision is
@@ -14,8 +15,9 @@
 #      each call (and each include of MainArcadeLink.h) inside an
 #      #if defined(CTR_NATIVE) block;
 #   3. StateZero keeps every load, init, and topology-lease call in its
-#      retail order, and the two gated blocks hold exactly the SCEA display
-#      and the XA play and wait;
+#      retail order, the three gated blocks hold exactly the SCEA display,
+#      the crate-song CseqMusic_Start, and the XA play and wait, and
+#      Music_SetIntro, CseqMusic_StopAll, and Music_Start stay ungated;
 #   4. the copyright gate holds exactly the display and the native hold, and
 #      boolFirstBoot, the TIM load, and the not-first-boot branch are intact;
 #   5. the crate skip is the retail START-skip path for NAUGHTY_DOG_CRATE
@@ -265,8 +267,10 @@ foreach(site IN ITEMS "${mainmain_path}" "${tenstages_path}" "${csthread_path}")
 endforeach()
 
 # 3. StateZero: the call is in StateZero, every load, init, and lease call
-#    keeps its retail order, the lease calls are the retail four, and the two
-#    gated blocks hold exactly the SCEA display and the XA play and wait.
+#    keeps its retail order, the lease calls are the retail four, and the
+#    three gated blocks hold exactly the SCEA display, the crate-song start,
+#    and the XA play and wait. Music_SetIntro (bank and song loads),
+#    CseqMusic_StopAll, and Music_Start (the play bookkeeping) stay ungated.
 ctr_read_source("${mainmain_path}" mainmain_source)
 ctr_strip_comments("${mainmain_source}" mainmain_code)
 ctr_block_text("${mainmain_path}" "${mainmain_code}" "void StateZero()" statezero)
@@ -290,6 +294,7 @@ ctr_require_order("${mainmain_path} (StateZero)" "${statezero}"
     "VSyncCallback(MainDrawCb_Vsync);"
     "Music_SetIntro();"
     "CseqMusic_StopAll();"
+    "if (skipBootIntro == 0)"
     "CseqMusic_Start(CSEQ_SONG_LEVEL, 0, NULL, 0, 0);"
     "Music_Start(0);"
     "if (skipBootIntro == 0)"
@@ -312,12 +317,29 @@ foreach(lease_call IN ITEMS BeforeGameTrackerZero ResetAfterGameTrackerZero Befo
 endforeach()
 ctr_count("${statezero}" "skipBootIntro" statezero_flag_names)
 ctr_count("${statezero}" "if (skipBootIntro == 0)" statezero_gates)
-if(NOT statezero_flag_names EQUAL 3 OR NOT statezero_gates EQUAL 2)
-    message(FATAL_ERROR "${prefix}: StateZero must name skipBootIntro only to set it and in its two gates (found ${statezero_flag_names} names, ${statezero_gates} gates)")
+if(NOT statezero_flag_names EQUAL 4 OR NOT statezero_gates EQUAL 3)
+    message(FATAL_ERROR "${prefix}: StateZero must name skipBootIntro only to set it and in its three gates (found ${statezero_flag_names} names, ${statezero_gates} gates)")
 endif()
 ctr_require_native_guard("${mainmain_path} (StateZero)" "${statezero}" "if (skipBootIntro == 0)")
 ctr_require_gated_block("${mainmain_path} (StateZero)" "${statezero}" "if (skipBootIntro == 0)"
     "{MainInit_VRAMDisplay();}")
+# The crate-song gate sits between CseqMusic_StopAll and Music_Start and
+# holds only the CseqMusic_Start; the music calls around it are ungated.
+string(FIND "${statezero}" "CseqMusic_StopAll();" stop_all_at)
+string(SUBSTRING "${statezero}" ${stop_all_at} -1 statezero_after_stop_all)
+ctr_require_native_guard("${mainmain_path} (StateZero, crate-song gate)" "${statezero_after_stop_all}" "if (skipBootIntro == 0)")
+ctr_require_gated_block("${mainmain_path} (StateZero, crate-song gate)" "${statezero_after_stop_all}" "if (skipBootIntro == 0)"
+    "{CseqMusic_Start(CSEQ_SONG_LEVEL,0,NULL,0,0);}")
+string(FIND "${statezero}" "Music_SetIntro();" set_intro_at)
+string(FIND "${statezero}" "Music_Start(0);" music_start_at)
+string(LENGTH "Music_Start(0);" music_start_length)
+math(EXPR music_span_length "${music_start_at} + ${music_start_length} - ${set_intro_at}")
+string(SUBSTRING "${statezero}" ${set_intro_at} ${music_span_length} statezero_music)
+ctr_squash("${statezero_music}" statezero_music_squashed)
+set(expected_music "Music_SetIntro();CseqMusic_StopAll();if(skipBootIntro==0){CseqMusic_Start(CSEQ_SONG_LEVEL,0,NULL,0,0);}Music_Start(0);")
+if(NOT statezero_music_squashed STREQUAL "${expected_music}")
+    message(FATAL_ERROR "${prefix}: StateZero's music calls must be exactly '${expected_music}' (found '${statezero_music_squashed}')")
+endif()
 string(FIND "${statezero}" "Music_Start(0);" music_start_at)
 string(SUBSTRING "${statezero}" ${music_start_at} -1 statezero_after_music)
 ctr_require_native_guard("${mainmain_path} (StateZero, XA gate)" "${statezero_after_music}" "if (skipBootIntro == 0)")
