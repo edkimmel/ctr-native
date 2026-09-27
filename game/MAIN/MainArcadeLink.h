@@ -47,8 +47,11 @@ int MainArcadeLink_SkipBootIntro(void);
 
 /*
  * The arcade-link top LOD tier (docs/SOLO_CAB_MILESTONE.md section 8):
- * MainArcadeLinkPolicy_ForceTopLod on the host mode, which main.c fixes
- * before the first StateZero. 1 in LINK mode only. Reads only; changes
+ * MainArcadeLinkPolicy_ForceTopLod on the host mode, which main.c configures
+ * before the first StateZero; it never goes OFF -> LINK after that
+ * configure. It can go LINK -> OFF mid-session (the host's abort to title
+ * shuts the link down when it cannot restart it); the retail LOD then
+ * returns, which is harmless. 1 in LINK mode only. Reads only; changes
  * nothing. Called only from the render path: RenderBucket_QueueDraw (the
  * model header drawn) and DecalMP_01 (the multiplayer kart impostor).
  */

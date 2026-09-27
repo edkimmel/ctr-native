@@ -46,11 +46,27 @@ void DecalMP_01(struct GameTracker *gGT)
 	 * shown as a textured quad. Each kart keeps PIXEL_LOD, the retail
 	 * multiplayer distance scale-up (RenderBucket_BuildM3x3), but gets no
 	 * PUSHBUFFER_EXISTS and keeps its own camera pushBuffer, so it is drawn in
-	 * 3D in every view every frame; DecalMP_02 and DecalMP_03 then pass over
-	 * its entry. Every entry write below still runs: the retail missile
-	 * target check reads a bot's gGT->pushBuffer[driverID] past the four
-	 * cameras (VehPickupItem_MissileGetTargetDriver), and for bot 5 that is
-	 * the inst pointer of entry 1. */
+	 * 3D in every view every frame. Every entry write below still runs: the
+	 * retail missile target check reads a bot's gGT->pushBuffer[driverID]
+	 * past the four cameras (VehPickupItem_MissileGetTargetDriver), and for
+	 * bot 5 that is the inst pointer of entry 1.
+	 *
+	 * LINK is not retail in the entry writes the impostor render makes. With
+	 * no PUSHBUFFER_EXISTS, DecalMP_02 only holds the entry timer at 1000,
+	 * and these are never written: boolUpdatedThisFrame (DecalMP_02),
+	 * renderW, renderH and lodIndex, and the timer reset to 0 (DecalMP_03),
+	 * pb.ptrOT (left at the camera OT seeded below), pb.renderBucketOTRangeEnd
+	 * and pb.renderBucketOTByteOffset (RenderBucket_AllocateOTRange), and
+	 * pb.renderBucketScreenPos and pb.renderBucketScreenSize
+	 * (RenderBucket_UpdatePushBufferMetadata). A second retail out-of-bounds
+	 * reader sees some of them: the weapon branch of RB_CrateFruit_ThCollide
+	 * (no ACTION_BOT check) loads bot 5's gGT->pushBuffer[5].matrix_ViewProj
+	 * into the GTE (RB_Pickup_SetCamera) and adds its rect.x/rect.y. In 2P
+	 * rect.y is entry 1's boolUpdatedThisFrame and the first rotation words
+	 * are its renderW, renderH and lodIndex, all 0 in LINK. So bot 5's
+	 * PickupWumpaHUD.startX/startY (not in V4, drawn only for humans) and
+	 * the GTE rotation left by that call differ from retail, identically on
+	 * every LINK cabinet. docs/SOLO_CAB_MILESTONE.md section 8.4. */
 	const int forceTopLod = MainArcadeLink_ForceTopLod();
 #endif
 

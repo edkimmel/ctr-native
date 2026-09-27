@@ -871,8 +871,11 @@ left unchanged outside LINK.
 2. `DecalMP_01`: each kart keeps `PIXEL_LOD` (the retail multiplayer
    distance scale-up in `RenderBucket_BuildM3x3`, :1361) but gets no
    `PUSHBUFFER_EXISTS`. Its camera `pushBuffer` is not redirected, so it is
-   drawn in 3D in every view on every frame. Every entry write still runs;
-   see 8.4 for why.
+   drawn in 3D in every view on every frame. Every `DecalMP_01` entry write
+   still runs; the entry writes of the impostor render do not (8.4).
+   Keeping `PIXEL_LOD` means a distant 3D kart is drawn scaled up by
+   `(viewDepth/2 + 0x1000)/0x1000`, as in retail; without the impostor this
+   is now more visible. The owner has not looked at it yet.
 
 ### 8.3 Every LOD threshold found
 
@@ -908,30 +911,84 @@ its own measurement and decision.
 - A retail coupling had to be kept: `VehPickupItem_MissileGetTargetDriver`
   (game/Vehicle/VehPickupItem.c:480, 490) checks a bot's target against
   `gGT->pushBuffer[driverID].rect` for any driverID. The array has four
-  cameras, and `gGT->DecalMP` follows it (include/namespace_Main.h:336,
-  369), so bots 4-7 read DecalMP entry bytes. In a 2P race (6 drivers)
-  those are entry 0's never-written `pb.rot` (bot 4) and entry 1's `inst`
-  pointer (bot 5, as its rect width and height). A first version that
-  skipped the entry writes diverged: bot 5 took a different missile target
+  cameras (`sizeof(struct PushBuffer)` is 0x110), and `gGT->DecalMP`
+  (entries of 0x128) follows it (include/namespace_Main.h:336, 369), so
+  bots 4-7 read DecalMP entry bytes. In a 2P race (6 drivers,
+  game/MAIN/MainInit.c:357-360) those are entry 0's never-written `pb.rot`
+  (bot 4) and entry 1's `inst` pointer at +0x8 (bot 5: `rect.w` is its low
+  half, `rect.h` its high half). A first version that skipped the
+  `DecalMP_01` entry writes diverged: bot 5 took a different missile target
   and the V4 digest split at race tick 1850. The LINK path therefore keeps
-  every entry write. Only the flag and the redirect differ. The entry fields
-  written by the impostor render (timer, `boolUpdatedThisFrame`,
-  `renderW/H`, `lodIndex`, the pb OT and screen fields) alias no rect width
-  or height read by bots 4 and 5. The bot 6 and 7 slots, which would alias
-  them, do not exist in 2P arcade (`MainInit_Drivers`, 6 drivers). Pinned
-  by the isolation test.
+  every `DecalMP_01` entry write. The isolation test pins exactly that:
+  those writes run, unguarded, in every mode. It does not pin the driver
+  count or the struct offsets this bullet relies on.
+- LINK is not retail in the entry writes of the impostor render, which run
+  only for a kart with `PUSHBUFFER_EXISTS`. `DecalMP_02` holds the entry
+  timer at 1000 (its else branch) instead of counting it, and LINK never
+  writes: `boolUpdatedThisFrame` (`DecalMP_02`); `renderW`, `renderH`,
+  `lodIndex` and the timer reset to 0 (`DecalMP_03`); `pb.ptrOT` (left at
+  the camera OT that `DecalMP_01` copies), `pb.renderBucketOTRangeEnd` and
+  `pb.renderBucketOTByteOffset` (`RenderBucket_AllocateOTRange`,
+  RenderBucket_QueueExecute.c:1693-1700); `pb.renderBucketScreenPos` and
+  `pb.renderBucketScreenSize` (`RenderBucket_UpdatePushBufferMetadata`,
+  :1737-1738). None of them is a `rect.w` or `rect.h` the missile check
+  reads in 2P.
+- A second retail out-of-bounds reader does see them. The weapon branch of
+  `RB_CrateFruit_ThCollide` (game/231/RB_Crate.c:338-355) has no
+  `ACTION_BOT` check, unlike the weapon and time crates (:160, :458). For
+  the weapon's owner it calls `RB_Pickup_SetCamera`
+  (game/231/RB_Pickup.h:20), which loads
+  `gGT->pushBuffer[driverID].matrix_ViewProj` into the GTE rotation and
+  translation, projects the kart, and adds `rect.x` and `rect.y`. For bot 5
+  in 2P that is DecalMP entry 1: `rect.y` is `boolUpdatedThisFrame` (+0x6),
+  and the first rotation words (+0x10..0x17) are `renderW`, `renderH` and
+  `lodIndex`. All of them stay 0 in LINK. The rest of bot 5's rotation, its
+  translation and `rect.x`, and every byte bot 4 reads there, are bytes
+  both modes write or neither does. Effect: bot 5's
+  `Driver.PickupWumpaHUD.startX/startY` and the GTE rotation left after
+  that call differ from retail. `startX/startY` are not in V4
+  (game/MAIN/MainCanonicalDrivers.c:465 copies only
+  `PickupLetterHUD.numCollected`) and are drawn only for humans. Two LINK
+  cabinets both read zeros, so this is no LINK-vs-LINK desync. That the
+  path is presentation-only relies on no later simulation code in that
+  tick reading those GTE registers before setting them. The retail-bug fix
+  is a separate task (last bullet).
+- "The bot 6 and 7 slots do not exist" holds for 2P only. In 1P (8
+  drivers) `DecalMP_01` does not run, and `MainInit_FinalizeInit`
+  (game/MAIN/MainInit.c:460-467) resets only each entry's `inst`, timer,
+  and `ptrOT1/2` (`pb.ptrOT`, `pb.renderBucketOTRangeEnd`). Bot 6's rect
+  width and height are entry 1's `pb.renderBucketScreenPos` (+0x118),
+  which retail writes only in `RenderBucket_UpdatePushBufferMetadata`
+  (RenderBucket_QueueExecute.c:1737); bot 7's are entry 2's `pb.bbox`,
+  never written. So in retail a 1P race after a 2P race in the same
+  process has history-dependent bot-6 missile targeting (and the crate
+  path above reads other stale entry bytes for bots 6 and 7); LINK leaves
+  them 0. The ONE_CAB evidence was a fresh process. This is no
+  LINK-vs-LINK hazard: solo has no peer.
 - Evidence (internal build, `--arcade-roster-proof`, seed 0x5EED, 3600 race
   ticks, a temporary env override of the accessor, not committed): TWO_CAB
   (2P, autopilot) retail against forced gave byte-identical reports, every
   per-tick control, rng, drivers, and V4 digest. ONE_CAB (1P) did too. With
   the missile check neutralised, the first version was identical too, so
-  that read was the only coupling seen.
-- Out of scope, found here: bot 5's rect in that check is the low and high
-  16 bits of a host Instance pointer (0x3C08/0x00AE in one run). Its
-  missile targeting in 2P therefore depends on where the image loads
-  (the build layout moved it: two retail builds split at race tick 2088;
-  `/DYNAMICBASE` is on). This affects the current arcade build, forced LOD
-  or not.
+  that read was the only coupling seen in the reports (the crate path above
+  writes nothing they record).
+- Pre-existing, found here: the missile check's bot 5 rect in 2P is entry
+  1's host `inst` pointer. Instances live in the static .bss
+  `s_mempackMemory` (platform/native_memory.c:31), so the pointer is the
+  image base plus a fixed offset (0x00AE3C08 in one run). Windows moves the
+  base in 64 KB steps (`/DYNAMICBASE` is on), so `rect.w` (the low half)
+  changes with the build layout and `rect.h` (the high half) with the
+  per-boot image base. Two retail builds split at race tick 2088. Two
+  cabinets on different bases can pick different bot-5 missile targets
+  (VehPickupItem.c:490); the live digest would then abort the race
+  (detected, not silent). This affects the current arcade build, forced
+  LOD or not. On PS1 every candidate is rejected: `rect.h` is negative as
+  s16 for a 0x800Axxxx pointer, and bot 4's `rect.w` is 0. Recommended
+  separate retail-bug task (reviewer pass, trial branch, re-baselined
+  fixtures): in `VehPickupItem_MissileGetTargetDriver`, reject every
+  candidate when `driver->driverID >= 4` (no camera PushBuffer; matches
+  PS1), paired with an `ACTION_BOT` guard in the weapon branch of
+  `RB_CrateFruit_ThCollide` matching :160 and :458.
 
 ### 8.5 Cost
 
