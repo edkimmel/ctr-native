@@ -2439,6 +2439,52 @@ LR-60 The internal race-tick-limit override (LR-S10 part 1, for LR-42).
   not change the report.
 - The live gate's value is chosen in part 2, which also adds the option to
   tools/arcade-link-launch-check.ps1; part 1 leaves the script unchanged.
+- Production default (decision). Nothing in band compares the cap, so
+  there were two options: carry and compare it in the launch agreement, or
+  prove and pin that production always races with the fixed default 18000.
+  The second was chosen because it is smaller and safer: no wire format,
+  launch agreement, match config, or identity changes, and no product
+  code changes (pins and a unit test only). "Production" is a cabinet
+  started without any --arcade-link-autopilot option: from arcade.cfg
+  (--config) or the static link options, in either build (v1 ships the
+  CTR_INTERNAL build). The proof chain:
+  - A non-internal build cannot call the setter: main.c's one call sits in
+    a CTR_INTERNAL region, and such a build rejects the autopilot option.
+  - An internal build calls it only under the autopilot: the call, with
+    exactly the argument arcadeLinkAutopilotOptions.raceTickLimit, lies
+    inside main.c's `if (arcadeLinkAutopilotOptions.enabled != 0u)` block.
+  - The cap comes only from argv. main.c's options are zeroed by
+    SetDefaults and written only by ApplyArgs over main's own argc and
+    argv, neither of which main.c assigns; the glue's Configure takes them
+    as const. ApplyArgs sets raceTickLimit only for
+    --arcade-link-autopilot-race-ticks, which fails without
+    --arcade-link-autopilot. No other source writes the field (the glue
+    copies it into the autopilot state for the report only, and the drive
+    writes its own limit from Begin's parameter, g_raceTickLimit).
+  - The arcade.cfg parser, whose synthetic argv reaches only the link and
+    display parsers, and the package (tools/package/ and
+    tools/package-arcade.ps1) name no autopilot option and no race tick
+    key. A packaged cabinet can reach the setter only if an operator adds
+    the internal autopilot flags by hand, which also hands its menus to the
+    autopilot.
+  - Configure (through its first statement, Shutdown) and Shutdown reset
+    the stored value to 0, so a cap lowered by an earlier configuration
+    never carries over.
+  The pins: native_arcade_link_host_isolation rule 3h (its "production
+  default" part: the enclosing if-block by brace matching, main.c's
+  option and argv writes, SetDefaults and ApplyArgs, an allowlist of every
+  member write of raceTickLimit across game/, platform/, include/, tools/,
+  and main.c, and the config and package scan, each scan with a
+  self-check), beside 3h's existing setter, static, reset, and
+  CTR_INTERNAL-region pins; native_arcade_link_autopilot_isolation 1b and
+  2 (the option literals and the glue's one copy); and the unit test
+  TestDriveRaceTickLimitDefault in native_arcade_link_host_unit. With no
+  setter call, a LINK race's drive runs with the default (stored 0, drive
+  18000, past race tick 5 with no end) on a first Configure, after a
+  replacing Configure over a session whose cap was lowered, and after a
+  Shutdown that follows a lowered cap. The gate's cross-check (the same
+  "race tick limit 6000" line on both stdouts, LR-67) is still what proves
+  that the gate's two internal cabinets agree.
 
 LR-61 The drive phase and its result (LR-S10 part 2). The launch core's
 REHEARSAL phase becomes MAIN_ARCADE_RACE_LAUNCH_CORE_PHASE_DRIVE (value
@@ -5906,6 +5952,8 @@ Part B result: the three-race run and the gate (LR-75, LR-76).
     (not in the match config or on the wire); the gate requires the same
     "race tick limit 6000" line on both stdouts and the cap in cab1's
     report, and a mismatch stays a stall, not a silent desync (LR-60).
+    Closed later: production is pinned to the default cap (LR-60's
+    "Production default (decision)", risk 20).
 - Tests: native_arcade_link_autopilot_unit (TestEndAccepted, and the
   three-race TestDecideResults, TestFullRun, TestFailures, TestFaultAt, and
   TestReport of LR-75) and native_arcade_link_autopilot_isolation 1c and 7b
@@ -6217,8 +6265,8 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
     isolation pin (LR-S4). Ruling (b), not taken, would have re-planned
     the Drivers projection without the bot nav index and lost direct
     detection of a bot's nav-path divergence.
-20. Items LR-S13 recorded (LR-S13's result, LR-76); the first two are
-    closed, the third stays open:
+20. Items LR-S13 recorded (LR-S13's result, LR-76); all three are
+    closed:
     - Closed by eae477000: LR-70's divergence found only by the Tick that
       closes the link, leaving RESULTS, was not logged, because the link's
       session was gone before the host's helper ran. CloseLobby now keeps
@@ -6236,7 +6284,14 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
       requires a race 2 drive end line on both cabinets, the flow-left
       form only on a detecting cabinet with its race tick in the
       divergence window.
-    - LR-60's race tick cap is cross-checked between cabinets only by the
-      gate (the same "race tick limit 6000" line on both stdouts). The
-      option is internal and host-local; a mismatch shows as a stall, not
-      a silent desync.
+    - Closed by the LR-60 production-default commit: LR-60's race tick
+      cap is cross-checked between cabinets only by the gate (the same
+      "race tick limit 6000" line on both stdouts). The option is internal
+      and host-local; a mismatch shows as a stall, not a silent desync.
+      Rather than carry the cap in the launch agreement, production is
+      proved and pinned to race with the fixed default 18000: only the
+      internal autopilot, from argv, can set the cap, and Configure and
+      Shutdown reset it (LR-60's "Production default (decision)";
+      native_arcade_link_host_isolation 3h and the unit test
+      TestDriveRaceTickLimitDefault). No wire format, launch agreement,
+      match config, or identity changed.

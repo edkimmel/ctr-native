@@ -34,7 +34,9 @@
 # drive core (rules 2, 3, 3d, 3g, and 4). Since LR-S10 part 1 (LR-60) the
 # header declares the internal race tick limit setter, whose host-local value
 # BeginDrive hands the drive, and only main.c's internal-build code sets it
-# (rule 3h). Since LR-S10 part 2 the race caller
+# (rule 3h); since LR-60's production-default decision 3h also pins that
+# the call runs only under the autopilot, that the cap comes only from
+# argv, and that the config parser and the package offer none. Since LR-S10 part 2 the race caller
 # (game/MAIN/MainArcadeRaceLaunch.c) is the one game source that names
 # RaceStep and RaceHold, once each (rule 3g). Since LR-S12 the hold's period
 # service keeps the launch linger sending through the start wait (race tick
@@ -767,6 +769,251 @@ endforeach()
 if(NOT limit_named_in_main)
     message(FATAL_ERROR "arcade link host isolation: main.c must set the race tick limit (NativeArcadeLinkHost_SetRaceTickLimit) in its internal autopilot handling")
 endif()
+
+# 3h, continued: the production default (docs/LOCKSTEP_RACE_MILESTONE.md
+#     LR-60's decision). The cap is host-local and only the live gate
+#     compares it across cabinets, so production must always race with the
+#     default 18000: a cabinet started without an --arcade-link-autopilot
+#     option never calls the setter, and the limit Configure and Shutdown
+#     reset to 0 stays 0 (the unit test TestDriveRaceTickLimitDefault).
+#     - main.c's one call is exactly
+#       NativeArcadeLinkHost_SetRaceTickLimit(arcadeLinkAutopilotOptions.raceTickLimit)
+#       and lies inside the block of the nearest `if
+#       (arcadeLinkAutopilotOptions.enabled != 0u)` before it, brace-matched
+#       on main.c's code with comments removed and string and character
+#       literals blanked (a matcher with its own self-check).
+#     - main.c's options are written only by the parser: declared once with
+#       no initializer, never assigned (whole or by member, nor incremented),
+#       and their address is taken exactly three times, by SetDefaults,
+#       ApplyArgs over main's own argc and argv (neither assigned), and the
+#       internal glue's Configure, which takes a const pointer.
+#       SetDefaults only zeroes them. ApplyArgs takes the field's address
+#       only under the --arcade-link-autopilot-race-ticks match, and fails
+#       that option without --arcade-link-autopilot.
+#     - A member write of the name raceTickLimit (an assignment, a compound
+#       assignment, an increment or decrement, or its address taken) in
+#       game/, platform/, include/, and tools/ sources and main.c, comments
+#       removed, is exactly one of: the parser's
+#       `tickValue = &candidate.raceTickLimit` (once), the glue's report copy
+#       `state->autopilot.raceTickLimit = options->raceTickLimit` (once; a
+#       write of the autopilot state's own field that only reads the
+#       options, feeding the report's "race ticks" line and never the host),
+#       and the drive's two Begin writes of its limit in force from its
+#       parameter, which rule 3g pins to g_raceTickLimit.
+#     - The arcade.cfg parser (platform/native_arcade_config.c and its
+#       header), every file under tools/package/ (the shipped arcade.cfg and
+#       README.txt), and tools/package-arcade.ps1 name no autopilot and no
+#       race tick (raw text, case-insensitive): a packaged cabinet reaches
+#       the setter only if an operator adds the internal autopilot flags by
+#       hand, which also hand its menus to the autopilot.
+function(ctr_matching_brace code open_at out_var)
+    string(SUBSTRING "${code}" ${open_at} 1 first)
+    if(NOT first STREQUAL "{")
+        message(FATAL_ERROR "arcade link host isolation: the brace matcher was not given an opening brace; the scan is broken")
+    endif()
+    math(EXPR at "${open_at} + 1")
+    string(SUBSTRING "${code}" ${at} -1 rest)
+    set(depth 1)
+    while(TRUE)
+        string(FIND "${rest}" "{" open_next)
+        string(FIND "${rest}" "}" close_next)
+        if(close_next EQUAL -1)
+            message(FATAL_ERROR "arcade link host isolation: unbalanced braces in the brace matcher; the scan is broken")
+        endif()
+        if(NOT open_next EQUAL -1 AND open_next LESS close_next)
+            set(step ${open_next})
+            math(EXPR depth "${depth} + 1")
+        else()
+            set(step ${close_next})
+            math(EXPR depth "${depth} - 1")
+        endif()
+        math(EXPR at "${at} + ${step}")
+        if(depth EQUAL 0)
+            break()
+        endif()
+        math(EXPR at "${at} + 1")
+        math(EXPR skip "${step} + 1")
+        string(SUBSTRING "${rest}" ${skip} -1 rest)
+    endwhile()
+    set(${out_var} ${at} PARENT_SCOPE)
+endfunction()
+# The brace matcher's self-check: the offset of the closing brace.
+foreach(probe IN ITEMS "0|1|{}" "0|8|{ a { } }" "2|16|x { { a } { b } } }" "4|8|x { { a } { b } } }" "0|4|{ {}}{}")
+    string(REPLACE "|" ";" probe_parts "${probe}")
+    list(GET probe_parts 0 probe_open)
+    list(GET probe_parts 1 probe_expected)
+    list(GET probe_parts 2 probe_text)
+    ctr_matching_brace("${probe_text}" ${probe_open} probe_result)
+    if(NOT probe_result EQUAL probe_expected)
+        message(FATAL_ERROR "arcade link host isolation: the brace matcher got ${probe_result} for '${probe_text}' from ${probe_open}, expected ${probe_expected}")
+    endif()
+endforeach()
+
+# main.c's code: block comments, then string literals, then line comments,
+# then character literals, so no literal or comment holds a brace.
+file(READ "${repo}/main.c" main_raw)
+string(REGEX REPLACE "/\\*([^*]|\\*+[^*/])*\\*+/" " " main_blank "${main_raw}")
+string(REGEX REPLACE "\"([^\"\\\\\r\n]|\\\\.)*\"" "\"\"" main_blank "${main_blank}")
+string(REGEX REPLACE "//[^\r\n]*" "" main_blank "${main_blank}")
+string(REGEX REPLACE "'([^'\\\\\r\n]|\\\\.)*'" "' '" main_blank "${main_blank}")
+set(limit_call "NativeArcadeLinkHost_SetRaceTickLimit(arcadeLinkAutopilotOptions.raceTickLimit)")
+ctr_require_count("main.c" "${main_blank}" "${limit_call}" 1)
+string(FIND "${main_blank}" "${limit_call}" limit_call_at)
+string(SUBSTRING "${main_blank}" 0 ${limit_call_at} main_before_limit)
+set(enabled_if "if (arcadeLinkAutopilotOptions.enabled != 0u)")
+string(FIND "${main_before_limit}" "${enabled_if}" enabled_if_at REVERSE)
+if(enabled_if_at EQUAL -1)
+    message(FATAL_ERROR "arcade link host isolation: main.c must call ${limit_call} inside an '${enabled_if}' block (LR-60's production default)")
+endif()
+string(LENGTH "${enabled_if}" enabled_if_length)
+math(EXPR enabled_after_at "${enabled_if_at} + ${enabled_if_length}")
+string(SUBSTRING "${main_blank}" ${enabled_after_at} -1 enabled_after)
+string(REGEX MATCH "^[ \t\r\n]*\\{" enabled_open "${enabled_after}")
+if(enabled_open STREQUAL "")
+    message(FATAL_ERROR "arcade link host isolation: main.c's '${enabled_if}' before the race tick limit call must open a braced block")
+endif()
+string(LENGTH "${enabled_open}" enabled_open_length)
+math(EXPR enabled_open_at "${enabled_after_at} + ${enabled_open_length} - 1")
+ctr_matching_brace("${main_blank}" ${enabled_open_at} enabled_close_at)
+if(NOT limit_call_at GREATER enabled_open_at OR NOT limit_call_at LESS enabled_close_at)
+    message(FATAL_ERROR "arcade link host isolation: main.c's ${limit_call} must lie inside the '${enabled_if}' block (LR-60's production default: only the autopilot sets the cap)")
+endif()
+
+# main.c's options: written only by SetDefaults and ApplyArgs over main's argv.
+string(REGEX REPLACE "[ \t\r\n]+" " " main_flat "${main_blank}")
+ctr_require_in("main.c" "${main_flat}" "int main(int argc, char *argv[])")
+ctr_require_count("main.c" "${main_flat}" "struct NativeArcadeLinkAutopilotOptions arcadeLinkAutopilotOptions;" 1)
+ctr_require_count("main.c" "${main_flat}" "struct NativeArcadeLinkAutopilotOptions" 1)
+ctr_require_count("main.c" "${main_flat}" "&arcadeLinkAutopilotOptions" 3)
+foreach(options_call IN ITEMS
+        "NativeArcadeLinkAutopilotOptions_SetDefaults(&arcadeLinkAutopilotOptions);"
+        "NativeArcadeLinkAutopilotOptions_ApplyArgs(argc, argv, &arcadeLinkAutopilotOptions)"
+        "MainArcadeLinkAutopilot_Configure(&arcadeLinkAutopilotOptions);")
+    ctr_require_count("main.c" "${main_flat}" "${options_call}" 1)
+endforeach()
+foreach(write_pattern IN ITEMS
+        "(^|[^A-Za-z0-9_])arcadeLinkAutopilotOptions ?(\\. ?[A-Za-z_][A-Za-z0-9_]* ?)?([-+*/%&|^]|<<|>>)?=([^=]|$)"
+        "(^|[^A-Za-z0-9_])arcadeLinkAutopilotOptions ?\\. ?[A-Za-z_][A-Za-z0-9_]* ?(\\+\\+|--)"
+        "(\\+\\+|--) ?arcadeLinkAutopilotOptions"
+        "(^|[^A-Za-z0-9_])arg[cv] ?([-+*/%&|^]|<<|>>)?=([^=]|$)"
+        "(^|[^A-Za-z0-9_])argv ?\\[[^]]*\\] ?=([^=]|$)")
+    string(REGEX MATCH "${write_pattern}" options_write "${main_flat}")
+    if(NOT options_write STREQUAL "")
+        message(FATAL_ERROR "arcade link host isolation: main.c writes its autopilot options or argv outside the parser ('${options_write}'); LR-60's production default needs the cap from argv only")
+    endif()
+endforeach()
+set(glue_header "game/MAIN/MainArcadeLinkAutopilot.h")
+set(glue_source "game/MAIN/MainArcadeLinkAutopilot.c")
+foreach(relative_path IN ITEMS "${glue_header}" "${glue_source}")
+    ctr_read_source("${relative_path}" glue_text)
+    string(REGEX REPLACE "[ \t\r\n]+" " " glue_flat "${glue_text}")
+    ctr_require_count("${relative_path}" "${glue_flat}" "MainArcadeLinkAutopilot_Configure(" 1)
+    ctr_require_in("${relative_path}" "${glue_flat}"
+        "void MainArcadeLinkAutopilot_Configure(const struct NativeArcadeLinkAutopilotOptions *options)")
+endforeach()
+set(autopilot_source "platform/native_arcade_link_autopilot.c")
+ctr_read_source("${autopilot_source}" autopilot_text)
+string(REGEX REPLACE "/\\*([^*]|\\*+[^*/])*\\*+/" " " autopilot_code "${autopilot_text}")
+string(REGEX REPLACE "//[^\r\n]*" "" autopilot_code "${autopilot_code}")
+ctr_body("${autopilot_source}" "${autopilot_code}" "void NativeArcadeLinkAutopilotOptions_SetDefaults(" defaults_body)
+if(NOT defaults_body STREQUAL
+        "void NativeArcadeLinkAutopilotOptions_SetDefaults(struct NativeArcadeLinkAutopilotOptions *options) { if (options == NULL) { return; } memset(options, 0, sizeof(*options));")
+    message(FATAL_ERROR "arcade link host isolation: NativeArcadeLinkAutopilotOptions_SetDefaults must only zero the options (found '${defaults_body}')")
+endif()
+ctr_require_in("${autopilot_source}" "${autopilot_code}"
+    "static const char k_raceTicksOption[] = \"--arcade-link-autopilot-race-ticks\";")
+ctr_body("${autopilot_source}" "${autopilot_code}" "int NativeArcadeLinkAutopilotOptions_ApplyArgs(" apply_body)
+ctr_require_in("${autopilot_source} (ApplyArgs)" "${apply_body}"
+    "if ((arg != NULL) && (strcmp(arg, k_raceTicksOption) == 0)) { tickValue = &candidate.raceTickLimit;"
+    "candidate.enabled = 1u; seen = 1;"
+    "if ((seenRaceTicks || seenFreeze || seenDesync) && !seen) { return 0; }")
+
+# Every member write of raceTickLimit, by file, against the allowlist.
+set(member_write
+    "(\\.|->) ?raceTickLimit ?([-+*/%&|^]|<<|>>)?=([^=]|$)|(\\.|->) ?raceTickLimit ?(\\+\\+|--)|(\\+\\+|--|(^|[^&])&) ?\\(? ?[A-Za-z_][]A-Za-z0-9_.>[ -]*(\\.|->) ?raceTickLimit")
+set(tick_write_expected_autopilot "tickValue = &candidate.raceTickLimit")
+set(tick_write_expected_glue "state->autopilot.raceTickLimit = options->raceTickLimit")
+set(tick_write_expected_drive
+    "drive->raceTickLimit = (raceTickLimit == 0u) ? NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT : raceTickLimit|drive->raceTickLimit = (raceTickLimit == 0u) ? NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT : raceTickLimit")
+set(tick_write_files_seen 0)
+foreach(path IN LISTS drive_scan_paths)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    file(READ "${path}" scanned)
+    string(FIND "${scanned}" "raceTickLimit" tick_name_at)
+    if(tick_name_at EQUAL -1)
+        continue()
+    endif()
+    string(REGEX REPLACE "/\\*([^*]|\\*+[^*/])*\\*+/" " " scanned_code "${scanned}")
+    string(REGEX REPLACE "//[^\r\n]*" "" scanned_code "${scanned_code}")
+    string(REGEX REPLACE "[ \t\r\n]+" " " scanned_flat "${scanned_code}")
+    string(REGEX MATCHALL "[^;{}]*(${member_write})[^;]*" tick_writes "${scanned_flat}")
+    set(tick_found "")
+    foreach(tick_write IN LISTS tick_writes)
+        string(STRIP "${tick_write}" tick_write)
+        if(tick_found STREQUAL "")
+            set(tick_found "${tick_write}")
+        else()
+            string(APPEND tick_found "|${tick_write}")
+        endif()
+    endforeach()
+    if(relative_path STREQUAL autopilot_source)
+        set(tick_expected "${tick_write_expected_autopilot}")
+        math(EXPR tick_write_files_seen "${tick_write_files_seen} + 1")
+    elseif(relative_path STREQUAL glue_source)
+        set(tick_expected "${tick_write_expected_glue}")
+        math(EXPR tick_write_files_seen "${tick_write_files_seen} + 1")
+    elseif(relative_path STREQUAL "platform/native_arcade_race_drive.c")
+        set(tick_expected "${tick_write_expected_drive}")
+        math(EXPR tick_write_files_seen "${tick_write_files_seen} + 1")
+    else()
+        set(tick_expected "")
+    endif()
+    if(NOT tick_found STREQUAL tick_expected)
+        message(FATAL_ERROR "arcade link host isolation: ${relative_path} writes raceTickLimit as '${tick_found}', expected '${tick_expected}' (LR-60's production default: the options' cap comes only from ApplyArgs)")
+    endif()
+endforeach()
+if(NOT tick_write_files_seen EQUAL 3)
+    message(FATAL_ERROR "arcade link host isolation: the raceTickLimit write scan saw ${tick_write_files_seen} of its 3 allowed writers; the scan is broken")
+endif()
+# The scan's self-check: each write form is caught, a read is not.
+foreach(probe IN ITEMS "1|o.raceTickLimit = 5u" "1|o->raceTickLimit += 5u" "1|o.raceTickLimit++" "1|--o.raceTickLimit"
+        "1|p = &o.raceTickLimit" "1|p = &(s->o.raceTickLimit)" "1|memcpy(&o . raceTickLimit, q, 4u)" "1|x = { .raceTickLimit = 5u }"
+        "0|if (o.raceTickLimit != 0u)" "0|if ((a != 0u) && o.raceTickLimit == 0u)" "0|x = o->raceTickLimit"
+        "0|g_raceTickLimit = limit" "0|(raceTick >= drive->raceTickLimit)")
+    string(FIND "${probe}" "|" bar_at)
+    string(SUBSTRING "${probe}" 0 ${bar_at} probe_expected)
+    math(EXPR probe_text_at "${bar_at} + 1")
+    string(SUBSTRING "${probe}" ${probe_text_at} -1 probe_text)
+    string(REGEX MATCH "${member_write}" probe_hit "${probe_text}")
+    if(probe_hit STREQUAL "")
+        set(probe_result 0)
+    else()
+        set(probe_result 1)
+    endif()
+    if(NOT probe_result EQUAL probe_expected)
+        message(FATAL_ERROR "arcade link host isolation: the raceTickLimit write scan got ${probe_result} for '${probe_text}', expected ${probe_expected}")
+    endif()
+endforeach()
+
+# The config parser and the package name no autopilot and no race tick.
+file(GLOB_RECURSE package_paths RELATIVE "${repo}" "${repo}/tools/package/*")
+foreach(shipped IN ITEMS "tools/package/arcade.cfg" "tools/package/README.txt")
+    list(FIND package_paths "${shipped}" shipped_at)
+    if(shipped_at EQUAL -1)
+        message(FATAL_ERROR "arcade link host isolation: ${shipped} was not scanned; the package scan is broken")
+    endif()
+endforeach()
+list(APPEND package_paths "platform/native_arcade_config.c" "include/platform/native_arcade_config.h" "tools/package-arcade.ps1")
+foreach(relative_path IN LISTS package_paths)
+    ctr_read_source("${relative_path}" package_text)
+    string(TOLOWER "${package_text}" package_lower)
+    foreach(term IN ITEMS autopilot racetick race-tick race_tick "race tick")
+        string(FIND "${package_lower}" "${term}" package_term_at)
+        if(NOT package_term_at EQUAL -1)
+            message(FATAL_ERROR "arcade link host isolation: ${relative_path} names '${term}'; the config parser and the package must offer no race tick cap (LR-60's production default)")
+        endif()
+    endforeach()
+endforeach()
 
 # 3i. The divergence record (docs/LOCKSTEP_RACE_MILESTONE.md LR-11, LR-70,
 #     LR-S12). The header declares the take and the record with exactly its

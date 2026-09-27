@@ -3496,6 +3496,64 @@ static int TestDriveRaceTickLimit(void)
 	return 0;
 }
 
+/* One race of a default-cap cabinet: StartDriveRace configures without the
+ * setter (g_hostRaceTickLimit 0), and the drive runs past race tick cap. */
+static int CheckDefaultCapRace(uint32_t cap, uint64_t entropy)
+{
+	struct NativeArcadeLinkHostDriveState state;
+
+	CHECK(g_hostRaceTickLimit == 0u);
+	CHECK(StartDriveRace(TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, entropy) == 0);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
+	CHECK(NativeArcadeLinkHost_InternalDriveRaceTickLimit() == NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT);
+	CHECK(RoundsBoth(cap + 3u) == 0);
+	CHECK(GetDriveState(&state) == 0);
+	CHECK(state.endKind == NATIVE_ARCADE_LINK_HOST_DRIVE_END_NONE);
+	CHECK(state.raceTick == cap + 2u);
+	StopDriveRace();
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
+	return 0;
+}
+
+/*
+ * LR-60's production default: a cabinet started without the internal
+ * autopilot never calls NativeArcadeLinkHost_SetRaceTickLimit, so every
+ * LINK race's drive runs with the default 18000 (stored limit 0). That
+ * holds on a first Configure, after a replacing Configure over a session
+ * whose cap was lowered (Configure resets it), and after a Shutdown that
+ * follows a lowered cap. Each race runs past the lowered cap without an
+ * end.
+ */
+static int TestDriveRaceTickLimitDefault(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	const uint32_t cap = 5u;
+
+	/* A first Configure with no setter call. */
+	CHECK(NativeArcadeLinkHost_Mode() == (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
+	CHECK(CheckDefaultCapRace(cap, UINT64_C(0x71C1000000000011)) == 0);
+
+	/* A replacing Configure over a session whose cap was lowered. */
+	NativeArcadeLinkLoopback_Identity(&identity);
+	NativeArcadeLinkLoopback_LinkOptions(&options, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT);
+	options.selectEntropy = UINT64_C(0x71C1000000000012);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(cap) == 1);
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == cap);
+	CHECK(CheckDefaultCapRace(cap, UINT64_C(0x71C1000000000013)) == 0);
+
+	/* A Shutdown after a lowered cap, then a new Configure. */
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeLinkHost_SetRaceTickLimit(cap) == 1);
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(NativeArcadeLinkHost_InternalRaceTickLimit() == 0u);
+	CHECK(CheckDefaultCapRace(cap, UINT64_C(0x71C1000000000014)) == 0);
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
 /* ---- LR-S12: failure wiring to RESULTS ---- */
 
 /* Polls the peer's link until its aux inbox holds want records (with no
@@ -6042,6 +6100,7 @@ int main(void)
 	CHECK(TestDriveParkedDigestMismatch() == 0);
 	CHECK(TestDriveRefusalsAndResets() == 0);
 	CHECK(TestDriveRaceTickLimit() == 0);
+	CHECK(TestDriveRaceTickLimitDefault() == 0);
 	CHECK(TestDriveStartWaitLateCommit() == 0);
 	CHECK(TestDriveStartWaitTimeout() == 0);
 	CHECK(TestDriveDivergenceRecord() == 0);
