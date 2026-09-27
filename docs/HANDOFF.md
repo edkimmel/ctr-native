@@ -890,7 +890,7 @@ Tasks 7 and 8 and v1 packaging are complete.
   clean tree (`docs/PACKAGING.md`, defaults PK-1..PK-10, and the Packaging
   section above). Its smoke test, `package_arcade_smoke`, races three times
   from the package folder, with no memcard save present.
-- The suite is 186 tests: the full run with `-j 8` takes about 635 s, and
+- The suite is 187 tests: the full run with `-j 8` takes about 630 s, and
   `-LE live -j 8` about 35 s. Live tests carry area labels (`live-link`,
   `live-roster`, `live-render`, `live-package`). Per-change checks use the
   fast suite plus the affected area; the full suite runs once per
@@ -914,11 +914,10 @@ open source.
 1. Single-player race: done (`docs/SOLO_CAB_MILESTONE.md`, SOLO-1..18).
    When the peer is silent, the lobby offers a solo race (1 human + 7
    bots) through the local race drive. The link keeps listening, and a
-   peer that wakes is linked at the next lobby. The live test
-   `arcade_solo_race` proves one solo race each on cab1 and cab2. Not yet
-   deployed: the package is `ctr-arcade-086114299b71`. Open: no
-   two-cabinet live test of "peer wakes during solo, then links"; unit
-   tests only.
+   peer that wakes is linked at the next lobby. Live tests:
+   `arcade_solo_race` runs a solo race on each seat, and
+   `arcade_solo_wake_link` wakes the peer mid-solo, relinks from the
+   LOBBY and runs a linked race.
 2. Automatic discovery (stretch goal 8; `docs/DISCOVERY_MILESTONE.md`,
    DISC-1..19). Done: S1-S5 and the open risks. The package ships a
    single `arcade.cfg` with `seat = auto`. Two cabinets find each other
@@ -931,93 +930,72 @@ open source.
    - Beacons continue in attract and during loads (IdleTick); the NIC
      refresh is held during races.
    Real broadcast, the NIC list, and the lan filter are proven only by
-   unit and loopback tests. Next:
-   - The C:\Arcade follow-up in `setup-ctr-native.ps1`:
-     - the cfg writer writes `seat = auto`, `lan = 192.168.1.0/24`, and
-       no peer or port;
-     - the firewall is one rule for the program, UDP 7000,7001 from
-       LocalSubnet;
-     - the usage comment at :37 needs updating.
-     `C:\Arcade`'s working tree IS the fleet sync source (CAB2 pulls it at
-     boot), so prepare the change on a `C:\Arcade` branch in a separate
-     worktree and land it only together with the new package, on the
-     owner's go: the v1 exe does not understand `seat = auto` or `lan`.
+   unit and loopback tests.
+   - The fleet change is staged, not landed, on branch
+     `ctr-discovery-deploy` in the worktree `C:\re-tools\arcade-fleet-ctr`.
+     `C:\Arcade`'s working tree IS the fleet sync source, which is why it
+     is staged separately. The branch has:
+     - `setup-ctr-native.ps1`: the mode follows the deployed MANIFEST
+       (v1 keeps its static cfg). Discovery writes `seat = auto` and
+       `lan = 192.168.1.0/24`, and uses one firewall rule, UDP 7000,7001
+       from LocalSubnet.
+     - `deploy-ctr-native.ps1 -Package <dir> [-DryRun] [-StaticPeer]`,
+       which backs up the old package and has a rollback path.
    - DISC-S6: physical acceptance. The cabinets pair at boot, .11 is
      cab1, one race runs, solo works with a cabinet off, and they relink
      when it is powered back on. This needs the owner.
-3. Cabinet polish: done. In LINK mode the boot skips the SCEA,
-   copyright, and crate intro, which saves about 27 s. Every kart and
-   model draws at its top LOD tier, with the 2P-4P kart impostor
-   (DecalMP) off. A retail-vs-forced roster digest check is byte-identical.
-   - LINK primMem: the draw buffers point at static 256 KiB host
-     buffers. Across all 16 tracks the worst peak is 52% of the buffer;
-     the retail buffer dropped level geometry on tracks 4, 5, 11, and 16.
-   - The crate song no longer plays over black (not yet heard by the
-     owner). `docs/SOLO_CAB_MILESTONE.md` sections 7-8 have the details.
-4. Retail bug fixes found by the linked races (`docs/SOLO_CAB_MILESTONE.md`
-   section 8.4):
-   - Fixed and live-proven: the N. Tropy clock wrote `clockFlash`
-     through an empty driver slot (`VehPickupItem.c:865`), which crashed
-     both cabinets in a 6-driver race. Roster runs L and M
-     (`--arcade-roster-proof-clock`) fire a clock with empty slots.
-   - Fixed: `VehPickupItem_MissileGetTargetDriver` read
-     `pushBuffer[driverID]` out of bounds for bots 4 and 5. On native,
-     bot 5's value followed ASLR and could desync two cabinets. Bots with
-     driverID >= 4 now reject every candidate, as PS1 does in practice.
+3. Deploy (owner's go). The candidate is
+   `build-msvc-x86\package\ctr-arcade-c39867c69b7b`, exe SHA-256
+   `181FE2A9...A2C18C0D`. The full Debug and full Release suites passed,
+   186/186 each.
+   - `ctr-arcade-78c1376c5c32` (exe `57FE463B...0B49CCE`) adds only
+     logging and tests on top of it. It passed the full Debug suite
+     (187/187) and the Release package smoke.
+   - Steps:
+     1. Merge the fleet branch into `C:\Arcade` (`--ff-only`).
+     2. Run `deploy-ctr-native.ps1 -DryRun`, then run it for real on CAB1.
+     3. Run `ssh cab2 'schtasks /run /tn Arcade-Sync'`.
+     4. Check that CAB2's `last-sync.log` shows
+        `PASS [SETUP, discovery]`.
+4. Cabinet polish: done. In LINK mode the boot skips the SCEA,
+   copyright, and crate intro (about 27 s), and the crate song no longer
+   plays over black. Every kart and model draws at its top LOD tier, with
+   the 2P-4P kart impostor (DecalMP) off; a retail-vs-forced roster digest
+   check is byte-identical. The LINK draw buffers use static 256 KiB host
+   buffers, with a worst peak of 52% across all 16 tracks. See
+   `docs/SOLO_CAB_MILESTONE.md` sections 7-8. The owner has not yet seen
+   or heard these on a cabinet.
+5. Retail bug fixes found by the linked races (`docs/SOLO_CAB_MILESTONE.md`
+   sections 8.4 and 9). All are fixed and live-proven:
+   - The N. Tropy clock wrote `clockFlash` through an empty driver slot,
+     which crashed both cabinets. Roster runs L and M fire a clock with
+     empty slots.
+   - The missile target read `pushBuffer[driverID]` out of bounds for
+     bots 4 and 5. The value followed ASLR and could desync cabinets.
      The crate weapon branch returns early for bot owners.
-   - Fixed: the V4 drivers extractor rejected a legitimate retail
-     state, a human re-hit by a hazard while already spinning (kartState
-     0 with a live spin suffix; see `VehPickState.c:240-299`). This
-     failed tracks 0 and 12. The canonical rule now accepts it, with no
-     schema change. The live test `arcade_roster_track_sweep` covers
-     both profiles on all 16 tracks (1800 ticks). All 16 pass 3600 ticks
-     in both profiles (`docs/SOLO_CAB_MILESTONE.md` section 9).
-   - Fixed: the BOTS.c plant-eaten camera now writes `pushBuffer` only
-     for driverID < 4.
-   - Fixed, defensive: the shield crash-attack flash
-     (`RB_MaskShieldCloud.c:400`) writes `pushBuffer` only for driverID
-     < 4, native-only. No arcade bot can own a shield.
-   - Determinism: `arcade_roster_track_sweep` pairs same-seed TWO_CAB
-     runs on all 16 tracks and compares them byte for byte, about 345 s.
-     ONE_CAB pairs were byte-identical in a one-off record but are not
-     gated.
-   - Race finish: at 6000 ticks, 9 of 16 tracks reach END_OF_RACE, all
-     paired identical (`docs/SOLO_CAB_MILESTONE.md` section 9). Four
-     more need a longer cap. The autopilot cannot finish Sewer Speedway,
-     Cortex Castle or N. Gin Labs; that is an autopilot limit, not a game
-     one. There is no finish gate.
-   - Deferred: `RB_Player.c:87` (battle only) leaves suffix tuples
-     (88-91, 100) that extraction rejects. It cannot happen in arcade;
-     the fix outline is in section 9.
-   - Every ctest process runs on SDL's dummy audio driver, so tests are
-     silent on the cabinet. `MISSILE_TARGET_CAMERA_COUNT` is
-     static-asserted against the length of `pushBuffer`.
-   - Deploy candidate: `build-msvc-x86\package\ctr-arcade-c39867c69b7b`.
-     The exe SHA-256 is `181FE2A9...A2C18C0D`. The full Debug suite
-     passed 186/186, and Release passed `-L live-package`. PACKAGING.md
-     asks for the full Release suite before deployment. The fleet change
-     is staged on branch `ctr-discovery-deploy` in
-     `C:\re-tools\arcade-fleet-ctr`; its `deploy-ctr-native.ps1` handles
-     rollback, and the owner deploys.
-5. Shelved (owner): stretch goals 9 and 10 (Oxide Station, unlock
+   - The V4 drivers extractor rejected a spin re-hit (tracks 0 and 12).
+   - The BOTS plant camera and the shield crash flash wrote `pushBuffer`
+     out of bounds. Both are now guarded to driverID < 4 and
+     static-asserted.
+   - Coverage: `arcade_roster_track_sweep` runs both profiles on all 16
+     tracks, plus byte-identical same-seed TWO_CAB pairs.
+   - At 6000 ticks, 9 of 16 tracks reach END_OF_RACE. The autopilot
+     cannot finish Sewer Speedway, Cortex Castle or N. Gin Labs; that is
+     an autopilot limit.
+   - Deferred: `RB_Player.c:87` (battle only) leaves suffix tuples that
+     extraction rejects; this cannot happen in arcade.
+6. Shelved (owner): stretch goals 9 and 10 (Oxide Station, unlock
    everything and Turbo Track). Dropped (owner): 11 (16:9) and 13
    (per-cabinet full screen). Not prioritised: 12 (G29 force feedback).
-6. Open items, none blocking:
-   - Task 8:
-     - A divergence found only by the Tick that closes the link while
-       leaving RESULTS is not logged (LR-70).
-     - The detecting cabinet logs no "drive end" line when the flow
-       leaves RACING.
-     - The race-tick cap is checked across cabinets only by the gate
-       (LR-60).
-     - Audio during a hold has not been observed.
-     - Whether RESULTS shows standings is open (risk 16).
-     - TOPOLOGY is not compared (risk 17).
-   - Test hardening from packaging:
-     - Nothing pins the CMake registration of the roster split or its
-       `-Ticks` value.
-     - The one-cab group's run A is not byte-checked against the two-cab
-       group's.
-     - No test pins the `README.txt` content.
+7. Open items, none blocking:
+   - Audio during a hold has not been observed.
+   - Whether RESULTS shows standings is open (risk 16).
+   - TOPOLOGY is not compared (risk 17).
+   - ONE_CAB same-seed pairs are not gated. The one-cab group's run A is
+     not byte-checked against the two-cab group's.
+   - The LR-70 closing-Tick divergence latch is proven by unit tests
+     only.
+   - `arcade_solo_wake_link` has a 2.2x timing margin measured idle. It
+     can overlap the track sweep.
    - With neGcon/Jogcon pads, a different saved `data.rwd` on the two
      cabinets could affect steering. This predates packaging.
