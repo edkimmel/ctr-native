@@ -63,7 +63,11 @@ enum
 	BOTS_NAV_SPECIAL_LEVEL_INST_COLL = 0x40,
 	BOTS_NAV_SPECIAL_MOON_GRAVITY = 0x80,
 	BOTS_NAV_SPECIAL_INDEX_MASK = 0xf,
+
+	BOTS_PLANT_CAMERA_COUNT = 4,
 };
+
+CTR_STATIC_ASSERT(BOTS_PLANT_CAMERA_COUNT == len(((struct GameTracker *)0)->pushBuffer));
 
 static s16 BOTS_PathChangePathID(s16 changeOpcode)
 {
@@ -2321,24 +2325,35 @@ UpdateTireColorTimer:
 
 							RotTrans(&v, &v2, &l3);
 
-							gGT->pushBuffer[botDriver->driverID].pos.x = v2.vx;
-							gGT->pushBuffer[botDriver->driverID].pos.y = CTR_MipsAddLo(plantInst->matrix.t[1], 0xc0);
-							gGT->pushBuffer[botDriver->driverID].pos.z = v2.vz;
+							// Retail bug fix: gGT->pushBuffer has BOTS_PLANT_CAMERA_COUNT
+							// (4) entries, one per human screen. The original wrote
+							// pushBuffer[driverID].pos/rot for every eaten bot, so bots with
+							// driverID 4..7 wrote past the array into the DecalMP entries
+							// that follow (in non-LINK 2P, bot 5 overwrote DecalMP[0]'s
+							// renderBucketOTRangeEnd). Render-only on the PS1 too; the
+							// camera writes are skipped for those bots. The GTE work above
+							// and every non-camera statement below still run for all bots.
+							if (botDriver->driverID < BOTS_PLANT_CAMERA_COUNT)
+							{
+								gGT->pushBuffer[botDriver->driverID].pos.x = v2.vx;
+								gGT->pushBuffer[botDriver->driverID].pos.y = CTR_MipsAddLo(plantInst->matrix.t[1], 0xc0);
+								gGT->pushBuffer[botDriver->driverID].pos.z = v2.vz;
 
-							int camDriverXDelta = CTR_MipsSubLo(v2.vx, plantInst->matrix.t[0]);
-							int camY = gGT->pushBuffer[botDriver->driverID].pos.y;
-							int driverY = plantInst->matrix.t[1];
-							int camDriverZDelta = CTR_MipsSubLo(v2.vz, plantInst->matrix.t[2]);
+								int camDriverXDelta = CTR_MipsSubLo(v2.vx, plantInst->matrix.t[0]);
+								int camY = gGT->pushBuffer[botDriver->driverID].pos.y;
+								int driverY = plantInst->matrix.t[1];
+								int camDriverZDelta = CTR_MipsSubLo(v2.vz, plantInst->matrix.t[2]);
 
-							int rotY = ratan2(camDriverXDelta, camDriverZDelta);
-							gGT->pushBuffer[botDriver->driverID].rot.y = rotY;
+								int rotY = ratan2(camDriverXDelta, camDriverZDelta);
+								gGT->pushBuffer[botDriver->driverID].rot.y = rotY;
 
-							int rotX = SquareRoot0_stub(
-							    CTR_MipsAddLo(CTR_MipsMulLo(camDriverXDelta, camDriverXDelta), CTR_MipsMulLo(camDriverZDelta, camDriverZDelta)));
-							rotX = ratan2(CTR_MipsSubLo(camY, driverY), rotX);
+								int rotX = SquareRoot0_stub(
+								    CTR_MipsAddLo(CTR_MipsMulLo(camDriverXDelta, camDriverXDelta), CTR_MipsMulLo(camDriverZDelta, camDriverZDelta)));
+								rotX = ratan2(CTR_MipsSubLo(camY, driverY), rotX);
 
-							gGT->pushBuffer[botDriver->driverID].rot.x = CTR_MipsSubLo(0x800, rotX);
-							gGT->pushBuffer[botDriver->driverID].rot.z = 0;
+								gGT->pushBuffer[botDriver->driverID].rot.x = CTR_MipsSubLo(0x800, rotX);
+								gGT->pushBuffer[botDriver->driverID].rot.z = 0;
+							}
 						}
 
 						botDriver->botData.aiPhysics.speedLinear = 0;

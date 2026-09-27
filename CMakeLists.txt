@@ -2630,6 +2630,12 @@ if(BUILD_TESTING)
     add_test(NAME veh_pickup_missile_target_bot_bounds_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/veh_pickup_missile_target_bot_bounds_isolation_test.cmake")
 
+    # Bots past the four cameras (BOTS_ThTick_Drive plant-eaten branch): the
+    # native build writes the plant camera pos/rot only for driverID <
+    # len(pushBuffer); retail wrote bots 4-7 past the array into DecalMP.
+    add_test(NAME bots_plant_camera_isolation
+        COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/bots_plant_camera_isolation_test.cmake")
+
     add_executable(native_replay_scheduler_seam_test tests/native_replay_scheduler_seam_test.c)
     set_target_properties(native_replay_scheduler_seam_test PROPERTIES
         C_STANDARD 17
