@@ -2207,7 +2207,13 @@ if(BUILD_TESTING)
         # cross-profile checks (F against A).  Together they run every check
         # of the unsplit proof (tests/arcade_roster_proof_groups_test.cmake).
         # Needs an internal build too.  Each group writes only under its own
-        # directory of the build tree.
+        # directory of the build tree.  Each group holds its own RESOURCE_LOCK
+        # (arcade_roster_two_cab_cpu, arcade_roster_one_cab_cpu), so the two
+        # groups may still overlap each other but never the track sweep below,
+        # which holds both: the runs pace VBlank on the wall clock, and run K's
+        # hold must last within 10% of 45 tick periods on two clocks, which
+        # the sweep's 16 game processes on top of the groups' (about 30 on a
+        # 16-core machine under `ctest -j 8`) can starve.
         foreach(roster_group IN ITEMS two-cab one-cab)
             string(REPLACE "-" "_" roster_suffix "${roster_group}")
             add_test(NAME arcade_roster_determinism_${roster_suffix}
@@ -2221,6 +2227,7 @@ if(BUILD_TESTING)
             set_tests_properties(arcade_roster_determinism_${roster_suffix} PROPERTIES
                 SKIP_RETURN_CODE 77
                 TIMEOUT 900
+                RESOURCE_LOCK arcade_roster_${roster_suffix}_cpu
                 LABELS "live;live-roster")
         endforeach()
 
@@ -2238,8 +2245,11 @@ if(BUILD_TESTING)
         # timing); measured (Debug) about 114 s per run and 230 s for the test,
         # so TIMEOUT 600 and 300 s per run leave over 2x margin.  Each
         # run writes only under its own directory of this test's directory.
-        # tests/arcade_roster_track_sweep_plan_test.cmake pins the plan and
-        # these arguments.
+        # It holds both roster group locks (above), so its 16 processes never
+        # run alongside either determinism group, whose wall-clock paced runs
+        # (run K's hold) they could starve.
+        # tests/arcade_roster_track_sweep_plan_test.cmake pins the plan, these
+        # arguments, and the locks.
         add_test(NAME arcade_roster_track_sweep
             COMMAND powershell -NoProfile -ExecutionPolicy Bypass
                 -File "${CMAKE_SOURCE_DIR}/tools/arcade-roster-track-sweep.ps1"
@@ -2252,6 +2262,7 @@ if(BUILD_TESTING)
         set_tests_properties(arcade_roster_track_sweep PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 600
+            RESOURCE_LOCK "arcade_roster_two_cab_cpu;arcade_roster_one_cab_cpu"
             LABELS "live;live-roster")
 
         # The two-process live race gate (docs/RACE_LAUNCH_MILESTONE.md

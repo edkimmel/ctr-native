@@ -546,7 +546,9 @@ ctest --test-dir build-msvc-x86 -C Debug -LE live -j 8 --output-on-failure
 # are distinct).
 ctest --test-dir build-msvc-x86 -C Debug -L live-link -j 3 --output-on-failure
 # live-roster runs three tests (the two arcade_roster_determinism groups,
-# about 273 s each, and arcade_roster_track_sweep, about 230 s).
+# about 273 s each, and arcade_roster_track_sweep, about 230 s). The sweep
+# holds both groups' RESOURCE_LOCKs, so it never overlaps them and -j 8 takes
+# about two-cab time + sweep time (499 s measured).
 ctest --test-dir build-msvc-x86 -C Debug -L live-roster -j 8 --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-render --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-package --output-on-failure
@@ -574,7 +576,8 @@ Eight tests carry the ctest label `live` plus one area label:
 `arcade_discovery_link` (`live-link`), and
 `package_arcade_smoke` (`live-package`, about 242 s).
 `ctest -LE live` excludes all eight; the default run includes them. They are
-parallel-safe (no RUN_SERIAL or RESOURCE_LOCK). Measured in Debug: the fast
+parallel-safe (no RUN_SERIAL; the only RESOURCE_LOCKs keep
+`arcade_roster_track_sweep` apart from the two roster groups). Measured in Debug: the fast
 suite (163 tests when measured) takes 86 s serial and 36 s with `-j 8`
 (175 tests: 31 s with `-j 8`), and the five live tests other than
 `arcade_solo_race` together with `-L live -j 8` take 273 s

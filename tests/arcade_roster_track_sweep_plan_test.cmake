@@ -7,6 +7,9 @@
 #     reach past race tick 946 (the latest known TWO_CAB DRIVERS_FAILED, Polar
 #     Pass) and, with one-cab, past 1785 (the ONE_CAB one, Dingo Canyon), and
 #     the test is live-roster with SKIP_RETURN_CODE 77;
+#   - the sweep holds RESOURCE_LOCK on both roster determinism groups' locks
+#     (arcade_roster_two_cab_cpu, arcade_roster_one_cab_cpu), and each group
+#     holds its own, so the sweep never overlaps either group;
 #   - the default plan covers all 16 arcade match-select tracks, in the order
 #     of platform/native_match_select_rules.c k_matchSelectTracks
 #     (NativeMatchSelect_TrackAt), each once per profile;
@@ -62,6 +65,26 @@ endif()
 set(registered_properties "${CMAKE_MATCH_1}")
 if(NOT registered_properties MATCHES "SKIP_RETURN_CODE 77" OR NOT registered_properties MATCHES "LABELS \"live;live-roster\"")
     message(FATAL_ERROR "track sweep plan: arcade_roster_track_sweep must be SKIP_RETURN_CODE 77 and LABELS \"live;live-roster\":${registered_properties}")
+endif()
+# The locks: each roster determinism group holds its own, and the sweep holds
+# both, so its 16 processes never overlap either group's wall-clock paced runs.
+if(NOT cmake_source MATCHES "foreach\\(roster_group IN ITEMS two-cab one-cab\\)")
+    message(FATAL_ERROR "track sweep plan: the roster determinism groups are no longer two-cab and one-cab; update the lock check")
+endif()
+if(NOT cmake_source MATCHES "set_tests_properties\\(arcade_roster_determinism_\\\${roster_suffix} PROPERTIES([^)]*)\\)")
+    message(FATAL_ERROR "track sweep plan: no set_tests_properties for arcade_roster_determinism_\${roster_suffix}")
+endif()
+set(group_properties "${CMAKE_MATCH_1}")
+if(NOT group_properties MATCHES "RESOURCE_LOCK arcade_roster_\\\${roster_suffix}_cpu[ \t\r\n]")
+    message(FATAL_ERROR "track sweep plan: each roster determinism group must hold RESOURCE_LOCK arcade_roster_\${roster_suffix}_cpu:${group_properties}")
+endif()
+if(NOT registered_properties MATCHES "RESOURCE_LOCK \"([^\"]*)\"")
+    message(FATAL_ERROR "track sweep plan: arcade_roster_track_sweep holds no quoted RESOURCE_LOCK list:${registered_properties}")
+endif()
+set(sweep_locks "${CMAKE_MATCH_1}")
+list(SORT sweep_locks)
+if(NOT sweep_locks STREQUAL "arcade_roster_one_cab_cpu;arcade_roster_two_cab_cpu")
+    message(FATAL_ERROR "track sweep plan: arcade_roster_track_sweep holds RESOURCE_LOCK '${sweep_locks}', expected both arcade_roster_two_cab_cpu and arcade_roster_one_cab_cpu")
 endif()
 if(NOT registered_Profile STREQUAL "two-cab" AND NOT registered_Profile STREQUAL "both")
     message(FATAL_ERROR "track sweep plan: arcade_roster_track_sweep registers -Profile ${registered_Profile}; it must run two-cab (the autopilot)")
