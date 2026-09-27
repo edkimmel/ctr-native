@@ -931,40 +931,36 @@ open source.
      refresh is held during races.
    Real broadcast, the NIC list, and the lan filter are proven only by
    unit and loopback tests.
-   - The fleet change is staged, not landed, on branch
-     `ctr-discovery-deploy` in the worktree `C:\re-tools\arcade-fleet-ctr`.
-     `C:\Arcade`'s working tree IS the fleet sync source, which is why it
-     is staged separately. The branch has:
-     - `setup-ctr-native.ps1`: the mode follows the deployed MANIFEST
-       (v1 keeps its static cfg). Discovery writes `seat = auto` and
-       `lan = 192.168.1.0/24`, and uses one firewall rule, UDP 7000,7001
-       from LocalSubnet.
-     - `deploy-ctr-native.ps1 -Package <dir> [-DryRun] [-StaticPeer]`,
-       which backs up the old package and has a rollback path.
-   - DISC-S6: physical acceptance. The cabinets pair at boot, .11 is
-     cab1, one race runs, solo works with a cabinet off, and they relink
-     when it is powered back on. This needs the owner.
-3. Deploy (owner's go). The candidate is
-   `build-msvc-x86\package\ctr-arcade-c39867c69b7b`, exe SHA-256
-   `181FE2A9...A2C18C0D`. The full Debug and full Release suites passed,
-   186/186 each.
-   - `ctr-arcade-78c1376c5c32` (exe `57FE463B...0B49CCE`) adds only
-     logging and tests on top of it. It passed the full Debug suite
-     (187/187) and the Release package smoke.
-   - Steps:
-     1. Merge the fleet branch into `C:\Arcade` (`--ff-only`).
-     2. Run `deploy-ctr-native.ps1 -DryRun`, then run it for real on CAB1.
-     3. Run `ssh cab2 'schtasks /run /tn Arcade-Sync'`.
-     4. Check that CAB2's `last-sync.log` shows
-        `PASS [SETUP, discovery]`.
+   - Fleet: `setup-ctr-native.ps1` picks the link mode from the deployed
+     MANIFEST (discovery writes `seat = auto` and
+     `lan = 192.168.1.0/24`, plus one firewall rule for UDP 7000,7001
+     from LocalSubnet). `deploy-ctr-native.ps1 -Package <dir>
+     [-DryRun] [-StaticPeer]` installs a package and backs up the old
+     one; the v1 backup is in `games\backups\ctr-native\`.
+   - DISC-S6, physical acceptance: partly done. Linked races through
+     Pegasus worked (owner, 2026-09-27). Still to confirm: pairing at
+     boot with .11 as cab1 (check the logs), solo with one cabinet off,
+     and relinking when it is powered back on.
+3. Deployed (2026-09-27): both cabinets run `ctr-arcade-c39867c69b7b`
+   (exe `181FE2A9...A2C18C0D`, full Debug and Release suites green), in
+   discovery mode, with fleet `C:\Arcade` main `d0c3518`. The owner saw
+   bot karts stay full 3D. `ctr-arcade-78c1376c5c32` adds logging and
+   tests only and is not deployed. The session report is
+   `docs/SESSION_REPORT_2026-09-27.md`.
+   - NEXT (owner-observed): 3D terrain still uses level LOD. The level
+     BSP near/far slot and the texture/subdivision depths are retail
+     (`docs/SOLO_CAB_MILESTONE.md` section 8.3). With LINK's 256 KiB
+     primMem (52% worst peak), forcing the near tier in LINK may fit.
+     Measure it on all 16 tracks and keep it presentation-only;
+     collision and the LEV file are simulation.
 4. Cabinet polish: done. In LINK mode the boot skips the SCEA,
    copyright, and crate intro (about 27 s), and the crate song no longer
    plays over black. Every kart and model draws at its top LOD tier, with
    the 2P-4P kart impostor (DecalMP) off; a retail-vs-forced roster digest
    check is byte-identical. The LINK draw buffers use static 256 KiB host
    buffers, with a worst peak of 52% across all 16 tracks. See
-   `docs/SOLO_CAB_MILESTONE.md` sections 7-8. The owner has not yet seen
-   or heard these on a cabinet.
+   `docs/SOLO_CAB_MILESTONE.md` sections 7-8. On the cabinets the owner
+   confirmed bot karts stay 3D; terrain LOD is item 3's NEXT.
 5. Retail bug fixes found by the linked races (`docs/SOLO_CAB_MILESTONE.md`
    sections 8.4 and 9). All are fixed and live-proven:
    - The N. Tropy clock wrote `clockFlash` through an empty driver slot,
