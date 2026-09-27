@@ -2446,8 +2446,8 @@ LR-60 The internal race-tick-limit override (LR-S10 part 1, for LR-42).
   launch agreement, match config, or identity changes, and no product
   code changes (pins and a unit test only). "Production" is a cabinet
   started without any --arcade-link-autopilot option: from arcade.cfg
-  (--config) or the static link options, in either build (v1 ships the
-  CTR_INTERNAL build). The proof chain:
+  (the default next to the exe, or --config) or the static link options,
+  in either build (v1 ships the CTR_INTERNAL build). The proof chain:
   - A non-internal build cannot call the setter: main.c's one call sits in
     a CTR_INTERNAL region, and such a build rejects the autopilot option.
   - An internal build calls it only under the autopilot: the call, with
@@ -2455,12 +2455,15 @@ LR-60 The internal race-tick-limit override (LR-S10 part 1, for LR-42).
     inside main.c's `if (arcadeLinkAutopilotOptions.enabled != 0u)` block.
   - The cap comes only from argv. main.c's options are zeroed by
     SetDefaults and written only by ApplyArgs over main's own argc and
-    argv, neither of which main.c assigns; the glue's Configure takes them
-    as const. ApplyArgs sets raceTickLimit only for
+    argv, neither of which main.c assigns by name; the glue's Configure
+    takes them as const. ApplyArgs sets raceTickLimit only for
     --arcade-link-autopilot-race-ticks, which fails without
-    --arcade-link-autopilot. No other source writes the field (the glue
-    copies it into the autopilot state for the report only, and the drive
-    writes its own limit from Begin's parameter, g_raceTickLimit).
+    --arcade-link-autopilot. No other source writes the field by name (the
+    glue copies it into the autopilot state for the report only, and the
+    drive writes its own limit from Begin's parameter, g_raceTickLimit).
+    These pins match names, so a write through an alias (for example
+    `*(argv + 1) = ...`, or a type-punned write to ApplyArgs' candidate)
+    would pass them.
   - The arcade.cfg parser, whose synthetic argv reaches only the link and
     display parsers, and the package (tools/package/ and
     tools/package-arcade.ps1) name no autopilot option and no race tick
@@ -2470,6 +2473,9 @@ LR-60 The internal race-tick-limit override (LR-S10 part 1, for LR-42).
   - Configure (through its first statement, Shutdown) and Shutdown reset
     the stored value to 0, so a cap lowered by an earlier configuration
     never carries over.
+  - The default 18000 (NATIVE_ARCADE_RACE_DRIVE_RACE_TICK_LIMIT) is a
+    compile-time constant of a build whose identity the link compares, so
+    two linked production cabinets always share it.
   The pins: native_arcade_link_host_isolation rule 3h (its "production
   default" part: the enclosing if-block by brace matching, main.c's
   option and argv writes, SetDefaults and ApplyArgs, an allowlist of every
@@ -6284,14 +6290,14 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
       requires a race 2 drive end line on both cabinets, the flow-left
       form only on a detecting cabinet with its race tick in the
       divergence window.
-    - Closed by the LR-60 production-default commit: LR-60's race tick
-      cap is cross-checked between cabinets only by the gate (the same
-      "race tick limit 6000" line on both stdouts). The option is internal
-      and host-local; a mismatch shows as a stall, not a silent desync.
-      Rather than carry the cap in the launch agreement, production is
-      proved and pinned to race with the fixed default 18000: only the
-      internal autopilot, from argv, can set the cap, and Configure and
-      Shutdown reset it (LR-60's "Production default (decision)";
-      native_arcade_link_host_isolation 3h and the unit test
-      TestDriveRaceTickLimitDefault). No wire format, launch agreement,
-      match config, or identity changed.
+    - Closed by b749f5369: production is proved and pinned to race with
+      the fixed default 18000, rather than carrying LR-60's race tick cap
+      in the launch agreement: only the internal autopilot, from argv, can
+      set the cap, and Configure and Shutdown reset it (LR-60's
+      "Production default (decision)"; native_arcade_link_host_isolation
+      3h and the unit test TestDriveRaceTickLimitDefault). No wire format,
+      launch agreement, match config, or identity changed. The item was
+      that the cap was cross-checked between cabinets only by the gate
+      (the same "race tick limit 6000" line on both stdouts); the option
+      is internal and host-local, and a mismatch shows as a stall, not a
+      silent desync.

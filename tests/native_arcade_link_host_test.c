@@ -3518,11 +3518,11 @@ static int CheckDefaultCapRace(uint32_t cap, uint64_t entropy)
 /*
  * LR-60's production default: a cabinet started without the internal
  * autopilot never calls NativeArcadeLinkHost_SetRaceTickLimit, so every
- * LINK race's drive runs with the default 18000 (stored limit 0). That
- * holds on a first Configure, after a replacing Configure over a session
- * whose cap was lowered (Configure resets it), and after a Shutdown that
- * follows a lowered cap. Each race runs past the lowered cap without an
- * end.
+ * LINK race's drive runs with the default 18000 (stored limit 0). With no
+ * setter call after Configure, that holds on a first Configure, after a
+ * replacing Configure over a session whose cap was lowered (Configure
+ * resets it), and after a Shutdown that follows a lowered cap. Each race
+ * runs past the lowered cap without an end.
  */
 static int TestDriveRaceTickLimitDefault(void)
 {

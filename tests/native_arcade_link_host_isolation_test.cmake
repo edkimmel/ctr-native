@@ -36,9 +36,9 @@
 # BeginDrive hands the drive, and only main.c's internal-build code sets it
 # (rule 3h); since LR-60's production-default decision 3h also pins that
 # the call runs only under the autopilot, that the cap comes only from
-# argv, and that the config parser and the package offer none. Since LR-S10 part 2 the race caller
-# (game/MAIN/MainArcadeRaceLaunch.c) is the one game source that names
-# RaceStep and RaceHold, once each (rule 3g). Since LR-S12 the hold's period
+# argv, and that the config parser and the package offer none. Since
+# LR-S10 part 2 the race caller (game/MAIN/MainArcadeRaceLaunch.c) is the
+# one game source that names RaceStep and RaceHold, once each (rule 3g). Since LR-S12 the hold's period
 # service keeps the launch linger sending through the start wait (race tick
 # 0, LR-69; rule 3g), and the host latches a pointer-free divergence record
 # once per race after every Tick, RaceStep, and RaceHold, which the header's
@@ -806,6 +806,10 @@ endif()
 #       race tick (raw text, case-insensitive): a packaged cabinet reaches
 #       the setter only if an operator adds the internal autopilot flags by
 #       hand, which also hand its menus to the autopilot.
+# ctr_matching_brace counts raw braces and ignores the preprocessor:
+# braces unbalanced across #if/#else arms would miscount. The code it
+# scans has none today; a count that never returns to depth 0 fails
+# closed with "unbalanced".
 function(ctr_matching_brace code open_at out_var)
     string(SUBSTRING "${code}" ${open_at} 1 first)
     if(NOT first STREQUAL "{")
