@@ -20,7 +20,7 @@ package folder itself is never run); the copied files re-checked against the
 MANIFEST, and asserted to hold no memcards\ (a fresh cabinet, no memcard
 save); the package's arcade.cfg checked to set data_dir, seat, fullscreen,
 render_scale, and texture_filter once each, seat = auto, and no port, peer,
-or group (those are commented-out examples); <output>\a.loopback.cfg and
+group, or lan (those are commented-out examples); <output>\a.loopback.cfg and
 b.loopback.cfg derived from it by changing ONLY data_dir (to the folder
 holding -AssetsFile), fullscreen (to 0), and render_scale (to 1: two
 cabinets at 8x on one test PC is needless load; texture_filter stays the
@@ -93,7 +93,7 @@ $loopbackRenderScale = '1'
 $templateSeat = 'auto'
 $templateTextureFilter = 'bilinear'
 # The keys the template must set exactly once; every other key (port, peer,
-# group) it must leave commented out.
+# group, lan) it must leave commented out.
 $templateKeys = @('data_dir', 'seat', 'fullscreen', 'render_scale', 'texture_filter')
 
 # Write-Host, not Write-Output: these also run inside functions whose output
@@ -234,8 +234,8 @@ function Get-LoopbackValue([string]$Key) {
 }
 
 # Checks the package's arcade.cfg: each of $templateKeys set exactly once,
-# seat auto, texture_filter bilinear, and no other key set (port, peer, and
-# group are commented-out examples only).
+# seat auto, texture_filter bilinear, and no other key set (port, peer,
+# group, and lan are commented-out examples only).
 function Assert-Template([string]$Source) {
     $lines = Split-ConfigText ([System.IO.File]::ReadAllText($Source))
     $counts = @{}
@@ -252,7 +252,7 @@ function Assert-Template([string]$Source) {
             Exit-Failed "$Source line $($i + 1) has no '=': '$line'"
         }
         if (-not $counts.ContainsKey($entry.Key)) {
-            Exit-Failed "$Source line $($i + 1) sets '$($entry.Key)'; the template sets only $($templateKeys -join ', ') (port, peer, and group are commented-out examples)"
+            Exit-Failed "$Source line $($i + 1) sets '$($entry.Key)'; the template sets only $($templateKeys -join ', ') (port, peer, group, and lan are commented-out examples)"
         }
         $counts[$entry.Key]++
         if (($entry.Key -ceq 'seat') -and ($entry.Value -cne $templateSeat)) {
@@ -461,7 +461,7 @@ $runExe = Join-Path $runDir 'ctr_native.exe'
 Write-Output ''
 $template = Join-Path $packageDir 'arcade.cfg'
 Assert-Template $template
-Write-Output ("template: {0} sets {1} once each, seat {2}, and no port, peer, or group" -f $template, ($templateKeys -join ', '), $templateSeat)
+Write-Output ("template: {0} sets {1} once each, seat {2}, and no port, peer, group, or lan" -f $template, ($templateKeys -join ', '), $templateSeat)
 $configs = @{}
 foreach ($run in $loopbackRuns) {
     $derived = Join-Path $output "$($run.Name).loopback.cfg"

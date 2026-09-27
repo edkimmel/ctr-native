@@ -645,6 +645,131 @@ static int TestDiscoveryModes(void)
 	return 0;
 }
 
+/* The lan (docs/DISCOVERY_MILESTONE.md DISC-19): --arcade-link-lan in both
+ * modes, and the post-merge rule that holds targets and peers inside it. */
+static int TestLan(void)
+{
+	char *autoLan[] = {"ctr_native", "--arcade-link-lan", "192.168.1.0/24", "--arcade-link", "auto"};
+	char *staticLan[] = {"ctr_native", "--arcade-link", "cab1", "--arcade-link-port", "7001", "--arcade-link-peer", "192.168.1.12:7001",
+		"--arcade-link-lan", "192.168.1.0/24"};
+	char *staticOutside[] = {"ctr_native", "--arcade-link", "cab1", "--arcade-link-port", "7001", "--arcade-link-peer", "192.168.1.12:7001",
+		"--arcade-link-peer", "10.0.0.2:7001", "--arcade-link-lan", "192.168.1.0/24"};
+	char *loopbackLan[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-port", "7301", "--arcade-link-lan", "127.0.0.0/8",
+		"--arcade-discovery-port", "7303", "--arcade-discovery-target", "127.0.0.1:7304"};
+	char *targetOutside[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "192.168.1.0/24", "--arcade-discovery-target",
+		"192.168.1.12:7000", "--arcade-discovery-target", "127.0.0.1:7000"};
+	char *narrowest[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "10.20.30.40/30"};
+	char *widest[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "10.0.0.0/8"};
+	/* Errors: the core's grammar refusals, the option rules. */
+	char *lanAlone[] = {"ctr_native", "--arcade-link-lan", "192.168.1.0/24"};
+	char *lanTwice[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "192.168.1.0/24", "--arcade-link-lan", "192.168.1.0/24"};
+	char *lanMissing[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan"};
+	char *lanDash[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "-192.168.1.0/24"};
+	char *lanEmpty[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", ""};
+	char *lanNoPrefix[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "192.168.1.0"};
+	char *lanHostBits[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "192.168.1.5/24"};
+	char *lanPrefix7[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "10.0.0.0/7"};
+	char *lanPrefix31[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "192.168.1.0/31"};
+	char *lanPrefix32[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "192.168.1.1/32"};
+	char *lanSpace[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "192.168.1.0/24 "};
+	char *lanJunk[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "192.168.1.0/24x"};
+	char *lanBadQuad[] = {"ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "192.168.256.0/24"};
+	char *lanPreview[] = {"ctr_native", "--arcade-link-preview", "lobby", "--arcade-link-lan", "192.168.1.0/24"};
+	char *lanUpper[] = {"ctr_native", "--arcade-link", "auto", "--ARCADE-LINK-LAN", "192.168.1.0/24", "--arcade-link-lan", "x"};
+	char **errors[] = {
+		lanAlone, lanTwice, lanMissing, lanDash, lanEmpty, lanNoPrefix, lanHostBits, lanPrefix7, lanPrefix31, lanPrefix32, lanSpace,
+		lanJunk, lanBadQuad, lanPreview, lanUpper,
+	};
+	const int errorCounts[] = {
+		ARGC(lanAlone), ARGC(lanTwice), ARGC(lanMissing), ARGC(lanDash), ARGC(lanEmpty), ARGC(lanNoPrefix), ARGC(lanHostBits),
+		ARGC(lanPrefix7), ARGC(lanPrefix31), ARGC(lanPrefix32), ARGC(lanSpace), ARGC(lanJunk), ARGC(lanBadQuad), ARGC(lanPreview),
+		ARGC(lanUpper),
+	};
+	struct NativeArcadeLinkOptions options;
+	struct NativeArcadeLinkOptions snapshot;
+
+	/* SetDefaults leaves no lan. */
+	Sentinel(&options);
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK((options.hasLan == 0) && (options.lanNetwork == 0u) && (options.lanPrefixLength == 0) && (options.lanReserved == 0));
+
+	/* Discovery mode with a lan; the nonce and entropy are untouched. */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	options.discoveryNonce = UINT64_C(0x0123456789ABCDEF);
+	options.selectEntropy = UINT64_C(0xFEDCBA9876543210);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(autoLan), autoLan, &options));
+	CHECK((options.enabled == 1) && (options.discovery == 1) && (options.localPort == 7001u) && (options.hasGroup == 0));
+	CHECK((options.hasLan == 1) && (options.lanNetwork == UINT32_C(0xC0A80100)) && (options.lanPrefixLength == 24u) && (options.lanReserved == 0));
+	CHECK(options.discoveryNonce == UINT64_C(0x0123456789ABCDEF));
+	CHECK(options.selectEntropy == UINT64_C(0xFEDCBA9876543210));
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(narrowest), narrowest, &options));
+	CHECK((options.lanNetwork == UINT32_C(0x0A141E28)) && (options.lanPrefixLength == 30u));
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(widest), widest, &options));
+	CHECK((options.lanNetwork == UINT32_C(0x0A000000)) && (options.lanPrefixLength == 8u));
+
+	/* Static mode takes a lan too (unlike a group); its peers must be inside. */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(staticLan), staticLan, &options));
+	CHECK((options.discovery == 0) && (options.peerCount == 1u) && (options.hasLan == 1) && (options.lanPrefixLength == 24u));
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(staticOutside), staticOutside, &options));
+	CHECK((options.discovery == 0) && (options.peerCount == 2u) && (options.hasLan == 1));
+	snapshot = options;
+	CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+	CHECK(memcmp(&options, &snapshot, sizeof(options)) == 0);
+	/* Without the lan the same peers validate: the rule is the lan's alone. */
+	options.hasLan = 0;
+	options.lanNetwork = 0u;
+	options.lanPrefixLength = 0;
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+
+	/* Explicit discovery targets must be inside the lan: the loopback test
+	 * setup with 127.0.0.0/8 validates; a target outside it does not. */
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(loopbackLan), loopbackLan, &options));
+	CHECK((options.discoveryTargetCount == 1u) && (options.lanNetwork == UINT32_C(0x7F000000)) && (options.lanPrefixLength == 8u));
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+	NativeArcadeLinkOptions_SetDefaults(&options);
+	CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(targetOutside), targetOutside, &options));
+	CHECK(options.discoveryTargetCount == 2u);
+	CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+	options.discoveryTargetCount = 1u; /* the first target alone is inside */
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+	/* The merge order main.c uses: argv's targets, then the file's group
+	 * with its lan applied over them; the merged options are checked. */
+	{
+		char *argvTargets[] = {"ctr_native", "--arcade-discovery-port", "7303", "--arcade-discovery-target", "127.0.0.1:7304"};
+		char *fileInside[] = {"arcade.cfg", "--arcade-link", "auto", "--arcade-link-port", "7301", "--arcade-link-lan", "127.0.0.0/8"};
+		char *fileOutside[] = {"arcade.cfg", "--arcade-link", "auto", "--arcade-link-port", "7301", "--arcade-link-lan", "192.168.1.0/24"};
+
+		NativeArcadeLinkOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argvTargets), argvTargets, &options));
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(fileInside), fileInside, &options));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&options));
+		NativeArcadeLinkOptions_SetDefaults(&options);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argvTargets), argvTargets, &options));
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(fileOutside), fileOutside, &options));
+		CHECK((options.hasLan == 1) && (options.discoveryTargetCount == 1u));
+		CHECK(!NativeArcadeLinkOptions_ValidateMerged(&options));
+	}
+
+	/* Errors leave the options untouched, from a sentinel and from defaults. */
+	CHECK(sizeof(errors) / sizeof(errors[0]) == sizeof(errorCounts) / sizeof(errorCounts[0]));
+	for (size_t i = 0; i < sizeof(errors) / sizeof(errors[0]); i++)
+	{
+		if (!RejectsUntouched(errorCounts[i], errors[i]) || !RejectsFromDefaults(errorCounts[i], errors[i]))
+		{
+			fprintf(stderr, "lan error case %u was accepted or wrote the options\n", (unsigned)i);
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static int TestFixture(void)
 {
 	struct NativeIdentityV1 identity;
@@ -782,6 +907,7 @@ int main(void)
 	CHECK(TestApplyArgsErrors() == 0);
 	CHECK(TestSelectEntropyNotParsed() == 0);
 	CHECK(TestDiscoveryModes() == 0);
+	CHECK(TestLan() == 0);
 	CHECK(TestFixture() == 0);
 	puts("native_arcade_link_options_test: ok");
 	return 0;

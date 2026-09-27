@@ -32,6 +32,19 @@
  * - Failure is never fatal (DISC-15): a bind failure makes Open return 0
  *   with the service closed, and the caller logs it and carries on without
  *   discovery; a receive error ends that tick's drain.
+ * - The lan (DISC-19, optional): with one, a datagram whose source IPv4 is
+ *   outside the lan is dropped before it reaches the core (counted in the
+ *   status, never logged per datagram), every override target must be
+ *   inside the lan, and without overrides the only target is the lan's
+ *   directed broadcast, and only while a local interface is inside the lan
+ *   (NativeNetInterfaces_BuildLanTargets); with none, or while the
+ *   enumeration fails, there is no target and no beacon goes out (never a
+ *   fallback to 255.255.255.255 or another interface's broadcast), and the
+ *   next refresh retries. TakeLanChange reports each change of that
+ *   interface for the caller's log. The one broadcast leaves the
+ *   INADDR_ANY socket through the interface with the on-link route for the
+ *   lan's subnet; the socket is never bound to an interface address.
+ *   Without a lan every rule above is as before.
  *
  * Caller-owned state, no heap, no clock: the only time is the tick count.
  * Nothing here reaches simulation identity, the match config, replay,
@@ -67,6 +80,13 @@ struct NativeArcadeDiscoveryService
 	uint32_t receiveErrors;
 	uint32_t refreshCount; /* interface-list reads since Open, Open's included */
 	uint32_t beaconCount;  /* beacon rounds since Open */
+	/* The lan (DISC-19); lanPrefixLength 0: none. */
+	uint8_t lanPrefixLength;
+	uint8_t lanChanged; /* lanInterfaceIpv4 changed since the last TakeLanChange */
+	uint16_t reserved3;
+	uint32_t lanNetwork;
+	uint32_t lanInterfaceIpv4; /* the interface inside the lan at the latest read, 0: none */
+	uint32_t lanDropped;       /* datagrams dropped for a source outside the lan */
 	struct NativeUdpTransportAddress targets[NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_TARGETS];
 	struct NativeUdpTransport transport;
 	struct NativeArcadeDiscoveryTable table;
@@ -87,7 +107,13 @@ struct NativeArcadeDiscoveryServiceStatus
 	uint32_t sendFailures;  /* beacon sends the socket refused */
 	uint32_t receiveErrors; /* drains ended by a receive error */
 	uint32_t refreshCount;  /* interface-list reads since Open, Open's included */
-	uint32_t beaconCount;   /* beacon rounds since Open (sent or refused) */
+	uint32_t beaconCount;   /* beacon rounds since Open (sent or refused); a tick with no target sends none */
+	/* The lan (DISC-19); all zero without one. */
+	uint8_t lanPrefixLength;
+	uint8_t reserved3[3];
+	uint32_t lanNetwork;
+	uint32_t lanInterfaceIpv4; /* 0: no interface inside the lan (always 0 with explicit targets) */
+	uint32_t lanDropped;       /* datagrams dropped for a source outside the lan */
 };
 
 /*
@@ -96,15 +122,19 @@ struct NativeArcadeDiscoveryServiceStatus
  * hash, identity digest, link port, and seat preference
  * (NATIVE_ARCADE_DISCOVERY_SEAT_*). overrideCount 1..4 entries of
  * overrideTargets (ipv4 and port nonzero) become the only targets; with
- * overrideCount 0 the targets come from the interface list.
+ * overrideCount 0 the targets come from the interface list. lanPrefixLength
+ * 0 means no lan; otherwise (lanNetwork, lanPrefixLength) must be a lan
+ * NativeArcadeDiscovery_LanValid accepts, and every override target inside
+ * it (DISC-19).
  * Returns 1 when open. Returns 0 with the service closed for a NULL service,
- * bindPort 0, a bad override list, arguments the core's Init rejects, or
- * when the socket cannot be opened, bound (port in use), or set to
- * broadcast.
+ * bindPort 0, a bad override list, a bad lan or an override outside it,
+ * arguments the core's Init rejects, or when the socket cannot be opened,
+ * bound (port in use), or set to broadcast.
  */
 int NativeArcadeDiscoveryService_Open(struct NativeArcadeDiscoveryService *service, uint16_t bindPort, uint64_t ourNonce, uint64_t groupHash,
                                       const uint8_t identity[NATIVE_ARCADE_DISCOVERY_IDENTITY_BYTES], uint16_t ourLinkPort, uint8_t ourSeatPreference,
-                                      const struct NativeUdpTransportAddress *overrideTargets, uint32_t overrideCount);
+                                      const struct NativeUdpTransportAddress *overrideTargets, uint32_t overrideCount, uint32_t lanNetwork,
+                                      uint8_t lanPrefixLength);
 
 /* One 30 Hz tick, as described above. mayRefresh 0 holds the interface
  * refresh; the drain, the core's tick, and the beacon cadence are
@@ -118,6 +148,17 @@ int NativeArcadeDiscoveryService_Pairing(const struct NativeArcadeDiscoveryServi
 
 /* NativeArcadeDiscovery_TakeEvent on the table; 0 when closed. */
 int NativeArcadeDiscoveryService_TakeEvent(struct NativeArcadeDiscoveryService *service, struct NativeArcadeDiscoveryEvent *out);
+
+/*
+ * The lan interface for the caller's log (DISC-19): returns 1 once for each
+ * interface-list read that found a different interface inside the lan than
+ * the read before it (the first read, at Open, always counts), and writes
+ * that interface's IPv4, or 0 when none is inside the lan (nothing is then
+ * sent). Returns 0 (*interfaceIpv4 untouched) when closed, without a lan,
+ * with explicit targets (no list is read), with nothing new, or for NULL
+ * arguments.
+ */
+int NativeArcadeDiscoveryService_TakeLanChange(struct NativeArcadeDiscoveryService *service, uint32_t *interfaceIpv4);
 
 /* Writes the status (all zero when closed). Returns 0 for NULL arguments. */
 int NativeArcadeDiscoveryService_GetStatus(const struct NativeArcadeDiscoveryService *service, struct NativeArcadeDiscoveryServiceStatus *out);

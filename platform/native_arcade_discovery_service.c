@@ -15,7 +15,10 @@ static void NativeArcadeDiscoveryService_Clear(struct NativeArcadeDiscoveryServi
 }
 
 /* The interface-list targets at the discovery port (DISC-5), or the limited
- * broadcast alone when the enumeration fails (DISC-15). */
+ * broadcast alone when the enumeration fails (DISC-15). With a lan
+ * (DISC-19): the lan's directed broadcast alone while an interface is inside
+ * the lan, else no target at all (a failed enumeration included); a change
+ * of that interface is marked for TakeLanChange. */
 static void NativeArcadeDiscoveryService_RefreshTargets(struct NativeArcadeDiscoveryService *service)
 {
 	struct NativeNetInterface interfaces[NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_INTERFACES];
@@ -23,7 +26,28 @@ static void NativeArcadeDiscoveryService_RefreshTargets(struct NativeArcadeDisco
 	uint32_t interfaceCount = 0;
 	uint32_t count;
 
-	if (NativeNetInterfaces_List(&service->scratch, interfaces, NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_INTERFACES, &interfaceCount))
+	if (service->lanPrefixLength != 0)
+	{
+		uint32_t lanInterface = 0;
+
+		if (NativeNetInterfaces_List(&service->scratch, interfaces, NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_INTERFACES, &interfaceCount))
+		{
+			count = NativeNetInterfaces_BuildLanTargets(interfaces, interfaceCount, service->lanNetwork, service->lanPrefixLength, addresses,
+			                                            NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_TARGETS, &lanInterface);
+			service->enumerationFailed = 0;
+		}
+		else
+		{
+			count = 0;
+			service->enumerationFailed = 1;
+		}
+		if ((service->refreshCount == 0) || (lanInterface != service->lanInterfaceIpv4))
+		{
+			service->lanChanged = 1;
+		}
+		service->lanInterfaceIpv4 = lanInterface;
+	}
+	else if (NativeNetInterfaces_List(&service->scratch, interfaces, NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_INTERFACES, &interfaceCount))
 	{
 		count = NativeNetInterfaces_BuildTargets(interfaces, interfaceCount, addresses, NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_TARGETS);
 		service->enumerationFailed = 0;
@@ -46,7 +70,9 @@ static void NativeArcadeDiscoveryService_SendBeacon(struct NativeArcadeDiscovery
 {
 	uint8_t beacon[NATIVE_ARCADE_DISCOVERY_BEACON_BYTES];
 
-	if (!NativeArcadeDiscovery_BuildBeacon(&service->table, beacon))
+	/* Only a lan with no interface inside it has no target (DISC-19): nothing
+	 * is sent, and no round is counted. */
+	if ((service->targetCount == 0) || !NativeArcadeDiscovery_BuildBeacon(&service->table, beacon))
 	{
 		return;
 	}
@@ -62,20 +88,23 @@ static void NativeArcadeDiscoveryService_SendBeacon(struct NativeArcadeDiscovery
 
 int NativeArcadeDiscoveryService_Open(struct NativeArcadeDiscoveryService *service, uint16_t bindPort, uint64_t ourNonce, uint64_t groupHash,
                                       const uint8_t identity[NATIVE_ARCADE_DISCOVERY_IDENTITY_BYTES], uint16_t ourLinkPort, uint8_t ourSeatPreference,
-                                      const struct NativeUdpTransportAddress *overrideTargets, uint32_t overrideCount)
+                                      const struct NativeUdpTransportAddress *overrideTargets, uint32_t overrideCount, uint32_t lanNetwork,
+                                      uint8_t lanPrefixLength)
 {
 	if (service == NULL)
 	{
 		return 0;
 	}
 	NativeArcadeDiscoveryService_Close(service);
-	if ((bindPort == 0) || (overrideCount > NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_OVERRIDES) || ((overrideCount != 0) && (overrideTargets == NULL)))
+	if ((bindPort == 0) || (overrideCount > NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_OVERRIDES) || ((overrideCount != 0) && (overrideTargets == NULL)) ||
+	    ((lanPrefixLength != 0) && !NativeArcadeDiscovery_LanValid(lanNetwork, lanPrefixLength)))
 	{
 		return 0;
 	}
 	for (uint32_t i = 0; i < overrideCount; i++)
 	{
-		if ((overrideTargets[i].ipv4 == 0) || (overrideTargets[i].port == 0))
+		if ((overrideTargets[i].ipv4 == 0) || (overrideTargets[i].port == 0) ||
+		    ((lanPrefixLength != 0) && !NativeArcadeDiscovery_LanContains(lanNetwork, lanPrefixLength, overrideTargets[i].ipv4)))
 		{
 			return 0;
 		}
@@ -106,6 +135,11 @@ int NativeArcadeDiscoveryService_Open(struct NativeArcadeDiscoveryService *servi
 
 	service->open = 1;
 	service->bindPort = bindPort;
+	if (lanPrefixLength != 0)
+	{
+		service->lanNetwork = lanNetwork;
+		service->lanPrefixLength = lanPrefixLength;
+	}
 	if (overrideCount != 0)
 	{
 		for (uint32_t i = 0; i < overrideCount; i++)
@@ -141,7 +175,15 @@ void NativeArcadeDiscoveryService_Tick(struct NativeArcadeDiscoveryService *serv
 
 		if (result == NATIVE_UDP_TRANSPORT_RECEIVE_OK)
 		{
-			(void)NativeArcadeDiscovery_Receive(&service->table, datagram, size, sender.ipv4);
+			/* DISC-19: a source outside the lan never reaches the core. */
+			if ((service->lanPrefixLength != 0) && !NativeArcadeDiscovery_LanContains(service->lanNetwork, service->lanPrefixLength, sender.ipv4))
+			{
+				service->lanDropped++;
+			}
+			else
+			{
+				(void)NativeArcadeDiscovery_Receive(&service->table, datagram, size, sender.ipv4);
+			}
 		}
 		else if (result != NATIVE_UDP_TRANSPORT_RECEIVE_TOO_SMALL)
 		{
@@ -191,6 +233,17 @@ int NativeArcadeDiscoveryService_TakeEvent(struct NativeArcadeDiscoveryService *
 	return NativeArcadeDiscovery_TakeEvent(&service->table, out);
 }
 
+int NativeArcadeDiscoveryService_TakeLanChange(struct NativeArcadeDiscoveryService *service, uint32_t *interfaceIpv4)
+{
+	if ((service == NULL) || (interfaceIpv4 == NULL) || (service->open == 0) || (service->lanChanged == 0))
+	{
+		return 0;
+	}
+	service->lanChanged = 0;
+	*interfaceIpv4 = service->lanInterfaceIpv4;
+	return 1;
+}
+
 int NativeArcadeDiscoveryService_GetStatus(const struct NativeArcadeDiscoveryService *service, struct NativeArcadeDiscoveryServiceStatus *out)
 {
 	if ((service == NULL) || (out == NULL))
@@ -213,6 +266,10 @@ int NativeArcadeDiscoveryService_GetStatus(const struct NativeArcadeDiscoverySer
 	out->refreshPending = service->refreshPending;
 	out->refreshCount = service->refreshCount;
 	out->beaconCount = service->beaconCount;
+	out->lanPrefixLength = service->lanPrefixLength;
+	out->lanNetwork = service->lanNetwork;
+	out->lanInterfaceIpv4 = service->lanInterfaceIpv4;
+	out->lanDropped = service->lanDropped;
 	return 1;
 }
 

@@ -12,7 +12,7 @@
 #     tools/arcade-discovery-link-check.ps1 reject their argument misuses
 #     before any run;
 #   - the smoke refuses a package arcade.cfg that sets a port, a peer, a
-#     group, or a seat other than auto, before any run, and runs the
+#     group, a lan, or a seat other than auto, before any run, and runs the
 #     discovery gate in config mode (DISC-S5).
 # WORK_DIR must lie under REPO_DIR/build-msvc-x86 (the stage mode refuses
 # anything else).
@@ -284,7 +284,7 @@ if(EXISTS "${work_dir}/discovery_gate")
 endif()
 
 # 10. The smoke's template check, before any run: a package whose arcade.cfg
-# (MANIFEST line updated to match) sets a port, a peer, a group, or a seat
+# (MANIFEST line updated to match) sets a port, a peer, a group, a lan, or a seat
 # other than auto is refused. A dummy disc image gets past the skip; the
 # check fails before the gate starts.
 set(dummy_assets "${work_dir}/source/dummy-disc.bin")
@@ -301,6 +301,7 @@ endif()
 # Each case: its name, the line appended to the template (the seat case
 # replaces the seat line instead), and the smoke's expected refusal.
 foreach(case IN ITEMS "port|port = 7001|sets 'port'" "peer|peer = 127.0.0.1:7002|sets 'peer'" "group|group = hall|sets 'group'"
+        "lan|lan = 192.168.1.0/24|sets 'lan'"
         "seat|seat = cab1|seat is 'cab1', the template's is 'auto'")
     string(REPLACE "|" ";" case "${case}")
     list(GET case 0 case_name)

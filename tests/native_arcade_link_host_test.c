@@ -92,6 +92,10 @@
  * targets at its own discovery port, where nothing but itself listens. */
 #define TEST_DISC_ENUM_LINK_PORT        48578u
 #define TEST_DISC_ENUM_PORT             48579u
+/* The lan case (DISC-19) reads the interface list too, but its lan holds no
+ * interface, so it sends nothing at all. */
+#define TEST_DISC_LAN_LINK_PORT         48580u
+#define TEST_DISC_LAN_PORT              48581u
 #define TEST_DISC_HOST_NONCE UINT64_C(0x5EED00000000C0DE)
 #define TEST_DISC_PEER_NONCE UINT64_C(0x5EED00000000BEEF)
 /* Beacons go out every 30 ticks; both sides must hear each other's echo. */
@@ -5302,7 +5306,7 @@ static int OpenFakePeer(const struct NativeIdentityV1 *identity)
 	target.port = (uint16_t)TEST_DISC_HOST_PORT;
 	CHECK(NativeArcadeDiscoveryService_Open(&g_fakePeer, (uint16_t)TEST_DISC_PEER_PORT, TEST_DISC_PEER_NONCE,
 		NativeArcadeDiscovery_GroupHash(NATIVE_ARCADE_DISCOVERY_DEFAULT_GROUP), digest, (uint16_t)TEST_DISC_PEER_LINK_PORT,
-		(uint8_t)NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &target, 1u));
+		(uint8_t)NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &target, 1u, 0u, 0u));
 	return 0;
 }
 
@@ -5741,6 +5745,86 @@ static int TestDiscoveryRefreshHeldInRace(void)
 	return 0;
 }
 
+/*
+ * DISC-19 on the host: a discovery-mode Configure pinned to a lan no local
+ * interface is in (203.0.113.0/24, TEST-NET-3), with no explicit target. The
+ * socket opens ("lan broadcast"); the first tick logs, once, that no
+ * interface is in the lan; nothing is sent (no beacon round) through more
+ * than one interface refresh (all retried, none logged again, since nothing
+ * changed); and it never falls back to the other interfaces.
+ */
+static int TestDiscoveryLanNoInterface(void)
+{
+	struct NativeArcadeLinkOptions options;
+	struct NativeIdentityV1 identity;
+	uint32_t beacons = 0xA5A5A5A5u;
+	uint32_t lanInterface = 0xA5A5A5A5u;
+	uint32_t dropped = 0xA5A5A5A5u;
+	uint32_t noInterfaceLines = 0u;
+	uint32_t i;
+
+	NativeArcadeLinkHost_Shutdown();
+	g_logCalls = 0u;
+	NativeArcadeLinkLoopback_Identity(&identity);
+	DiscoveryOptions(&options, (uint8_t)NATIVE_ARCADE_LINK_SEAT_AUTO, TEST_DISC_LAN_LINK_PORT, TEST_DISC_LAN_PORT, TEST_DISC_PEER_PORT);
+	options.discoveryTargetCount = 0u;
+	memset(options.discoveryTargets, 0, sizeof(options.discoveryTargets));
+	options.hasLan = 1u;
+	options.lanNetwork = UINT32_C(0xCB007100);
+	options.lanPrefixLength = 24u;
+	CHECK(NativeArcadeLinkOptions_ValidateMerged(&options) == 1);
+	CHECK(NativeArcadeLinkHost_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryOpen() == 1u);
+	CHECK(g_logCalls == 1u);
+	CHECK(strcmp(g_lastLog, "[CTR Native] arcade discovery: listening on port 48581, group ctr-native, link port 48580, "
+	                        "lan broadcast\n") == 0);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryLan(&beacons, &lanInterface, &dropped) == 1);
+	if (lanInterface != 0u)
+	{
+		fprintf(stderr, "this machine has an interface in 203.0.113.0/24 (TEST-NET-3); the no-interface case cannot run\n");
+		return 1;
+	}
+	CHECK(beacons == 0u);
+
+	/* The first tick: the one no-interface line. */
+	NativeArcadeLinkHost_IdleTick();
+	CHECK(g_logCalls == 2u);
+	CHECK(strcmp(g_lastLog, "[CTR Native] arcade discovery: no network interface in lan 203.0.113.0/24; not beaconing, retrying\n") == 0);
+	noInterfaceLines = 1u;
+
+	/* Through the refresh at service tick 300 (retried, still none) and past
+	 * it, by IdleTick and Tick alike: no second line, no beacon round. */
+	for (i = 0u; i < NATIVE_ARCADE_DISCOVERY_SERVICE_REFRESH_TICKS + 40u; i++)
+	{
+		const uint32_t logsBefore = g_logCalls;
+
+		if ((i % 2u) == 0u)
+		{
+			NativeArcadeLinkHost_IdleTick();
+		}
+		else
+		{
+			CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+		}
+		if ((g_logCalls != logsBefore) && (strstr(g_lastLog, "no network interface in lan") != NULL))
+		{
+			noInterfaceLines++;
+		}
+	}
+	CHECK(noInterfaceLines == 1u);
+	CHECK(g_logCalls == 2u);
+	CHECK(CheckDiscoveryRefresh(2u, 0u) == 0);
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryLan(&beacons, &lanInterface, &dropped) == 1);
+	CHECK((beacons == 0u) && (lanInterface == 0u) && (dropped == 0u));
+	CHECK(NativeArcadeLinkHost_InternalPairingsHanded() != 0u);
+	CHECK(LocalCab() == 1u);
+
+	NativeArcadeLinkHost_Shutdown();
+	CHECK(NativeArcadeLinkHost_InternalDiscoveryLan(&beacons, &lanInterface, &dropped) == 0);
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestInertBeforeConfigure() == 0);
@@ -5781,6 +5865,7 @@ int main(void)
 	CHECK(TestDiscoveryPairsAndLocalCab() == 0);
 	CHECK(TestDiscoveryBindFailureNotFatal() == 0);
 	CHECK(TestDiscoveryIdleTick() == 0);
+	CHECK(TestDiscoveryLanNoInterface() == 0);
 	CHECK(TestDiscoveryRefreshHeldInRace() == 0);
 	puts("native_arcade_link_host_test: passed");
 	return 0;

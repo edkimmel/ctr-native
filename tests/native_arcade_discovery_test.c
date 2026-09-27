@@ -988,10 +988,109 @@ static int TestEventQueue(void)
 	return 0;
 }
 
+/* ParseLan must refuse text and leave both outputs untouched. */
+static int LanRejected(const char *text)
+{
+	uint32_t network = 0xA5A5A5A5u;
+	uint8_t prefixLength = 0xA5u;
+
+	if (NativeArcadeDiscovery_ParseLan(text, &network, &prefixLength))
+	{
+		fprintf(stderr, "lan accepted: '%s'\n", (text != NULL) ? text : "(null)");
+		return 0;
+	}
+	return (network == 0xA5A5A5A5u) && (prefixLength == 0xA5u);
+}
+
+/* The lan (DISC-19): the one grammar, containment, and the directed broadcast. */
+static int TestLan(void)
+{
+	static const struct
+	{
+		const char *text;
+		uint32_t network;
+		uint8_t prefixLength;
+	} good[] = {
+		{"192.168.1.0/24", 0xC0A80100u, 24u}, {"10.0.0.0/8", 0x0A000000u, 8u},      {"127.0.0.0/8", 0x7F000000u, 8u},
+		{"172.16.0.0/12", 0xAC100000u, 12u},  {"192.168.1.4/30", 0xC0A80104u, 30u}, {"203.0.113.0/24", 0xCB007100u, 24u},
+		{"192.168.001.000/24", 0xC0A80100u, 24u}, {"10.0.0.0/08", 0x0A000000u, 8u}, {"255.255.255.252/30", 0xFFFFFFFCu, 30u},
+	};
+	static const char *const bad[] = {
+		/* missing or empty prefix */
+		"192.168.1.0", "192.168.1.0/", "/24", "",
+		/* prefix out of 8..30 */
+		"10.0.0.0/7", "0.0.0.0/0", "192.168.1.0/31", "192.168.1.1/32", "192.168.1.0/33", "192.168.1.0/99", "192.168.1.0/024",
+		/* host bits set */
+		"192.168.1.5/24", "192.168.1.255/24", "10.1.0.0/8", "192.168.1.2/30",
+		/* bad quad */
+		"192.168.1/24", "192.168.1.0.0/24", "256.168.1.0/24", "192.168.1.1000/24", "192..1.0/24", "a.b.c.d/24", "192.168.1.-0/24",
+		"+192.168.1.0/24", "0x0A.0.0.0/8", "192.168.1.0:24",
+		/* trailing junk */
+		"192.168.1.0/24x", "192.168.1.0/24/", "192.168.1.0/24.", "192.168.1.0/24,10.0.0.0/8",
+		/* spaces anywhere, as the options grammar refuses them */
+		" 192.168.1.0/24", "192.168.1.0/24 ", "192.168.1.0 /24", "192.168.1.0/ 24", "192.168.1. 0/24", "192.168.1.0/2 4",
+		"192.168.1.0/24\t", "192.168.1.0/+24", "192.168.1.0/-24",
+	};
+	uint32_t network = 0u;
+	uint8_t prefixLength = 0u;
+
+	for (size_t i = 0u; i < sizeof(good) / sizeof(good[0]); ++i)
+	{
+		network = 0xA5A5A5A5u;
+		prefixLength = 0xA5u;
+		CHECK(NativeArcadeDiscovery_ParseLan(good[i].text, &network, &prefixLength) == 1);
+		CHECK((network == good[i].network) && (prefixLength == good[i].prefixLength));
+		CHECK(NativeArcadeDiscovery_LanValid(network, prefixLength) == 1);
+	}
+	for (size_t i = 0u; i < sizeof(bad) / sizeof(bad[0]); ++i)
+	{
+		CHECK(LanRejected(bad[i]));
+	}
+	CHECK(LanRejected(NULL));
+	CHECK(NativeArcadeDiscovery_ParseLan("192.168.1.0/24", NULL, &prefixLength) == 0);
+	CHECK(NativeArcadeDiscovery_ParseLan("192.168.1.0/24", &network, NULL) == 0);
+
+	/* LanValid: the prefix bounds and the host bits. */
+	CHECK(NativeArcadeDiscovery_LanValid(0x0A000000u, 7u) == 0);
+	CHECK(NativeArcadeDiscovery_LanValid(0x0A000000u, 8u) == 1);
+	CHECK(NativeArcadeDiscovery_LanValid(0xC0A80104u, 30u) == 1);
+	CHECK(NativeArcadeDiscovery_LanValid(0xC0A80100u, 31u) == 0);
+	CHECK(NativeArcadeDiscovery_LanValid(0xC0A80100u, 32u) == 0);
+	CHECK(NativeArcadeDiscovery_LanValid(0xC0A80100u, 0u) == 0);
+	CHECK(NativeArcadeDiscovery_LanValid(0xC0A80105u, 24u) == 0);
+
+	/* Containment: the network and broadcast addresses included, one past each edge out. */
+	CHECK(NativeArcadeDiscovery_LanContains(0xC0A80100u, 24u, IP_11) == 1);
+	CHECK(NativeArcadeDiscovery_LanContains(0xC0A80100u, 24u, 0xC0A80100u) == 1);
+	CHECK(NativeArcadeDiscovery_LanContains(0xC0A80100u, 24u, 0xC0A801FFu) == 1);
+	CHECK(NativeArcadeDiscovery_LanContains(0xC0A80100u, 24u, 0xC0A800FFu) == 0);
+	CHECK(NativeArcadeDiscovery_LanContains(0xC0A80100u, 24u, 0xC0A80200u) == 0);
+	CHECK(NativeArcadeDiscovery_LanContains(0xC0A80100u, 24u, 0x0A00000Bu) == 0);
+	CHECK(NativeArcadeDiscovery_LanContains(0x7F000000u, 8u, 0x7F000001u) == 1);
+	CHECK(NativeArcadeDiscovery_LanContains(0x0A000000u, 8u, 0x7F000001u) == 0);
+	CHECK(NativeArcadeDiscovery_LanContains(0xC0A80104u, 30u, 0xC0A80107u) == 1);
+	CHECK(NativeArcadeDiscovery_LanContains(0xC0A80104u, 30u, 0xC0A80108u) == 0);
+	/* An invalid lan contains nothing. */
+	CHECK(NativeArcadeDiscovery_LanContains(0xC0A80105u, 24u, 0xC0A80105u) == 0);
+	CHECK(NativeArcadeDiscovery_LanContains(0x00000000u, 0u, IP_11) == 0);
+	CHECK(NativeArcadeDiscovery_LanContains(0xC0A8010Bu, 32u, IP_11) == 0);
+
+	/* The directed broadcast, network | ~mask; 0 for an invalid lan. */
+	CHECK(NativeArcadeDiscovery_LanBroadcast(0xC0A80100u, 24u) == 0xC0A801FFu);
+	CHECK(NativeArcadeDiscovery_LanBroadcast(0x0A000000u, 8u) == 0x0AFFFFFFu);
+	CHECK(NativeArcadeDiscovery_LanBroadcast(0xAC100000u, 12u) == 0xAC1FFFFFu);
+	CHECK(NativeArcadeDiscovery_LanBroadcast(0xC0A80104u, 30u) == 0xC0A80107u);
+	CHECK(NativeArcadeDiscovery_LanBroadcast(0xC0A80105u, 24u) == 0u);
+	CHECK(NativeArcadeDiscovery_LanBroadcast(0xC0A80100u, 31u) == 0u);
+	CHECK(NativeArcadeDiscovery_LanBroadcast(0xC0A80100u, 7u) == 0u);
+	return 0;
+}
+
 int main(void)
 {
 	CHECK(TestCodec() == 0);
 	CHECK(TestGroup() == 0);
+	CHECK(TestLan() == 0);
 	CHECK(TestElection() == 0);
 	CHECK(TestInit() == 0);
 	CHECK(TestTablesPair() == 0);

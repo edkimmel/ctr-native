@@ -6,7 +6,8 @@
 # fetches it). Its includes are limited to stddef.h, stdint.h, string.h, its
 # own header, and the arcade-bot-rules, identity, and match-config headers
 # (and, in the source only, the discovery core's header, for the group name
-# check of DISC-9); the library links exactly ctr_native_arcade_bot_rules,
+# check of DISC-9 and the lan grammar and containment of DISC-19); the
+# library links exactly ctr_native_arcade_bot_rules,
 # ctr_native_arcade_discovery, and ctr_native_match_config (no SHA-256 of
 # its own); discoveryNonce, like selectEntropy, is never parsed; the target stays portable
 # C17 with extensions off; the fixture values (UX-8) cannot silently change;
@@ -76,7 +77,8 @@ foreach(relative_path IN LISTS options_files)
     foreach(include_line IN LISTS include_lines)
         if(NOT include_line MATCHES "^#[ \t]*include[ \t]*(<stddef\\.h>|<stdint\\.h>|<string\\.h>|\"platform/native_arcade_link_options\\.h\"|\"platform/native_arcade_bot_rules\\.h\"|\"platform/native_identity\\.h\"|\"platform/native_match_config\\.h\")[ \t]*$")
             # The source (not the header) may also include the discovery
-            # core, for its group name check (DISC-9, DISC-S3).
+            # core, for its group name check (DISC-9, DISC-S3) and its lan
+            # grammar and containment (DISC-19).
             if(relative_path STREQUAL "platform/native_arcade_link_options.c" AND include_line MATCHES "^#[ \t]*include[ \t]*\"platform/native_arcade_discovery\\.h\"[ \t]*$")
                 continue()
             endif()
@@ -226,4 +228,33 @@ foreach(relative_path IN LISTS options_files)
             NativeDeterministicRng NativeArcadeBotRules_DeriveRetailSeeds NativeArcadeBotRules_MapRetailSeeds NativeCodec)
         ctr_forbid("${relative_path}" "${source}" "${term}")
     endforeach()
+endforeach()
+
+# 14. The lan (docs/DISCOVERY_MILESTONE.md DISC-19) is host-local link
+#     configuration, like the group. The header declares its fields once, after
+#     discoveryNonce; the source names the option once (k_lanOption) and has
+#     no lan grammar of its own (the discovery core's ParseLan is the one,
+#     and the post-merge check uses its LanContains): no '/' character
+#     literal and no mask arithmetic. The fixture builder never names the lan,
+#     so it cannot reach the match config.
+ctr_require_single("${options_header}" "the lanNetwork field" "${header}" "uint32_t lanNetwork")
+ctr_require_single("${options_header}" "the hasLan field" "${header}" "uint8_t hasLan")
+ctr_require_single("${options_header}" "the lanPrefixLength field" "${header}" "uint8_t lanPrefixLength")
+string(FIND "${header}" "uint64_t discoveryNonce" nonce_field_at)
+string(FIND "${header}" "uint32_t lanNetwork" lan_field_at)
+if(nonce_field_at EQUAL -1 OR NOT nonce_field_at LESS lan_field_at)
+    message(FATAL_ERROR "arcade link options isolation: the lan fields must follow discoveryNonce in struct NativeArcadeLinkOptions")
+endif()
+ctr_require_single("platform/native_arcade_link_options.c" "the --arcade-link-lan option name" "${options_source}" "\"--arcade-link-lan\"")
+ctr_require_single("platform/native_arcade_link_options.c" "the lan grammar call" "${options_source}"
+    "NativeArcadeDiscovery_ParseLan\\(value, &candidate\\.lanNetwork, &candidate\\.lanPrefixLength\\)")
+foreach(term IN ITEMS "'/'" "0xFFFFFFFF" "<< (32")
+    ctr_forbid("platform/native_arcade_link_options.c" "${options_source}" "${term}")
+endforeach()
+string(TOLOWER "${build_body}" build_body_lower)
+foreach(term IN ITEMS haslan lannetwork lanprefixlength arcade-link-lan parselan lancontains)
+    string(FIND "${build_body_lower}" "${term}" lan_hit)
+    if(NOT lan_hit EQUAL -1)
+        message(FATAL_ERROR "arcade link options isolation: NativeArcadeLinkFixture_Build names '${term}'; the lan never reaches the fixture (DISC-19)")
+    endif()
 endforeach()

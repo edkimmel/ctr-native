@@ -16,7 +16,10 @@
 # 5. No other game/, platform/, include/, or main.c file names the service
 #    but the link host's .c, its one consumer since DISC-S4.
 # Since the discovery risk 10, rule 2 also pins that the interface list is
-# read only at Open and on a Tick that allows a pending refresh.
+# read only at Open and on a Tick that allows a pending refresh. Since the
+# lan (DISC-19), rule 2 also pins that a datagram from outside the lan is
+# counted and never fed to the core, that the lan targets come only from
+# BuildLanTargets with no fallback, and that no target means no beacon.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade discovery service isolation")
@@ -100,7 +103,8 @@ ctr_require("${service_source}" "${source}" "#include \"platform/native_arcade_d
 ctr_strip_comments("${source}" source_code)
 foreach(term IN ITEMS "NativeUdpTransport_Open(" "NativeUdpTransport_EnableBroadcast(" "NativeUdpTransport_Receive(" "NativeUdpTransport_Send("
         "NativeUdpTransport_Close(" "NativeArcadeDiscovery_Receive(" "NativeArcadeDiscovery_Tick(" "NativeArcadeDiscovery_BuildBeacon("
-        "NativeNetInterfaces_List(" "NativeNetInterfaces_BuildTargets(")
+        "NativeNetInterfaces_List(" "NativeNetInterfaces_BuildTargets(" "NativeNetInterfaces_BuildLanTargets(" "NativeArcadeDiscovery_LanValid("
+        "NativeArcadeDiscovery_LanContains(")
     ctr_require("${service_source}" "${source_code}" "${term}")
 endforeach()
 # Risk 10 (docs/DISCOVERY_MILESTONE.md section 5): the interface list is
@@ -115,6 +119,24 @@ endif()
 string(REGEX REPLACE "[ \t\r\n]+" " " source_flat "${source_code}")
 ctr_require("${service_source}" "${source_flat}"
     "if ((service->refreshPending != 0) && (mayRefresh != 0)) { service->refreshPending = 0; NativeArcadeDiscoveryService_RefreshTargets(service); }")
+# The lan (DISC-19): the one core Receive call sits behind the source filter;
+# the lan branch of the refresh builds only the lan target and has no
+# fallback (a failed enumeration leaves no target); no target, no beacon.
+string(REGEX MATCHALL "NativeArcadeDiscovery_Receive\\(" receive_calls "${source_code}")
+list(LENGTH receive_calls receive_call_count)
+if(NOT receive_call_count EQUAL 1)
+    message(FATAL_ERROR "${prefix}: ${service_source} must call NativeArcadeDiscovery_Receive exactly once, behind the lan filter (found ${receive_call_count})")
+endif()
+ctr_require("${service_source}" "${source_flat}"
+    "if ((service->lanPrefixLength != 0) && !NativeArcadeDiscovery_LanContains(service->lanNetwork, service->lanPrefixLength, sender.ipv4)) { service->lanDropped++; } else { (void)NativeArcadeDiscovery_Receive(&service->table, datagram, size, sender.ipv4); }")
+ctr_require_order("${service_source}" "${source_flat}"
+    "if (service->lanPrefixLength != 0) {"
+    "count = NativeNetInterfaces_BuildLanTargets(interfaces, interfaceCount, service->lanNetwork, service->lanPrefixLength, addresses,"
+    "else { count = 0; service->enumerationFailed = 1; }"
+    "service->lanInterfaceIpv4 = lanInterface; }"
+    "else if (NativeNetInterfaces_List(")
+ctr_require("${service_source}" "${source_flat}"
+    "if ((service->targetCount == 0) || !NativeArcadeDiscovery_BuildBeacon(&service->table, beacon)) { return; }")
 
 # 3. The public API, pinned.
 ctr_read_source("${service_header}" header)
@@ -124,7 +146,8 @@ list(REMOVE_DUPLICATES api_calls)
 list(SORT api_calls)
 set(expected_api
     "NativeArcadeDiscoveryService_Close(" "NativeArcadeDiscoveryService_GetStatus(" "NativeArcadeDiscoveryService_Open("
-    "NativeArcadeDiscoveryService_Pairing(" "NativeArcadeDiscoveryService_TakeEvent(" "NativeArcadeDiscoveryService_Target("
+    "NativeArcadeDiscoveryService_Pairing(" "NativeArcadeDiscoveryService_TakeEvent(" "NativeArcadeDiscoveryService_TakeLanChange("
+    "NativeArcadeDiscoveryService_Target("
     "NativeArcadeDiscoveryService_Tick(")
 if(NOT "${api_calls}" STREQUAL "${expected_api}")
     message(FATAL_ERROR "${prefix}: the public API changed; expected '${expected_api}', found '${api_calls}'")

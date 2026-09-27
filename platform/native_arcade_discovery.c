@@ -268,6 +268,100 @@ uint64_t NativeArcadeDiscovery_GroupHash(const char *name)
 	return hash;
 }
 
+/* The lan's subnet mask; valid only for a prefix length of 1..31. */
+static uint32_t LanMask(uint8_t prefixLength)
+{
+	return UINT32_C(0xFFFFFFFF) << (32u - (uint32_t)prefixLength);
+}
+
+/* 1..maxDigits decimal digits at *cursor, no greater than maxValue; advances
+ * *cursor past them. */
+static int ParseLanDecimal(const char **cursor, uint32_t maxDigits, uint32_t maxValue, uint32_t *value)
+{
+	const char *text = *cursor;
+	uint32_t digits = 0u;
+	uint32_t result = 0u;
+
+	while ((text[digits] >= '0') && (text[digits] <= '9'))
+	{
+		if (digits == maxDigits)
+		{
+			return 0;
+		}
+		result = (result * 10u) + (uint32_t)(text[digits] - '0');
+		digits++;
+	}
+	if ((digits == 0u) || (result > maxValue))
+	{
+		return 0;
+	}
+	*cursor = text + digits;
+	*value = result;
+	return 1;
+}
+
+int NativeArcadeDiscovery_ParseLan(const char *text, uint32_t *network, uint8_t *prefixLength)
+{
+	const char *cursor = text;
+	uint32_t address = 0u;
+	uint32_t prefix = 0u;
+
+	if ((text == NULL) || (network == NULL) || (prefixLength == NULL))
+	{
+		return 0;
+	}
+	for (uint32_t octetIndex = 0u; octetIndex < 4u; octetIndex++)
+	{
+		uint32_t octet = 0u;
+
+		if (!ParseLanDecimal(&cursor, 3u, 255u, &octet))
+		{
+			return 0;
+		}
+		address = (address << 8) | octet;
+		if (*cursor != ((octetIndex < 3u) ? '.' : '/'))
+		{
+			return 0;
+		}
+		cursor++;
+	}
+	if (!ParseLanDecimal(&cursor, 2u, NATIVE_ARCADE_DISCOVERY_LAN_MAX_PREFIX, &prefix) || (*cursor != '\0') ||
+	    !NativeArcadeDiscovery_LanValid(address, (uint8_t)prefix))
+	{
+		return 0;
+	}
+	*network = address;
+	*prefixLength = (uint8_t)prefix;
+	return 1;
+}
+
+int NativeArcadeDiscovery_LanValid(uint32_t network, uint8_t prefixLength)
+{
+	if ((prefixLength < NATIVE_ARCADE_DISCOVERY_LAN_MIN_PREFIX) || (prefixLength > NATIVE_ARCADE_DISCOVERY_LAN_MAX_PREFIX))
+	{
+		return 0;
+	}
+	return (network & ~LanMask(prefixLength)) == 0u;
+}
+
+int NativeArcadeDiscovery_LanContains(uint32_t network, uint8_t prefixLength, uint32_t ipv4)
+{
+	if (!NativeArcadeDiscovery_LanValid(network, prefixLength))
+	{
+		return 0;
+	}
+	return (ipv4 & LanMask(prefixLength)) == network;
+}
+
+uint32_t NativeArcadeDiscovery_LanBroadcast(uint32_t network, uint8_t prefixLength)
+{
+	if (!NativeArcadeDiscovery_LanValid(network, prefixLength))
+	{
+		return 0u;
+	}
+	return network | ~LanMask(prefixLength);
+}
+
 /* 1 when key a (ipv4, port, nonce) is lower than key b, unsigned. */
 static int KeyLess(uint32_t ipv4A, uint16_t portA, uint64_t nonceA, uint32_t ipv4B, uint16_t portB, uint64_t nonceB)
 {

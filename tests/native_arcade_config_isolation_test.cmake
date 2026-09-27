@@ -118,9 +118,26 @@ if(NOT apply_calls EQUAL 1)
     message(FATAL_ERROR "${prefix}: ${config_source} must call NativeArcadeLinkOptions_ApplyArgs exactly once (found ${apply_calls})")
 endif()
 foreach(term IN ITEMS NativeArcadeLinkOptions_ParsePeer NativeArcadeLinkOptions_ParsePreview NativeArcadeLinkFixture strtol strtoul atoi sscanf
-        "'0'" "'9'" "'.'" "':'" "options->" "options." "probe->" "probe." "localPort" "localRole" "NATIVE_MATCH_SLOT")
+        "'0'" "'9'" "'.'" "':'" "'/'" "options->" "options." "probe->" "probe." "localPort" "localRole" "NATIVE_MATCH_SLOT"
+        NativeArcadeDiscovery ParseLan LanContains lanNetwork lanPrefixLength)
     ctr_forbid("${config_source}" "${code}" "${term}")
 endforeach()
+# 3a. The lan key (docs/DISCOVERY_MILESTONE.md DISC-19) is a link-group key
+#     like group: its value reaches the link parser only as the synthetic
+#     argv's --arcade-link-lan (one option name, in the one argv helper),
+#     checked at its line by the discovery-mode probe, and it counts toward
+#     HasLink.
+ctr_count("${code}" "\"--arcade-link-lan\"" lan_option_names)
+if(NOT lan_option_names EQUAL 2)
+    message(FATAL_ERROR "${prefix}: ${config_source} must name \"--arcade-link-lan\" exactly twice, in the synthetic argv helper and in ParseArgs' link-option list (found ${lan_option_names})")
+endif()
+string(REGEX REPLACE "[ \t\r\n]+" " " code_flat "${code}")
+ctr_require("${config_source}" "${code_flat}" "char lanOption[] = \"--arcade-link-lan\";")
+ctr_require("${config_source}" "${code_flat}" "if (lan != NULL) { argv[argc++] = lanOption; argv[argc++] = lan; }")
+ctr_require("${config_source}" "${code_flat}"
+    "const int discoveryProbe = (key == NATIVE_ARCADE_CONFIG_KEY_SEAT) || (key == NATIVE_ARCADE_CONFIG_KEY_GROUP) || (key == NATIVE_ARCADE_CONFIG_KEY_LAN);")
+ctr_require("${config_source}" "${code_flat}" "(config->hasGroup != 0) || (config->hasLan != 0)")
+ctr_require("${config_source}" "${code_flat}" "(strcmp(arg, \"--arcade-link-lan\") == 0)")
 
 # 3b. No display grammar of its own: the only display-config names in the
 #     source are one NativeDisplayConfig_ApplyArgs call (inside the one

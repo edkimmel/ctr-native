@@ -19,7 +19,8 @@
  *   (TestRefreshHeld, docs/DISCOVERY_MILESTONE.md risk 10) ticks it: 901
  *   ticks, so 31 beacon rounds go to the broadcast targets at port 48612,
  *   where nothing listens but the service itself (which drops its own
- *   nonce). Every other case sends to loopback only.
+ *   nonce). Every other case sends to loopback only (the lan case with no
+ *   interface inside its lan sends nothing).
  * The link ports are only advertised, never bound.
  */
 #define PORT_A         48610u
@@ -30,6 +31,12 @@
 #define NONCE_A        UINT64_C(0x1111111111111111)
 #define NONCE_B        UINT64_C(0x2222222222222222)
 #define LOOPBACK       UINT32_C(0x7F000001)
+/* The lan cases (DISC-19): 127.0.0.0/8, which holds the loopback sender, and
+ * 203.0.113.0/24 (TEST-NET-3, RFC 5737), which no local interface and no
+ * loopback sender is in. The latter case enumerates the interfaces, finds
+ * none inside, and so sends nothing at all. */
+#define LAN_LOOPBACK   UINT32_C(0x7F000000)
+#define LAN_ABSENT     UINT32_C(0xCB007100)
 
 static struct NativeArcadeDiscoveryService s_a;
 static struct NativeArcadeDiscoveryService s_b;
@@ -107,16 +114,22 @@ static int TestClosedAndArguments(void)
 	CHECK((status.open == 0) && (status.targetCount == 0) && (status.bindPort == 0) && (status.tickCount == 0));
 
 	/* Bad arguments: 0, and the service stays closed (no socket bound). */
-	CHECK(!NativeArcadeDiscoveryService_Open(NULL, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &good, 1u));
-	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, 0u, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &good, 1u));
-	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, five, 5u));
-	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, NULL, 1u));
-	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &zeroPort, 1u));
-	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &zeroAddress, 1u));
-	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, 0u, 1u, k_identity, LINK_PORT_A, 0u, &good, 1u));
-	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, NULL, LINK_PORT_A, 0u, &good, 1u));
-	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, 0u, 0u, &good, 1u));
-	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 3u, &good, 1u));
+	CHECK(!NativeArcadeDiscoveryService_Open(NULL, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &good, 1u, 0u, 0u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, 0u, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &good, 1u, 0u, 0u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, five, 5u, 0u, 0u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, NULL, 1u, 0u, 0u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &zeroPort, 1u, 0u, 0u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &zeroAddress, 1u, 0u, 0u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, 0u, 1u, k_identity, LINK_PORT_A, 0u, &good, 1u, 0u, 0u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, NULL, LINK_PORT_A, 0u, &good, 1u, 0u, 0u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, 0u, 0u, &good, 1u, 0u, 0u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 3u, &good, 1u, 0u, 0u));
+	/* A bad lan (DISC-19): prefix 7 or 31, host bits set; and an override outside the lan. */
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &good, 1u, LAN_LOOPBACK, 7u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &good, 1u, LAN_LOOPBACK, 31u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &good, 1u, LOOPBACK, 8u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &good, 1u, LAN_ABSENT, 24u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_zero, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, NULL, 0u, LAN_ABSENT, 32u));
 	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_zero, &status));
 	CHECK(status.open == 0);
 	return 0;
@@ -128,7 +141,7 @@ static int TestEnumeratedTargets(void)
 	struct NativeArcadeDiscoveryServiceStatus status;
 	struct NativeUdpTransportAddress address;
 
-	CHECK(NativeArcadeDiscoveryService_Open(&s_enumerate, PORT_ENUMERATE, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, NULL, 0u));
+	CHECK(NativeArcadeDiscoveryService_Open(&s_enumerate, PORT_ENUMERATE, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, NULL, 0u, 0u, 0u));
 	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_enumerate, &status));
 	CHECK((status.open == 1) && (status.overridden == 0) && (status.bindPort == PORT_ENUMERATE) && (status.tickCount == 0));
 	CHECK((status.targetCount >= 1u) && (status.targetCount <= NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_TARGETS));
@@ -166,7 +179,7 @@ static int TestRefreshHeld(void)
 	struct NativeArcadeDiscoveryServiceStatus status;
 	uint32_t tick;
 
-	CHECK(NativeArcadeDiscoveryService_Open(&s_enumerate, PORT_ENUMERATE, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, NULL, 0u));
+	CHECK(NativeArcadeDiscoveryService_Open(&s_enumerate, PORT_ENUMERATE, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, NULL, 0u, 0u, 0u));
 	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_enumerate, &status));
 	CHECK((status.overridden == 0) && (status.refreshCount == 1u) && (status.refreshPending == 0) && (status.beaconCount == 0u));
 
@@ -225,8 +238,8 @@ static int TestPairOnLoopback(void)
 	uint32_t step = 0;
 	uint32_t pairedStep;
 
-	CHECK(NativeArcadeDiscoveryService_Open(&s_a, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &toB, 1u));
-	CHECK(NativeArcadeDiscoveryService_Open(&s_b, PORT_B, NONCE_B, 1u, k_identity, LINK_PORT_B, NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &toA, 1u));
+	CHECK(NativeArcadeDiscoveryService_Open(&s_a, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &toB, 1u, 0u, 0u));
+	CHECK(NativeArcadeDiscoveryService_Open(&s_b, PORT_B, NONCE_B, 1u, k_identity, LINK_PORT_B, NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &toA, 1u, 0u, 0u));
 	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_a, &status));
 	CHECK((status.open == 1) && (status.overridden == 1) && (status.enumerationFailed == 0) && (status.targetCount == 1u));
 	/* Explicit targets: no interface list is ever read. */
@@ -236,7 +249,7 @@ static int TestPairOnLoopback(void)
 	CHECK(!NativeArcadeDiscoveryService_Target(&s_a, 1u, &address));
 
 	/* A second Open on a bound port: 0, closed, nothing crashes (DISC-15). */
-	CHECK(!NativeArcadeDiscoveryService_Open(&s_conflict, PORT_A, UINT64_C(0x3333), 1u, k_identity, LINK_PORT_A, 0u, &toB, 1u));
+	CHECK(!NativeArcadeDiscoveryService_Open(&s_conflict, PORT_A, UINT64_C(0x3333), 1u, k_identity, LINK_PORT_A, 0u, &toB, 1u, 0u, 0u));
 	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_conflict, &status));
 	CHECK(status.open == 0);
 	NativeArcadeDiscoveryService_Tick(&s_conflict, 1);
@@ -316,10 +329,113 @@ static int TestPairOnLoopback(void)
 	CHECK((event.type == NATIVE_ARCADE_DISCOVERY_EVENT_PAIR_LOST) && (event.peerNonce == NONCE_A));
 
 	/* A closed port is free again: A reopens on it. */
-	CHECK(NativeArcadeDiscoveryService_Open(&s_a, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &toB, 1u));
+	CHECK(NativeArcadeDiscoveryService_Open(&s_a, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, 0u, &toB, 1u, 0u, 0u));
 	NativeArcadeDiscoveryService_Close(&s_a);
 	NativeArcadeDiscoveryService_Close(&s_a);
 	NativeArcadeDiscoveryService_Close(&s_b);
+	NativeArcadeDiscoveryService_Close(&s_b);
+	return 0;
+}
+
+/* DISC-19: both pinned to 127.0.0.0/8 with explicit targets inside it pair
+ * as without a lan; the filter drops nothing; no interface list is read. */
+static int TestLanPairsOnLoopback(void)
+{
+	const struct NativeUdpTransportAddress toB = {LOOPBACK, PORT_B};
+	const struct NativeUdpTransportAddress toA = {LOOPBACK, PORT_A};
+	struct NativeArcadeDiscoveryServiceStatus status;
+	struct NativeArcadeDiscoveryPairing pairingA;
+	struct NativeArcadeDiscoveryPairing pairingB;
+	uint32_t interfaceIpv4 = 0xA5A5A5A5u;
+	uint32_t step = 0;
+
+	CHECK(NativeArcadeDiscoveryService_Open(&s_a, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &toB, 1u, LAN_LOOPBACK, 8u));
+	CHECK(NativeArcadeDiscoveryService_Open(&s_b, PORT_B, NONCE_B, 1u, k_identity, LINK_PORT_B, NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &toA, 1u, LAN_LOOPBACK, 8u));
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_a, &status));
+	CHECK((status.open == 1) && (status.overridden == 1) && (status.targetCount == 1u) && (status.refreshCount == 0u));
+	CHECK((status.lanPrefixLength == 8u) && (status.lanNetwork == LAN_LOOPBACK) && (status.lanInterfaceIpv4 == 0u) && (status.lanDropped == 0u));
+	/* Explicit targets: no list is read, so there is no lan interface to report. */
+	CHECK(!NativeArcadeDiscoveryService_TakeLanChange(&s_a, &interfaceIpv4));
+	CHECK(interfaceIpv4 == 0xA5A5A5A5u);
+
+	CHECK(StepUntilBothPaired(&s_a, &s_b, &step));
+	CHECK(NativeArcadeDiscoveryService_Pairing(&s_a, &pairingA));
+	CHECK(NativeArcadeDiscoveryService_Pairing(&s_b, &pairingB));
+	CHECK((pairingA.localSeat == NATIVE_ARCADE_DISCOVERY_SEAT_CAB1) && (pairingB.localSeat == NATIVE_ARCADE_DISCOVERY_SEAT_CAB2));
+	CHECK((pairingA.peerIpv4 == LOOPBACK) && (pairingA.peerLinkPort == LINK_PORT_B));
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_a, &status));
+	CHECK((status.lanDropped == 0u) && (status.beaconCount >= 1u) && (status.sendFailures == 0u));
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_b, &status));
+	CHECK(status.lanDropped == 0u);
+	printf("native_arcade_discovery_service_test: lan 127.0.0.0/8 paired by step %u\n", (unsigned)step);
+	NativeArcadeDiscoveryService_Close(&s_a);
+	NativeArcadeDiscoveryService_Close(&s_b);
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_a, &status));
+	CHECK((status.open == 0) && (status.lanPrefixLength == 0u) && (status.lanNetwork == 0u));
+	return 0;
+}
+
+/*
+ * DISC-19, the source filter and the no-interface state: A is pinned to a
+ * lan that holds neither the loopback sender nor any local interface, with
+ * no explicit target. It finds no interface inside the lan, reports that
+ * once, has no target, and sends nothing (no beacon round). B (no lan)
+ * beacons at A over loopback: A drops every one of them before the core
+ * (counted, no table entry), so neither side ever pairs.
+ */
+static int TestLanDropsOutsideSource(void)
+{
+	const struct NativeUdpTransportAddress toA = {LOOPBACK, PORT_A};
+	struct NativeArcadeDiscoveryServiceStatus status;
+	uint32_t interfaceIpv4 = 0xA5A5A5A5u;
+	uint32_t step = 0;
+	ULONGLONG deadline;
+
+	CHECK(NativeArcadeDiscoveryService_Open(&s_a, PORT_A, NONCE_A, 1u, k_identity, LINK_PORT_A, NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, NULL, 0u, LAN_ABSENT, 24u));
+	CHECK(NativeArcadeDiscoveryService_Open(&s_b, PORT_B, NONCE_B, 1u, k_identity, LINK_PORT_B, NATIVE_ARCADE_DISCOVERY_SEAT_AUTO, &toA, 1u, 0u, 0u));
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_a, &status));
+	if (status.lanInterfaceIpv4 != 0u)
+	{
+		fprintf(stderr, "this machine has an interface in 203.0.113.0/24 (TEST-NET-3); the no-interface case cannot run\n");
+		return 1;
+	}
+	CHECK((status.open == 1) && (status.overridden == 0) && (status.refreshCount == 1u) && (status.targetCount == 0u));
+	CHECK((status.lanPrefixLength == 24u) && (status.lanNetwork == LAN_ABSENT));
+	/* The first read is reported once: no interface inside the lan. */
+	CHECK(NativeArcadeDiscoveryService_TakeLanChange(&s_a, &interfaceIpv4));
+	CHECK(interfaceIpv4 == 0u);
+	interfaceIpv4 = 0xA5A5A5A5u;
+	CHECK(!NativeArcadeDiscoveryService_TakeLanChange(&s_a, &interfaceIpv4));
+	CHECK(!NativeArcadeDiscoveryService_TakeLanChange(&s_a, NULL));
+	CHECK(interfaceIpv4 == 0xA5A5A5A5u);
+
+	/* B's beacons reach A and are dropped: wait for the first drop. */
+	deadline = GetTickCount64() + POLL_BOUND_MS;
+	do
+	{
+		Step(&s_a, &s_b, &step);
+		CHECK(NativeArcadeDiscoveryService_GetStatus(&s_a, &status));
+	} while ((status.lanDropped == 0u) && (GetTickCount64() < deadline));
+	CHECK(status.lanDropped >= 1u);
+	/* Three more beacon intervals: still nothing reaches A's table, A sends
+	 * nothing, and neither side pairs. */
+	for (uint32_t i = 0; i < 3u * NATIVE_ARCADE_DISCOVERY_BEACON_INTERVAL_TICKS; i++)
+	{
+		Step(&s_a, &s_b, &step);
+		CHECK(!Paired(&s_a) && !Paired(&s_b));
+	}
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_a, &status));
+	CHECK((status.beaconCount == 0u) && (status.sendFailures == 0u) && (status.targetCount == 0u) && (status.lanDropped >= 2u));
+	for (uint32_t i = 0; i < NATIVE_ARCADE_DISCOVERY_TABLE_SIZE; i++)
+	{
+		CHECK(s_a.table.peers[i].used == 0u);
+	}
+	CHECK(!NativeArcadeDiscoveryService_TakeLanChange(&s_a, &interfaceIpv4));
+	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_b, &status));
+	CHECK((status.beaconCount >= 4u) && (status.lanDropped == 0u));
+	printf("native_arcade_discovery_service_test: lan 203.0.113.0/24: no interface, nothing sent, %u beacons from outside dropped\n",
+	       (unsigned)s_a.lanDropped);
+	NativeArcadeDiscoveryService_Close(&s_a);
 	NativeArcadeDiscoveryService_Close(&s_b);
 	return 0;
 }
@@ -330,6 +446,8 @@ int main(void)
 	CHECK(TestEnumeratedTargets() == 0);
 	CHECK(TestRefreshHeld() == 0);
 	CHECK(TestPairOnLoopback() == 0);
+	CHECK(TestLanPairsOnLoopback() == 0);
+	CHECK(TestLanDropsOutsideSource() == 0);
 	puts("native_arcade_discovery_service_test: ok");
 	return 0;
 }

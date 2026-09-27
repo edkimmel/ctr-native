@@ -19,6 +19,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* 1 for an entry that may carry a beacon: up, not loopback (by flag or by
+ * 127.0.0.0/8), not 0.0.0.0, and a prefix length of 1..31. */
+static int NativeNetInterfaces_Usable(const struct NativeNetInterface *entry)
+{
+	return (entry->up != 0) && (entry->loopback == 0) && (entry->ipv4 != 0) && ((entry->ipv4 >> 24) != 127u) && (entry->prefixLength != 0) &&
+	       (entry->prefixLength < 32u);
+}
+
 uint32_t NativeNetInterfaces_BuildTargets(const struct NativeNetInterface *interfaces, uint32_t interfaceCount, uint32_t *targets, uint32_t capacity)
 {
 	uint32_t count = 0;
@@ -43,8 +51,7 @@ uint32_t NativeNetInterfaces_BuildTargets(const struct NativeNetInterface *inter
 		uint32_t broadcast;
 		int seen = 0;
 
-		if ((entry->up == 0) || (entry->loopback != 0) || (entry->ipv4 == 0) || ((entry->ipv4 >> 24) == 127u) || (entry->prefixLength == 0) ||
-		    (entry->prefixLength >= 32u))
+		if (!NativeNetInterfaces_Usable(entry))
 		{
 			continue;
 		}
@@ -64,6 +71,38 @@ uint32_t NativeNetInterfaces_BuildTargets(const struct NativeNetInterface *inter
 		}
 	}
 	return count;
+}
+
+uint32_t NativeNetInterfaces_BuildLanTargets(const struct NativeNetInterface *interfaces, uint32_t interfaceCount, uint32_t lanNetwork, uint8_t lanPrefixLength,
+                                             uint32_t *targets, uint32_t capacity, uint32_t *interfaceIpv4)
+{
+	uint32_t mask;
+
+	if (interfaceIpv4 != NULL)
+	{
+		*interfaceIpv4 = 0;
+	}
+	if ((targets == NULL) || (interfaceIpv4 == NULL) || (capacity == 0) || (lanPrefixLength == 0) || (lanPrefixLength >= 32u))
+	{
+		return 0;
+	}
+	mask = UINT32_C(0xFFFFFFFF) << (32u - lanPrefixLength);
+	if (((lanNetwork & ~mask) != 0) || (interfaces == NULL))
+	{
+		return 0;
+	}
+	for (uint32_t i = 0; i < interfaceCount; i++)
+	{
+		const struct NativeNetInterface *entry = &interfaces[i];
+
+		if (NativeNetInterfaces_Usable(entry) && ((entry->ipv4 & mask) == lanNetwork))
+		{
+			targets[0] = lanNetwork | ~mask;
+			*interfaceIpv4 = entry->ipv4;
+			return 1;
+		}
+	}
+	return 0;
 }
 
 int NativeNetInterfaces_List(struct NativeNetInterfacesScratch *scratch, struct NativeNetInterface *out, uint32_t capacity, uint32_t *count)

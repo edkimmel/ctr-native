@@ -18,6 +18,8 @@
  *   --arcade-link-peer a.b.c.d:port  one candidate peer; repeatable, up to
  *                                    NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS
  *   --arcade-link-group name         discovery group (DISC-9)
+ *   --arcade-link-lan a.b.c.d/n      the lan the link is pinned to (DISC-19),
+ *                                    NativeArcadeDiscovery_ParseLan's grammar
  *   --arcade-link-preview name       drive one screen with no socket
  *   --arcade-discovery-port N        discovery bind port, 1..65535 (DISC-18)
  *   --arcade-discovery-target a.b.c.d:port
@@ -39,12 +41,17 @@
  *   optional and defaults to NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_LINK_PORT;
  *   the group is optional (NATIVE_ARCADE_DISCOVERY_DEFAULT_GROUP when
  *   unset, applied by the consumer).
- * - An enabled link may not also request a preview. A port, peer, or group
- *   without --arcade-link is an error. A preview on its own is valid.
+ * - The lan is optional in both modes (DISC-19).
+ * - An enabled link may not also request a preview. A port, peer, group, or
+ *   lan without --arcade-link is an error. A preview on its own is valid.
  * The two discovery flags are parsed here but checked only after the
  * config file's link group has been merged, by
  * NativeArcadeLinkOptions_ValidateMerged (DISC-18): they are not link-group
  * options, so argv naming them does not make the file's link group ignored.
+ * The same post-merge check holds every discovery target and static peer
+ * inside the lan when one is set (DISC-19). The lan is host-local link
+ * configuration: never in the beacon, the group hash, the fixture, or any
+ * match or deterministic state.
  *
  * The fixture is the one race both cabinets propose (UX-8). It is fixed by
  * the build rather than chosen per cabinet, because the link handshake is
@@ -157,10 +164,15 @@ struct NativeArcadeLinkOptions
 	 * parsed from argv: ApplyArgs leaves it unchanged and SetDefaults zeroes
 	 * it; main.c fills it for a discovery-mode run only. Not match identity. */
 	uint64_t discoveryNonce;
+	/* The lan (docs/DISCOVERY_MILESTONE.md DISC-19): --arcade-link-lan, both modes. */
+	uint32_t lanNetwork;     /* host order, host bits zero, when hasLan; else 0 */
+	uint8_t hasLan;          /* --arcade-link-lan given */
+	uint8_t lanPrefixLength; /* 8..30 when hasLan; else 0 */
+	uint16_t lanReserved;
 };
 
 /* NULL is a no-op. Otherwise zeroes the options: disabled, preview NONE,
- * selectEntropy and discoveryNonce 0, no group, no discovery flags. */
+ * selectEntropy and discoveryNonce 0, no group, no lan, no discovery flags. */
 void NativeArcadeLinkOptions_SetDefaults(struct NativeArcadeLinkOptions *options);
 
 /* Returns 1 and updates *options on success; 0 with *options untouched
@@ -174,9 +186,11 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
  * be silently ignored; and in discovery mode the link port may not equal the
  * effective discovery port (discoveryPort, or
  * NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_DISCOVERY_PORT when 0), which the
- * discovery socket holds. Returns 1 when the options are consistent, 0 for
- * NULL, a discovery flag without discovery mode, or that port clash. Never
- * writes.
+ * discovery socket holds. With a lan (DISC-19) every discovery target and
+ * every static peer must be inside it (NativeArcadeDiscovery_LanContains).
+ * Returns 1 when the options are consistent, 0 for NULL, a discovery flag
+ * without discovery mode, that port clash, or a target or peer outside the
+ * lan. Never writes.
  */
 int NativeArcadeLinkOptions_ValidateMerged(const struct NativeArcadeLinkOptions *options);
 

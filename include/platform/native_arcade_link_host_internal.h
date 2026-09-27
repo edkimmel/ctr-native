@@ -70,6 +70,13 @@ int NativeArcadeLinkHost_InternalPendingPairing(uint32_t *peerIpv4, uint16_t *pe
  * untouched (a NULL output included). */
 int NativeArcadeLinkHost_InternalDiscoveryStatus(uint32_t *ticks, uint32_t *refreshes, uint8_t *refreshPending);
 
+/* Discovery, the lan (DISC-19): while the discovery socket is open, writes
+ * its beacon rounds since Configure, the interface inside the lan at the
+ * latest interface-list read (0: none, or no lan), and the datagrams dropped
+ * for a source outside the lan, and returns 1; otherwise returns 0 with the
+ * outputs untouched (a NULL output included). */
+int NativeArcadeLinkHost_InternalDiscoveryLan(uint32_t *beacons, uint32_t *lanInterfaceIpv4, uint32_t *lanDropped);
+
 /* 1 while a race runs, the state that holds the discovery refresh (risk 10):
  * the flow on RACING, the race pacing on (RaceBegin to RaceEnd), a begun
  * drive, or a drive in its finish linger; 0 otherwise and outside LINK. */

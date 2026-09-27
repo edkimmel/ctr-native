@@ -77,6 +77,7 @@ static int TestDefaults(void)
 	CHECK((config.hasDataDir == 0) && (config.hasSeat == 0) && (config.hasPort == 0) && (config.hasFullscreen == 0));
 	CHECK((config.hasRenderScale == 0) && (config.hasTextureFilter == 0) && (config.renderScaleText[0] == '\0') && (config.textureFilterText[0] == '\0'));
 	CHECK((config.peerCount == 0) && (config.fullscreen == 0) && (config.dataDir[0] == '\0'));
+	CHECK((config.hasGroup == 0) && (config.hasLan == 0) && (config.lan[0] == '\0'));
 	CHECK(!NativeArcadeConfig_HasLink(&config));
 	CHECK(!NativeArcadeConfig_HasLink(NULL));
 
@@ -507,6 +508,125 @@ static int TestDiscoveryKeys(void)
 	return 0;
 }
 
+/* The lan key (docs/DISCOVERY_MILESTONE.md DISC-19): the flag's grammar at its
+ * line, the exact command line, both modes, and PK-4 precedence. */
+static int TestLanKey(void)
+{
+	char text[256];
+	struct NativeArcadeConfig config;
+	struct NativeArcadeConfigArgs args;
+	struct NativeArcadeLinkOptions fromConfig;
+	struct NativeArcadeLinkOptions fromArgs;
+
+	/* Discovery mode: the file equals the command line byte for byte. */
+	{
+		static const char file[] = "seat = auto\n# the arcade switch\nlan =  192.168.1.0/24 \t\n";
+		char *argv[] = { "ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "192.168.1.0/24" };
+
+		Sentinel(&config);
+		CHECK(ParseText(file, &config, NULL));
+		CHECK((config.hasLan == 1) && (strcmp(config.lan, "192.168.1.0/24") == 0) && (config.hasGroup == 0) && (config.hasPort == 0));
+		CHECK(NativeArcadeConfig_HasLink(&config));
+		NativeArcadeLinkOptions_SetDefaults(&fromConfig);
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		CHECK(NativeArcadeConfig_ApplyLink(&config, &fromConfig));
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argv), argv, &fromArgs));
+		CHECK(memcmp(&fromConfig, &fromArgs, sizeof(fromConfig)) == 0);
+		CHECK((fromConfig.discovery == 1) && (fromConfig.hasLan == 1) && (fromConfig.lanNetwork == 0xC0A80100u) && (fromConfig.lanPrefixLength == 24u));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&fromConfig));
+	}
+	/* Static mode takes a lan (unlike a group), and every peer must be inside
+	 * it: the file check passes either way, the post-merge check decides. */
+	{
+		static const char file[] = "lan = 192.168.1.0/24\nseat = cab1\nport = 7001\npeer = 192.168.1.12:7001\n";
+		char *argv[] = { "ctr_native", "--arcade-link", "cab1", "--arcade-link-port", "7001", "--arcade-link-peer", "192.168.1.12:7001",
+			"--arcade-link-lan", "192.168.1.0/24" };
+
+		Sentinel(&config);
+		CHECK(ParseText(file, &config, NULL));
+		NativeArcadeLinkOptions_SetDefaults(&fromConfig);
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		CHECK(NativeArcadeConfig_ApplyLink(&config, &fromConfig));
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argv), argv, &fromArgs));
+		CHECK(memcmp(&fromConfig, &fromArgs, sizeof(fromConfig)) == 0);
+		CHECK((fromConfig.discovery == 0) && (fromConfig.hasLan == 1));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&fromConfig));
+
+		CHECK(ParseText("seat = cab1\nport = 7001\npeer = 10.0.0.12:7001\nlan = 192.168.1.0/24\n", &config, NULL));
+		NativeArcadeLinkOptions_SetDefaults(&fromConfig);
+		CHECK(NativeArcadeConfig_ApplyLink(&config, &fromConfig));
+		CHECK(!NativeArcadeLinkOptions_ValidateMerged(&fromConfig));
+	}
+	/* A lan alone is an incomplete link group, at its line. */
+	CHECK(RejectsTextAt("# c\nlan = 192.168.1.0/24\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 2));
+	CHECK(RejectsTextAt("data_dir = x\nlan = 192.168.1.0/24\nport = 7001\n", NATIVE_ARCADE_CONFIG_ERROR_LINK_INCOMPLETE, 2));
+
+	/* Bad values at their line, by the core's one lan grammar (through the
+	 * options parser); not repeatable; not empty. */
+	{
+		static const char *const badLans[] = { "lan = 192.168.1.5/24", "lan = 192.168.1.0", "lan = 192.168.1.0/", "lan = 192.168.1.0/31",
+		                                       "lan = 192.168.1.1/32", "lan = 10.0.0.0/7", "lan = 192.168.1.0/24 # c", "lan = 192.168.1.0 / 24",
+		                                       "lan = 1.2.3.4:5", "lan = 192.168.1.0/24x", "lan = 192.168.1.256/24", "lan = -192.168.1.0/24",
+		                                       "lan = 192.168.1.0/24,10.0.0.0/8", "lan = 0192.168.1.0/24" };
+
+		for (size_t i = 0; i < sizeof(badLans) / sizeof(badLans[0]); i++)
+		{
+			snprintf(text, sizeof(text), "seat = auto\n%s\n", badLans[i]);
+			CHECK(RejectsTextAt(text, NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE, 2));
+		}
+	}
+	CHECK(RejectsTextAt("seat = auto\nlan = 10.0.0.0/8\nlan = 10.0.0.0/8\n", NATIVE_ARCADE_CONFIG_ERROR_DUPLICATE_KEY, 3));
+	CHECK(RejectsTextAt("seat = auto\nlan =\n", NATIVE_ARCADE_CONFIG_ERROR_EMPTY_VALUE, 2));
+	CHECK(RejectsTextAt("seat = auto\nLAN = 10.0.0.0/8\n", NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY, 2));
+	CHECK(strstr(NativeArcadeConfig_ErrorText(NATIVE_ARCADE_CONFIG_ERROR_UNKNOWN_KEY), "group, lan,") != NULL);
+	CHECK(strstr(NativeArcadeConfig_ErrorText(NATIVE_ARCADE_CONFIG_ERROR_BAD_VALUE), "lan: a.b.c.d/n") != NULL);
+	/* The longest accepted lan text fits its buffer. */
+	CHECK(ParseText("seat = auto\nlan = 010.000.000.000/08\n", &config, NULL));
+	CHECK(strlen(config.lan) == 18u);
+
+	/* Precedence (PK-4): argv naming --arcade-link-lan ignores the file's
+	 * whole group; argv alone is applied, and a lan without --arcade-link is
+	 * an error there, as a group is. */
+	{
+		char *alone[] = { "ctr_native", "--arcade-link-lan", "10.0.0.0/8" };
+		char *argv[] = { "ctr_native", "--arcade-link", "auto", "--arcade-link-lan", "10.0.0.0/8" };
+
+		CHECK(NativeArcadeConfig_ParseArgs(ARGC(alone), alone, &args));
+		CHECK(args.namesLinkOption == 1);
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		CHECK(!NativeArcadeLinkOptions_ApplyArgs(ARGC(alone), alone, &fromArgs));
+
+		CHECK(ParseText("seat = cab1\nport = 7001\npeer = 192.168.1.12:7001\nlan = 192.168.1.0/24\n", &config, NULL));
+		CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
+		CHECK(args.namesLinkOption == 1);
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argv), argv, &fromArgs));
+		CHECK((fromArgs.discovery == 1) && (fromArgs.peerCount == 0) && (fromArgs.lanNetwork == 0x0A000000u) && (fromArgs.lanPrefixLength == 8u));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&fromArgs));
+	}
+	/* The discovery flags keep the file's group, lan included; the merged
+	 * targets must then lie inside the file's lan. */
+	{
+		char *argv[] = { "ctr_native", "--arcade-discovery-port", "7303", "--arcade-discovery-target", "127.0.0.1:7304" };
+
+		CHECK(NativeArcadeConfig_ParseArgs(ARGC(argv), argv, &args));
+		CHECK(args.namesLinkOption == 0);
+		CHECK(ParseText("seat = auto\nport = 7301\nlan = 127.0.0.0/8\n", &config, NULL));
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argv), argv, &fromArgs));
+		CHECK(NativeArcadeConfig_ApplyLink(&config, &fromArgs));
+		CHECK((fromArgs.hasLan == 1) && (fromArgs.discoveryTargetCount == 1u));
+		CHECK(NativeArcadeLinkOptions_ValidateMerged(&fromArgs));
+
+		CHECK(ParseText("seat = auto\nport = 7301\nlan = 192.168.1.0/24\n", &config, NULL));
+		NativeArcadeLinkOptions_SetDefaults(&fromArgs);
+		CHECK(NativeArcadeLinkOptions_ApplyArgs(ARGC(argv), argv, &fromArgs));
+		CHECK(NativeArcadeConfig_ApplyLink(&config, &fromArgs));
+		CHECK(!NativeArcadeLinkOptions_ValidateMerged(&fromArgs));
+	}
+	return 0;
+}
+
 /*
  * What the command line's display parser says about option + value, from the
  * defaults: the '=' form is the result, *twoToken the two-token form's.
@@ -796,7 +916,8 @@ static int TestParseArgs(void)
 		CHECK((args.namesRenderScale == 1) && (args.namesTextureFilter == 1) && (args.namesWindowMode == 0));
 	}
 	{
-		static const char *const linkNames[] = { "--arcade-link", "--arcade-link-port", "--arcade-link-peer", "--arcade-link-group", "--arcade-link-preview" };
+		static const char *const linkNames[] = { "--arcade-link", "--arcade-link-port", "--arcade-link-peer", "--arcade-link-group", "--arcade-link-lan",
+		                                         "--arcade-link-preview" };
 
 		for (size_t i = 0; i < sizeof(linkNames) / sizeof(linkNames[0]); i++)
 		{
@@ -866,7 +987,7 @@ static int ReadFile(const char *path, char *buffer, size_t capacity, size_t *siz
 /*
  * The committed package template, tools/package/arcade.cfg, parses with the
  * real parser to the documented values (PK-8, DISC-11): one file for every
- * cabinet, seat auto (discovery mode), the default link port, no peer, no
+ * cabinet, seat auto (discovery mode), the default link port, no peer, no lan, no
  * group, and the display defaults.
  */
 static int TestTemplate(const char *path)
@@ -882,14 +1003,18 @@ static int TestTemplate(const char *path)
 	CHECK((config.hasDataDir == 1) && (strcmp(config.dataDir, "C:\\ctr-data") == 0));
 	CHECK((config.hasFullscreen == 1) && (config.fullscreen == 1));
 	CHECK((config.hasSeat == 1) && (strcmp(config.seat, "auto") == 0));
-	/* port, peer, and group are commented-out examples only. */
-	CHECK((config.hasPort == 0) && (config.peerCount == 0) && (config.hasGroup == 0));
+	/* port, peer, group, and lan are commented-out examples only (DISC-19: no active lan). */
+	CHECK((config.hasPort == 0) && (config.peerCount == 0) && (config.hasGroup == 0) && (config.hasLan == 0) && (config.lan[0] == '\0'));
+	/* The lan example is there, commented out (the fleet's switch subnet). */
+	s_big[size] = '\0';
+	CHECK(strstr(s_big, "\n# lan = 192.168.1.0/24") != NULL);
 
 	NativeArcadeLinkOptions_SetDefaults(&options);
 	CHECK(NativeArcadeConfig_ApplyLink(&config, &options));
 	CHECK((options.enabled == 1) && (options.discovery == 1) && (options.seatPreference == NATIVE_ARCADE_LINK_SEAT_AUTO) && (options.localRole == 0));
 	CHECK((options.localPort == NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_LINK_PORT) && (options.localPort == 7001u));
 	CHECK((options.peerCount == 0) && (options.hasGroup == 0) && (options.group[0] == '\0'));
+	CHECK((options.hasLan == 0) && (options.lanNetwork == 0u) && (options.lanPrefixLength == 0));
 	CHECK((options.discoveryPort == 0) && (options.discoveryTargetCount == 0));
 	CHECK(options.preview == NATIVE_ARCADE_LINK_PREVIEW_NONE);
 	/* The default link port is not the default discovery port (7000). */
@@ -913,6 +1038,7 @@ int main(int argc, char *argv[])
 	CHECK(TestErrors() == 0);
 	CHECK(TestApplyLink() == 0);
 	CHECK(TestDiscoveryKeys() == 0);
+	CHECK(TestLanKey() == 0);
 	CHECK(TestDisplayKeys() == 0);
 	CHECK(TestApplyDisplay() == 0);
 	CHECK(TestParseArgs() == 0);

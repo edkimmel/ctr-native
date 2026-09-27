@@ -57,6 +57,22 @@ struct NativeNetInterfacesScratch
 uint32_t NativeNetInterfaces_BuildTargets(const struct NativeNetInterface *interfaces, uint32_t interfaceCount, uint32_t *targets, uint32_t capacity);
 
 /*
+ * Pure. The beacon target when discovery is pinned to a lan
+ * (docs/DISCOVERY_MILESTONE.md DISC-19): the lan's directed broadcast
+ * (lanNetwork | ~mask) alone, and only while an entry BuildTargets would use
+ * (up, not loopback, not in 127.0.0.0/8, not 0.0.0.0, prefix length 1..31)
+ * has its address inside the lan. Then targets[0] is that broadcast,
+ * *interfaceIpv4 the first such address, and the result 1. Otherwise the
+ * result is 0 and *interfaceIpv4 0: never 255.255.255.255 and never another
+ * entry's broadcast (no fallback). Returns 0 (with *interfaceIpv4 0 when it
+ * is not NULL, targets untouched) for a NULL targets or interfaceIpv4,
+ * capacity 0, a lan prefix length outside 1..31, or a lanNetwork with host
+ * bits set; the caller has already checked the lan's own rule.
+ */
+uint32_t NativeNetInterfaces_BuildLanTargets(const struct NativeNetInterface *interfaces, uint32_t interfaceCount, uint32_t lanNetwork, uint8_t lanPrefixLength,
+                                             uint32_t *targets, uint32_t capacity, uint32_t *interfaceIpv4);
+
+/*
  * Reads the OS list of IPv4 unicast addresses into out[] (at most capacity
  * entries; later ones are left out) and *count. Returns 1 on success (an
  * empty list included), 0 for NULL arguments or when the OS call fails,

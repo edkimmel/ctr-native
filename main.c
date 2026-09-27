@@ -348,7 +348,8 @@ int main(int argc, char *argv[])
 	{
 		fprintf(stderr, "[CTR Native] invalid arcade-link option; expected --arcade-link cab1|cab2 --arcade-link-port <1-65535> --arcade-link-peer <a.b.c.d:port> (repeatable), "
 		                "or --arcade-link cab1|cab2|auto [--arcade-link-port <1-65535>] [--arcade-link-group <name>] with no peer (discovery), "
-		                "or --arcade-link-preview <screen> alone; discovery mode also takes --arcade-discovery-port <1-65535> and --arcade-discovery-target <a.b.c.d:port> (up to 4).\n");
+		                "or --arcade-link-preview <screen> alone; either link mode also takes --arcade-link-lan <a.b.c.d/n> (n 8-30, host bits zero); "
+		                "discovery mode also takes --arcade-discovery-port <1-65535> and --arcade-discovery-target <a.b.c.d:port> (up to 4).\n");
 		return NativeConsole_Return(1);
 	}
 	/* The config's link group reaches the link only through these options,
@@ -368,7 +369,8 @@ int main(int argc, char *argv[])
 	if (!NativeArcadeLinkOptions_ValidateMerged(&arcadeLinkOptions))
 	{
 		fprintf(stderr, "[CTR Native] invalid arcade-link option; --arcade-discovery-port and --arcade-discovery-target need discovery mode (--arcade-link or seat without a peer), "
-		                "and in discovery mode the link port may not equal the discovery port (default 7000).\n");
+		                "in discovery mode the link port may not equal the discovery port (default 7000), "
+		                "and with a lan (--arcade-link-lan or lan) every discovery target and peer must be inside it.\n");
 		return NativeConsole_Return(1);
 	}
 
@@ -662,6 +664,15 @@ int main(int argc, char *argv[])
 
 		printf("[CTR Native] arcade link: %s port %u, %u peers\n", arcadeLinkSeat, (unsigned)arcadeLinkOptions.localPort,
 		       (unsigned)arcadeLinkOptions.peerCount);
+		/* The lan the link is pinned to (DISC-19), on its own line so the
+		 * line above stays exactly as the checkers match it. */
+		if (arcadeLinkOptions.hasLan != 0u)
+		{
+			const uint32_t lan = arcadeLinkOptions.lanNetwork;
+
+			printf("[CTR Native] arcade link: lan %u.%u.%u.%u/%u\n", (unsigned)((lan >> 24) & 0xFFu), (unsigned)((lan >> 16) & 0xFFu),
+			       (unsigned)((lan >> 8) & 0xFFu), (unsigned)(lan & 0xFFu), (unsigned)arcadeLinkOptions.lanPrefixLength);
+		}
 	}
 	else if (arcadeLinkOptions.preview != (uint32_t)NATIVE_ARCADE_LINK_PREVIEW_NONE)
 	{

@@ -112,6 +112,37 @@ int NativeArcadeDiscovery_GroupNameValid(const char *name);
 uint64_t NativeArcadeDiscovery_GroupHash(const char *name);
 
 /*
+ * The lan (DISC-19): the IPv4 subnet an operator pins discovery to, as
+ * "a.b.c.d/n". Host-local link configuration only: it is never in the
+ * beacon, the group hash, or any deterministic state.
+ *
+ * NativeArcadeDiscovery_ParseLan is the one lan grammar (the options parser
+ * and, through it, the config file use it): four decimal octets 0..255 of
+ * 1-3 digits separated by '.', one '/', and a decimal prefix length of 1-2
+ * digits in NATIVE_ARCADE_DISCOVERY_LAN_MIN_PREFIX..MAX_PREFIX (8..30: a /31
+ * or /32 has no directed broadcast, and a subnet wider than /8 is not a
+ * LAN), with nothing else (no whitespace, no sign), and the host bits zero
+ * (192.168.1.5/24 is refused as ambiguous). Returns 1 and writes the
+ * network (host order) and the prefix length, else 0 with both untouched
+ * (NULL arguments included).
+ */
+#define NATIVE_ARCADE_DISCOVERY_LAN_MIN_PREFIX 8u
+#define NATIVE_ARCADE_DISCOVERY_LAN_MAX_PREFIX 30u
+int NativeArcadeDiscovery_ParseLan(const char *text, uint32_t *network, uint8_t *prefixLength);
+
+/* 1 when (network, prefixLength) is a lan ParseLan accepts: the prefix length
+ * in 8..30 and the host bits of network zero; else 0. */
+int NativeArcadeDiscovery_LanValid(uint32_t network, uint8_t prefixLength);
+
+/* 1 when ipv4 lies inside a valid lan ((ipv4 & mask) == network); 0 when it
+ * does not or the lan is not valid. */
+int NativeArcadeDiscovery_LanContains(uint32_t network, uint8_t prefixLength, uint32_t ipv4);
+
+/* The lan's directed broadcast, network | ~mask (192.168.1.0/24 gives
+ * 192.168.1.255); 0 when the lan is not valid. */
+uint32_t NativeArcadeDiscovery_LanBroadcast(uint32_t network, uint8_t prefixLength);
+
+/*
  * One side of the election (DISC-8). The election key is (ipv4, linkPort)
  * as the OTHER side observes it: for ourselves, the peer's echo of our
  * nonce; for the peer, its beacon source IPv4 and advertised link port.

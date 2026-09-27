@@ -779,10 +779,11 @@ static void NativeArcadeLinkHost_FormatIpv4(uint32_t ipv4, char text[16])
  * nonce (main.c's DISC-13 draw), the group hash of the options' group (the
  * default group when not given, DISC-9), the identity digest (DISC-10: the
  * first 8 bytes of SHA-256 over the build identity then the content
- * identity), the link port, the seat preference, and the options' explicit
- * targets (DISC-18; none: the broadcast targets). A failure (the port in
- * use) is logged once and is not fatal (DISC-15): discovery stays off, the
- * adapter is never paired, its lobby waits, and solo is offered.
+ * identity), the link port, the seat preference, the options' explicit
+ * targets (DISC-18; none: the broadcast targets), and the options' lan
+ * (DISC-19; none: prefix length 0). A failure (the port in use) is logged
+ * once and is not fatal (DISC-15): discovery stays off, the adapter is never
+ * paired, its lobby waits, and solo is offered.
  */
 static void NativeArcadeLinkHost_OpenDiscovery(const struct NativeArcadeLinkOptions *options, const struct NativeIdentityV1 *identity)
 {
@@ -792,6 +793,7 @@ static void NativeArcadeLinkHost_OpenDiscovery(const struct NativeArcadeLinkOpti
 	const char *group = (options->hasGroup != 0u) ? options->group : NATIVE_ARCADE_DISCOVERY_DEFAULT_GROUP;
 	const uint16_t bindPort = (options->discoveryPort != 0u) ? options->discoveryPort
 															 : (uint16_t)NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_DISCOVERY_PORT;
+	const uint8_t lanPrefixLength = (options->hasLan != 0u) ? options->lanPrefixLength : 0u;
 	uint32_t targetCount = 0u;
 	uint32_t i;
 
@@ -808,10 +810,10 @@ static void NativeArcadeLinkHost_OpenDiscovery(const struct NativeArcadeLinkOpti
 	}
 	g_discoveryMode = 1u;
 	if (NativeArcadeDiscoveryService_Open(&g_discovery, bindPort, options->discoveryNonce, NativeArcadeDiscovery_GroupHash(group),
-			digest, options->localPort, options->seatPreference, targets, targetCount))
+			digest, options->localPort, options->seatPreference, targets, targetCount, options->lanNetwork, lanPrefixLength))
 	{
 		Platform_Log("[CTR Native] arcade discovery: listening on port %u, group %s, link port %u, %s\n", (unsigned)bindPort, group,
-			(unsigned)options->localPort, (targetCount != 0u) ? "explicit targets" : "broadcast");
+			(unsigned)options->localPort, (targetCount != 0u) ? "explicit targets" : ((lanPrefixLength != 0u) ? "lan broadcast" : "broadcast"));
 	}
 	else
 	{
@@ -855,6 +857,32 @@ static void NativeArcadeLinkHost_LogDiscoveryEvent(const struct NativeArcadeDisc
 	NativeArcadeLinkHost_FormatIpv4(event->peerIpv4, address);
 	Platform_Log("[CTR Native] arcade discovery: %s %s:%u%s%s\n", what, address, (unsigned)event->peerLinkPort,
 		(seat[0] != '\0') ? " as " : "; not paired", seat);
+}
+
+/* The lan (DISC-19): one line whenever the interface inside the lan changes,
+ * the first interface-list read included: none (nothing is sent, and the
+ * next refresh retries; never a fallback to other interfaces), or the
+ * interface's address. Nothing with explicit targets or without a lan. */
+static void NativeArcadeLinkHost_LogDiscoveryLan(void)
+{
+	struct NativeArcadeDiscoveryServiceStatus status;
+	char lan[16];
+	char address[16];
+	uint32_t interfaceIpv4 = 0u;
+
+	if (!NativeArcadeDiscoveryService_TakeLanChange(&g_discovery, &interfaceIpv4) || !NativeArcadeDiscoveryService_GetStatus(&g_discovery, &status))
+	{
+		return;
+	}
+	NativeArcadeLinkHost_FormatIpv4(status.lanNetwork, lan);
+	if (interfaceIpv4 == 0u)
+	{
+		Platform_Log("[CTR Native] arcade discovery: no network interface in lan %s/%u; not beaconing, retrying\n", lan,
+			(unsigned)status.lanPrefixLength);
+		return;
+	}
+	NativeArcadeLinkHost_FormatIpv4(interfaceIpv4, address);
+	Platform_Log("[CTR Native] arcade discovery: lan %s/%u on interface %s; beaconing\n", lan, (unsigned)status.lanPrefixLength, address);
 }
 
 /* Discovery mode only: hands the service's current pairing, or none, to
@@ -919,7 +947,8 @@ uint8_t NativeArcadeLinkHost_InternalRaceRunning(void)
 
 /* Discovery mode only, at the top of every LINK host Tick, before the
  * adapter's (DISC-12), and on every IdleTick: one service tick (drain,
- * beacon), its events to the log, and the current pairing to the adapter.
+ * beacon), its events and any lan interface change (DISC-19) to the log, and
+ * the current pairing to the adapter.
  * The interface refresh is held while a race runs (risk 10: the OS call
  * takes over a millisecond); one that falls due meanwhile runs on the first
  * tick after the race. */
@@ -936,6 +965,7 @@ static void NativeArcadeLinkHost_TickDiscovery(void)
 	{
 		NativeArcadeLinkHost_LogDiscoveryEvent(&event);
 	}
+	NativeArcadeLinkHost_LogDiscoveryLan();
 	NativeArcadeLinkHost_HandPairing();
 }
 
@@ -972,6 +1002,21 @@ int NativeArcadeLinkHost_InternalDiscoveryStatus(uint32_t *ticks, uint32_t *refr
 	*ticks = status.tickCount;
 	*refreshes = status.refreshCount;
 	*refreshPending = status.refreshPending;
+	return 1;
+}
+
+int NativeArcadeLinkHost_InternalDiscoveryLan(uint32_t *beacons, uint32_t *lanInterfaceIpv4, uint32_t *lanDropped)
+{
+	struct NativeArcadeDiscoveryServiceStatus status;
+
+	if ((beacons == NULL) || (lanInterfaceIpv4 == NULL) || (lanDropped == NULL) || !NativeArcadeDiscoveryService_GetStatus(&g_discovery, &status) ||
+	    (status.open == 0u))
+	{
+		return 0;
+	}
+	*beacons = status.beaconCount;
+	*lanInterfaceIpv4 = status.lanInterfaceIpv4;
+	*lanDropped = status.lanDropped;
 	return 1;
 }
 

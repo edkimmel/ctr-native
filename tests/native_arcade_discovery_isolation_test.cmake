@@ -23,6 +23,10 @@
 #    include/, or main.c: the link options (the group name check, DISC-S3),
 #    the discovery service (DISC-S3), and the link host's .c (DISC-S4),
 #    which owns the service.
+# 7. The lan (DISC-19) stays host-local: no match config, identity,
+#    lockstep, netplay, lobby, replay, checkpoint, canonical, or lease file,
+#    and not the fixture builder, names it; the beacon, table, and peer
+#    structs and the wire, Init, and group hash code hold none.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade discovery isolation")
@@ -127,7 +131,8 @@ list(REMOVE_DUPLICATES api_calls)
 list(SORT api_calls)
 set(expected_api
     "NativeArcadeDiscovery_BuildBeacon(" "NativeArcadeDiscovery_Decode(" "NativeArcadeDiscovery_Elect(" "NativeArcadeDiscovery_Encode("
-    "NativeArcadeDiscovery_GroupHash(" "NativeArcadeDiscovery_GroupNameValid(" "NativeArcadeDiscovery_Init(" "NativeArcadeDiscovery_Pairing("
+    "NativeArcadeDiscovery_GroupHash(" "NativeArcadeDiscovery_GroupNameValid(" "NativeArcadeDiscovery_Init(" "NativeArcadeDiscovery_LanBroadcast("
+    "NativeArcadeDiscovery_LanContains(" "NativeArcadeDiscovery_LanValid(" "NativeArcadeDiscovery_Pairing(" "NativeArcadeDiscovery_ParseLan("
     "NativeArcadeDiscovery_Receive(" "NativeArcadeDiscovery_TakeEvent(" "NativeArcadeDiscovery_Tick(")
 if(NOT "${api_calls}" STREQUAL "${expected_api}")
     message(FATAL_ERROR "${prefix}: the public API changed; expected '${expected_api}', found '${api_calls}'")
@@ -263,11 +268,124 @@ foreach(path IN LISTS scan_files)
         message(FATAL_ERROR "${prefix}: ${relative_path} names '${hit}'; no module may use discovery before its slice allows it")
     endif()
 endforeach()
-# The options use the core for the group name check only.
+# The options use the core for the group name check, the lan grammar, and
+# the lan containment of the post-merge check (DISC-19) only.
 ctr_read_source("platform/native_arcade_link_options.c" options_source)
 ctr_strip_comments("${options_source}" options_code)
 string(REGEX MATCHALL "NativeArcadeDiscovery_[A-Za-z0-9_]*" options_calls "${options_code}")
 list(REMOVE_DUPLICATES options_calls)
-if(NOT "${options_calls}" STREQUAL "NativeArcadeDiscovery_GroupNameValid")
-    message(FATAL_ERROR "${prefix}: platform/native_arcade_link_options.c may call only NativeArcadeDiscovery_GroupNameValid (found '${options_calls}')")
+list(SORT options_calls)
+if(NOT "${options_calls}" STREQUAL "NativeArcadeDiscovery_GroupNameValid;NativeArcadeDiscovery_LanContains;NativeArcadeDiscovery_ParseLan")
+    message(FATAL_ERROR "${prefix}: platform/native_arcade_link_options.c may call only NativeArcadeDiscovery_GroupNameValid, NativeArcadeDiscovery_ParseLan, and NativeArcadeDiscovery_LanContains (found '${options_calls}')")
 endif()
+
+# 7. The lan (DISC-19) is host-local link configuration, like the group:
+#    a. no match config, identity, lockstep (handshake and config digest
+#       included), netplay adapter, lobby, replay, checkpoint, canonical, or
+#       lease file names a lan field or the lan option, comments included,
+#       case-insensitively (the matcher is first proven on planted hits);
+#    b. the fixture builder names no lan;
+#    c. the beacon cannot carry it: the core's beacon, table, and peer
+#       structs hold no lan field, and the codec, the table Init, the beacon
+#       builder, and the group hash name no lan.
+set(lan_names haslan lannetwork lanprefixlength laninterface landropped arcade-link-lan parselan lancontains lanbroadcast lanvalid
+    buildlantargets takelanchange)
+function(ctr_find_lan_name text out_var)
+    string(TOLOWER "${text}" lower)
+    set(found "")
+    foreach(term IN LISTS lan_names)
+        string(FIND "${lower}" "${term}" hit)
+        if(NOT hit EQUAL -1)
+            set(found "${term}")
+            break()
+        endif()
+    endforeach()
+    set(${out_var} "${found}" PARENT_SCOPE)
+endfunction()
+ctr_find_lan_name("if (options->hasLan != 0u)" planted_hit)
+if(NOT planted_hit STREQUAL "haslan")
+    message(FATAL_ERROR "${prefix}: the lan matcher missed a planted field; the scan is broken")
+endif()
+ctr_find_lan_name("char *argv[] = {\"x\", \"--ARCADE-LINK-LAN\", \"10.0.0.0/8\"};" planted_hit)
+if(NOT planted_hit STREQUAL "arcade-link-lan")
+    message(FATAL_ERROR "${prefix}: the lan matcher missed a planted option; the scan is broken")
+endif()
+ctr_find_lan_name("uint8_t plan; int landing; /* a plan to land */" planted_hit)
+if(NOT planted_hit STREQUAL "")
+    message(FATAL_ERROR "${prefix}: the lan matcher hit a clean text; the scan is broken")
+endif()
+set(lan_free_globs
+    "platform/native_match_config*" "include/platform/native_match_config*"
+    "platform/native_identity*" "include/platform/native_identity*"
+    "platform/native_lockstep*" "include/platform/native_lockstep*"
+    "platform/native_arcade_netplay*" "include/platform/native_arcade_netplay*"
+    "platform/native_lobby*" "include/platform/native_lobby*")
+set(lan_free_files ${state_files})
+foreach(pattern IN LISTS lan_free_globs)
+    file(GLOB matched LIST_DIRECTORIES false "${repo}/${pattern}")
+    list(LENGTH matched matched_count)
+    if(matched_count EQUAL 0)
+        message(FATAL_ERROR "${prefix}: the glob ${pattern} matches no file; the lan scan would pass vacuously")
+    endif()
+    list(APPEND lan_free_files ${matched})
+endforeach()
+foreach(required IN ITEMS "platform/native_match_config.c" "platform/native_identity.c" "platform/native_lockstep_handshake.c"
+        "platform/native_arcade_netplay.c" "platform/native_checkpoint.c" "platform/native_replay_v4.c" "platform/native_canonical_state_v4.c"
+        "game/MAIN/MainCanonicalTopologyLeaseRuntime.c")
+    list(FIND lan_free_files "${repo}/${required}" required_at)
+    if(required_at EQUAL -1)
+        message(FATAL_ERROR "${prefix}: the lan scan misses ${required}")
+    endif()
+endforeach()
+foreach(path IN LISTS lan_free_files)
+    file(RELATIVE_PATH relative_path "${repo}" "${path}")
+    file(READ "${path}" scanned_source)
+    ctr_find_lan_name("${scanned_source}" hit)
+    if(NOT hit STREQUAL "")
+        message(FATAL_ERROR "${prefix}: ${relative_path} names '${hit}'; the lan is host-local link configuration (DISC-19)")
+    endif()
+endforeach()
+# 7b. The fixture builder.
+string(FIND "${options_code}" "int NativeArcadeLinkFixture_Build(" fixture_at)
+if(fixture_at EQUAL -1)
+    message(FATAL_ERROR "${prefix}: missing NativeArcadeLinkFixture_Build in platform/native_arcade_link_options.c")
+endif()
+string(SUBSTRING "${options_code}" ${fixture_at} -1 fixture_body)
+ctr_find_lan_name("${fixture_body}" hit)
+if(NOT hit STREQUAL "" OR fixture_body MATCHES "[Ll]an[A-Z]")
+    message(FATAL_ERROR "${prefix}: NativeArcadeLinkFixture_Build names the lan; the fixture never carries it (DISC-19)")
+endif()
+# 7c. The beacon and the table hold no lan; the wire code names none.
+ctr_read_source("${core_header}" header)
+ctr_strip_comments("${header}" header_code)
+ctr_read_source("${core_source}" source)
+ctr_strip_comments("${source}" code)
+function(ctr_c_body code signature out_var)
+    string(FIND "${code}" "${signature}" start)
+    if(start EQUAL -1)
+        message(FATAL_ERROR "${prefix}: missing '${signature}'")
+    endif()
+    string(SUBSTRING "${code}" ${start} -1 tail)
+    string(FIND "${tail}" "\n}" end)
+    if(end EQUAL -1)
+        message(FATAL_ERROR "${prefix}: no end for '${signature}'")
+    endif()
+    string(SUBSTRING "${tail}" 0 ${end} body)
+    set(${out_var} "${body}" PARENT_SCOPE)
+endfunction()
+foreach(signature IN ITEMS "struct NativeArcadeDiscoveryBeacon\n{" "struct NativeArcadeDiscoveryEcho\n{" "struct NativeArcadeDiscoveryPeer\n{"
+        "struct NativeArcadeDiscoveryTable\n{")
+    string(REPLACE "\r\n" "\n" header_lf "${header_code}")
+    ctr_c_body("${header_lf}" "${signature}" struct_body)
+    if(struct_body MATCHES "[Ll]an[A-Z]|[^A-Za-z]lan[^a-z]")
+        message(FATAL_ERROR "${prefix}: ${core_header} '${signature}' holds a lan field; the lan never enters the beacon or the table (DISC-19)")
+    endif()
+endforeach()
+string(REPLACE "\r\n" "\n" code_lf "${code}")
+foreach(signature IN ITEMS "int NativeArcadeDiscovery_Encode(" "int NativeArcadeDiscovery_Decode(" "int NativeArcadeDiscovery_BuildBeacon("
+        "uint64_t NativeArcadeDiscovery_GroupHash(" "int NativeArcadeDiscovery_Init(" "int NativeArcadeDiscovery_Receive(")
+    ctr_c_body("${code_lf}" "${signature}" function_body)
+    if(function_body MATCHES "[Ll]an[A-Z]|[^A-Za-z]lan[^a-z]")
+        message(FATAL_ERROR "${prefix}: ${core_source} '${signature}' names the lan; the lan never enters the beacon, the group hash, or the table (DISC-19)")
+    endif()
+endforeach()

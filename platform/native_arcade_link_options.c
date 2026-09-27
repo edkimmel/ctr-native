@@ -18,14 +18,17 @@ _Static_assert((NATIVE_ARCADE_LINK_SEAT_AUTO == NATIVE_ARCADE_DISCOVERY_SEAT_AUT
                    (NATIVE_ARCADE_LINK_SEAT_CAB2 == NATIVE_ARCADE_DISCOVERY_SEAT_CAB2),
                "the seat preference values match the beacon's");
 /* Every byte is a named field: the 88 bytes of the original fields, then 88
- * of discovery fields, the sum of their sizes (no padding). */
+ * of discovery fields, then 8 of lan fields (DISC-19), the sum of their
+ * sizes (no padding). */
 _Static_assert(offsetof(struct NativeArcadeLinkOptions, seatPreference) == 88u, "the discovery fields follow the original fields");
-_Static_assert(sizeof(struct NativeArcadeLinkOptions) == 176u, "struct NativeArcadeLinkOptions holds no padding");
+_Static_assert(offsetof(struct NativeArcadeLinkOptions, lanNetwork) == 176u, "the lan fields follow the discovery fields");
+_Static_assert(sizeof(struct NativeArcadeLinkOptions) == 184u, "struct NativeArcadeLinkOptions holds no padding");
 
 static const char k_linkOption[] = "--arcade-link";
 static const char k_portOption[] = "--arcade-link-port";
 static const char k_peerOption[] = "--arcade-link-peer";
 static const char k_groupOption[] = "--arcade-link-group";
+static const char k_lanOption[] = "--arcade-link-lan";
 static const char k_previewOption[] = "--arcade-link-preview";
 static const char k_discoveryPortOption[] = "--arcade-discovery-port";
 static const char k_discoveryTargetOption[] = "--arcade-discovery-target";
@@ -191,6 +194,7 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
 	int linkGiven = 0;
 	int portGiven = 0;
 	int groupGiven = 0;
+	int lanGiven = 0;
 	int previewGiven = 0;
 	int discoveryPortGiven = 0;
 
@@ -209,8 +213,8 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
 		{
 			return 0;
 		}
-		if ((strcmp(arg, k_linkOption) != 0) && (strcmp(arg, k_portOption) != 0) && (strcmp(arg, k_peerOption) != 0) &&
-		    (strcmp(arg, k_groupOption) != 0) && (strcmp(arg, k_previewOption) != 0) && (strcmp(arg, k_discoveryPortOption) != 0) &&
+		if ((strcmp(arg, k_linkOption) != 0) && (strcmp(arg, k_portOption) != 0) && (strcmp(arg, k_peerOption) != 0) && (strcmp(arg, k_groupOption) != 0) &&
+		    (strcmp(arg, k_lanOption) != 0) && (strcmp(arg, k_previewOption) != 0) && (strcmp(arg, k_discoveryPortOption) != 0) &&
 		    (strcmp(arg, k_discoveryTargetOption) != 0))
 		{
 			continue;
@@ -278,6 +282,16 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
 			candidate.hasGroup = 1;
 			groupGiven = 1;
 		}
+		else if (strcmp(arg, k_lanOption) == 0)
+		{
+			/* The discovery core's one lan grammar (DISC-19). */
+			if (lanGiven || !NativeArcadeDiscovery_ParseLan(value, &candidate.lanNetwork, &candidate.lanPrefixLength))
+			{
+				return 0;
+			}
+			candidate.hasLan = 1;
+			lanGiven = 1;
+		}
 		else if (strcmp(arg, k_discoveryPortOption) == 0)
 		{
 			if (discoveryPortGiven || !NativeArcadeLinkOptions_ParsePort(value, &candidate.discoveryPort))
@@ -333,7 +347,7 @@ int NativeArcadeLinkOptions_ApplyArgs(int argc, char *argv[], struct NativeArcad
 			candidate.discovery = 1;
 		}
 	}
-	else if ((candidate.localPort != 0) || (candidate.peerCount != 0) || (candidate.hasGroup != 0))
+	else if ((candidate.localPort != 0) || (candidate.peerCount != 0) || (candidate.hasGroup != 0) || (candidate.hasLan != 0))
 	{
 		return 0;
 	}
@@ -359,6 +373,25 @@ int NativeArcadeLinkOptions_ValidateMerged(const struct NativeArcadeLinkOptions 
 	    (options->localPort == ((options->discoveryPort != 0) ? options->discoveryPort : (uint16_t)NATIVE_ARCADE_LINK_OPTIONS_DEFAULT_DISCOVERY_PORT)))
 	{
 		return 0;
+	}
+	/* DISC-19: with a lan, every explicit discovery target and every static
+	 * peer lies inside it (a lan the grammar refused never gets here). */
+	if (options->hasLan != 0)
+	{
+		for (uint32_t i = 0; (i < options->discoveryTargetCount) && (i < NATIVE_ARCADE_LINK_OPTIONS_MAX_DISCOVERY_TARGETS); i++)
+		{
+			if (!NativeArcadeDiscovery_LanContains(options->lanNetwork, options->lanPrefixLength, options->discoveryTargets[i].ipv4))
+			{
+				return 0;
+			}
+		}
+		for (uint32_t i = 0; (i < options->peerCount) && (i < NATIVE_ARCADE_LINK_OPTIONS_MAX_PEERS); i++)
+		{
+			if (!NativeArcadeDiscovery_LanContains(options->lanNetwork, options->lanPrefixLength, options->peers[i].ipv4))
+			{
+				return 0;
+			}
+		}
 	}
 	return 1;
 }
