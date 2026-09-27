@@ -2240,11 +2240,18 @@ if(BUILD_TESTING)
         # ticks, past the latest known DRIVERS_FAILED ticks (TWO_CAB 946 on
         # Polar Pass, ONE_CAB 1785 on Dingo Canyon; fixed by d9bb4e0bc and
         # 5761b6eec).  Every report must be v12 PASS with its profile, ticks,
-        # track, and all its tick lines.  The 32 runs go 16 at a time under
-        # the proof's fixed VBlank pacing (each is independent of the others'
-        # timing); measured (Debug) about 114 s per run and 230 s for the test,
-        # so TIMEOUT 600 and 300 s per run leave over 2x margin.  Each
-        # run writes only under its own directory of this test's directory.
+        # track, and all its tick lines.  -Pairs two-cab runs every TWO_CAB
+        # (track) twice with the same arguments but the report path, and the
+        # two reports must be byte-identical (and their autopilot summary
+        # lines equal): same-seed determinism on every track, not only track
+        # 3's A = B.  ONE_CAB runs once per track (its same-seed pairs on
+        # every track are a one-off record, -Pairs both: 64 runs, 460 s, all
+        # 32 pairs identical; not gated, see section 9).  The 48 runs go 16 at
+        # a time under the proof's fixed VBlank pacing (each is independent
+        # of the others' timing); measured (Debug, 3aaa2c184 + this sweep)
+        # 113-115 s per run and 348 s for the test, so TIMEOUT 900 and 300 s
+        # per run leave over 2x margin.  Each run writes only under its own
+        # directory of this test's directory.
         # It holds both roster group locks (above), so its 16 processes never
         # run alongside either determinism group, whose wall-clock paced runs
         # (run K's hold) they could starve.
@@ -2256,12 +2263,13 @@ if(BUILD_TESTING)
                 -Executable "$<TARGET_FILE:ctr_native>"
                 -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_roster_track_sweep/$<CONFIG>"
                 -Profile both
+                -Pairs two-cab
                 -Ticks 1800
                 -Parallel 16
                 -TimeoutSeconds 300)
         set_tests_properties(arcade_roster_track_sweep PROPERTIES
             SKIP_RETURN_CODE 77
-            TIMEOUT 600
+            TIMEOUT 900
             RESOURCE_LOCK "arcade_roster_two_cab_cpu;arcade_roster_one_cab_cpu"
             LABELS "live;live-roster")
 

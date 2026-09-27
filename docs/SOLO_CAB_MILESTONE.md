@@ -1250,9 +1250,67 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/arcade-roster-track-sw
 
 The live ctest `arcade_roster_track_sweep` (labels `live;live-roster`,
 skips with 77) runs the same sweep at 1800 race ticks, past the latest known
-failures (946 TWO_CAB, 1785 ONE_CAB), both profiles, 16 at a time: 32 runs
-of about 114 s, 230 s for the test (TIMEOUT 600). The fast test
-`arcade_roster_track_sweep_plan` (tests/arcade_roster_track_sweep_plan_test.cmake)
-pins its plan through `-ListRuns`: the 16 tracks of `k_matchSelectTracks`,
-the flags per profile (the autopilot only on TWO_CAB), the arguments the
-live test registers, and the rejection of the non-table tracks 13 and 17.
+failures (946 TWO_CAB, 1785 ONE_CAB), both profiles, with `-Pairs two-cab`:
+every TWO_CAB run twice as a same-seed pair whose reports must be
+byte-identical (below), ONE_CAB once, 16 at a time: 48 runs of 113-115 s,
+348 s for the test (measured alone, Debug; TIMEOUT 900, 300 s per run). The
+fast test `arcade_roster_track_sweep_plan`
+(tests/arcade_roster_track_sweep_plan_test.cmake) pins its plan through
+`-ListRuns`: the 16 tracks of `k_matchSelectTracks`, the flags per profile
+(the autopilot only on TWO_CAB), the pairs (run b's arguments are run a's but
+for the report path, `track<NN>-<profile>-b`), the arguments and timeouts the
+live test registers, and the rejection of the non-table tracks 13 and 17 and
+of `-Pairs` naming a profile `-Profile` does not run.
+
+### Per-track identity
+
+`-Pairs` makes each run of a paired profile twice with byte-identical game
+arguments (seed 0x5EED, dwell 0) except the report path. Once both runs of a
+pair pass, the sweep compares the two whole reports byte-for-byte (the report
+holds no run-specific text, as the checker's A = B and F = G already rely
+on); a difference fails the pair and prints the first differing tick, the
+digest fields that differ there (control, rcontrol, rng, input, drivers, v4,
+...), and both lines. A TWO_CAB pair also requires equal stdout autopilot
+summaries (END_OF_RACE and both finish ticks). Before this, byte-compared
+same-seed determinism was proven on track 3 only (`arcade_roster_determinism_*`).
+
+Record run (Debug build of 3aaa2c184 with this sweep, 1800 race ticks, 64
+runs, 16 at a time: 460 s, 110-115 s per run; every run PASS 1800/1800):
+
+```sh
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/arcade-roster-track-sweep.ps1 \
+    -Executable build-msvc-x86/Debug/ctr_native.exe \
+    -OutputDirectory C:/re-tools/ctr-native/build-msvc-x86/arcade_roster_track_identity_record/1800 \
+    -Profile both -Pairs both -Ticks 1800 -Parallel 16 -TimeoutSeconds 600
+```
+
+| Track | Name | TWO_CAB a==b | ONE_CAB a==b |
+|---|---|---|---|
+| 3 | Crash Cove | a==b | a==b |
+| 6 | Roo's Tubes | a==b | a==b |
+| 4 | Tiger Temple | a==b | a==b |
+| 14 | Coco Park | a==b | a==b |
+| 9 | Mystery Caves | a==b | a==b |
+| 2 | Blizzard Bluff | a==b | a==b |
+| 8 | Sewer Speedway | a==b | a==b |
+| 0 | Dingo Canyon | a==b | a==b |
+| 5 | Papu's Pyramid | a==b | a==b |
+| 1 | Dragon Mines | a==b | a==b |
+| 12 | Polar Pass | a==b | a==b |
+| 10 | Cortex Castle | a==b | a==b |
+| 15 | Tiny Arena | a==b | a==b |
+| 7 | Hot Air Skyway | a==b | a==b |
+| 11 | N. Gin Labs | a==b | a==b |
+| 16 | Slide Coliseum | a==b | a==b |
+
+All 32 pairs are byte-identical whole reports; every TWO_CAB autopilot
+summary is END_OF_RACE -1, player 0 finish -1, player 1 finish -1 (no finish
+within 1800 race ticks) in both runs. The live ctest (`-Pairs two-cab`, run
+alone: 348 s) reproduced the 16 TWO_CAB pairs identical.
+
+The live ctest gates the TWO_CAB pairs only. ONE_CAB pairs on every track
+stay a record: `-Pairs both` took 460 s, four full waves of 16 on this
+16-thread machine, only 4% under the ~480 s budget for the test, so any
+per-run slowdown of about 5 s would cross it; ONE_CAB same-seed identity
+stays gated on track 3 (`arcade_roster_determinism_one_cab`, F = G bytes).
+Gating it is `-Pairs both` with TIMEOUT at least 920.

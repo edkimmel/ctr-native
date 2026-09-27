@@ -5,7 +5,8 @@ param(
     [string]$Executable,
 
     # Absolute directory for the sweep.  Each run gets its own subdirectory
-    # (track<NN>-<profile>) holding its report and stdout/stderr logs, and
+    # (track<NN>-<profile>, and track<NN>-<profile>-b for the second run of a
+    # -Pairs pair) holding its report and stdout/stderr logs, and
     # uses it as its working directory; the game itself still writes the
     # gitignored `Crash Team Racing.log` in the repository root.
     [Parameter(Mandatory = $true)]
@@ -25,6 +26,12 @@ param(
     # or both.
     [ValidateSet('two-cab', 'one-cab', 'both')]
     [string]$Profile = 'both',
+
+    # Which profiles run twice on every track as a same-seed pair (see
+    # below): none, two-cab, or both (two-cab and one-cab).  Every profile it
+    # names must be one -Profile runs.
+    [ValidateSet('none', 'two-cab', 'both')]
+    [string]$Pairs = 'none',
 
     # The tracks (levelIDs) to run, each one of the 16 arcade match-select
     # tracks; default all 16, in the retail menu order.  Accepts a list
@@ -65,16 +72,38 @@ param(
 # its stdout (the proof logs its failing check there).  The sweep prints one
 # summary row per run and a total, and exits nonzero if any run failed.
 #
-# The runs do not compare with each other: the proof's fixed VBlank pacing
-# makes each run independent of the others' timing, so they run -Parallel at
-# a time.  Every ctr_native the sweep started is stopped when it exits or is
-# interrupted.
+# Unpaired runs do not compare with each other: the proof's fixed VBlank
+# pacing makes each run independent of the others' timing, so they run
+# -Parallel at a time.  Every ctr_native the sweep started is stopped when it
+# exits or is interrupted.
+#
+# Same-seed pairs (-Pairs): each (track, profile) whose profile -Pairs names
+# runs twice, run a in track<NN>-<profile> and run b in
+# track<NN>-<profile>-b, with byte-identical game arguments except the report
+# path; b is queued right after a.  Once both runs of a pair passed the checks
+# above, the pair compares their WHOLE reports byte-for-byte (the report holds
+# no run-specific text: not its path, not a wall-clock time; the checker's
+# A = B and F = G compare whole reports the same way).  Any difference fails
+# the pair; the sweep then prints the first differing tick line (ordinal
+# compare of the tick lines in order), the digest fields that differ there
+# (control, rcontrol, rng, input, drivers, v4, v4control, ...), and both
+# lines, or the first differing non-tick line when every tick line matches.
+# A two-cab pair also requires the stdout autopilot summary lines
+# ("autopilot: seed ... END_OF_RACE tick E player 0 finish tick P0 player 1
+# finish tick P1 (-1: never; N race ticks)", game/MAIN/MainArcadeRosterProof.c)
+# of a and b to be present and equal.  The summary shows each two-cab run's
+# END_OF_RACE and finish ticks (paired or not; '-' when the line is absent,
+# which fails only a pair) and each pair's identity: a==b, DIFF@<tick>,
+# DIFF@line<N> (a non-tick report line), DIFF@finish (the autopilot lines),
+# n/a (a run of the pair failed, not compared), or - (unpaired).
 #
 # Exit codes: 0 pass, 1 fail, 77 skipped (ctest SKIP_RETURN_CODE).
 $skipExitCode = 77
 $noDisplayMarker = 'No displays available'
 $notInternalMarker = '--arcade-roster-proof is available in internal builds only.'
 $tickPattern = '^tick ([0-9]+) control [0-9a-f]{16} rcontrol [0-9a-f]{16} rng [0-9a-f]{16} input [0-9a-f]{16} drivers [0-9a-f]{64} v4 [0-9a-f]{16} v4control [0-9a-f]{16} v4rng [0-9a-f]{16} v4input [0-9a-f]{16} v4drivers [0-9a-f]{16} v4world [0-9a-f]{16} v4topology [0-9a-f]{16}$'
+# The two-cab autopilot's stdout summary, logged once after the last race tick.
+$autopilotPattern = 'autopilot: seed 0x[0-9A-F]{16} END_OF_RACE tick (-?[0-9]+) player 0 finish tick (-?[0-9]+) player 1 finish tick (-?[0-9]+) \(-1: never; [0-9]+ race ticks\)'
 $seed = '0x5EED'
 $dwell = 0
 # The 16 arcade match-select tracks, in the retail menu order: the levelIDs of
@@ -252,6 +281,127 @@ function Test-SweepRun($Run) {
     $Run.Problems = $problems
 }
 
+# Reads a two-cab run's autopilot summary from its stdout: sets Autopilot (the
+# summary text of every match, joined; '' when absent) and EndOfRace,
+# FinishP0, and FinishP1 (from the last match; '-' when absent).
+function Read-AutopilotSummary($Run) {
+    $Run.Autopilot = ''
+    $Run.EndOfRace = '-'
+    $Run.FinishP0 = '-'
+    $Run.FinishP1 = '-'
+    if ($Run.Profile -ne 'two-cab') {
+        return
+    }
+    $found = @([regex]::Matches((Read-SharedText $Run.StdoutPath), $autopilotPattern))
+    if ($found.Count -eq 0) {
+        return
+    }
+    $Run.Autopilot = ($found | ForEach-Object { $_.Value }) -join "`n"
+    $last = $found[$found.Count - 1]
+    $Run.EndOfRace = $last.Groups[1].Value
+    $Run.FinishP0 = $last.Groups[2].Value
+    $Run.FinishP1 = $last.Groups[3].Value
+}
+
+# The digest fields of two tick lines ("tick N name value name value ...")
+# whose values differ, in line order.
+function Get-TickFieldDifferences([string]$LineA, [string]$LineB) {
+    $tokensA = $LineA.Split(' ')
+    $tokensB = $LineB.Split(' ')
+    $fields = @()
+    for ($i = 2; ($i + 1) -lt [math]::Min($tokensA.Count, $tokensB.Count); $i += 2) {
+        if (-not [string]::Equals($tokensA[$i + 1], $tokensB[$i + 1], [System.StringComparison]::Ordinal)) {
+            $fields += $tokensA[$i]
+        }
+    }
+    return $fields
+}
+
+# Compares the two runs of a pair, both finished and passing: sets both runs'
+# Identity and returns the pair's problems (none when identical).
+function Compare-SweepPair($RunA, $RunB) {
+    $problems = @()
+    $identity = 'a==b'
+    $linesA = @([System.IO.File]::ReadAllLines($RunA.ReportPath))
+    $linesB = @([System.IO.File]::ReadAllLines($RunB.ReportPath))
+    $ticksA = @($linesA | Where-Object { $_ -cmatch $tickPattern })
+    $ticksB = @($linesB | Where-Object { $_ -cmatch $tickPattern })
+    $count = [math]::Min($ticksA.Count, $ticksB.Count)
+    for ($i = 0; $i -lt $count; $i++) {
+        if (-not [string]::Equals($ticksA[$i], $ticksB[$i], [System.StringComparison]::Ordinal)) {
+            $tick = $i
+            if ($ticksA[$i] -match '^tick ([0-9]+) ') {
+                $tick = [int]$Matches[1]
+            }
+            $identity = "DIFF@$tick"
+            $fields = @(Get-TickFieldDifferences $ticksA[$i] $ticksB[$i])
+            $problems += "first differing tick $tick, fields: $($fields -join ', ')"
+            $problems += "a: $($ticksA[$i])"
+            $problems += "b: $($ticksB[$i])"
+            break
+        }
+    }
+    if (($identity -eq 'a==b') -and ($ticksA.Count -ne $ticksB.Count)) {
+        $identity = "DIFF@$count"
+        $problems += "a has $($ticksA.Count) tick lines, b $($ticksB.Count)"
+    }
+    if ($identity -eq 'a==b') {
+        # Every tick line matches: the whole report, byte-for-byte.
+        $bytesA = [System.IO.File]::ReadAllBytes($RunA.ReportPath)
+        $bytesB = [System.IO.File]::ReadAllBytes($RunB.ReportPath)
+        $same = $bytesA.Length -eq $bytesB.Length
+        for ($i = 0; $same -and ($i -lt $bytesA.Length); $i++) {
+            if ($bytesA[$i] -ne $bytesB[$i]) {
+                $same = $false
+            }
+        }
+        if (-not $same) {
+            $lineCount = [math]::Max($linesA.Count, $linesB.Count)
+            $line = $lineCount
+            for ($i = 0; $i -lt $lineCount; $i++) {
+                $textA = ''
+                $textB = ''
+                if ($i -lt $linesA.Count) {
+                    $textA = $linesA[$i]
+                }
+                if ($i -lt $linesB.Count) {
+                    $textB = $linesB[$i]
+                }
+                if (($i -ge $linesA.Count) -or ($i -ge $linesB.Count) -or
+                    (-not [string]::Equals($textA, $textB, [System.StringComparison]::Ordinal))) {
+                    $line = $i
+                    break
+                }
+            }
+            $identity = "DIFF@line$($line + 1)"
+            $problems += "every tick line matches, but the reports differ at line $($line + 1) ($($bytesA.Length) and $($bytesB.Length) bytes)"
+            if ($line -lt $lineCount) {
+                $problems += "a: $textA"
+                $problems += "b: $textB"
+            }
+        }
+    }
+    if ($RunA.Profile -eq 'two-cab') {
+        if (($RunA.Autopilot -eq '') -or ($RunB.Autopilot -eq '')) {
+            $problems += "the autopilot summary line is missing from $(@(@($RunA, $RunB) | Where-Object { $_.Autopilot -eq '' } | ForEach-Object { $_.StdoutPath }) -join ' and ')"
+            if ($identity -eq 'a==b') {
+                $identity = 'DIFF@finish'
+            }
+        }
+        elseif (-not [string]::Equals($RunA.Autopilot, $RunB.Autopilot, [System.StringComparison]::Ordinal)) {
+            $problems += 'the autopilot summary lines differ'
+            $problems += "a: $($RunA.Autopilot)"
+            $problems += "b: $($RunB.Autopilot)"
+            if ($identity -eq 'a==b') {
+                $identity = 'DIFF@finish'
+            }
+        }
+    }
+    $RunA.Identity = $identity
+    $RunB.Identity = $identity
+    return $problems
+}
+
 try {
     # The planned tracks: -Tracks (each a table levelID), or the whole table.
     $plannedTracks = @()
@@ -292,6 +442,19 @@ try {
             Exit-Failed "invalid tick count $Ticks for $name (1..$limit)"
         }
     }
+    # The paired profiles: each must be one -Profile runs.
+    $pairedProfiles = @()
+    if ($Pairs -eq 'two-cab') {
+        $pairedProfiles = @('two-cab')
+    }
+    elseif ($Pairs -eq 'both') {
+        $pairedProfiles = @('two-cab', 'one-cab')
+    }
+    foreach ($name in $pairedProfiles) {
+        if ($plannedProfiles -notcontains $name) {
+            Exit-Failed "-Pairs $Pairs pairs $name, which -Profile $Profile does not run"
+        }
+    }
     if ($Parallel -lt 1) {
         Exit-Failed "invalid -Parallel $Parallel (at least 1)"
     }
@@ -303,40 +466,73 @@ try {
     }
     $resolvedOutput = [System.IO.Path]::GetFullPath($OutputDirectory)
 
-    # One run per (track, profile), track-major.
+    # One run per (track, profile), track-major; a paired profile's run b
+    # right after its run a, with the same arguments but its own report path.
+    $pairList = @()
     foreach ($track in $plannedTracks) {
         foreach ($name in $plannedProfiles) {
-            $directory = Join-Path $resolvedOutput ('track{0:D2}-{1}' -f $track.Id, $name)
-            $reportPath = Join-Path $directory 'report.txt'
-            $arguments = @('--arcade-roster-proof', $reportPath, '--arcade-roster-proof-seed', $seed,
-                '--arcade-roster-proof-dwell', "$dwell", '--arcade-roster-proof-ticks', "$Ticks") +
-                $profileTable[$name].Flags + @('--arcade-roster-proof-track', "$($track.Id)")
-            $runs += [pscustomobject]@{
-                Track = $track.Id
-                TrackName = $track.Name
-                Profile = $name
-                ReportProfile = $profileTable[$name].Report
-                Arguments = $arguments
-                Directory = $directory
-                ReportPath = $reportPath
-                StdoutPath = Join-Path $directory 'stdout.log'
-                StderrPath = Join-Path $directory 'stderr.log'
-                Process = $null
-                StartedAt = $null
-                Seconds = $null
-                TimedOut = $false
-                Result = ''
-                ResultLine = ''
-                Reached = $null
-                Problems = @()
+            $members = @('-')
+            if ($pairedProfiles -contains $name) {
+                $members = @('a', 'b')
+            }
+            $pairRuns = @()
+            foreach ($member in $members) {
+                $directoryName = 'track{0:D2}-{1}' -f $track.Id, $name
+                if ($member -eq 'b') {
+                    $directoryName += '-b'
+                }
+                $directory = Join-Path $resolvedOutput $directoryName
+                $reportPath = Join-Path $directory 'report.txt'
+                $arguments = @('--arcade-roster-proof', $reportPath, '--arcade-roster-proof-seed', $seed,
+                    '--arcade-roster-proof-dwell', "$dwell", '--arcade-roster-proof-ticks', "$Ticks") +
+                    $profileTable[$name].Flags + @('--arcade-roster-proof-track', "$($track.Id)")
+                $run = [pscustomobject]@{
+                    Track = $track.Id
+                    TrackName = $track.Name
+                    Profile = $name
+                    ReportProfile = $profileTable[$name].Report
+                    Pair = $member
+                    Arguments = $arguments
+                    Directory = $directory
+                    ReportPath = $reportPath
+                    StdoutPath = Join-Path $directory 'stdout.log'
+                    StderrPath = Join-Path $directory 'stderr.log'
+                    Process = $null
+                    StartedAt = $null
+                    Seconds = $null
+                    TimedOut = $false
+                    Done = $false
+                    Result = ''
+                    ResultLine = ''
+                    Reached = $null
+                    Problems = @()
+                    Autopilot = ''
+                    EndOfRace = '-'
+                    FinishP0 = '-'
+                    FinishP1 = '-'
+                    Identity = '-'
+                }
+                $runs += $run
+                $pairRuns += $run
+            }
+            if ($pairRuns.Count -eq 2) {
+                $pairList += [pscustomobject]@{ A = $pairRuns[0]; B = $pairRuns[1]; Compared = $false; Problems = @() }
             }
         }
     }
 
     if ($ListRuns) {
-        Write-Output "sweep ticks $Ticks profile $Profile parallel $Parallel runs $($runs.Count)"
+        $header = "sweep ticks $Ticks profile $Profile parallel $Parallel runs $($runs.Count)"
+        if ($Pairs -ne 'none') {
+            $header += " pairs $Pairs $($pairList.Count)"
+        }
+        Write-Output $header
         foreach ($run in $runs) {
-            Write-Output "run track $($run.Track) ($($run.TrackName)) profile $($run.Profile): $(($run.Arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' ')"
+            $member = ''
+            if ($run.Pair -ne '-') {
+                $member = " pair $($run.Pair)"
+            }
+            Write-Output "run track $($run.Track) ($($run.TrackName)) profile $($run.Profile)$($member): $(($run.Arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' ')"
         }
         exit 0
     }
@@ -401,11 +597,17 @@ try {
                 Exit-Skipped "--arcade-roster-proof was rejected: the executable is not an internal (CTR_INTERNAL) build (see $($run.StderrPath))"
             }
             Test-SweepRun $run
+            Read-AutopilotSummary $run
+            $run.Done = $true
             $status = 'ok'
             if ($run.Problems.Count -ne 0) {
                 $status = 'FAIL'
             }
-            Write-Output ("done track {0,2} {1,-7} {2} in {3} s ({4})" -f $run.Track, $run.Profile, $run.Result, $run.Seconds, $status)
+            $label = $run.Profile
+            if ($run.Pair -ne '-') {
+                $label += " $($run.Pair)"
+            }
+            Write-Output ("done track {0,2} {1,-7} {2} in {3} s ({4})" -f $run.Track, $label, $run.Result, $run.Seconds, $status)
             if ($run.Problems.Count -ne 0) {
                 foreach ($problem in $run.Problems) {
                     Write-Output "  problem: $problem"
@@ -418,13 +620,40 @@ try {
                     Write-Output "    $($tail[$i])"
                 }
             }
+            # Both runs of a pair done: compare them (only when both passed).
+            foreach ($pair in @($pairList | Where-Object { (-not $_.Compared) -and $_.A.Done -and $_.B.Done })) {
+                $pair.Compared = $true
+                $pairName = "pair track $($pair.A.Track) $($pair.A.Profile)"
+                if (($pair.A.Problems.Count -ne 0) -or ($pair.B.Problems.Count -ne 0)) {
+                    $pair.A.Identity = 'n/a'
+                    $pair.B.Identity = 'n/a'
+                    $pair.Problems = @('not compared: a run of the pair failed')
+                    Write-Output "$($pairName): not compared (a run failed)"
+                    continue
+                }
+                $pair.Problems = @(Compare-SweepPair $pair.A $pair.B)
+                $finish = ''
+                if ($pair.A.Profile -eq 'two-cab') {
+                    $finish = " (END_OF_RACE $($pair.A.EndOfRace) p0 $($pair.A.FinishP0) p1 $($pair.A.FinishP1))"
+                }
+                if ($pair.Problems.Count -eq 0) {
+                    Write-Output "$($pairName): a==b, byte-identical reports$finish"
+                }
+                else {
+                    Write-Output "$($pairName): $($pair.A.Identity) (FAIL)"
+                    foreach ($problem in $pair.Problems) {
+                        Write-Output "  $problem"
+                    }
+                }
+            }
         }
         $active = $stillActive
     }
     $totalSeconds = [math]::Round(((Get-Date) - $sweepStartedAt).TotalSeconds, 1)
 
     Write-Output ''
-    Write-Output ('{0,5}  {1,-16} {2,-7}  {3,-20} {4,11} {5,8}' -f 'track', 'name', 'profile', 'result', 'race ticks', 'seconds')
+    $rowFormat = '{0,5}  {1,-16} {2,-7} {3,-4}  {4,-20} {5,11}  {6,-12} {7,6} {8,6} {9,6} {10,8}'
+    Write-Output ($rowFormat -f 'track', 'name', 'profile', 'pair', 'result', 'race ticks', 'identity', 'EOR', 'p0 fin', 'p1 fin', 'seconds')
     $failed = @()
     foreach ($run in $runs) {
         $reached = '-'
@@ -435,21 +664,30 @@ try {
         if (($run.Problems.Count -ne 0) -and ($result -eq 'PASS')) {
             $result = 'PASS (bad report)'
         }
-        Write-Output ('{0,5}  {1,-16} {2,-7}  {3,-20} {4,11} {5,8}' -f $run.Track, $run.TrackName, $run.Profile, $result, $reached, $run.Seconds)
+        Write-Output ($rowFormat -f $run.Track, $run.TrackName, $run.Profile, $run.Pair, $result, $reached, $run.Identity,
+            $run.EndOfRace, $run.FinishP0, $run.FinishP1, $run.Seconds)
         if ($run.Problems.Count -ne 0) {
             $failed += $run
         }
     }
+    $failedPairs = @($pairList | Where-Object { $_.Problems.Count -ne 0 })
     Write-Output ''
     Write-Output "all runs done in $totalSeconds s"
-    if ($failed.Count -ne 0) {
+    $pairCounts = ''
+    if ($pairList.Count -ne 0) {
+        $pairCounts = ", $($pairList.Count - $failedPairs.Count) of $($pairList.Count) pairs byte-identical"
+    }
+    if (($failed.Count -ne 0) -or ($failedPairs.Count -ne 0)) {
         foreach ($run in $failed) {
-            Write-Output "FAIL: track $($run.Track) ($($run.TrackName)) $($run.Profile): $($run.Problems -join '; ') (logs in $($run.Directory))"
+            Write-Output "FAIL: track $($run.Track) ($($run.TrackName)) $($run.Profile) $($run.Pair): $($run.Problems -join '; ') (logs in $($run.Directory))"
         }
-        Write-Output "arcade roster track sweep: FAIL ($($failed.Count) of $($runs.Count) runs)"
+        foreach ($pair in $failedPairs) {
+            Write-Output "FAIL: pair track $($pair.A.Track) ($($pair.A.TrackName)) $($pair.A.Profile) $($pair.A.Identity): $($pair.Problems -join '; ') (reports $($pair.A.ReportPath) and $($pair.B.ReportPath))"
+        }
+        Write-Output "arcade roster track sweep: FAIL ($($failed.Count) of $($runs.Count) runs failed$pairCounts)"
         exit 1
     }
-    Write-Output "arcade roster track sweep: PASS ($($runs.Count) runs)"
+    Write-Output "arcade roster track sweep: PASS ($($runs.Count) runs$pairCounts)"
     exit 0
 }
 finally {
