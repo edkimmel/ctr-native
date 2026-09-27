@@ -969,7 +969,19 @@ its own measurement and decision.
   path above reads other stale entry bytes for bots 6 and 7); LINK leaves
   them 0. The ONE_CAB evidence was a fresh process. This is no
   LINK-vs-LINK hazard: solo has no peer. Since the fix (last bullet)
-  native reads none of these bytes for bots 4-7.
+  neither the missile check nor the crate path reads these bytes for bots
+  4-7; one retail reader remains (next bullet).
+- Known remaining reader, not fixed: `VehPickState_NewState`
+  (game/Vehicle/VehPickState.c:313-321), outside `END_OF_RACE`, loads a
+  bot attacker's `pushBuffer[driverID].matrix_ViewProj` and adds `rect.x`
+  and `rect.y`, writing the human-only `BattleHUD.startX/startY` and
+  leaving GTE state that `VehPhysForce_OnGravity` reloads in stage 4. It
+  reads no host pointer in any reachable roster.
+- Open item, not fixed here: the pre-existing bot plant-eaten camera
+  writes (game/BOTS.c:2324-2341) store `gGT->pushBuffer[driverID].pos`
+  and `rot` for bots >= 4 into DecalMP entries; render-only, but in
+  non-LINK 2P bot 5 clobbers entry 0's `pb.renderBucketOTRangeEnd`, a
+  latent render-only hazard (cannot happen in LINK).
 - Evidence (internal build, `--arcade-roster-proof`, seed 0x5EED, 3600 race
   ticks, a temporary env override of the accessor, not committed): TWO_CAB
   (2P, autopilot) retail against forced gave byte-identical reports, every
@@ -992,10 +1004,21 @@ its own measurement and decision.
   under `CTR_NATIVE`: `VehPickupItem_MissileGetTargetDriver` rejects every
   candidate when `driver->driverID >= 4` (no camera PushBuffer), after the
   per-candidate GTE work and before the `rect` reads. That matches PS1 for
-  bots 4 and 5 in 1P and 2P; for bots 6 and 7 (4P, or 1P with 8 drivers)
-  PS1 read render state. The weapon branch of `RB_CrateFruit_ThCollide`
-  returns for an `ACTION_BOT` owner before `RB_Pickup_SetCamera`, keeping
-  the cooldown and count writes. Guarded by
+  bots 4 and 5 in 1P and 2P. Bots 6 and 7 exist only in 1P (bots spawn
+  only below three players and 2P gets 6 drivers,
+  game/MAIN/MainInit.c:322-360), where their `rect` is render state that
+  is 0 in a fresh process (the bot 6 and 7 bullet above), so PS1 rejects
+  them there too.
+  The weapon branch of `RB_CrateFruit_ThCollide` returns for an
+  `ACTION_BOT` owner before `RB_Pickup_SetCamera`, keeping the cooldown
+  and count writes. That is defensive, presentation-only hardening: its
+  only outputs are the human-only fly-in `startX/startY` and leftover GTE
+  state that no simulation code consumes before reloading, and in
+  reachable rosters it reads no host pointer (in 1P the entry `inst` and
+  `ptrOT1/2` are NULL and `DecalMP_01` does not run; in 2P bots 4 and 5
+  read `DecalMP_01` copies, never-written zeros, or render state). It would
+  read one (`DecalMP[2].inst`, `pb.ptrOT`) only if an 8-driver
+  multiplayer roster were allowed. Guarded by
   tests/veh_pickup_missile_target_bot_bounds_isolation_test.cmake.
 
 ### 8.5 Cost

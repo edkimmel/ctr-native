@@ -490,9 +490,11 @@ struct Driver *VehPickupItem_MissileGetTargetDriver(struct Driver *driver)
 		// of a heap pointer, positive and different per boot, so bot 5 could
 		// pick targets and desync two cabinets. Native rejects every candidate
 		// for driverID >= 4 here, after the per-candidate GTE work, as the PS1
-		// does for bots 4 and 5 in 1P and 2P. Bots 6 and 7 (4P, or 1P with
-		// eight drivers) read DecalMP render state on the PS1 instead; native
-		// rejects every candidate for them too.
+		// does for bots 4 and 5 in 1P and 2P. Bots 6 and 7 exist only in 1P
+		// (bots spawn only below three players, 2P gets six drivers), where
+		// DecalMP_01 does not run: they read DecalMP[1].pb.renderBucketScreenPos
+		// and DecalMP[2].pb.bbox.min, render state that is 0 in a fresh 1P
+		// process, so the PS1 rejects every candidate for them there too.
 		if (driver->driverID >= MISSILE_TARGET_CAMERA_COUNT)
 		{
 			continue;

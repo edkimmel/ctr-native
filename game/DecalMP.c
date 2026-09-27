@@ -66,8 +66,14 @@ void DecalMP_01(struct GameTracker *gGT)
 	 * gGT->pushBuffer[5].matrix_ViewProj into the GTE (RB_Pickup_SetCamera)
 	 * and adds its rect.x/rect.y, which in 2P are entry 1's
 	 * boolUpdatedThisFrame, renderW, renderH and lodIndex. The native build
-	 * now returns for a bot before that block, so neither reader sees the
-	 * entries. docs/SOLO_CAB_MILESTONE.md section 8.4. */
+	 * now returns for a bot before that block (defensive, presentation-only
+	 * hardening), so neither of these two readers sees the entries. A third
+	 * retail reader remains, not fixed: VehPickState_NewState (outside
+	 * END_OF_RACE) loads a bot attacker's pushBuffer[driverID].matrix_ViewProj
+	 * and rect.x/rect.y, writing the human-only BattleHUD.startX/startY and
+	 * leaving GTE state that VehPhysForce_OnGravity reloads in stage 4; it
+	 * reads no host pointer in any reachable roster.
+	 * docs/SOLO_CAB_MILESTONE.md section 8.4. */
 	const int forceTopLod = MainArcadeLink_ForceTopLod();
 #endif
 
