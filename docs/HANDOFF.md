@@ -868,7 +868,7 @@ Tasks 7 and 8 and v1 packaging are complete.
   clean tree (`docs/PACKAGING.md`, defaults PK-1..PK-10, and the Packaging
   section above). Its smoke test, `package_arcade_smoke`, races three times
   from the package folder, with no memcard save present.
-- The suite is 185 tests: the full run with `-j 8` takes about 630 s, and
+- The suite is 186 tests: the full run with `-j 8` takes about 635 s, and
   `-LE live -j 8` about 35 s. Live tests carry area labels (`live-link`,
   `live-roster`, `live-render`, `live-package`). Per-change checks use the
   fast suite plus the affected area; the full suite runs once per
@@ -967,12 +967,16 @@ open source.
    - Deferred: `RB_Player.c:87` (battle only) leaves suffix tuples
      (88-91, 100) that extraction rejects. It cannot happen in arcade;
      the fix outline is in section 9.
-   - Queued:
-     - Run test processes silent, for example with SDL's dummy audio
-       driver in the ctest environment. The track sweep plays 16
-       intros on the cabinet.
-     - Static-assert `MISSILE_TARGET_CAMERA_COUNT` against the length of
-       `pushBuffer`.
+   - Every ctest process runs on SDL's dummy audio driver, so tests are
+     silent on the cabinet. `MISSILE_TARGET_CAMERA_COUNT` is
+     static-asserted against the length of `pushBuffer`.
+   - Deploy candidate: `build-msvc-x86\package\ctr-arcade-c39867c69b7b`.
+     The exe SHA-256 is `181FE2A9...A2C18C0D`. The full Debug suite
+     passed 186/186, and Release passed `-L live-package`. PACKAGING.md
+     asks for the full Release suite before deployment. The fleet change
+     is staged on branch `ctr-discovery-deploy` in
+     `C:\re-tools\arcade-fleet-ctr`; its `deploy-ctr-native.ps1` handles
+     rollback, and the owner deploys.
 5. Shelved (owner): stretch goals 9 and 10 (Oxide Station, unlock
    everything and Turbo Track). Dropped (owner): 11 (16:9) and 13
    (per-cabinet full screen). Not prioritised: 12 (G29 force feedback).
