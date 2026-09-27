@@ -864,7 +864,7 @@ Tasks 7 and 8 and v1 packaging are complete.
   clean tree (`docs/PACKAGING.md`, defaults PK-1..PK-10, and the Packaging
   section above). Its smoke test, `package_arcade_smoke`, races three times
   from the package folder, with no memcard save present.
-- The suite is 184 tests: the full run with `-j 8` takes about 520 s, and
+- The suite is 185 tests: the full run with `-j 8` takes about 630 s, and
   `-LE live -j 8` about 35 s. Live tests carry area labels (`live-link`,
   `live-roster`, `live-render`, `live-package`). Per-change checks use the
   fast suite plus the affected area; the full suite runs once per
@@ -948,15 +948,27 @@ open source.
      in both profiles (`docs/SOLO_CAB_MILESTONE.md` section 9).
    - Fixed: the BOTS.c plant-eaten camera now writes `pushBuffer` only
      for driverID < 4.
-   - Open:
-     - `RB_MaskShieldCloud.c:400-402` writes `pushBuffer[owner->driverID]`
-       without a bot check. This may be an out-of-bounds write for bots
-       4 and above; unverified.
-     - Byte-compared determinism is proven on track 3 only; the sweep
-       checks PASS per track.
-     - No gate reaches END_OF_RACE on tracks other than 3.
-     - `RB_Player.c:87` (battle only) can still leave a suffix that
-       extraction rejects.
+   - Fixed, defensive: the shield crash-attack flash
+     (`RB_MaskShieldCloud.c:400`) writes `pushBuffer` only for driverID
+     < 4, native-only. No arcade bot can own a shield.
+   - Determinism: `arcade_roster_track_sweep` pairs same-seed TWO_CAB
+     runs on all 16 tracks and compares them byte for byte, about 345 s.
+     ONE_CAB pairs were byte-identical in a one-off record but are not
+     gated.
+   - Race finish: at 6000 ticks, 9 of 16 tracks reach END_OF_RACE, all
+     paired identical (`docs/SOLO_CAB_MILESTONE.md` section 9). Four
+     more need a longer cap. The autopilot cannot finish Sewer Speedway,
+     Cortex Castle or N. Gin Labs; that is an autopilot limit, not a game
+     one. There is no finish gate.
+   - Deferred: `RB_Player.c:87` (battle only) leaves suffix tuples
+     (88-91, 100) that extraction rejects. It cannot happen in arcade;
+     the fix outline is in section 9.
+   - Queued:
+     - Run test processes silent, for example with SDL's dummy audio
+       driver in the ctest environment. The track sweep plays 16
+       intros on the cabinet.
+     - Static-assert `MISSILE_TARGET_CAMERA_COUNT` against the length of
+       `pushBuffer`.
 5. Shelved (owner): stretch goals 9 and 10 (Oxide Station, unlock
    everything and Turbo Track). Dropped (owner): 11 (16:9) and 13
    (per-cabinet full screen). Not prioritised: 12 (G29 force feedback).
