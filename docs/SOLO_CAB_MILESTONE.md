@@ -1040,7 +1040,12 @@ primMem buffers without moving the MEMPACK layout.
   DecalMP+0x12/0x14/0x16 (entry 0 `data2[6..11]`), 5 +0x122/0x124/0x126
   (entry 0 `data3[0xE..0x13]`), 6 +0x232/0x234/0x236 (entry 1 +0x10A,
   then the low and high halves of `ptrOT1`), and 7 +0x342/0x344/0x346
-  (entry 2 `data2[0xE6..0xEB]`) (layout in include/namespace_Main.h).
+  (entry 2 `data2[0xE6..0xEB]`) (layout in include/namespace_Main.h). In
+  `struct DecalMPEntry` terms (game/DecalMP.c:7-19), as the BOTS.c and
+  DecalMP.c comments name them: 4 hits `renderH` and `lodIndex`; 5 the high
+  half of `pb.cameraID` and `pb.distanceToScreen_CURR`; 6 `pb.bbox.max.z`
+  and `pb.ptrOT`; 7 `pb.RenderListJmpIndex[2]` (high half) and
+  `pb.RenderListJmpIndex[3]`.
   The native branch (`#ifdef CTR_NATIVE`) adds
   `owner->driverID < RB_SHIELD_FLASH_CAMERA_COUNT` (4, static-asserted
   against the array length). The `#else` branch keeps the retail line,
@@ -1053,7 +1058,7 @@ primMem buffers without moving the MEMPACK layout.
   PLAYER bucket (MainFrame.c:300-305, driverIDs 0..3). So the guard is
   defensive, pinned by `rb_shield_crash_flash_isolation`. Audit (`grep -rn
   "pushBuffer\[" game`): every other driverID-indexed access is either
-  guarded or unreachable for bots. RB_Burst.c:110 and
+  guarded or unreachable for bots. RB_Burst.c:111 and
   RB_GenericMine.c:183 check `ACTION_BOT`. The
   RB_Crate/RB_Crystal/RB_CtrLetter/RB_Fruit/`RB_Pickup_SetCamera` callers
   are DYNAMIC_PLAYER-only or return for bot weapon owners. The BOTS.c
@@ -1266,7 +1271,9 @@ of 5761b6eec's code, 32 runs, 8 at a time, 684 s, about 170 s per run):
 (Crash Cove, player 0 at race tick 3552) and no race reached END_OF_RACE, so
 this sweep covers racing and the hazards, not the finish. The finish is
 recorded at 6000 race ticks under "Race finish (6000 ticks)" below (END_OF_RACE
-on 9 of 16 tracks).
+on 9 of 16 tracks). Its Crash Cove player 0 finish (3608) is a different
+race from this sweep's 3552: the two builds have different build identities,
+so a different setup seed.
 
 The sweep (output under the ignored build tree):
 
@@ -1366,14 +1373,14 @@ When extraction sees it. A crash hit is queued in `pendingDamageType`.
 `VehPickupItem_ShootOnCirclePress` (game/Vehicle/VehPickupItem.c:1519)
 applies it at game/MAIN/MainFrame.c:305, before the driver stages
 (:311-328) of the same frame. So RIP_Init runs at once: `PlantEaten_Init`
-sets kartState 5 and clears the init (game/Vehicle/VehStuckProc.c:880,
+sets kartState 5 and clears the init (game/Vehicle/VehStuckProc.c:879,
 :922), which gives behavior 13 with kartState 5 (PLANT_EATEN, accepted).
 A weapon hit goes through `RB_Hazard_HurtDriver`, for example
 game/231/RB_Burst.c:87-100, RB_GenericMine.c:177 and :252, and
 RB_TNT.c:220. It runs in a later thread bucket (MainFrame.c:334), after
 the driver stages, so the tuple is still queued at the tick boundary where
-`MainCanonicalDrivers_ExtractDriverActive` (MainCanonicalDrivers.c:596)
-resolves it. Bot victims take `BOTS_ChangeState` instead
+`MainCanonicalDrivers_ExtractDriverActive` (MainCanonicalDrivers.c:589; its
+`ResolveActualActiveTag` call is :596) resolves it. Bot victims take `BOTS_ChangeState` instead
 (game/231/RB_Hazard.c:9-17) and are NONE-only anyway.
 
 The contract (platform/native_canonical_driver_behavior.c). For init 5
@@ -1387,17 +1394,20 @@ which excludes only inits 6..8) admits it (:109):
 | 1 driving | yes | 0 | behavior 86, accepted, NONE |
 | 4, 5 drift (PowerSlide) | yes | 2 (:98) | behaviors 89, 90, rejected |
 | 6 slam (SlamWall, `KS_CRASHING`) | yes | 1 (:99) | behavior 91, rejected |
+| 3 anti-vshift (FreezeVShift, `KS_ANTIVSHIFT`) | yes: `VehPhysProc_Driving_Update` calls `FreezeVShift_Init` whenever `vShiftCount >= 5`, in any race or battle (VehPhysProc.c:1686, kartState 9 at :1850), and `VehPickState_NewState` has no early return for 9 | 9 (:97) | behavior 88, rejected |
 | 7..10 spin | yes | 3 | behaviors 92..95, accepted, SPIN |
 | 15 tumble (`KS_BLASTED`) | by a non-blast hit (below) | 6 (:104) | behavior 100, rejected |
 | 14 rev engine | not traced (mask respawn, VehStuckProc.c:747) | 4 | behavior 99, rejected if reached |
 | 11..13 mask grab, plant | no: `KS_MASK_GRABBED` returns first (VehPickState.c:65-68) | 5 | - |
-| 2, 3, 16 freeze, anti-vshift, warp | no: adventure hub, Aku hint or crystal challenge only (MainFrame.c:791, UI_RenderFrame.c:985, game/232/AH_*) | 11, 9, 10 | - |
+| 2, 16 freeze, warp | no: adventure hub, Aku hint or crystal challenge only (MainFrame.c:791, UI_RenderFrame.c:985, game/232/AH_*) | 11, 10 | - |
 
 A blast returns on `KS_BLASTED` (VehPickState.c:152), but spin, squish and
 burn do not. A tumbling driver gets no invincibility until `Driving_Init`
 (game/Vehicle/VehPhysProc.c:1707-1709). So the premise holds: the rejected
-tuples are drift (89, 90) and slam (91), plus tumble (100) and possibly rev
-engine (99). The spin suffixes are accepted as SPIN, not rejected.
+tuples are drift (89, 90), slam (91) and anti-vshift (88), plus tumble (100)
+and possibly rev engine (99). The spin suffixes are accepted as SPIN, not
+rejected. The fix below (init 5 queued, so NONE for any suffix) covers 88
+as well.
 
 Reachability: none in an arcade race. The arcade race setup plan sets
 `gameMode1 = (before & TRANSIENT) | ARCADE_MODE`
@@ -1432,7 +1442,7 @@ What a fix would need (not implemented):
     suffix.
   - A reviewer must confirm that dropping the suffix union is lossless.
     RIP_Init runs `PlantEaten_Init`, which writes kartState and
-    `EatenByPlant.boolInited` (VehStuckProc.c:880-882), not the whole
+    `EatenByPlant.boolInited` (VehStuckProc.c:879-881), not the whole
     union. Inits 6..8 already make the same trade.
 - Tests that would change: tests/native_canonical_driver_behavior_test.c.
   - `LegacyValidateState` (:22) and `ActualTagOracle` (:63) would use the
@@ -1501,7 +1511,7 @@ tick, and the two humans finish 3 to 97 race ticks apart. That makes 8
 tracks with a two-cabinet race finish, on top of track 3. The seven tracks
 that do not finish (7, 8, 10, 11, 12, 15, 16) show no game issue: PASS
 6000/6000, a==b, no FAIL, no crash, and no "player finished" line for
-either human, so neither is ahead of the other.
+either human.
 
 The proof logs no lap or restart-point progress, so the classifications
 come from a progress diagnostic, which was temporary and is not committed
@@ -1526,7 +1536,9 @@ Which race this is: the proof config carries the build identity, and a
 dirty tree runs under the fixed proof build identity. So the diagnostic
 build does not replay the 37d54726f record's race. Its setup seed is
 0x5218508ABCA49688 (the record's is 0xB5C373CFEF03CDEF), and its tick lines
-differ from the 6000-tick record's from tick 0 (rng, drivers, v4). It does
+differ from the 6000-tick record's from tick 0 (rng, drivers, v4, v4rng,
+v4drivers; control, rcontrol, input, v4control, v4input, v4world and
+v4topology are equal). It does
 replay the race of the 1800-tick identity record above, which was also
 built from a dirty tree. On all 8 tracks the config digest is equal (the
 tick count is not in it), and the first 1800 tick lines are byte-identical,
@@ -1548,16 +1560,17 @@ ticks are this race's.
 Tick cap (16, 7, 12, 15): both humans finish every lap at a steady pace,
 1933 to 3264 race ticks per lap. No sample shows wall contact or a respawn.
 The laps of 7, 12 and 15 are 1.3 to 1.5 times as long as Mystery Caves',
-at about the same pace (44 to 52 distance units per race tick, against 51
-to 54). Slide Coliseum's lap is as long as Mystery Caves', driven at 45 to
-48 units per tick. The races end 135 to 3474 ticks past 6000.
+at about the same pace (laps 2-3, excluding the standing start: 44 to 52
+distance units per race tick, against 51 to 54). Slide Coliseum's lap is as
+long as Mystery Caves', driven at 45 to 48 units per tick (laps 2-3). The races end 135 to 3474 ticks past 6000.
 
 Sewer Speedway (8), pinned on a wall: by race tick 900 both humans stop in
 lap 0 near x -3350 / -3480, z -20490, y 1 (distanceToFinish about 58,850 /
 58,750), and they stay there to race tick 14000, creeping less than 100
 units along the wall. From race tick 900 on, every sample shows speed 373
-to 689 (cruise is about 13,000),
-`ACTION_DRIVING_AGAINST_WALL`, and CROSS held without steering. The
+to 689 (cruise is about 13,000) and CROSS held without steering, and 87 of
+the 88 samples show `ACTION_DRIVING_AGAINST_WALL` (not player 1 at race
+tick 6300). The
 target, restart point 78, is at (-3073, 799, -20615), 800 units above the
 kart. The autopilot steers in x/z only and cannot reverse or unstick, so it
 drives straight into the wall under the upper route.
@@ -1568,7 +1581,8 @@ at x -9051, z -1110, from about y 2500. Aku Aku picks it up (`kartState` 5,
 mask flag), it respawns at (-9913, ~2400, -2304), and it drives back into
 the same drop. It never passes restart point 104 (-9216, 2688, -384), and
 the loop repeats to race tick 14000. Player 1 passes the spot twice (laps
-end 2294 and 4416), then falls into the same loop on lap 3 by race tick
+end 2294 and 4416), then falls into the same loop in lapIndex 2 (third lap)
+by race tick
 6600. Every respawn completes (`kartState` 5, then 4, then 0, driving), so
 the game recovers the kart; the autopilot's line takes it off the edge.
 
