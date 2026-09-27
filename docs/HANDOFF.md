@@ -912,7 +912,10 @@ open source.
      - the firewall is one rule for the program, UDP 7000,7001 from
        LocalSubnet;
      - the usage comment at :37 needs updating.
-     Commit it; do not sync without the owner.
+     C:Arcade's working tree IS the fleet sync source (CAB2 pulls it at
+     boot), so prepare the change on a C:Arcade branch in a separate
+     worktree and land it only together with the new package, on the
+     owner's go: the v1 exe does not understand `seat = auto` or `lan`.
    - DISC-S6: physical acceptance. The cabinets pair at boot, .11 is
      cab1, one race runs, solo works with a cabinet off, and they relink
      when it is powered back on. This needs the owner.
