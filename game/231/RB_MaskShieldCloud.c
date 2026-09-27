@@ -402,20 +402,26 @@ void RB_ShieldDark_ThTick_Grow(struct Thread *th)
 	    ((struct Driver *)th->parentThread->object)->kartState == KS_MASK_GRABBED)
 	{
 		struct Driver *owner = th->parentThread->object;
-		// Retail bug fix: gGT->pushBuffer has RB_SHIELD_FLASH_CAMERA_COUNT (4)
-		// entries, one per human screen. The original wrote the crash-attack
-		// white flash (fadeFromBlack_currentValue/desiredResult, fade_step) to
-		// the pushBuffer at owner->driverID with no bounds check; driverID 4..7 would
-		// land past the array in the DecalMP block at 0x5A8. Not reachable in
-		// retail or arcade: instBubbleHold is set only by the
+#ifdef CTR_NATIVE
+		// Retail bug fix, native build only (the retail-matching build keeps
+		// the original condition in the #else branch): gGT->pushBuffer has
+		// RB_SHIELD_FLASH_CAMERA_COUNT (4) entries, one per human screen.
+		// Retail writes the crash-attack white flash
+		// (fadeFromBlack_currentValue/desiredResult, fade_step) to the
+		// pushBuffer at owner->driverID with no bounds check; driverID 4..7
+		// would land past the array in the DecalMP block at 0x5A8. Not
+		// reachable in retail or arcade: instBubbleHold is set only by the
 		// VehPickupItem_ShootNow shield case, and only human drivers
 		// (VehBirth_Player(i), driverID i < 4) reach it, through
 		// VehPickupItem_ShootOnCirclePress (MainFrame runs it for the PLAYER
-		// thread bucket only; bots live in ROBOT); bot weapon use
-		// (PickupBots arcade TNT/potion/bomb/missile, boss driverID 1, roster
-		// proof clock) never fires a shield. The guard is defensive; the pop
+		// thread bucket only; bots live in ROBOT); bot weapon use (PickupBots
+		// arcade TNT/potion/bomb/missile, boss driverID 1, roster proof
+		// clock) never fires a shield. The native guard is defensive; the pop
 		// transition below still runs for every owner.
 		if ((shield->flags & SHIELD_FLAG_CRASH_ATTACK) && (owner->driverID < RB_SHIELD_FLASH_CAMERA_COUNT))
+#else
+		if (shield->flags & SHIELD_FLAG_CRASH_ATTACK)
+#endif
 		{
 			GAME_TRACKER->pushBuffer[((struct Driver *)th->parentThread->object)->driverID].fadeFromBlack_currentValue = 0x1fff;
 			GAME_TRACKER->pushBuffer[((struct Driver *)th->parentThread->object)->driverID].fadeFromBlack_desiredResult = 0x1000;

@@ -2647,9 +2647,11 @@ if(BUILD_TESTING)
     add_test(NAME bots_plant_camera_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/bots_plant_camera_isolation_test.cmake")
 
-    # Shield crash-attack flash (RB_ShieldDark_ThTick_Grow): the native build
-    # writes the pushBuffer fade only for driverID < len(pushBuffer); only
-    # humans (0..3) own shields today, so the guard is defensive.
+    # Shield crash-attack flash (RB_ShieldDark_ThTick_Grow): under CTR_NATIVE
+    # the pushBuffer fade is written only for driverID < len(pushBuffer); the
+    # #else branch keeps the retail condition, since game/231 is a retail
+    # match target. Only humans (0..3) own shields today, so the guard is
+    # defensive.
     add_test(NAME rb_shield_crash_flash_isolation
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_SOURCE_DIR}/tests/rb_shield_crash_flash_isolation_test.cmake")
 

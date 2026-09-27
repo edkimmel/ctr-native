@@ -72,7 +72,9 @@ void DecalMP_01(struct GameTracker *gGT)
 	 * END_OF_RACE) loads a bot attacker's pushBuffer[driverID].matrix_ViewProj
 	 * and rect.x/rect.y, writing the human-only BattleHUD.startX/startY and
 	 * leaving GTE state that VehPhysForce_OnGravity reloads in stage 4; it
-	 * reads no host pointer in any reachable roster.
+	 * reads no host pointer in any reachable roster. The shield crash-attack
+	 * flash writer (RB_ShieldDark_ThTick_Grow, RB_MaskShieldCloud.c) is
+	 * unreachable for bots and guarded to driverID < 4 on native.
 	 * docs/SOLO_CAB_MILESTONE.md section 8.4. */
 	const int forceTopLod = MainArcadeLink_ForceTopLod();
 #endif
