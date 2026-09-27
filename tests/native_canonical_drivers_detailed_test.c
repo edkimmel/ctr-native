@@ -198,6 +198,12 @@ static int TestSpinReHit(void)
 	value.slots[0].meta.kartState=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
 	value.slots[0].meta.kartState=0;value.slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;value.slots[0].active.branchBytes[0]=0;
 	CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
+	/* Queued damage init: behavior 143 (init 8, spin suffix 7) with kartState 0
+	 * has exactly one encoding, NONE; the re-hit SPIN widening excludes it. */
+	value.slots[0].meta.behaviorID=143;
+	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN;value.slots[0].active.branchBytes[0]=1;
+	CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
 	return 0;
 }
 static void ValidMaskGrab(struct NativeCanonicalDriversDetailedV1 *value)

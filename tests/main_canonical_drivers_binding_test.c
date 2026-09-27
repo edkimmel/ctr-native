@@ -520,6 +520,9 @@ static int MetaFlagsTest(void)
 	driver->kartState=KS_ENGINE_REVVING;
 	if(!MetaResolve(&f,31,KS_ENGINE_REVVING,&flags)||flags.externalPresenceFlags!=0)return 0;
 	driver->kartState=KS_NORMAL;
+	/* The spin re-hit tuple (behavior 177, KS_NORMAL) is a SPIN singleton, not
+	 * MASK_GRAB: it succeeds without reading the MaskGrab pointer. */
+	if(!MetaResolve(&f,177,KS_NORMAL,&flags)||flags.externalPresenceFlags!=0)return 0;
 	/* Excluded pointers and unrelated structural root flags have no effect;
 	 * DISABLE_COLLISION is the sole thread structural bit persisted here. */
 	driver->thTrackingMe=(struct Thread *)(uintptr_t)1;driver->plantEatingMe=(struct Thread *)(uintptr_t)1;
@@ -1046,6 +1049,14 @@ static int ActiveProjectionTest(void)
 
 	memset(&driver,0,sizeof(driver));driver.kartState=KS_SPINNING;driver.KartStates.Spinning.driftSpinRate=INT16_MIN;driver.KartStates.Spinning.spinDir=INT16_MAX;memset(expected,0,sizeof(expected));ActivePut16(expected,0,INT16_MIN);ActivePut16(expected,2,INT16_MAX);
 	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,7,KS_SPINNING,NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN,expected)||!MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,7,KS_SPINNING,&active)||!ActiveEncoded(&active,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,7,KS_SPINNING))return 0;
+	/* Retail spin re-hit: behavior 177 (init 10, spin suffix 7) with kartState
+	 * cleared to KS_NORMAL still projects the live Spinning union. */
+	memset(&driver,0,sizeof(driver));driver.kartState=KS_NORMAL;driver.KartStates.Spinning.driftSpinRate=-1234;driver.KartStates.Spinning.spinDir=-1;memset(expected,0,sizeof(expected));ActivePut16(expected,0,-1234);ActivePut16(expected,2,-1);
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,177,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN,expected)||!MainCanonicalDrivers_ExtractDriverActive(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,177,KS_NORMAL,&active)||!ActiveEncoded(&active,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,177,KS_NORMAL))return 0;
+	/* A queued damage init (behavior 143 = init 8 + suffix 7) with KS_NORMAL
+	 * stays NONE and leaves the retained Spinning bytes uninspected. */
+	memset(expected,0,sizeof(expected));
+	if(!ActiveExpect(&driver,NATIVE_CANONICAL_DRIVER_KIND_HUMAN,143,KS_NORMAL,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE,expected))return 0;
 
 	memset(&driver,0,sizeof(driver));driver.kartState=KS_ENGINE_REVVING;driver.KartStates.RevEngine.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;driver.KartStates.RevEngine.boostMeter=INT32_MIN;driver.KartStates.RevEngine.fireLevel=INT32_MAX;driver.KartStates.RevEngine.overRevTimerMS=INT16_MIN;driver.KartStates.RevEngine.releaseCooldownTimerMS=-2;driver.KartStates.RevEngine.emptyCooldownTimerMS=INT16_MAX;driver.KartStates.RevEngine.chargeState=2;driver.KartStates.RevEngine.lockoutFlags=3;driver.KartStates.RevEngine.boolMaskGrab=1;
 	memset(expected,0,sizeof(expected));ActivePut32(expected,0,INT32_MIN);ActivePut32(expected,4,INT32_MAX);ActivePut16(expected,8,INT16_MIN);ActivePut16(expected,10,-2);ActivePut16(expected,12,INT16_MAX);expected[14]=2;expected[15]=3;expected[16]=1;
@@ -1321,6 +1332,16 @@ static int MetaProjectionTest(void)
 	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,6,1);driver->kartState=KS_NORMAL;
 	driver->KartStates.MaskGrab.maskObj=(struct MaskHeadWeapon *)(uintptr_t)1;
 	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.meta[0].behaviorID!=103||value.active[0].unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE)return 0;
+	/* Retail spin re-hit: init 10 + spin suffix 7 with kartState cleared to
+	 * KS_NORMAL. The actual tag is SPIN, so attachment selection takes no mask
+	 * (the overlapping MaskGrab pointer bytes are the non-null spin payload),
+	 * and the Spinning union is projected. */
+	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,10,7);driver->kartState=KS_NORMAL;
+	driver->KartStates.Spinning.driftSpinRate=-1234;driver->KartStates.Spinning.spinDir=-1;
+	if(!MainCanonicalDrivers_ExtractRosterRaceDynamicsActivePendingBotMeta(&fixture.tracker,sd,&value)||value.meta[0].behaviorID!=177||
+		value.meta[0].kartState!=KS_NORMAL||value.meta[0].externalPresenceFlags!=0||value.active[0].unionTag!=NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN||
+		value.active[0].branchBytes[0]!=(uint8_t)(uint16_t)-1234||value.active[0].branchBytes[1]!=(uint8_t)((uint16_t)-1234>>8)||
+		value.active[0].branchBytes[2]!=0xff||value.active[0].branchBytes[3]!=0xff||!DetailedFromMetaCandidate(&value,&detailed))return 0;
 	/* Podium queues Driving while displaying REVVING; it must not inspect the
 	 * uninitialized RevEngine branch. */
 	SourceFixtureInit(&fixture);driver=FLD(&fixture,0);SourceBehavior(&fixture,0,1,14);driver->kartState=KS_ENGINE_REVVING;

@@ -17,7 +17,8 @@ static void Registry(struct NativeCanonicalDriverBehaviorRegistry *registry,uint
  * rows prove that the set-valued API has not narrowed legacy acceptance.
  * It additionally admits the retail spin re-hit (DefaultSpin skips the
  * queued init when already spinning and clears kartState): a human spin
- * suffix 7..10 with kartState 0 carries the live SPIN union. */
+ * suffix 7..10 with kartState 0 carries the live SPIN union, except under a
+ * queued damage init 6..8, which is NONE-only there. */
 static int LegacyValidateState(uint8_t kind,uint8_t behaviorID,uint8_t kartState,uint32_t activeTag)
 {
 	uint8_t suffix,init,expectedState,expectedTag;
@@ -29,7 +30,8 @@ static int LegacyValidateState(uint8_t kind,uint8_t behaviorID,uint8_t kartState
 	if(suffix==0)return activeTag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;
 	if((init==6||init==7||init==8)&&kartState==0&&activeTag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE)return 1;
 	if(init==1&&kartState==4&&activeTag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE)return 1;
-	if(kartState==0&&activeTag==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN&&(suffix==7||suffix==8||suffix==9||suffix==10))return 1;
+	if(kartState==0&&activeTag==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN&&(suffix==7||suffix==8||suffix==9||suffix==10)&&
+		!(init==6||init==7||init==8))return 1;
 	expectedState=0;expectedTag=0;
 	switch(suffix)
 	{
@@ -148,7 +150,12 @@ static int TestActualTagRows(void)
 static int TestSpinReHitRows(void)
 {
 	const uint32_t spin=UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN,none=UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;
-	static const uint8_t steadyInits[]={0,9,10};
+	/* Every init except the queued damage inits 6..8. Init 1 is reachable
+	 * (SpinStop_Animate queues Driving_Init in suffix 10 while kartState is 3,
+	 * VehPhysProc.c:3124-3125; a later hazard re-hit gives behaviour 27 with
+	 * kartState 0) and so is init 5 (RIP_Init, RB_Player.c:87). */
+	static const uint8_t steadyInits[]={0,1,2,3,4,5,9,10};
+	const uint8_t steadyCount=(uint8_t)(sizeof(steadyInits)/sizeof(steadyInits[0]));
 	{uint32_t actual=UINT32_MAX,mask=0;
 		/* The observed failure: behavior 177 = init 10 + spin-first suffix 7. */
 		CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,177,0,&actual)&&actual==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN);
@@ -158,30 +165,48 @@ static int TestSpinReHitRows(void)
 		/* Bots are unchanged. */
 		CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_BOT,177,0,&actual)&&actual==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE);
 		CHECK(NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_BOT,177,0,&mask)&&mask==none);}
-	for(uint8_t i=0;i<3;i++)for(uint8_t suffix=7;suffix<=10;suffix++)
+	/* The reachable init-1 row named above. */
+	{uint32_t actual=UINT32_MAX,mask=0;
+		CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,27,0,&actual)&&actual==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN);
+		CHECK(NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,27,0,&mask)&&mask==spin);}
+	for(uint8_t i=0;i<steadyCount;i++)for(uint8_t suffix=7;suffix<=10;suffix++)
 	{
-		uint8_t behavior=(uint8_t)(suffix+17*steadyInits[i]);uint32_t actual=UINT32_MAX,mask=0;
+		uint8_t behavior=(uint8_t)(suffix+17*steadyInits[i]);uint32_t actual=UINT32_MAX,mask=0,resolved=UINT32_MAX;
 		CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&actual)&&actual==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN);
 		CHECK(NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&mask)&&mask==spin);
+		CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&resolved)&&resolved==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN);
+		CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN));
+		CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE));
 		/* The steady spinning state still resolves SPIN. */
 		CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,3,&actual)&&actual==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN);
-		/* Any other kartState is still rejected. */
+		/* Any other kartState is still rejected, except the podium row
+		 * (init 1, kartState 4), which is NONE-only for a spin suffix. */
 		for(uint16_t state=1;state<=UINT8_MAX;state++)
 		{
 			uint32_t rejected=UINT32_C(0xa5a5a5a5),rejectedMask=UINT32_C(0xa5a5a5a5);
 			if(state==3)continue;
+			if(steadyInits[i]==1&&state==4)
+			{
+				CHECK(NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,4,&rejectedMask)&&rejectedMask==none);
+				CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,4,&rejected)&&rejected==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE);
+				continue;
+			}
 			CHECK(!NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,(uint8_t)state,&rejected)&&rejected==UINT32_C(0xa5a5a5a5));
 			CHECK(!NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,(uint8_t)state,&rejectedMask)&&rejectedMask==UINT32_C(0xa5a5a5a5));
 		}
 	}
-	/* Queued damage init precedence is unchanged: NONE is the actual tag. */
+	/* Queued damage init precedence is unchanged: NONE is the actual tag and
+	 * the only accepted encoding (no SPIN widening, so one canonical form). */
 	for(uint8_t init=6;init<=8;init++)for(uint8_t suffix=7;suffix<=10;suffix++)
 	{
-		uint8_t behavior=(uint8_t)(suffix+17*init);uint32_t actual=UINT32_MAX;
+		uint8_t behavior=(uint8_t)(suffix+17*init);uint32_t actual=UINT32_MAX,mask=0,resolved=UINT32_MAX;
 		CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&actual)&&actual==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE);
+		CHECK(NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&mask)&&mask==none);
+		CHECK(NativeCanonicalDriverBehavior_ResolveActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&resolved)&&resolved==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE);
+		CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN));
 	}
 	/* A non-spin suffix (drift 4/5) with kartState 0 and a steady init is still rejected. */
-	for(uint8_t i=0;i<3;i++)for(uint8_t suffix=4;suffix<=5;suffix++)
+	for(uint8_t i=0;i<steadyCount;i++)for(uint8_t suffix=4;suffix<=5;suffix++)
 	{
 		uint8_t behavior=(uint8_t)(suffix+17*steadyInits[i]);uint32_t actual=UINT32_C(0xa5a5a5a5),mask=UINT32_C(0xa5a5a5a5);
 		CHECK(!NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&actual)&&actual==UINT32_C(0xa5a5a5a5));
@@ -215,9 +240,8 @@ static int TestStateRows(void)
 	{
 		uint8_t behavior=(uint8_t)(suffix+17*init);uint32_t mask=0;
 		CHECK(NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&mask));
-		/* Spin suffixes also admit the retained SPIN union (re-hit overlap). */
-		if(suffix>=7&&suffix<=10)CHECK(mask==((UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_NONE)|(UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN)));
-		else CHECK(mask==(UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_NONE));
+		/* Spin suffixes included: the re-hit SPIN widening excludes queued inits. */
+		CHECK(mask==(UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_NONE));
 	}
 	for(uint8_t suffix=1;suffix<17;suffix++)
 	{

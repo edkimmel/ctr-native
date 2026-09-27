@@ -46,6 +46,20 @@ int NativeCanonicalDriverBehavior_ResolveCallback(const struct NativeCanonicalDr
 	if(!NativeCanonicalDriverBehavior_Resolve(registry,table,&candidate))return 0;
 	*behaviorIDOut=candidate;return 1;
 }
+/* Retail spin re-hit: VehPickState.c DefaultSpin (:240-242) skips the queued
+ * SpinFirst init when the driver is already KS_SPINNING, then (:299)
+ * unconditionally clears kartState to KS_NORMAL, so a human keeps running the
+ * spin suffixes (7..10) with kartState 0. The Spinning union (driftSpinRate,
+ * spinDir) stays live, so the tag stays SPIN; NONE would drop it. Found by the
+ * Dingo Canyon / Polar Pass hazard re-hit. Queued damage inits 6..8 are
+ * excluded: with kartState 0 a queued damage init always goes with the NONE
+ * observation (queued-init precedence), so admitting SPIN there as well would
+ * give one state two canonical encodings. The acceptance mask and the
+ * actual-tag resolver share this predicate so they cannot drift. */
+static int IsSpinReHit(uint8_t init, uint8_t suffix, uint8_t kartState)
+{
+	return suffix>=7&&suffix<=10&&kartState==0&&!(init>=6&&init<=8);
+}
 int NativeCanonicalDriverBehavior_ValidateKind(uint8_t kind, uint8_t behaviorID, uint8_t threadBehaviorID)
 {
 	if(behaviorID>NATIVE_CANONICAL_DRIVER_BEHAVIOR_MAX)return 0;
@@ -91,13 +105,8 @@ int NativeCanonicalDriverBehavior_AllowedActiveTagMask(uint8_t kind, uint8_t beh
 		case 16: expectedState=10;expectedTag=7;break;
 		default:return 0;
 	}
-	/* Retail spin re-hit: VehPickState.c DefaultSpin (:240-242) skips the
-	 * queued SpinFirst init when the driver is already KS_SPINNING, then
-	 * (:299) unconditionally clears kartState to KS_NORMAL, so a human keeps
-	 * running the spin suffixes (7..10) with kartState 0. The Spinning union
-	 * (driftSpinRate, spinDir) stays live, so the tag stays SPIN; NONE would
-	 * drop it. Found by the Dingo Canyon / Polar Pass hazard re-hit. */
-	if(kartState==expectedState||(suffix>=7&&suffix<=10&&kartState==0))allowed|=UINT32_C(1)<<expectedTag;
+	/* Retail spin re-hit (see IsSpinReHit); queued inits 6..8 stay NONE-only. */
+	if(kartState==expectedState||IsSpinReHit(init,suffix,kartState))allowed|=UINT32_C(1)<<expectedTag;
 	if(allowed==0)return 0;
 	*activeTagMaskOut=allowed;
 	return 1;
@@ -146,14 +155,11 @@ int NativeCanonicalDriverBehavior_ResolveActualActiveTag(uint8_t kind, uint8_t b
 				case 16: expectedState=10;candidate=NATIVE_CANONICAL_DRIVER_ACTIVE_WARP;break;
 				default:return 0;
 			}
-			/* Retail spin re-hit (see AllowedActiveTagMask): DefaultSpin
-			 * (VehPickState.c :240-242) skips the queued init when already
-			 * spinning and (:299) clears kartState, leaving a spin suffix with
-			 * kartState 0. The Spinning union is live, so the tag stays SPIN
-			 * (NONE would drop driftSpinRate/spinDir). Found by the Dingo
-			 * Canyon / Polar Pass hazard re-hit. The queued-init precedence
-			 * above still resolves init 6..8 with kartState 0 to NONE. */
-			if(kartState!=expectedState&&!(suffix>=7&&suffix<=10&&kartState==0))return 0;
+			/* Retail spin re-hit (see IsSpinReHit): a spin suffix with
+			 * kartState 0 keeps its live SPIN union. The queued-init
+			 * precedence above already resolves init 6..8 with kartState 0
+			 * to NONE, and IsSpinReHit excludes those inits to match. */
+			if(kartState!=expectedState&&!IsSpinReHit(init,suffix,kartState))return 0;
 		}
 	}
 	/* Keep the precedence resolver mechanically tied to the complete
