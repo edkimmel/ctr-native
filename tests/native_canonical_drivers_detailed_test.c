@@ -186,6 +186,20 @@ static int TestAllowedTagOverlap(void)
 	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
 	return 0;
 }
+static int TestSpinReHit(void)
+{
+	struct NativeCanonicalDriversDetailedV1 value;
+	ValidHuman(&value);
+	/* Retail hazard re-hit while spinning: behavior 177 (init 10, spin-first
+	 * suffix 7) with kartState cleared to 0 keeps the live Spinning union. */
+	value.slots[0].meta.behaviorID=177;value.slots[0].meta.kartState=0;
+	value.slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN;value.slots[0].active.branchBytes[0]=1;
+	CHECK(NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].meta.kartState=1;CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
+	value.slots[0].meta.kartState=0;value.slots[0].active.unionTag=NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;value.slots[0].active.branchBytes[0]=0;
+	CHECK(!NativeCanonicalDriversDetailedV1_Validate(&value));
+	return 0;
+}
 static void ValidMaskGrab(struct NativeCanonicalDriversDetailedV1 *value)
 {
 	ValidHuman(value);
@@ -297,6 +311,6 @@ static int TestZeroPhysicsPresentSlots(void)
 int main(void)
 {
 	if(TestZeroPhysicsPresentSlots()!=0)return 1;
-	if(TestGoldenAndSummary()!=0||TestSemanticMutations()!=0||TestRejectionAndTransaction()!=0||TestPendingDamageTail()!=0||TestTypedBotLayout()!=0||TestBotAndReferences()!=0||TestRanksAndActiveTags()!=0||TestAllowedTagOverlap()!=0||TestMetaFlagContract()!=0||TestPhysicsContract()!=0)return 1;
+	if(TestGoldenAndSummary()!=0||TestSemanticMutations()!=0||TestRejectionAndTransaction()!=0||TestPendingDamageTail()!=0||TestTypedBotLayout()!=0||TestBotAndReferences()!=0||TestRanksAndActiveTags()!=0||TestAllowedTagOverlap()!=0||TestSpinReHit()!=0||TestMetaFlagContract()!=0||TestPhysicsContract()!=0)return 1;
 	puts("native_canonical_drivers_detailed_test: passed");return 0;
 }

@@ -34,7 +34,10 @@ int NativeCanonicalDriverBehavior_ValidateKind(uint8_t kind, uint8_t behaviorID,
 /* Returns a set of valid active tags for a pointer-free kind/behavior/state
  * tuple. Bit n represents canonical active tag n. On failure the output is
  * not modified. Some lifecycle observations deliberately allow more than one
- * tag, so callers that validate an existing value must test membership. */
+ * tag, so callers that validate an existing value must test membership.
+ * A HUMAN spin suffix (7..10) also accepts kartState 0 with SPIN: retail
+ * DefaultSpin re-hits an already spinning driver without queueing an init
+ * and clears kartState, while the Spinning union stays live. */
 int NativeCanonicalDriverBehavior_AllowedActiveTagMask(uint8_t kind, uint8_t behaviorID, uint8_t kartState,
 	uint32_t *activeTagMaskOut);
 /* Convenience only: resolves a tag when the allowed set has exactly one bit.

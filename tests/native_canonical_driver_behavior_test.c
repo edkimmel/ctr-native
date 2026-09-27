@@ -14,7 +14,10 @@ static void Registry(struct NativeCanonicalDriverBehaviorRegistry *registry,uint
 	for(uint8_t s=0;s<17;s++)for(uint8_t f=0;f<12;f++)registry->suffixTemplates[s][f]=&suffix[s][f];
 }
 /* This is the pre-mask contract, retained independently so the exhaustive
- * rows prove that the set-valued API has not narrowed legacy acceptance. */
+ * rows prove that the set-valued API has not narrowed legacy acceptance.
+ * It additionally admits the retail spin re-hit (DefaultSpin skips the
+ * queued init when already spinning and clears kartState): a human spin
+ * suffix 7..10 with kartState 0 carries the live SPIN union. */
 static int LegacyValidateState(uint8_t kind,uint8_t behaviorID,uint8_t kartState,uint32_t activeTag)
 {
 	uint8_t suffix,init,expectedState,expectedTag;
@@ -26,6 +29,7 @@ static int LegacyValidateState(uint8_t kind,uint8_t behaviorID,uint8_t kartState
 	if(suffix==0)return activeTag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;
 	if((init==6||init==7||init==8)&&kartState==0&&activeTag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE)return 1;
 	if(init==1&&kartState==4&&activeTag==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE)return 1;
+	if(kartState==0&&activeTag==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN&&(suffix==7||suffix==8||suffix==9||suffix==10))return 1;
 	expectedState=0;expectedTag=0;
 	switch(suffix)
 	{
@@ -77,7 +81,9 @@ static int ActualTagOracle(uint8_t kind,uint8_t behaviorID,uint8_t kartState,uin
 		case 16:expectedState=10;tag=NATIVE_CANONICAL_DRIVER_ACTIVE_WARP;break;
 		default:return 0;
 	}
-	if(kartState!=expectedState)return 0;
+	/* Spin re-hit: past the queued-init precedence, a spinning suffix also
+	 * observes kartState 0 (retail clears it) and keeps its SPIN union. */
+	if(kartState!=expectedState&&!(tag==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN&&kartState==0))return 0;
 	*activeTagOut=tag;return 1;
 }
 static int TestActualTagRows(void)
@@ -136,6 +142,53 @@ static int TestActualTagRows(void)
 		CHECK(!NativeCanonicalDriverBehavior_IsMaskGrabActive(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,1,1,NULL));}
 	return 0;
 }
+/* Regression rows for the retail spin re-hit found by the Dingo Canyon /
+ * Polar Pass hazards: VehPickState.c DefaultSpin skips the queued SpinFirst
+ * init when already KS_SPINNING and then clears kartState to 0. */
+static int TestSpinReHitRows(void)
+{
+	const uint32_t spin=UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN,none=UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_NONE;
+	static const uint8_t steadyInits[]={0,9,10};
+	{uint32_t actual=UINT32_MAX,mask=0;
+		/* The observed failure: behavior 177 = init 10 + spin-first suffix 7. */
+		CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,177,0,&actual)&&actual==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN);
+		CHECK(NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,177,0,&mask)&&mask==spin);
+		CHECK(NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,177,0,NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN));
+		CHECK(!NativeCanonicalDriverBehavior_ValidateState(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,177,0,NATIVE_CANONICAL_DRIVER_ACTIVE_NONE));
+		/* Bots are unchanged. */
+		CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_BOT,177,0,&actual)&&actual==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE);
+		CHECK(NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_BOT,177,0,&mask)&&mask==none);}
+	for(uint8_t i=0;i<3;i++)for(uint8_t suffix=7;suffix<=10;suffix++)
+	{
+		uint8_t behavior=(uint8_t)(suffix+17*steadyInits[i]);uint32_t actual=UINT32_MAX,mask=0;
+		CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&actual)&&actual==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN);
+		CHECK(NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&mask)&&mask==spin);
+		/* The steady spinning state still resolves SPIN. */
+		CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,3,&actual)&&actual==NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN);
+		/* Any other kartState is still rejected. */
+		for(uint16_t state=1;state<=UINT8_MAX;state++)
+		{
+			uint32_t rejected=UINT32_C(0xa5a5a5a5),rejectedMask=UINT32_C(0xa5a5a5a5);
+			if(state==3)continue;
+			CHECK(!NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,(uint8_t)state,&rejected)&&rejected==UINT32_C(0xa5a5a5a5));
+			CHECK(!NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,(uint8_t)state,&rejectedMask)&&rejectedMask==UINT32_C(0xa5a5a5a5));
+		}
+	}
+	/* Queued damage init precedence is unchanged: NONE is the actual tag. */
+	for(uint8_t init=6;init<=8;init++)for(uint8_t suffix=7;suffix<=10;suffix++)
+	{
+		uint8_t behavior=(uint8_t)(suffix+17*init);uint32_t actual=UINT32_MAX;
+		CHECK(NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&actual)&&actual==NATIVE_CANONICAL_DRIVER_ACTIVE_NONE);
+	}
+	/* A non-spin suffix (drift 4/5) with kartState 0 and a steady init is still rejected. */
+	for(uint8_t i=0;i<3;i++)for(uint8_t suffix=4;suffix<=5;suffix++)
+	{
+		uint8_t behavior=(uint8_t)(suffix+17*steadyInits[i]);uint32_t actual=UINT32_C(0xa5a5a5a5),mask=UINT32_C(0xa5a5a5a5);
+		CHECK(!NativeCanonicalDriverBehavior_ResolveActualActiveTag(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&actual)&&actual==UINT32_C(0xa5a5a5a5));
+		CHECK(!NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&mask)&&mask==UINT32_C(0xa5a5a5a5));
+	}
+	return 0;
+}
 static int TestStateRows(void)
 {
 	for(uint16_t behavior=0;behavior<=NATIVE_CANONICAL_DRIVER_BEHAVIOR_MAX;behavior++)
@@ -162,7 +215,9 @@ static int TestStateRows(void)
 	{
 		uint8_t behavior=(uint8_t)(suffix+17*init);uint32_t mask=0;
 		CHECK(NativeCanonicalDriverBehavior_AllowedActiveTagMask(NATIVE_CANONICAL_DRIVER_KIND_HUMAN,behavior,0,&mask));
-		CHECK(mask==(UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_NONE));
+		/* Spin suffixes also admit the retained SPIN union (re-hit overlap). */
+		if(suffix>=7&&suffix<=10)CHECK(mask==((UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_NONE)|(UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_SPIN)));
+		else CHECK(mask==(UINT32_C(1)<<NATIVE_CANONICAL_DRIVER_ACTIVE_NONE));
 	}
 	for(uint8_t suffix=1;suffix<17;suffix++)
 	{
@@ -220,6 +275,6 @@ int main(void)
 	CHECK(!NativeCanonicalDriverBehavior_ValidateKind(NATIVE_CANONICAL_DRIVER_KIND_BOT,187,NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE));
 	context.kinds[3]=NATIVE_CANONICAL_DRIVER_KIND_BOT;CHECK(NativeCanonicalDriverBehavior_ValidateKindCallback(KindCallback,&context,3,16,NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE));
 	context.kinds[3]=NATIVE_CANONICAL_DRIVER_KIND_HUMAN;CHECK(!NativeCanonicalDriverBehavior_ValidateKindCallback(KindCallback,&context,3,16,NATIVE_CANONICAL_DRIVER_THREAD_BOTS_DRIVE));
-	if(TestStateRows()!=0||TestActualTagRows()!=0)return 1;
+	if(TestStateRows()!=0||TestActualTagRows()!=0||TestSpinReHitRows()!=0)return 1;
 	puts("native_canonical_driver_behavior_test: passed");return 0;
 }
