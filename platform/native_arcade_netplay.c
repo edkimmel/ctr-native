@@ -323,10 +323,45 @@ static void NativeArcadeNetplay_BeginLobby(struct NativeArcadeNetplay *netplay)
 										netplay->config.retransmitIntervalTicks) != 0);
 }
 
-/* Closes the lobby's link, the listen-only link of solo included. */
+/* LR-70: keeps the first divergence report of the open lobby's session under
+ * the current matchCount, right before the link closes, so a divergence the
+ * closing Tick's own poll found is still readable
+ * (NativeArcadeNetplay_ClosedDivergence). Never in solo (the flow in solo, or
+ * the listen-only link open), with no race counted yet, or with no lobby
+ * open; a session that reports none leaves the kept report as it is. */
+static void NativeArcadeNetplay_KeepClosedDivergence(struct NativeArcadeNetplay *netplay)
+{
+	const struct NativeLockstepDivergenceReport *report;
+
+	if ((netplay->lobbyBegun == 0u) || (netplay->matchCount == 0u) || (netplay->listening != 0u) ||
+		(NativeArcadeFlow_Solo(&netplay->flow) != 0u))
+	{
+		return;
+	}
+	report = NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeLobbyState_Link(&netplay->lobby)));
+	if (report == NULL)
+	{
+		return;
+	}
+	netplay->closedDivergence = *report;
+	netplay->closedDivergenceRace = netplay->matchCount;
+	netplay->closedDivergenceValid = 1u;
+}
+
+/* Drops the kept divergence report (a successful Enter, Shutdown). */
+static void NativeArcadeNetplay_DropClosedDivergence(struct NativeArcadeNetplay *netplay)
+{
+	memset(&netplay->closedDivergence, 0, sizeof(netplay->closedDivergence));
+	netplay->closedDivergenceRace = 0u;
+	netplay->closedDivergenceValid = 0u;
+}
+
+/* Closes the lobby's link, the listen-only link of solo included; a
+ * divergence its session reported is kept first (LR-70). */
 static void NativeArcadeNetplay_CloseLobby(struct NativeArcadeNetplay *netplay)
 {
 	NativeArcadeNetplay_ReadForeignDrops(netplay);
+	NativeArcadeNetplay_KeepClosedDivergence(netplay);
 	NativeLobbyState_Close(&netplay->lobby);
 	netplay->linkForeignDropsSeen = 0u;
 	netplay->lobbyBegun = 0u;
@@ -433,6 +468,8 @@ enum NativeArcadeFlowAction NativeArcadeNetplay_Enter(struct NativeArcadeNetplay
 		netplay->soloRaceArmed = 0u;
 		NativeArcadeNetplay_ClearSelect(netplay);
 		NativeArcadeLaunch_Reset(&netplay->launch);
+		/* LR-70: no earlier session's divergence outlives the title. */
+		NativeArcadeNetplay_DropClosedDivergence(netplay);
 		/* A new session on LOBBY: the pending pairing takes effect
 		 * (DISC-12; a no-op in static mode). */
 		NativeArcadeNetplay_TakePairing(netplay);
@@ -1448,6 +1485,16 @@ struct NativeLockstepPeerLink *NativeArcadeNetplay_Link(struct NativeArcadeNetpl
 	return NativeLobbyState_Link(&netplay->lobby);
 }
 
+const struct NativeLockstepDivergenceReport *NativeArcadeNetplay_ClosedDivergence(const struct NativeArcadeNetplay *netplay, uint32_t *raceNumber)
+{
+	if ((netplay == NULL) || (raceNumber == NULL) || (netplay->initialized == 0u) || (netplay->closedDivergenceValid == 0u))
+	{
+		return NULL;
+	}
+	*raceNumber = netplay->closedDivergenceRace;
+	return &netplay->closedDivergence;
+}
+
 uint32_t NativeArcadeNetplay_EndReasonForCause(uint32_t outcomeCause)
 {
 	switch (outcomeCause)
@@ -1555,6 +1602,8 @@ void NativeArcadeNetplay_Shutdown(struct NativeArcadeNetplay *netplay)
 	netplay->pendingLinkFailure = NATIVE_ARCADE_FLOW_END_NONE;
 	netplay->localRaceFailure = 0u;
 	netplay->raceEndPending = 0u;
+	/* After the close above, which may have kept one (LR-70). */
+	NativeArcadeNetplay_DropClosedDivergence(netplay);
 	netplay->listening = 0u;
 	netplay->peerHeard = 0u;
 	netplay->soloConfigValid = 0u;

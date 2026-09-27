@@ -12,8 +12,9 @@
 # record and a launch record each fill exactly one peer-link aux datagram,
 # stays portable C17 with extensions off, keeps its four defaults and its
 # launch linger cap frozen, keeps the race hold service to its slice of
-# Tick (docs/LOCKSTEP_RACE_MILESTONE.md LR-50), and keeps the discovery
-# pairing to its DISC-12 Begin points (docs/DISCOVERY_MILESTONE.md).
+# Tick (docs/LOCKSTEP_RACE_MILESTONE.md LR-50), keeps the discovery
+# pairing to its DISC-12 Begin points (docs/DISCOVERY_MILESTONE.md), and
+# keeps a closed link's divergence report only as LR-70 allows.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 
@@ -89,7 +90,9 @@ endforeach()
 #    LR-50) is the third platform-side hook: its signature carries no
 #    lockstep type, but it runs a slice of Tick behind the flow's back, so
 #    only the race driver's host glue calls it (section 8 pins its body).
-#    Every other NativeArcadeNetplay_* name is callable from engine code
+#    NativeArcadeNetplay_ClosedDivergence (LR-70) is the fourth: it returns
+#    a lockstep divergence report, for the host's divergence record only
+#    (section 10). Every other NativeArcadeNetplay_* name is callable from engine code
 #    without tripping either rule.
 ctr_read_source("${netplay_header}" header)
 string(REGEX MATCHALL "(NativeArcadeNetplay|NATIVE_ARCADE_NETPLAY)[A-Za-z0-9_]*" public_names "${header}")
@@ -457,4 +460,54 @@ endif()
 ctr_netplay_count("${netplay_source}" "NativeLobbyState_RestartCycle[(]" restart_cycle_calls)
 if(NOT restart_cycle_calls EQUAL 1)
     message(FATAL_ERROR "arcade netplay isolation: expected exactly one NativeLobbyState_RestartCycle call (in RestartLobby), found ${restart_cycle_calls}")
+endif()
+
+# 10. The closed link's divergence report (docs/LOCKSTEP_RACE_MILESTONE.md
+#     LR-70). A divergence the closing Tick's own poll finds (leaving
+#     RESULTS) would be gone with the link before the host reads it, so
+#     every close keeps it first: CloseLobby calls KeepClosedDivergence
+#     right after the foreign-drop read and before NativeLobbyState_Close,
+#     and nothing else calls it. Its body is pinned whole: never in solo
+#     (the flow in solo or the listen-only link open), with matchCount 0, or
+#     with no lobby open; it copies the session's first divergence report
+#     under matchCount only when there is one. The drop is called exactly
+#     twice, in Enter's lobby Begin and in Shutdown after its close (Init's
+#     memset clears it too), and the read accessor returns the kept report
+#     and its race number only while one is kept.
+ctr_netplay_body("${netplay_source}" "static void NativeArcadeNetplay_CloseLobby(" close_lobby_body)
+ctr_netplay_body("${netplay_source}" "static void NativeArcadeNetplay_KeepClosedDivergence(" keep_closed_body)
+ctr_netplay_body("${netplay_source}" "static void NativeArcadeNetplay_DropClosedDivergence(" drop_closed_body)
+ctr_netplay_body("${netplay_source}" "const struct NativeLockstepDivergenceReport *NativeArcadeNetplay_ClosedDivergence(" closed_accessor_body)
+ctr_netplay_body("${netplay_source}" "void NativeArcadeNetplay_Shutdown(" shutdown_body)
+foreach(body_name IN ITEMS close_lobby_body keep_closed_body drop_closed_body closed_accessor_body enter_body shutdown_body)
+    string(REGEX REPLACE "[ \t\r\n]+" " " ${body_name}_flat "${${body_name}}")
+endforeach()
+function(ctr_netplay_require_flat label flat expected)
+    string(FIND "${flat}" "${expected}" found_at)
+    if(found_at EQUAL -1)
+        message(FATAL_ERROR "arcade netplay isolation: ${label} must contain '${expected}' (LR-70)")
+    endif()
+endfunction()
+ctr_netplay_require_flat("NativeArcadeNetplay_CloseLobby" "${close_lobby_body_flat}"
+    "{ NativeArcadeNetplay_ReadForeignDrops(netplay); NativeArcadeNetplay_KeepClosedDivergence(netplay); NativeLobbyState_Close(&netplay->lobby);")
+ctr_netplay_require_flat("NativeArcadeNetplay_KeepClosedDivergence" "${keep_closed_body_flat}"
+    "{ const struct NativeLockstepDivergenceReport *report; if ((netplay->lobbyBegun == 0u) || (netplay->matchCount == 0u) || (netplay->listening != 0u) || (NativeArcadeFlow_Solo(&netplay->flow) != 0u)) { return; } report = NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeLobbyState_Link(&netplay->lobby))); if (report == NULL) { return; } netplay->closedDivergence = *report; netplay->closedDivergenceRace = netplay->matchCount; netplay->closedDivergenceValid = 1u;")
+ctr_netplay_require_flat("NativeArcadeNetplay_DropClosedDivergence" "${drop_closed_body_flat}"
+    "{ memset(&netplay->closedDivergence, 0, sizeof(netplay->closedDivergence)); netplay->closedDivergenceRace = 0u; netplay->closedDivergenceValid = 0u;")
+ctr_netplay_require_flat("NativeArcadeNetplay_ClosedDivergence" "${closed_accessor_body_flat}"
+    "{ if ((netplay == NULL) || (raceNumber == NULL) || (netplay->initialized == 0u) || (netplay->closedDivergenceValid == 0u)) { return NULL; } *raceNumber = netplay->closedDivergenceRace; return &netplay->closedDivergence;")
+ctr_netplay_require_flat("NativeArcadeNetplay_Enter" "${enter_body_flat}"
+    "NativeArcadeLaunch_Reset(&netplay->launch); /* LR-70: no earlier session's divergence outlives the title. */ NativeArcadeNetplay_DropClosedDivergence(netplay);")
+ctr_netplay_require_flat("NativeArcadeNetplay_Shutdown" "${shutdown_body_flat}"
+    "NativeArcadeNetplay_CloseLobby(netplay);")
+string(FIND "${shutdown_body_flat}" "NativeArcadeNetplay_CloseLobby(netplay);" shutdown_close_at)
+string(FIND "${shutdown_body_flat}" "NativeArcadeNetplay_DropClosedDivergence(netplay);" shutdown_drop_at)
+if(shutdown_drop_at EQUAL -1 OR shutdown_drop_at LESS shutdown_close_at)
+    message(FATAL_ERROR "arcade netplay isolation: NativeArcadeNetplay_Shutdown must drop the kept divergence after its close (LR-70)")
+endif()
+ctr_netplay_count("${netplay_source}" "NativeArcadeNetplay_KeepClosedDivergence[(]" keep_closed_names)
+ctr_netplay_count("${netplay_source}" "NativeArcadeNetplay_DropClosedDivergence[(]" drop_closed_names)
+ctr_netplay_count("${netplay_source}" "closedDivergenceValid = 1u" keep_closed_sets)
+if(NOT keep_closed_names EQUAL 2 OR NOT drop_closed_names EQUAL 3 OR NOT keep_closed_sets EQUAL 1)
+    message(FATAL_ERROR "arcade netplay isolation: KeepClosedDivergence must be defined once and called once (in CloseLobby), DropClosedDivergence defined once and called twice (Enter, Shutdown), and only the keep sets closedDivergenceValid (found ${keep_closed_names}, ${drop_closed_names}, ${keep_closed_sets}; LR-70)")
 endif()

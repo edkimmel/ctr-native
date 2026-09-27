@@ -38,6 +38,8 @@
  * the race driver's host glue may call it (no game source calls any
  * NativeArcadeNetplay_* name today, and the arcade-link hook's files may not
  * name one; tests/main_arcade_link_hook_isolation_test.cmake).
+ * NativeArcadeNetplay_ClosedDivergence is the fourth: it returns a lockstep
+ * divergence report, for the host's divergence record (LR-70) only.
  * NativeArcadeNetplay_Select
  * names no lockstep type, but it returns a select-session type, and game
  * code reads select state only through the host API. Every other name below
@@ -531,6 +533,18 @@ struct NativeArcadeNetplay
 	 * it. */
 	uint8_t raceEndPending;
 	struct NativeArcadeNetplayRaceEnd raceEnd;
+	/* The divergence a closed link's session reported
+	 * (docs/LOCKSTEP_RACE_MILESTONE.md LR-70): every close of an open lobby
+	 * outside solo, with matchCount nonzero, copies the session's first
+	 * divergence report, if it has one, into closedDivergence and the
+	 * matchCount it belongs to into closedDivergenceRace, and sets
+	 * closedDivergenceValid; a close whose session reports none leaves them.
+	 * NativeArcadeNetplay_ClosedDivergence reads them. Init, a successful
+	 * Enter, and Shutdown clear them. Host-local, like the race-end record
+	 * above. */
+	uint8_t closedDivergenceValid;
+	uint32_t closedDivergenceRace;
+	struct NativeLockstepDivergenceReport closedDivergence;
 	/* Solo (docs/SOLO_CAB_MILESTONE.md SOLO-4, SOLO-6). listening: 1 while
 	 * the lobby holds the listen-only link. peerHeard: 1 once that link heard
 	 * a configured peer; cleared whenever the link closes. soloConfigValid: 1
@@ -724,6 +738,16 @@ const struct NativeMatchSelectSession *NativeArcadeNetplay_Select(const struct N
  * type; game code must not call it, see the block comment above): the open
  * peer link, for the race-time drive; NULL when no lobby is open. */
 struct NativeLockstepPeerLink *NativeArcadeNetplay_Link(struct NativeArcadeNetplay *netplay);
+
+/* Platform-side hook for the Task 8 race driver only (it carries a lockstep
+ * type; game code must not call it): the divergence report the session of
+ * the last closed link held (docs/LOCKSTEP_RACE_MILESTONE.md LR-70), for a
+ * divergence found by the very Tick that closed the link, which leaves no
+ * session to read afterwards. Returns it and sets *raceNumber to the
+ * matchCount it was kept under; returns NULL with *raceNumber untouched when
+ * none is kept, and on a NULL argument or an uninitialized adapter. The
+ * caller must compare *raceNumber with the race it records. */
+const struct NativeLockstepDivergenceReport *NativeArcadeNetplay_ClosedDivergence(const struct NativeArcadeNetplay *netplay, uint32_t *raceNumber);
 
 /* Maps a match outcome cause: STALL_TIMEOUT to END_PEER_TIMEOUT, DIVERGED
  * to END_DESYNC, FAULTED to END_LINK_ERROR, anything else to END_NONE. */

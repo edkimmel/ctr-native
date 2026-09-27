@@ -5265,6 +5265,202 @@ static int TestSoloRace(void)
 	return failed;
 }
 
+/* ---- LR-70: a divergence found only by the Tick that closes the link ---- */
+
+/*
+ * Race raceNumber, both drives begun: the host finishes on race tick 8 (its
+ * digest of 8 recorded) and shows RESULTS RACE COMPLETE; its linger runs
+ * out and the dwell passes while the peer, neither ticked nor stepped,
+ * sends nothing; on exitRow the host moves its focus to EXIT. Nothing is
+ * latched. The peer, whose state differs from race tick 8, then steps 8
+ * and 9: its bundle of frame 11 carries its digest of 8. The host's next
+ * Tick, CROSS, leaves RESULTS (BEGIN_REMATCH, or CLOSE_LINK on EXIT): its
+ * own poll drains that bundle into a DIVERGED session and its action then
+ * closes the link, so no session is left for the latch after it.
+ */
+static int LeaveResultsOnDivergence(uint32_t raceNumber, int exitRow)
+{
+	const uint32_t finish = 8u;
+	uint32_t tick;
+
+	CHECK(RoundsBoth(finish) == 0);
+	CHECK(HostFinishOnRacing() == 0);
+	(void)DrainPeerBundles(0u);
+	for (tick = 1u; tick <= NATIVE_ARCADE_FLOW_DEFAULT_RESULTS_DWELL_TICKS + 1u; tick++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, (tick == 1u) ? 1u : 0u) == ACT_NONE);
+		CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+		CHECK(HostEndReason() == (uint32_t)NATIVE_ARCADE_FLOW_END_FINISHED);
+		if (tick == 1u)
+		{
+			CHECK(CheckRaceEndReason(raceNumber, NATIVE_ARCADE_FLOW_END_FINISHED) == 0);
+		}
+	}
+	CHECK(CheckDriveReset() == 0);
+	CHECK(HostPress(exitRow ? NATIVE_ARCADE_MENU_BUTTON_DOWN : 0u) == 0);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	(void)DrainPeerBundles(0u);
+	CHECK(CheckNoDivergence() == 0);
+	g_peerKnob = 3u;
+	g_peerKnobFrom = finish;
+	for (tick = 0u; tick < 2u; tick++)
+	{
+		CHECK(NativeArcadeNetplay_Tick(&g_peer, 0u, 0u) == NATIVE_ARCADE_FLOW_ACTION_NONE);
+		CHECK(PeerScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING);
+		CHECK(PeerSpin(PeerStep(0u)) == NATIVE_ARCADE_RACE_DRIVE_GO);
+	}
+	CHECK(g_driveBad == 0);
+	CHECK(g_peerNext == finish + 2u);
+	CHECK(CheckNoDivergence() == 0);
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) ==
+		(uint32_t)(exitRow ? NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK : NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH));
+	CHECK(HostScreen() ==
+		(uint32_t)(exitRow ? NATIVE_ARCADE_FLOW_SCREEN_EXIT : NATIVE_ARCADE_FLOW_SCREEN_REMATCH_WAIT));
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(g_pacing == 0);
+	return 0;
+}
+
+/* Race raceNumber, both drives begun and no divergence: both finish on race
+ * tick 10 with their lingers, and the host leaves RESULTS with REMATCH. No
+ * record on the way, the Tick that closes the link included. */
+static int CleanRaceThenLeaveResults(uint32_t raceNumber)
+{
+	uint32_t hostAction = ACT_NONE;
+	uint32_t peerAction = ACT_NONE;
+	uint32_t tick;
+
+	CHECK(RoundsBoth(10u) == 0);
+	NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+	CHECK((hostAction == ACT_NONE) && (peerAction == ACT_NONE));
+	CHECK(HostStep(1u) == RACE_END);
+	CHECK(PeerStep(1u) == NATIVE_ARCADE_RACE_DRIVE_END);
+	CHECK(BothFinishWithLinger(raceNumber) == 0);
+	CHECK(CheckNoDivergence() == 0);
+	for (tick = 0u; tick <= NATIVE_ARCADE_FLOW_DEFAULT_RESULTS_DWELL_TICKS; tick++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	}
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH);
+	CHECK(CheckNoDivergence() == 0);
+	NativeArcadeLinkHost_RaceEnd();
+	CHECK(g_pacing == 0);
+	return 0;
+}
+
+/*
+ * LR-70: a divergence found only by the Tick that closes the link while
+ * leaving RESULTS is still latched, from the report the adapter kept when it
+ * closed the link, under that race's number: race tick 8, the knob's
+ * domains, and both digests of 8, taken once. The next race (a rematch,
+ * race 2) never latches that kept report, not even on the Tick that closes
+ * its own link. Not taken, the record is dropped by AbortToTitle, and a new
+ * pairing's race 1 (the count restarts) never gets the old pairing's report;
+ * Shutdown likewise. After a taken record, the title, a new Enter, and a
+ * solo race latch nothing.
+ */
+static int RunDriveClosingTickDivergence(void)
+{
+	uint32_t hostAction = ACT_NONE;
+	uint32_t peerAction = ACT_NONE;
+	uint32_t action = ACT_NONE;
+	uint32_t tick;
+
+	/* Race 1, left by REMATCH: the record, taken once. */
+	CHECK(StartDriveRace(TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, UINT64_C(0xC105E00000000001)) == 0);
+	CHECK(LeaveResultsOnDivergence(1u, 0) == 0);
+	CHECK(CheckDivergence(1u, 8u, DRIVE_KNOB_DOMAINS, 3u) == 0);
+	for (tick = 0u; tick < 3u; tick++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+		CHECK(CheckNoDivergence() == 0);
+	}
+
+	/* Race 2: the peer ends its race 1 and rematches too; nothing latched. */
+	CHECK(NativeArcadeNetplay_Tick(&g_peer, 0u, 1u) == NATIVE_ARCADE_FLOW_ACTION_NONE);
+	CHECK(PeerScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RESULTS);
+	for (tick = 0u; tick <= NATIVE_ARCADE_FLOW_DEFAULT_RESULTS_DWELL_TICKS; tick++)
+	{
+		NativeArcadeLinkLoopback_TickPair(&g_peer, 0u, 0u, &hostAction, &peerAction);
+		CHECK((hostAction == ACT_NONE) && (peerAction == ACT_NONE));
+	}
+	CHECK(NativeArcadeNetplay_Tick(&g_peer, NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == NATIVE_ARCADE_FLOW_ACTION_BEGIN_REMATCH);
+	CHECK(DrivePairToRace() == 0);
+	CHECK(BeginRaceDrives() == 0);
+	CHECK(CleanRaceThenLeaveResults(2u) == 0);
+	StopDriveRace();
+	CHECK(CheckInert() == 0);
+
+	/* Not taken: AbortToTitle drops it, and the new pairing's race 1 latches
+	 * nothing. */
+	CHECK(StartDriveRace(TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, UINT64_C(0xC105E00000000002)) == 0);
+	CHECK(LeaveResultsOnDivergence(1u, 1) == 0);
+	CHECK(RepairToRace(UINT64_C(0xC105E2)) == 0);
+	CHECK(CheckNoDivergence() == 0);
+	CHECK(BeginRaceDrives() == 0);
+	CHECK(CleanRaceThenLeaveResults(1u) == 0);
+	StopDriveRace();
+	CHECK(CheckInert() == 0);
+
+	/* Not taken: Shutdown drops it, and the next Configure's race 1 latches
+	 * nothing. */
+	CHECK(StartDriveRace(TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, UINT64_C(0xC105E00000000003)) == 0);
+	CHECK(LeaveResultsOnDivergence(1u, 1) == 0);
+	StopDriveRace();
+	CHECK(StartDriveRace(TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, UINT64_C(0xC105E00000000004)) == 0);
+	CHECK(CheckNoDivergence() == 0);
+	CHECK(CleanRaceThenLeaveResults(1u) == 0);
+	StopDriveRace();
+	CHECK(CheckInert() == 0);
+
+	/* Taken on EXIT; the title, Enter with the peer gone, and a solo race
+	 * (race 2) latch nothing. */
+	CHECK(StartDriveRace(TEST_DRIVE_HOST_PORT, TEST_DRIVE_PEER_PORT, UINT64_C(0xC105E00000000005)) == 0);
+	CHECK(LeaveResultsOnDivergence(1u, 1) == 0);
+	CHECK(CheckDivergence(1u, 8u, DRIVE_KNOB_DOMAINS, 3u) == 0);
+	NativeArcadeNetplay_Shutdown(&g_peer);
+	for (tick = 0u; (tick < PAIR_BUDGET) && (action == ACT_NONE); tick++)
+	{
+		action = NativeArcadeLinkHost_Tick(0u, 0u);
+	}
+	CHECK(action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE);
+	CHECK(HostScreen() == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	CHECK(NativeArcadeLinkHost_Enter() == 1);
+	CHECK(HostTicksToSoloOffer() == NATIVE_ARCADE_FLOW_DEFAULT_SOLO_OFFER_DELAY_TICKS);
+	CHECK(NativeArcadeLinkHost_Tick(NATIVE_ARCADE_MENU_BUTTON_CROSS, 0u) == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_BEGIN_SOLO_SELECT);
+	CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+	for (tick = 0u; (tick < 3u) && (HostView().screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT); tick++)
+	{
+		CHECK(HostPress(NATIVE_ARCADE_MENU_BUTTON_CROSS) == 0);
+	}
+	CHECK(HostView().screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT);
+	for (tick = 0u; (tick < PAIR_BUDGET) && (HostView().screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_SELECT_RESULT); tick++)
+	{
+		action = NativeArcadeLinkHost_Tick(0u, 0u);
+	}
+	CHECK(action == (uint32_t)NATIVE_ARCADE_FLOW_ACTION_START_SOLO_RACE);
+	CHECK((HostView().screen == (uint32_t)NATIVE_ARCADE_FLOW_SCREEN_RACING) && (HostView().solo == 1u));
+	for (tick = 0u; tick < 5u; tick++)
+	{
+		CHECK(NativeArcadeLinkHost_Tick(0u, 0u) == ACT_NONE);
+		CHECK(CheckNoDivergence() == 0);
+	}
+	StopDriveRace();
+	CHECK(CheckInert() == 0);
+	return 0;
+}
+
+static int TestDriveClosingTickDivergence(void)
+{
+	int failed = RunDriveClosingTickDivergence();
+
+	if (failed != 0)
+	{
+		StopDriveRace();
+	}
+	return failed;
+}
+
 /* ---- Discovery (docs/DISCOVERY_MILESTONE.md DISC-12, slice DISC-S4) ---- */
 
 static struct NativeArcadeDiscoveryService g_fakePeer;
@@ -5861,6 +6057,7 @@ int main(void)
 	CHECK(TestSoloConfigEveryCharacter() == 0);
 	CHECK(TestSoloConfigFailsClosed() == 0);
 	CHECK(TestSoloRace() == 0);
+	CHECK(TestDriveClosingTickDivergence() == 0);
 	CHECK(TestDiscoveryStaticModeOpensNothing() == 0);
 	CHECK(TestDiscoveryPairsAndLocalCab() == 0);
 	CHECK(TestDiscoveryBindFailureNotFatal() == 0);

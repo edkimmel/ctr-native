@@ -2686,16 +2686,31 @@ logs through Platform_Log:
 first, as the per-tick digest lines print them. Only the detecting
 cabinet logs: the other may not detect the divergence (LR-12). A
 divergence found after the race's flow reached RESULTS (a finish linger's
-drain) is still recorded under that race's number. One found only by the
-Tick that closes the link, leaving RESULTS, can be missed: the link's
-session is gone before the helper runs. Stalls, faults, local failures,
+drain) is still recorded under that race's number. So is one found only by
+the Tick that closes the link, leaving RESULTS (its own poll drains the
+bundle, and its action then closes the link, so the session is gone
+before the helper runs): every close of an open lobby outside solo, with
+the match count nonzero, first keeps the session's first divergence
+report, if it has one, in the adapter with the match count it belongs
+to, and the helper, when the link gives no report, reads that kept
+report (NativeArcadeNetplay_ClosedDivergence, a platform-only hook) only
+if it was kept under the current match count; the at-most-once rule and
+the other guards are unchanged. A successful Enter and Shutdown drop the
+kept report (Init starts without one), so after AbortToTitle or a new
+pairing no earlier pairing's report can become a race's record, and the
+next race's number never matches it. Stalls, faults, local failures,
 and a finish with no digest disagreement latch nothing. Game code names
 no lockstep token: the hook sees only the host's record. Pinned by
 native_arcade_link_host_isolation 3i (the header record and take, the
-helper's whole body, its four names and three call sites, the take's
-body, the resets, and the hook as the one game caller) and
+helper's whole body with its fallback, its four names and three call
+sites, the one ClosedDivergence call, the take's body, the resets, and
+the hook as the one game caller), native_arcade_netplay_isolation 10
+(the keep's whole body and its one call, in CloseLobby before the close,
+the drop's two calls, and the accessor's body), and
 main_arcade_link_hook_isolation 12c (the one call site, its order, and
-the format).
+the format). native_arcade_link_host_unit
+(TestDriveClosingTickDivergence) and native_arcade_netplay_unit
+(TestInRaceDivergenceFromPoll) prove the closing-Tick path.
 
 LR-71 The failure rows' proof (LR-S12). Every row of the LR-12 table has
 a named unit case (the inventory in LR-S12's result). The host cases run
@@ -5856,7 +5871,8 @@ Part B result: the three-race run and the gate (LR-75, LR-76).
     (for example a latch inside the adapter ahead of its CLOSE_LINK and
     BEGIN_REMATCH teardown, or a divergence record kept past the close), a
     change to the host and adapter and their isolation pins (host 3i), out
-    of this slice.
+    of this slice. Closed later: the adapter keeps the closed session's
+    report and the host reads it (LR-70).
   - recorded, not closed (the LR-S13 review): the cabinet whose host Tick
     finds race 2's divergence logs no drive end line (LR-76's open
     observability item). The flow seen off RACING ends the drive phase

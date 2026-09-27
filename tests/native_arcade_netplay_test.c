@@ -981,6 +981,7 @@ static int TestDormancy(void)
 	struct NativeMatchConfigV1 fixture;
 	struct NativeArcadeNetplayConfig config;
 	struct NativeArcadeNetplayView view;
+	uint32_t closedRace;
 
 	NativeLockstepPeerLinkFixture_BuildConfig(&fixture);
 	CHECK(MakeConfig(&config, &fixture, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, TEST_DORMANT_A_PORT, TEST_DORMANT_B_PORT));
@@ -1012,6 +1013,10 @@ static int TestDormancy(void)
 	CHECK(NativeArcadeNetplay_Tick(NULL, 0u, 0u) == ACT_NONE);
 	CHECK(NativeArcadeNetplay_Enter(NULL) == ACT_NONE);
 	CHECK(NativeArcadeNetplay_Link(NULL) == NULL);
+	closedRace = UINT32_MAX;
+	CHECK(NativeArcadeNetplay_ClosedDivergence(NULL, &closedRace) == NULL);
+	CHECK(NativeArcadeNetplay_ClosedDivergence(&g_a, &closedRace) == NULL);
+	CHECK(closedRace == UINT32_MAX);
 	CHECK(NativeArcadeNetplay_AgreedConfig(NULL) == NULL);
 	NativeArcadeNetplay_OnTakeResult(NULL, NATIVE_LOCKSTEP_SESSION_STALL, 0u);
 
@@ -1691,6 +1696,9 @@ static int TestInRaceDivergenceFromPoll(void)
 	struct NativeLockstepSession *sessionB;
 	const struct NativeLockstepMatchOutcomeReport *report;
 	const struct NativeLockstepDivergenceReport *divergence;
+	struct NativeLockstepDivergenceReport expectedA;
+	struct NativeLockstepDivergenceReport expectedB;
+	uint32_t keptRace = 0u;
 	enum NativeArcadeFlowAction actionA;
 	enum NativeArcadeFlowAction actionB;
 	const uint32_t divergeFrame = 6u;
@@ -1788,6 +1796,45 @@ static int TestInRaceDivergenceFromPoll(void)
 	CHECK(report->frameIndex == divergeFrame);
 	CHECK(g_b.roster.lifecycle[g_a.localSlot] == (uint8_t)NATIVE_MATCH_SLOT_LIFECYCLE_DISCONNECTED);
 	CHECK(g_b.roster.lifecycle[g_b.localSlot] == (uint8_t)NATIVE_MATCH_SLOT_LIFECYCLE_ACTIVE);
+
+	/* LR-70: no link closed yet, so nothing is kept. Leaving RESULTS (the
+	 * idle timeout's CLOSE_LINK) closes each link, and the close keeps its
+	 * session's report, byte for byte, under race 1. The later
+	 * RETURN_TO_TITLE (no link open) keeps it; A's Enter drops it, and B's
+	 * Shutdown drops it. */
+	expectedA = *NativeLockstepSession_FirstDivergence(sessionA);
+	expectedB = *NativeLockstepSession_FirstDivergence(sessionB);
+	CHECK(NativeArcadeNetplay_ClosedDivergence(&g_a, &keptRace) == NULL);
+	CHECK(NativeArcadeNetplay_ClosedDivergence(&g_b, &keptRace) == NULL);
+	CHECK(TickUntilLeft(&g_a, NATIVE_ARCADE_FLOW_SCREEN_RESULTS, NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK));
+	CHECK(NativeArcadeNetplay_Link(&g_a) == NULL);
+	keptRace = UINT32_MAX;
+	divergence = NativeArcadeNetplay_ClosedDivergence(&g_a, &keptRace);
+	CHECK(divergence != NULL);
+	CHECK(keptRace == 1u);
+	CHECK(memcmp(divergence, &expectedA, sizeof(expectedA)) == 0);
+	CHECK(NativeArcadeNetplay_ClosedDivergence(&g_a, NULL) == NULL);
+	CHECK(NativeArcadeNetplay_ClosedDivergence(&g_b, &keptRace) == NULL);
+	CHECK(TickUntilLeft(&g_b, NATIVE_ARCADE_FLOW_SCREEN_RESULTS, NATIVE_ARCADE_FLOW_ACTION_CLOSE_LINK));
+	keptRace = UINT32_MAX;
+	divergence = NativeArcadeNetplay_ClosedDivergence(&g_b, &keptRace);
+	CHECK(divergence != NULL);
+	CHECK(keptRace == 1u);
+	CHECK(memcmp(divergence, &expectedB, sizeof(expectedB)) == 0);
+	CHECK(TickUntilLeft(&g_a, NATIVE_ARCADE_FLOW_SCREEN_EXIT, NATIVE_ARCADE_FLOW_ACTION_RETURN_TO_TITLE));
+	CHECK(ScreenOf(&g_a) == NATIVE_ARCADE_FLOW_SCREEN_OFF);
+	keptRace = UINT32_MAX;
+	divergence = NativeArcadeNetplay_ClosedDivergence(&g_a, &keptRace);
+	CHECK((divergence != NULL) && (keptRace == 1u));
+	CHECK(NativeArcadeNetplay_Enter(&g_a) == NATIVE_ARCADE_FLOW_ACTION_BEGIN_LOBBY);
+	keptRace = UINT32_MAX;
+	CHECK(NativeArcadeNetplay_ClosedDivergence(&g_a, &keptRace) == NULL);
+	CHECK(keptRace == UINT32_MAX);
+	CHECK(g_a.matchCount == 1u);
+	NativeArcadeNetplay_Shutdown(&g_b);
+	CHECK(NativeArcadeNetplay_ClosedDivergence(&g_b, &keptRace) == NULL);
+	CHECK(g_b.closedDivergenceValid == 0u);
+	CHECK(g_b.closedDivergenceRace == 0u);
 
 	ShutdownBoth();
 	return 0;

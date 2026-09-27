@@ -552,7 +552,12 @@ static void NativeArcadeLinkHost_ResetDivergence(void)
  * divergence latched in the race link's session is copied into a
  * pointer-free record for the game hook's log. That covers every latch
  * point: the adapter's own poll (Tick), the drive's poll and take, and a
- * parked digest inside the drive's record (RaceStep). The race number is the
+ * parked digest inside the drive's record (RaceStep). A Tick whose own poll
+ * finds it and whose action then closes the link (leaving RESULTS) leaves
+ * no session to read: the adapter kept that session's report when it
+ * closed the link (NativeArcadeNetplay_ClosedDivergence), and it is read
+ * when the link gives none, only under the race number it was kept for.
+ * The race number is the
  * link's match count, the same number the end-of-race record carries; a
  * record for this race number is never latched twice, and a record not
  * taken is replaced by the next race's. The report's frame is the divergent
@@ -568,6 +573,7 @@ static void NativeArcadeLinkHost_ResetDivergence(void)
 static void NativeArcadeLinkHost_LatchDivergence(void)
 {
 	const struct NativeLockstepDivergenceReport *report;
+	uint32_t closedRace = 0u;
 	uint32_t domain;
 
 	if ((g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) || (g_netplay.matchCount == 0u) ||
@@ -578,7 +584,14 @@ static void NativeArcadeLinkHost_LatchDivergence(void)
 	report = NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay)));
 	if (report == NULL)
 	{
-		return;
+		/* The Tick that closed the link (leaving RESULTS) may have found it
+		 * in its own poll: the adapter kept the closed session's report,
+		 * which counts only for this same race number. */
+		report = NativeArcadeNetplay_ClosedDivergence(&g_netplay, &closedRace);
+		if ((report == NULL) || (closedRace != g_netplay.matchCount))
+		{
+			return;
+		}
 	}
 	memset(&g_raceDivergence, 0, sizeof(g_raceDivergence));
 	g_raceDivergence.raceNumber = g_netplay.matchCount;

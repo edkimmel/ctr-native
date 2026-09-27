@@ -772,7 +772,12 @@ endif()
 #     LR-S12). The header declares the take and the record with exactly its
 #     six fields (pointer-free). The .c latches it in one helper, which reads
 #     the race link's session only through NativeLockstepSession_FirstDivergence
-#     (named once), skips a race number already latched, and copies the
+#     (named once), skips a race number already latched, and, when the link
+#     gives no report, falls back to the report the adapter kept when it
+#     closed the link (NativeArcadeNetplay_ClosedDivergence, named once),
+#     only if it was kept under the same match count (a divergence found by
+#     the Tick that closes the link leaving RESULTS; the adapter's side is
+#     tests/native_arcade_netplay_isolation_test.cmake 10), and copies the
 #     report's frame, canonical domain mask, and digests (the lowest differing
 #     domain's, else the combined ones; the whole body is pinned) with the
 #     link's match count; it is called exactly three times: in Tick right after
@@ -791,8 +796,9 @@ ctr_require_in("${host_header}" "${header_flat}"
     "struct NativeArcadeLinkHostRaceDivergence { uint32_t raceNumber; uint32_t raceTick; uint32_t domainMask; uint32_t reserved; uint64_t localDigest; uint64_t remoteDigest; };")
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_LatchDivergence(" latch_body)
 ctr_require_in("${host_source} (LatchDivergence)" "${latch_body}"
-    "{ const struct NativeLockstepDivergenceReport *report; uint32_t domain; if ((g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) || (g_netplay.matchCount == 0u) || (g_raceDivergenceRace == g_netplay.matchCount) || NativeArcadeLinkHost_LinkSolo()) { return; } report = NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay))); if (report == NULL) { return; } memset(&g_raceDivergence, 0, sizeof(g_raceDivergence)); g_raceDivergence.raceNumber = g_netplay.matchCount; g_raceDivergence.raceTick = report->frameIndex; g_raceDivergence.domainMask = report->canonicalDomainMask; g_raceDivergence.localDigest = report->localCombinedDigest; g_raceDivergence.remoteDigest = report->remoteCombinedDigest; for (domain = 0u; domain < NATIVE_CANONICAL_DOMAIN_COUNT; domain++) { if ((report->canonicalDomainMask & (UINT32_C(1) << domain)) != 0u) { g_raceDivergence.localDigest = report->localDomainDigests[domain]; g_raceDivergence.remoteDigest = report->remoteDomainDigests[domain]; break; } } g_raceDivergencePending = 1u; g_raceDivergenceRace = g_netplay.matchCount;")
+    "{ const struct NativeLockstepDivergenceReport *report; uint32_t closedRace = 0u; uint32_t domain; if ((g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) || (g_netplay.matchCount == 0u) || (g_raceDivergenceRace == g_netplay.matchCount) || NativeArcadeLinkHost_LinkSolo()) { return; } report = NativeLockstepSession_FirstDivergence(NativeLockstepPeerLink_Session(NativeArcadeNetplay_Link(&g_netplay))); if (report == NULL) { report = NativeArcadeNetplay_ClosedDivergence(&g_netplay, &closedRace); if ((report == NULL) || (closedRace != g_netplay.matchCount)) { return; } } memset(&g_raceDivergence, 0, sizeof(g_raceDivergence)); g_raceDivergence.raceNumber = g_netplay.matchCount; g_raceDivergence.raceTick = report->frameIndex; g_raceDivergence.domainMask = report->canonicalDomainMask; g_raceDivergence.localDigest = report->localCombinedDigest; g_raceDivergence.remoteDigest = report->remoteCombinedDigest; for (domain = 0u; domain < NATIVE_CANONICAL_DOMAIN_COUNT; domain++) { if ((report->canonicalDomainMask & (UINT32_C(1) << domain)) != 0u) { g_raceDivergence.localDigest = report->localDomainDigests[domain]; g_raceDivergence.remoteDigest = report->remoteDomainDigests[domain]; break; } } g_raceDivergencePending = 1u; g_raceDivergenceRace = g_netplay.matchCount;")
 ctr_require_count("${host_source}" "${source_flat}" "NativeLockstepSession_FirstDivergence(" 1)
+ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeNetplay_ClosedDivergence(" 1)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_LatchDivergence(" 4)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_LatchDivergence(); return NativeArcadeLinkHost_DriveStatus(status, pads, padsOut);" 2)
 ctr_body("${host_source}" "${source_code}" "uint32_t NativeArcadeLinkHost_RaceStep(" step_body)
