@@ -221,8 +221,11 @@ Integration order:
   picks the race: two-cab resolves the fixture through match select;
   one-cab builds a single-cabinet config from the fixture's track, laps,
   CAB1 character, and bot difficulty, with the retail 1P bots and the seed
-  as its masterSeed (match select is not used). The report (format v11)
-  names the profile. `tools/arcade-roster-proof-check.ps1` runs eleven
+  as its masterSeed (match select is not used).
+  `--arcade-roster-proof-track N` (a match-select levelID; default the
+  fixture's track 3) runs either profile on another track; the checker's
+  `-Track N` passes it to every run. The report (format v12) names the
+  profile and, on its `track` line, the track. `tools/arcade-roster-proof-check.ps1` runs eleven
   proofs, split across two ctests by `-Group`:
   `arcade_roster_determinism_two_cab` runs A-E and K, and
   `arcade_roster_determinism_one_cab` runs F-J plus its own A (see Build

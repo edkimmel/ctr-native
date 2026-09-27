@@ -30,6 +30,7 @@ static const char k_seedOption[] = "--arcade-roster-proof-seed";
 static const char k_dwellOption[] = "--arcade-roster-proof-dwell";
 static const char k_ticksOption[] = "--arcade-roster-proof-ticks";
 static const char k_profileOption[] = "--arcade-roster-proof-profile";
+static const char k_trackOption[] = "--arcade-roster-proof-track";
 static const char k_holdOption[] = "--arcade-roster-proof-hold";
 static const char k_autopilotOption[] = "--arcade-roster-proof-autopilot";
 static const char k_clockOption[] = "--arcade-roster-proof-clock";
@@ -170,6 +171,22 @@ static int NativeArcadeRosterProof_ParseDecimal(const char *text, uint32_t minim
 	return 1;
 }
 
+/* A match-select table track (decimal, 1..4 digits); 0 with *trackID
+ * untouched otherwise. */
+static int NativeArcadeRosterProof_ParseTrack(const char *text, uint8_t *trackID)
+{
+	uint32_t value = 0;
+	uint32_t index = 0;
+
+	if (!NativeArcadeRosterProof_ParseDecimal(text, 0u, (uint32_t)UINT8_MAX, &value) ||
+	    !NativeMatchSelect_TrackIndex((uint8_t)value, &index))
+	{
+		return 0;
+	}
+	*trackID = (uint8_t)value;
+	return 1;
+}
+
 /* The value after argv[index], or NULL when it is missing or looks like an option. */
 static const char *NativeArcadeRosterProof_Value(int argc, char *argv[], int index)
 {
@@ -195,6 +212,7 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 	int seenDwell = 0;
 	int seenTicks = 0;
 	int seenProfile = 0;
+	int seenTrack = 0;
 	int seenHold = 0;
 	int seenAutopilot = 0;
 	int seenClock = 0;
@@ -275,6 +293,17 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 			seenProfile = 1;
 			index++;
 		}
+		else if (strcmp(arg, k_trackOption) == 0)
+		{
+			value = NativeArcadeRosterProof_Value(argc, argv, index);
+			if ((value == NULL) || seenTrack || !NativeArcadeRosterProof_ParseTrack(value, &candidate.trackID))
+			{
+				return 0;
+			}
+			candidate.trackSet = 1u;
+			seenTrack = 1;
+			index++;
+		}
 		else if (strcmp(arg, k_holdOption) == 0)
 		{
 			/* A flag: it takes no value. */
@@ -306,8 +335,8 @@ int NativeArcadeRosterProofOptions_ApplyArgs(int argc, char *argv[], struct Nati
 			seenClock = 1;
 		}
 	}
-	/* A seed, dwell, tick count, profile, hold, autopilot, or clock without the proof would be silently ignored. */
-	if ((seenSeed || seenDwell || seenTicks || seenProfile || seenHold || seenAutopilot || seenClock) && !seenProof)
+	/* A seed, dwell, tick count, profile, track, hold, autopilot, or clock without the proof would be silently ignored. */
+	if ((seenSeed || seenDwell || seenTicks || seenProfile || seenTrack || seenHold || seenAutopilot || seenClock) && !seenProof)
 	{
 		return 0;
 	}
@@ -368,8 +397,26 @@ int NativeArcadeRosterProof_ProofBuildIdentity(uint8_t build[NATIVE_IDENTITY_DIG
 	return 1;
 }
 
-/* TWO_CAB: the fixture resolved through match select with two fixed choices. */
-static int NativeArcadeRosterProof_BuildTwoCabConfig(const struct NativeIdentityV1 *identity, uint64_t seed,
+/* The fixture track, or a table track: 1 with *trackID set; 0 otherwise. */
+static int NativeArcadeRosterProof_ResolveTrack(const struct NativeMatchConfigV1 *base, uint32_t track, uint8_t *trackID)
+{
+	uint32_t index = 0;
+
+	if (track == NATIVE_ARCADE_ROSTER_PROOF_TRACK_FIXTURE)
+	{
+		track = base->trackID;
+	}
+	if ((track > (uint32_t)UINT8_MAX) || !NativeMatchSelect_TrackIndex((uint8_t)track, &index))
+	{
+		return 0;
+	}
+	*trackID = (uint8_t)track;
+	return 1;
+}
+
+/* TWO_CAB: the fixture resolved through match select with two fixed
+ * choices; both humans vote the track. */
+static int NativeArcadeRosterProof_BuildTwoCabConfig(const struct NativeIdentityV1 *identity, uint64_t seed, uint32_t track,
 	struct NativeMatchConfigV1 *config)
 {
 	struct NativeMatchConfigV1 base;
@@ -378,8 +425,9 @@ static int NativeArcadeRosterProof_BuildTwoCabConfig(const struct NativeIdentity
 	struct NativeMatchSelectOutcome outcome;
 	uint8_t cab1Slot = 0;
 	uint8_t cab2Slot = 0;
+	uint8_t trackID = 0;
 
-	if (!NativeArcadeLinkFixture_Build(identity, &base) ||
+	if (!NativeArcadeLinkFixture_Build(identity, &base) || !NativeArcadeRosterProof_ResolveTrack(&base, track, &trackID) ||
 	    !NativeMatchConfigV1_FindRoleSlot(&base, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &cab1Slot) ||
 	    !NativeMatchConfigV1_FindRoleSlot(&base, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB2_HUMAN, &cab2Slot))
 	{
@@ -390,7 +438,7 @@ static int NativeArcadeRosterProof_BuildTwoCabConfig(const struct NativeIdentity
 	choices[1].characterID = base.slots[cab2Slot].characterID;
 	for (uint32_t human = 0; human < NATIVE_ARCADE_BOT_RULES_HUMAN_COUNT; human++)
 	{
-		choices[human].trackID = (uint8_t)base.trackID;
+		choices[human].trackID = trackID;
 		choices[human].lapCount = (uint8_t)base.lapCount;
 	}
 	choices[0].nonce = seed;
@@ -405,11 +453,12 @@ static int NativeArcadeRosterProof_BuildTwoCabConfig(const struct NativeIdentity
 }
 
 /*
- * ONE_CAB (RS-23): no match select. The fixture gives the identity, track,
- * laps, tick rate, the CAB1 character, and the bots' difficulty; the bots are
- * the LOAD_Robots1P rule for that character, and the seed is the masterSeed.
+ * ONE_CAB (RS-23): no match select. The fixture gives the identity, laps,
+ * tick rate, the CAB1 character, and the bots' difficulty; the track is the
+ * given one (the fixture's by default); the bots are the LOAD_Robots1P rule
+ * for that character, and the seed is the masterSeed.
  */
-static int NativeArcadeRosterProof_BuildOneCabConfig(const struct NativeIdentityV1 *identity, uint64_t seed,
+static int NativeArcadeRosterProof_BuildOneCabConfig(const struct NativeIdentityV1 *identity, uint64_t seed, uint32_t track,
 	struct NativeMatchConfigV1 *config)
 {
 	struct NativeMatchConfigV1 base;
@@ -417,10 +466,11 @@ static int NativeArcadeRosterProof_BuildOneCabConfig(const struct NativeIdentity
 	uint8_t bots[NATIVE_ARCADE_BOT_RULES_1P_BOT_COUNT];
 	uint8_t cab1Slot = 0;
 	uint8_t botDifficulty = 0;
+	uint8_t trackID = 0;
 	int botFound = 0;
 	uint32_t bot = 0;
 
-	if (!NativeArcadeLinkFixture_Build(identity, &base) ||
+	if (!NativeArcadeLinkFixture_Build(identity, &base) || !NativeArcadeRosterProof_ResolveTrack(&base, track, &trackID) ||
 	    !NativeMatchConfigV1_FindRoleSlot(&base, (uint8_t)NATIVE_MATCH_SLOT_ROLE_CAB1_HUMAN, &cab1Slot))
 	{
 		return 0;
@@ -438,7 +488,7 @@ static int NativeArcadeRosterProof_BuildOneCabConfig(const struct NativeIdentity
 		return 0;
 	}
 	NativeMatchConfigV1_InitArcadeOneCab(&candidate);
-	candidate.trackID = base.trackID;
+	candidate.trackID = trackID;
 	candidate.lapCount = base.lapCount;
 	candidate.tickRateNumerator = base.tickRateNumerator;
 	candidate.tickRateDenominator = base.tickRateDenominator;
@@ -474,8 +524,8 @@ static int NativeArcadeRosterProof_BuildOneCabConfig(const struct NativeIdentity
 	return 1;
 }
 
-int NativeArcadeRosterProof_BuildConfig(const struct NativeIdentityV1 *identity, uint32_t profile, uint64_t seed,
-	struct NativeMatchConfigV1 *config)
+int NativeArcadeRosterProof_BuildTrackConfig(const struct NativeIdentityV1 *identity, uint32_t profile, uint64_t seed,
+	uint32_t track, struct NativeMatchConfigV1 *config)
 {
 	if ((identity == NULL) || (config == NULL))
 	{
@@ -483,13 +533,19 @@ int NativeArcadeRosterProof_BuildConfig(const struct NativeIdentityV1 *identity,
 	}
 	if (profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB)
 	{
-		return NativeArcadeRosterProof_BuildTwoCabConfig(identity, seed, config);
+		return NativeArcadeRosterProof_BuildTwoCabConfig(identity, seed, track, config);
 	}
 	if (profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB)
 	{
-		return NativeArcadeRosterProof_BuildOneCabConfig(identity, seed, config);
+		return NativeArcadeRosterProof_BuildOneCabConfig(identity, seed, track, config);
 	}
 	return 0;
+}
+
+int NativeArcadeRosterProof_BuildConfig(const struct NativeIdentityV1 *identity, uint32_t profile, uint64_t seed,
+	struct NativeMatchConfigV1 *config)
+{
+	return NativeArcadeRosterProof_BuildTrackConfig(identity, profile, seed, NATIVE_ARCADE_ROSTER_PROOF_TRACK_FIXTURE, config);
 }
 
 int NativeArcadeRosterProof_Configure(const struct NativeArcadeRosterProofOptions *options,
@@ -509,8 +565,9 @@ int NativeArcadeRosterProof_Configure(const struct NativeArcadeRosterProofOption
 	    ((options->autopilot != 0u) && (options->profile != NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB)) || (options->hold > 1u) ||
 	    ((options->hold != 0u) && (options->tickCount <= NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK)) || (options->clock > 1u) ||
 	    ((options->clock != 0u) && ((options->profile != NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB) ||
-	                                (options->tickCount <= NATIVE_ARCADE_ROSTER_PROOF_CLOCK_TICK))) ||
-	    !NativeArcadeRosterProof_BuildConfig(identity, options->profile, options->seed, &config))
+	                                (options->tickCount <= NATIVE_ARCADE_ROSTER_PROOF_CLOCK_TICK))) || (options->trackSet > 1u) ||
+	    !NativeArcadeRosterProof_BuildTrackConfig(identity, options->profile, options->seed,
+	        (options->trackSet != 0u) ? (uint32_t)options->trackID : NATIVE_ARCADE_ROSTER_PROOF_TRACK_FIXTURE, &config))
 	{
 		return 0;
 	}
@@ -1013,7 +1070,7 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 	NativeArcadeRosterProof_Name(report->setupStatusName, statusName);
 	NativeArcadeRosterProof_Name(report->setupFailureName, failureName);
 
-	NativeArcadeRosterProof_Append(&text, "arcade roster proof v11\n");
+	NativeArcadeRosterProof_Append(&text, "arcade roster proof v12\n");
 	NativeArcadeRosterProof_Append(&text, "drivers digest excludes physics\n");
 	NativeArcadeRosterProof_Append(&text, "result %s (%u)\n", NativeArcadeRosterProof_ResultName(report->result),
 		(unsigned)report->result);
@@ -1024,6 +1081,8 @@ int NativeArcadeRosterProof_FormatReport(const struct NativeArcadeRosterProofRep
 		(unsigned)(uint32_t)(report->seed & 0xFFFFFFFFu));
 	NativeArcadeRosterProof_Append(&text, "dwell %u\n", (unsigned)report->dwellTicks);
 	NativeArcadeRosterProof_Append(&text, "ticks %u\n", (unsigned)report->ticksRequested);
+	/* v12: the track that ran (--arcade-roster-proof-track, or the fixture's). */
+	NativeArcadeRosterProof_Append(&text, "track %u\n", (unsigned)report->trackID);
 	NativeArcadeRosterProof_AppendTick(&text, "menu ready tick", report->menuReadyTick);
 	NativeArcadeRosterProof_AppendTick(&text, "demo race tick", report->demoRaceTick);
 	NativeArcadeRosterProof_AppendTick(&text, "launch tick", report->launchTick);

@@ -35,6 +35,14 @@ param(
     [ValidateSet('all', 'two-cab', 'one-cab')]
     [string]$Group = 'all',
 
+    # The race track (a levelID) of every run.  When given, every run passes
+    # --arcade-roster-proof-track <Track> (ctr_native accepts only the 16
+    # arcade match-select tracks and fails to start on any other) and every
+    # report must say "track <Track>".  When not given (the default), no run
+    # passes the option and every report must say "track 3", the arcade-link
+    # fixture's track.
+    [int]$Track,
+
     # Print the group's runs and which checks it runs, then exit 0 without
     # launching anything (tests/arcade_roster_proof_groups_test.cmake).
     [switch]$ListChecks
@@ -114,8 +122,10 @@ param(
 # driver N, empty driver slots 2", and L and M must be byte-identical.  Both
 # are skipped (with a note) when -Ticks is 600 or less.
 #
-# Every report must be format v11 with result PASS, the profile line right
-# after the result line, the expected launch window, both counter lines, a
+# Every report must be format v12 with result PASS, the profile line right
+# after the result line, the "ticks N" line followed (since v12) by
+# "track T", T the -Track value or the fixture's 3 without it, the expected
+# launch window, both counter lines, a
 # seeded line whose pin readback is the pinned values (timer 0,
 # frameTimerConfetti 0, and, since v10, LR-8's rcntTotalUnits 0 and
 # clockFrameStart -200) ending "match 1", eight slot lines, exactly the run's requested
@@ -197,6 +207,9 @@ $countersPattern = '^timer (-?[0-9]+) frameCounter (-?[0-9]+) frameTimer (-?[0-9
 # clockFrameStart.
 $seededPattern = '^seeded randomNumber 0x[0-9A-F]{4} advRng0 0x[0-9A-F]{8} advRng1 0x[0-9A-F]{8} psxRand 0x[0-9A-F]{8} audioRNG 0x[0-9A-F]{8} timer 0 frameTimerConfetti 0 rcntTotalUnits 0 clockFrameStart -200 match 1$'
 $holdPattern = '^hold tick ([0-9]+) periods ([0-9]+) wall us ([0-9]+) independent us ([0-9]+|none) expected us ([0-9]+) pumps ([0-9]+) min pumps per period ([0-9]+|none) banners due ([0-9]+) presented ([0-9]+) vsync entry (-?[0-9]+) exit (-?[0-9]+) frameTimer before (-?[0-9]+|none) after (-?[0-9]+|none)$'
+# The arcade-link fixture's track (NATIVE_ARCADE_LINK_FIXTURE_TRACK_ID): the
+# track of every run without -Track.
+$fixtureTrack = 3
 # Run K's hold (NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK and _HOLD_PERIODS).
 $holdTick = 300
 $holdPeriods = 45
@@ -343,6 +356,10 @@ function Start-Run($Run) {
     if ($Run.Clock) {
         $arguments += @('--arcade-roster-proof-clock')
     }
+    # Without -Track no run names the track (the fixture's).
+    if ($trackGiven) {
+        $arguments += @('--arcade-roster-proof-track', "$Track")
+    }
     $argumentLine = ($arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
     $process = Start-Process -FilePath $resolvedExecutable -ArgumentList $argumentLine `
         -WorkingDirectory $resolvedOutput -NoNewWindow -PassThru `
@@ -433,8 +450,16 @@ function Read-Report($Run) {
             $report.Header[$Matches[1]] = $Matches[2]
         }
     }
-    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v11') -or ($lines[1] -ne 'drivers digest excludes physics')) {
-        $report.Problems += 'the report does not start with the v11 header and "drivers digest excludes physics"'
+    if (($lines.Count -lt 2) -or ($lines[0] -ne 'arcade roster proof v12') -or ($lines[1] -ne 'drivers digest excludes physics')) {
+        $report.Problems += 'the report does not start with the v12 header and "drivers digest excludes physics"'
+    }
+    # v12: the track line comes right after the ticks line.
+    if (($lines.Count -lt 10) -or ($lines[8] -ne "ticks $($Run.Ticks)") -or ($lines[9] -ne "track $expectedTrack")) {
+        $found = ''
+        if ($lines.Count -ge 10) {
+            $found = "'$($lines[8])', '$($lines[9])'"
+        }
+        $report.Problems += "lines 9 and 10 are $found, expected 'ticks $($Run.Ticks)' then 'track $expectedTrack'"
     }
     # The hold line: "hold none" without the hold, the evidence line with it.
     if ($Run.Hold) {
@@ -648,10 +673,21 @@ try {
             Exit-Failed "check '$($check.Id)' runs in neither -Group two-cab nor -Group one-cab"
         }
     }
+    # -Track: every run's --arcade-roster-proof-track and the reports'
+    # "track" line; without it the fixture's track and no option.
+    $trackGiven = $PSBoundParameters.ContainsKey('Track')
+    $expectedTrack = $fixtureTrack
+    if ($trackGiven) {
+        if (($Track -lt 0) -or ($Track -gt 255)) {
+            Exit-Failed "invalid track $Track (a levelID, 0..255)"
+        }
+        $expectedTrack = $Track
+    }
     $groupRunNames = $groupRuns[$Group]
     $groupChecks = @(Get-GroupChecks $groupRunNames)
     if ($ListChecks) {
         Write-Output "group $Group runs $($groupRunNames -join ' ')"
+        Write-Output "track $expectedTrack"
         foreach ($check in $checkTable) {
             $state = 'other group'
             if ($groupChecks -contains $check.Id) {
@@ -759,7 +795,11 @@ try {
     if (($groupRunNames -contains 'K') -and (-not $runK)) {
         $runKText = ' (K skipped)'
     }
-    Write-Output "arcade roster determinism check, group ${Group}: $($runs.Count) runs ($mode, fixed VBlank pacing), $Ticks race ticks each, $($groupText[$Group])$runKText"
+    $trackText = "track $expectedTrack (the fixture's)"
+    if ($trackGiven) {
+        $trackText = "track $expectedTrack (--arcade-roster-proof-track)"
+    }
+    Write-Output "arcade roster determinism check, group ${Group}: $($runs.Count) runs ($mode, fixed VBlank pacing), $Ticks race ticks each, $trackText, $($groupText[$Group])$runKText"
     Write-Output "executable: $resolvedExecutable"
     Write-Output "output:     $resolvedOutput"
 

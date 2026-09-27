@@ -43,7 +43,7 @@
 #     comments name BotNavIndex and LR-17. So this test cannot pass while
 #     the ruling is broken;
 #  6. the unavailable topology digest the unit test pins is the one the
-#     roster proof check requires, and the check requires report v11.
+#     roster proof check requires, and the check requires report v12.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "race digest isolation")
@@ -701,5 +701,5 @@ string(LENGTH "${unit_digest}" unit_digest_length)
 if(NOT unit_digest_length EQUAL 16)
     message(FATAL_ERROR "${prefix}: the unavailable topology digest '${unit_digest}' is not 16 hex digits")
 endif()
-ctr_require("tools/arcade-roster-proof-check.ps1" "${checker}" "'arcade roster proof v11'")
-ctr_forbid("tools/arcade-roster-proof-check.ps1" "${checker}" "'arcade roster proof v10'")
+ctr_require("tools/arcade-roster-proof-check.ps1" "${checker}" "'arcade roster proof v12'")
+ctr_forbid("tools/arcade-roster-proof-check.ps1" "${checker}" "'arcade roster proof v11'")

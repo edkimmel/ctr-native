@@ -208,6 +208,8 @@ static void MainArcadeRosterProof_Finish(uint32_t requested)
 	memset(&report, 0, sizeof(report));
 	/* The profile of the configured config, the one that ran. */
 	report.profile = (config != NULL) ? config->profile : 0u;
+	/* Its track (report v12): the one the setup loaded and verified. */
+	report.trackID = (config != NULL) ? config->trackID : 0u;
 	report.setupStatus = (uint32_t)status;
 	report.setupFailure = (uint32_t)failure;
 	MainArcadeRosterProof_CopyName(report.setupStatusName, MainArcadeRaceSetup_StatusName(status));

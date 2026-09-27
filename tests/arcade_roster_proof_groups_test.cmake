@@ -8,6 +8,9 @@
 #   - the checks two-cab and one-cab run together are exactly all's, and the
 #     cross-profile checks (F != A, F's input digests against A and H) run in
 #     one-cab;
+#   - every group lists "track 3" (the arcade-link fixture's track) without
+#     -Track, and "track 5" with -Track 5; a -Track outside 0..255 is
+#     rejected;
 #   - an unknown group is rejected.
 
 if(NOT REPO_DIR)
@@ -20,13 +23,14 @@ if(NOT EXISTS "${roster_script}")
 endif()
 
 # Lists group ${group}: sets ${group}_runs to its "group ... runs" text,
-# ${group}_ran and ${group}_other to the ids of the checks it runs and leaves
-# to the other group.  Nothing is launched: the executable and output
-# directory are never used.
+# ${group}_track to its "track N" value, ${group}_ran and ${group}_other to
+# the ids of the checks it runs and leaves to the other group.  Extra
+# arguments are passed to the script (-Track N).  Nothing is launched: the
+# executable and output directory are never used.
 function(list_group group)
     execute_process(
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${roster_script}"
-            -Executable "unused.exe" -OutputDirectory "C:/unused" -Group "${group}" -ListChecks
+            -Executable "unused.exe" -OutputDirectory "C:/unused" -Group "${group}" -ListChecks ${ARGN}
         RESULT_VARIABLE result
         OUTPUT_VARIABLE output
         ERROR_VARIABLE error_output)
@@ -37,11 +41,14 @@ function(list_group group)
     string(REPLACE "\r" "" output "${output}")
     string(REPLACE "\n" ";" lines "${output}")
     set(runs "")
+    set(track "")
     set(ran "")
     set(other "")
     foreach(line IN LISTS lines)
         if(line MATCHES "^group ${group} runs (.*)$")
             set(runs "${CMAKE_MATCH_1}")
+        elseif(line MATCHES "^track ([0-9]+)$")
+            set(track "${CMAKE_MATCH_1}")
         elseif(line MATCHES "^check (.*): runs$")
             list(APPEND ran "${CMAKE_MATCH_1}")
         elseif(line MATCHES "^check (.*): other group$")
@@ -51,6 +58,7 @@ function(list_group group)
         endif()
     endforeach()
     set(${group}_runs "${runs}" PARENT_SCOPE)
+    set(${group}_track "${track}" PARENT_SCOPE)
     set(${group}_ran "${ran}" PARENT_SCOPE)
     set(${group}_other "${other}" PARENT_SCOPE)
 endfunction()
@@ -68,6 +76,31 @@ endif()
 if(NOT one-cab_runs STREQUAL "A F G H I J")
     message(FATAL_ERROR "roster proof groups: -Group one-cab runs '${one-cab_runs}', expected 'A F G H I J'")
 endif()
+
+# Without -Track every group runs on the fixture's track 3; -Track 5 lists
+# track 5 (and the same runs); a track outside 0..255 is rejected.
+foreach(group IN ITEMS all two-cab one-cab)
+    if(NOT "${${group}_track}" STREQUAL "3")
+        message(FATAL_ERROR "roster proof groups: -Group ${group} lists track '${${group}_track}', expected the fixture's 3")
+    endif()
+endforeach()
+set(default_one_cab_ran "${one-cab_ran}")
+list_group(one-cab -Track 5)
+if(NOT one-cab_track STREQUAL "5" OR NOT one-cab_runs STREQUAL "A F G H I J" OR NOT one-cab_ran STREQUAL default_one_cab_ran)
+    message(FATAL_ERROR "roster proof groups: -Group one-cab -Track 5 lists track '${one-cab_track}' and runs '${one-cab_runs}', expected track 5 and the default runs and checks")
+endif()
+list_group(one-cab)
+foreach(bad_track IN ITEMS 256 -1)
+    execute_process(
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${roster_script}"
+            -Executable "unused.exe" -OutputDirectory "C:/unused" -Group "one-cab" -ListChecks -Track ${bad_track}
+        RESULT_VARIABLE bad_track_result
+        OUTPUT_VARIABLE bad_track_output
+        ERROR_VARIABLE bad_track_error)
+    if(bad_track_result EQUAL 0)
+        message(FATAL_ERROR "roster proof groups: -Track ${bad_track} was accepted:\n${bad_track_output}${bad_track_error}")
+    endif()
+endforeach()
 
 list(LENGTH all_ran all_count)
 if(all_count LESS 22 OR NOT "${all_other}" STREQUAL "")

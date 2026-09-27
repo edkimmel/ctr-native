@@ -31,6 +31,12 @@ struct NativeCanonicalStateV1;
  *   --arcade-roster-proof-profile <name>    two-cab or one-cab (exactly, in
  *                                           lowercase); default two-cab: the
  *                                           race profile (RS-23)
+ *   --arcade-roster-proof-track <levelID>   decimal; one of the 16 arcade
+ *                                           match-select tracks
+ *                                           (NativeMatchSelect_TrackIndex);
+ *                                           default: the arcade-link
+ *                                           fixture's track (3): the race
+ *                                           track, in either profile
  *   --arcade-roster-proof-hold              no value: hold the race for
  *                                           HOLD_PERIODS tick periods of wall
  *                                           time at race tick HOLD_TICK
@@ -60,11 +66,12 @@ struct NativeCanonicalStateV1;
  * working directory. Pass an absolute path to write elsewhere.
  *
  * Parsing is transactional: on any error the caller's options are left
- * untouched. Arguments that are not one of these eight options are ignored,
+ * untouched. Arguments that are not one of these nine options are ignored,
  * because other host parsers own them. An option whose value is missing (end
  * of argv, a NULL entry, or a next argument starting with '-'), repeated, or
- * malformed is an error, and so is a seed, dwell, tick count, profile, hold,
- * autopilot, or clock without --arcade-roster-proof, a hold with a tick count of
+ * malformed is an error (a track outside the match-select table included),
+ * and so is a seed, dwell, tick count, profile, track, hold, autopilot, or
+ * clock without --arcade-roster-proof, a hold with a tick count of
  * HOLD_TICK or less, a tick count above MAX_TICKS without the autopilot, the
  * autopilot with the one-cab profile, and the clock with the one-cab profile
  * or a tick count of CLOCK_TICK or less. main.c rejects the proof together
@@ -232,21 +239,24 @@ struct NativeCanonicalStateV1;
  * ONE_CAB proof passes or fails on exactly the evidence a TWO_CAB proof
  * needs (its eight slot lines are then CAB1_HUMAN and seven BOTs).
  *
- * Config, per profile (the same identity, profile, and seed always give the
- * same config):
+ * Config, per profile (the same identity, profile, seed, and track always
+ * give the same config). The track is the --arcade-roster-proof-track value
+ * when given, else the fixture's; it changes the config's trackID and
+ * nothing else (both TWO_CAB humans vote it, so it wins outright, and the
+ * resolved masterSeed does not depend on the votes):
  * - TWO_CAB (the default): the arcade-link fixture
  *   (NativeArcadeLinkFixture_Build) for the caller's identity, resolved
  *   through match select with two fixed choices: CAB1 picks the fixture's
  *   CAB1 character and CAB2 the fixture's CAB2 character, both vote the
- *   fixture track and lap count, and the nonces are seed (CAB1) and seed XOR
+ *   track and the fixture lap count, and the nonces are seed (CAB1) and seed XOR
  *   NATIVE_ARCADE_ROSTER_PROOF_NONCE_MIX (CAB2) (NativeMatchSelect_Resolve,
  *   then NativeMatchSelect_BuildConfig). The seed reaches the config only
  *   through the resolved masterSeed.
  * - RS-23 (owner-accepted default), ONE_CAB: match select stays
  *   TWO_CAB-only and is not used. The arcade-link fixture is built for the
  *   identity, and the config takes from it the build and content identity,
- *   trackID, lapCount, the tick rate, the CAB1 character, and the bots'
- *   difficulty (the fixture's first BOT slot).
+ *   lapCount, the tick rate, the CAB1 character, and the bots' difficulty
+ *   (the fixture's first BOT slot); trackID is the track.
  *   NativeMatchConfigV1_InitArcadeOneCab gives the ONE_CAB roles and
  *   lifecycles; slot 0 (CAB1_HUMAN) holds the CAB1 character at difficulty 0,
  *   and slots 1..7 (BOT) hold NativeArcadeBotRules_ExpectedBots1P(CAB1
@@ -289,6 +299,9 @@ struct NativeCanonicalStateV1;
 /* The forced clock (--arcade-roster-proof-clock): the race tick it fires
  * after, well past the traffic lights. */
 #define NATIVE_ARCADE_ROSTER_PROOF_CLOCK_TICK 600u
+/* BuildTrackConfig's track for "the arcade-link fixture's track" (no
+ * --arcade-roster-proof-track). */
+#define NATIVE_ARCADE_ROSTER_PROOF_TRACK_FIXTURE UINT32_MAX
 
 /* Watchdogs and the post-validation wait, in proof ticks (game frames). */
 #define NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT_TICKS 3000u
@@ -319,6 +332,9 @@ struct NativeArcadeRosterProofOptions
 	uint8_t hold;    /* --arcade-roster-proof-hold given */
 	uint8_t autopilot; /* --arcade-roster-proof-autopilot given */
 	uint8_t clock;     /* --arcade-roster-proof-clock given */
+	uint8_t trackSet;  /* --arcade-roster-proof-track given */
+	uint8_t trackID;   /* its levelID, a match-select table track, when trackSet */
+	uint8_t trackReserved[2];
 	uint32_t dwellTicks;
 	uint64_t seed;
 	uint32_t tickCount; /* race ticks to log */
@@ -484,6 +500,7 @@ struct NativeArcadeRosterProofReport
 	uint32_t validatedTick;
 	uint32_t raceTickZeroTick; /* the proof tick of race tick 0 */
 	uint32_t ticksRequested;   /* --arcade-roster-proof-ticks */
+	uint32_t trackID;          /* the configured config's trackID: the track that ran (v12) */
 	uint32_t tickLineCount;    /* tick lines kept (NativeArcadeRosterProof_TickCount) */
 	uint8_t digestsValid;
 	uint8_t slotsValid;
@@ -509,7 +526,8 @@ struct NativeArcadeRosterProofReport
 };
 
 /* NULL is a no-op. Otherwise: disabled, seed 1, dwell 0, 900 ticks, profile
- * TWO_CAB, no hold, no autopilot, no clock, empty path. */
+ * TWO_CAB, no track (the fixture's), no hold, no autopilot, no clock, empty
+ * path. */
 void NativeArcadeRosterProofOptions_SetDefaults(struct NativeArcadeRosterProofOptions *options);
 
 /* Returns 1 and updates *options on success; 0 with *options untouched otherwise. */
@@ -528,19 +546,30 @@ int NativeArcadeRosterProof_NamesExitOption(int argc, char *argv[]);
 int NativeArcadeRosterProof_ProofBuildIdentity(uint8_t build[NATIVE_IDENTITY_DIGEST_BYTES]);
 
 /*
- * The proof config of a profile (see above; RS-23). Returns 0 with *config
- * untouched on NULL arguments, a profile other than TWO_CAB and ONE_CAB, a
- * fixture the identity cannot build, a failed resolution (TWO_CAB), or a
- * result that fails NativeArcadeBotRules_ValidateConfigV1.
+ * The proof config of a profile on the fixture's track (see above; RS-23):
+ * BuildTrackConfig with NATIVE_ARCADE_ROSTER_PROOF_TRACK_FIXTURE.
  */
 int NativeArcadeRosterProof_BuildConfig(const struct NativeIdentityV1 *identity, uint32_t profile, uint64_t seed,
 	struct NativeMatchConfigV1 *config);
 
 /*
+ * The proof config of a profile on a track (see above): track is a
+ * match-select table levelID, or NATIVE_ARCADE_ROSTER_PROOF_TRACK_FIXTURE
+ * for the fixture's track. Returns 0 with *config untouched on NULL
+ * arguments, a profile other than TWO_CAB and ONE_CAB, any other track, a
+ * fixture the identity cannot build, a failed resolution (TWO_CAB), or a
+ * result that fails NativeArcadeBotRules_ValidateConfigV1.
+ */
+int NativeArcadeRosterProof_BuildTrackConfig(const struct NativeIdentityV1 *identity, uint32_t profile, uint64_t seed,
+	uint32_t track, struct NativeMatchConfigV1 *config);
+
+/*
  * Configures the singleton. Disabled (or NULL) options leave it inactive and
  * return 1. Enabled options need a non-empty log path and a config
- * BuildConfig can build for *identity and the options' profile and seed; on
- * failure the singleton stays inactive and 0 is returned.
+ * BuildTrackConfig can build for *identity and the options' profile, seed,
+ * and track (trackID when trackSet is 1, the fixture's when it is 0; any
+ * other trackSet is refused); on failure the singleton stays inactive and 0
+ * is returned.
  */
 int NativeArcadeRosterProof_Configure(const struct NativeArcadeRosterProofOptions *options,
 	const struct NativeIdentityV1 *identity);
@@ -643,12 +672,15 @@ const char *NativeArcadeRosterProof_LogPath(void);
 /*
  * Formats the report as text into buffer (NUL-terminated) and stores its
  * length without the NUL. Returns 0 on NULL arguments or a buffer too small.
- * The format is line based: a header line ("arcade roster proof v11"; v11
- * added the tick lines' v4 fields, LR-S4), the line "drivers digest excludes
- * physics" (the V1-era drivers field; v4drivers includes it), then "result", "profile" (TWO_CAB
+ * The format is line based: a header line ("arcade roster proof v12"; v11
+ * added the tick lines' v4 fields, LR-S4; v12 the "track" line), the line
+ * "drivers digest excludes physics" (the V1-era drivers field; v4drivers
+ * includes it), then "result", "profile" (TWO_CAB
  * or ONE_CAB, the configured profile; UNKNOWN for any other value), "setup
  * status",
- * "setup failure", "seed", "dwell", "ticks" (requested), "menu ready tick",
+ * "setup failure", "seed", "dwell", "ticks" (requested), "track" (v12: the
+ * report's trackID, the configured config's, as decimal; the fixture's 3
+ * without --arcade-roster-proof-track), "menu ready tick",
  * "demo race tick", "launch tick", "launch window" (title, demo race, or
  * none), "launch counters" (timer, frameCounter, frameTimer, and
  * frameTimerConfetti at the launch tick, as signed decimal, or "none"),
