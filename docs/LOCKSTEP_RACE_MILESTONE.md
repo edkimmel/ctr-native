@@ -2481,7 +2481,8 @@ SETUP_FAILED. The caller's Apply calls MainArcadeRaceDigest_EndRace on it
 digest did not end (<failure>)" when it fails, which is expected after a
 latched projection failure (the next race tick 0 resets the runtime
 anyway). No end outside the drive phase sets it, because no digest began.
-The flow seen off RACING, the one end with no drive result, also sets
+The flow seen off RACING, the one end with no drive result and no failure
+report (SETUP_FAILED on a drive frame logs its failure), also sets
 flowLeftRacing (with raceTick the last race tick driven), and Apply logs
 it as that race's drive end line before the digest's end (LR-76).
 
@@ -2712,8 +2713,11 @@ the hook as the one game caller), native_arcade_netplay_isolation 10
 the drop's two calls, and the accessor's body), and
 main_arcade_link_hook_isolation 12c (the one call site, its order, and
 the format). native_arcade_link_host_unit
-(TestDriveClosingTickDivergence) and native_arcade_netplay_unit
-(TestInRaceDivergenceFromPoll) prove the closing-Tick path.
+(TestDriveClosingTickDivergence) proves the closing-Tick path: the
+detection on that Tick, the record taken once, and the drops.
+native_arcade_netplay_unit (TestInRaceDivergenceFromPoll) proves the
+adapter's side: the keep on close (through the idle timeout's
+CLOSE_LINK), the kept report byte for byte, and the drops.
 
 LR-71 The failure rows' proof (LR-S12). Every row of the LR-12 table has
 a named unit case (the inventory in LR-S12's result). The host cases run
@@ -6213,15 +6217,25 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
     isolation pin (LR-S4). Ruling (b), not taken, would have re-planned
     the Drivers projection without the bot nav index and lost direct
     detection of a bot's nav-path divergence.
-20. Open items LR-S13 recorded, not closed (LR-S13's result, LR-76):
-    - LR-70's divergence found only by the Tick that closes the link,
-      leaving RESULTS, is not logged: the link's session is gone before
-      the host's helper runs. The gate cannot reach it.
-    - The cabinet whose host Tick finds a divergence (race 2's cab2 in the
-      gate) logs no "drive end" line: the flow seen off RACING ends the
-      drive phase with no drive result
-      (game/MAIN/MainArcadeRaceLaunchCore.c:315-319). Only the line is
-      missing; the checker bounds that race's per-tick lines instead.
+20. Items LR-S13 recorded (LR-S13's result, LR-76); the first two are
+    closed, the third stays open:
+    - Closed by eae477000: LR-70's divergence found only by the Tick that
+      closes the link, leaving RESULTS, was not logged, because the link's
+      session was gone before the host's helper ran. CloseLobby now keeps
+      the session's first divergence report under its match count, and
+      the host's helper, when the link gives no report, latches that kept
+      report (LR-70), so the race's record and its "out of sync" line are
+      no longer lost. The gate still cannot reach this path; the host unit
+      test proves it.
+    - Closed by d058b1983: the cabinet whose host Tick finds a divergence
+      (race 2's cab2 in the gate) logged no "drive end" line, because the
+      flow seen off RACING ends the drive phase with no drive result
+      (game/MAIN/MainArcadeRaceLaunchCore.c:317-323). That end now sets
+      flowLeftRacing, and Apply logs "race <n> drive end: flow left
+      RACING at race tick <t>" (LR-62). The link-launch checker now
+      requires a race 2 drive end line on both cabinets, the flow-left
+      form only on a detecting cabinet with its race tick in the
+      divergence window.
     - LR-60's race tick cap is cross-checked between cabinets only by the
       gate (the same "race tick limit 6000" line on both stdouts). The
       option is internal and host-local; a mismatch shows as a stall, not
