@@ -649,10 +649,37 @@ that order; section 6 records the commits.
 8. CROSS is also the G29 throttle, so pressing the throttle at the offer
    starts solo. Release-to-arm makes a throttle held across the screen
    change harmless.
-9. No two-cabinet live test yet of "peer wakes during solo, then links
-   from the LOBBY". That is a later live proof. `arcade_solo_race` runs two
+9. "Peer wakes during solo, then links from the LOBBY": covered live by
+   `arcade_solo_wake_link` (labels `live;live-link`,
+   tools/arcade-solo-wake-link-check.ps1). `arcade_solo_race` runs two
    independent solo cabinets whose peers stay silent, so it never covers
-   the wake. Unit coverage, over real loopback sockets:
+   the wake. The wake gate runs two processes over loopback:
+   - cab1 (port 7401, peer 7402) starts alone with the autopilot's
+     solo-then-link mode (`--arcade-link-autopilot-solo-then-link`,
+     include/platform/native_arcade_link_autopilot.h): race 1 is the solo
+     mode's solo race (SOLO-18's rules); after its own RETURN_TO_LOBBY the
+     LOBBY presses nothing, a second solo race is UNEXPECTED_RACE, exactly
+     one linked START_RACE is race 2, which must end FINISHED
+     (RunEndAccepted: EndAccepted's race 1 end, not the LR-16 race 2
+     table), and the run passes on the title after its own EXIT. The
+     report adds "mode solo-then-link" and "peer heard <SCREEN>", the
+     screen of the first solo view with `peerHeard` set; FaultAt stays
+     NONE.
+   - The check starts cab2 (port 7402, peer 7401, the one-race mode) only
+     once cab1's stdout shows its solo race tick 0. cab2 boots to its
+     LOBBY and sends its HELLO; cab1's listen-only link hears it during
+     the solo race ("peer heard RACING", and a stdout line among the solo
+     race's per-tick lines). After the solo RESULTS -> LOBBY the two link
+     and race one linked race; cab1's race 2 and cab2's race 1 must have
+     the same agreed match, config, plan, bots, and bank digests, drive
+     end, and per-tick V4 digests.
+   - Both use a 1200-race-tick cap. At 900 the measured margin was only
+     1.67x (Debug: cab2 started at cab1's solo race tick 9 or later and
+     was heard at race tick 542, so its start to LOBBY took at most 17.8
+     s against 29.7 s of solo race left); at 1200 cab2 was heard at race
+     tick 555 (at most 18.2 s against 39.7 s: 2.18x). The test took
+     about 122 s.
+   Unit coverage, over real loopback sockets:
    - tests/native_arcade_netplay_test.c TestSoloListenOnly (:6765-6925):
      nothing is sent from solo SELECT on; a stranger's HELLO is not heard;
      the configured peer's HELLO latches peerHeard and moves no screen.
@@ -707,9 +734,17 @@ All five slices have landed on `arcade`:
   milestone documents, tools/package/README.txt, docs/PACKAGING.md, and
   docs/HANDOFF.md.
 
-Open: risks 3 and 9 (no live test of the race window or of a peer that
-wakes during solo), risk 6 (an abandoned LOBBY still waits forever), and
-physical two-cabinet validation (HANDOFF steps 6 and 7).
+- Risk 9, a peer that wakes during solo and then links from the LOBBY:
+  covered live by `arcade_solo_wake_link` (labels `live;live-link`,
+  tools/arcade-solo-wake-link-check.ps1) with the autopilot's
+  solo-then-link mode (section 5, risk 9). cab1 on 7401 races solo, cab2
+  on 7402 is started mid-race and heard on solo RACING, and after cab1's
+  solo RESULTS -> LOBBY the two race one linked race, paired tick by tick,
+  under a 1200-race-tick cap. It passed in about 122 s.
+
+Open: risk 3 (no live test of the race window), risk 6 (an abandoned
+LOBBY still waits forever), and physical two-cabinet validation (HANDOFF
+steps 6 and 7).
 
 ## 7. Boot-intro skip (arcade link)
 

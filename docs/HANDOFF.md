@@ -60,8 +60,10 @@ Integration order:
    (`arcade_link_launch`) proves three linked races live on one machine
    over loopback. A linked cabinet whose peer is not heard offers a solo
    race (one human, seven bots) from its LOBBY and links again from the
-   LOBBY afterwards (`docs/SOLO_CAB_MILESTONE.md`; live test
-   `arcade_solo_race`). Physical two-cabinet validation remains open before
+   LOBBY afterwards (`docs/SOLO_CAB_MILESTONE.md`; live tests
+   `arcade_solo_race` and, for a peer that wakes during solo and then links
+   from the LOBBY, `arcade_solo_wake_link`). Physical two-cabinet
+   validation remains open before
    steps 6-7.
 5. Failure handling, results, and rematch — stall-timeout policy, peer-drop
    roster, and rematch config builder complete and fault-tested against
@@ -506,9 +508,14 @@ the arcade-link screens and host adapter exist and are tested on top of it
   `--arcade-link-autopilot-solo` drives one solo race for the live test
   `arcade_solo_race` (`tools/arcade-solo-race-check.ps1`: two independent
   one-cabinet processes on ports 7201-7204 with silent peers, a
-  900-race-tick cap, each ending FINISHED and back in the LOBBY). No live
-  test covers a peer that wakes during solo and then links (unit-tested
-  only).
+  900-race-tick cap, each ending FINISHED and back in the LOBBY). The
+  internal `--arcade-link-autopilot-solo-then-link` races one solo race,
+  takes LOBBY, then one linked race and EXIT, for the live test
+  `arcade_solo_wake_link` (`tools/arcade-solo-wake-link-check.ps1`: cab1
+  on 7401 races solo; cab2 on 7402 is started mid-race, its HELLO is heard
+  during the solo race, "peer heard RACING", and after cab1's solo RESULTS
+  -> LOBBY the two link and race one linked race to the 1200-race-tick
+  cap, paired tick by tick).
 - None of this has been exercised over real two-cabinet LAN hardware or with
   a real G29 (only two real OS processes on one machine over loopback); that
   remains open before step 6.
@@ -538,13 +545,13 @@ Run from the repository root:
 ```sh
 cmake --preset windows-msvc-x86
 cmake --build build-msvc-x86 --config Debug
-# Inner loop, while iterating on a change: the fast suite (175 tests).
+# Inner loop, while iterating on a change: the fast suite (178 tests).
 ctest --test-dir build-msvc-x86 -C Debug -LE live -j 8 --output-on-failure
 # Task scope: also each live area the change reaches.
-# live-link runs three tests (arcade_link_launch about 242 s, arcade_solo_race
-# about 87 s, arcade_discovery_link); -j 3 runs them together (their ports
-# are distinct).
-ctest --test-dir build-msvc-x86 -C Debug -L live-link -j 3 --output-on-failure
+# live-link runs four tests (arcade_link_launch about 242 s, arcade_solo_race
+# about 87 s, arcade_solo_wake_link about 122 s, arcade_discovery_link); -j 4
+# runs them together (their ports are distinct).
+ctest --test-dir build-msvc-x86 -C Debug -L live-link -j 4 --output-on-failure
 # live-roster runs three tests (the two arcade_roster_determinism groups,
 # about 273 s each, and arcade_roster_track_sweep, about 230 s). The sweep
 # holds both groups' RESOURCE_LOCKs, so it never overlaps them and -j 8 takes
@@ -552,7 +559,7 @@ ctest --test-dir build-msvc-x86 -C Debug -L live-link -j 3 --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-roster -j 8 --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-render --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-package --output-on-failure
-# Milestone gate, once before the work is done: the full suite (183 tests).
+# Milestone gate, once before the work is done: the full suite (187 tests).
 ctest --test-dir build-msvc-x86 -C Debug -j 8 --output-on-failure
 ```
 
@@ -570,16 +577,17 @@ at the end of the `BUILD_TESTING` block, pinned by
 scripts' children included, plays through the speakers; normal runs keep
 SDL's default driver.
 
-Eight tests carry the ctest label `live` plus one area label:
+Nine tests carry the ctest label `live` plus one area label:
 `arcade_link_preview_render` (`live-render`, about 47 s measured with the
 17 previews before the solo ones),
 `arcade_roster_determinism_two_cab` and `arcade_roster_determinism_one_cab`
 (`live-roster`, about 273 s each), `arcade_roster_track_sweep`
 (`live-roster`, about 230 s), `arcade_link_launch` (`live-link`, about
 242 s), `arcade_solo_race` (`live-link`, about 87 s),
+`arcade_solo_wake_link` (`live-link`, about 122 s),
 `arcade_discovery_link` (`live-link`), and
 `package_arcade_smoke` (`live-package`, about 242 s).
-`ctest -LE live` excludes all eight; the default run includes them. They are
+`ctest -LE live` excludes all nine; the default run includes them. They are
 parallel-safe (no RUN_SERIAL; the only RESOURCE_LOCKs keep
 `arcade_roster_track_sweep` apart from the two roster groups). Measured in Debug: the fast
 suite (163 tests when measured) takes 86 s serial and 36 s with `-j 8`
@@ -589,10 +597,11 @@ suite (163 tests when measured) takes 86 s serial and 36 s with `-j 8`
 `arcade_roster_track_sweep` are not in that measurement; the old serial
 full suite took about 605 s); `-j 16` gave the fast suite no gain over `-j 8`. Each
 live test writes only under its own directory of the build tree, and the
-three link gates use distinct loopback ports (`arcade_link_launch` 7101 and
-7102, `package_arcade_smoke` the package's 7001 and 7002,
-`arcade_solo_race` 7201-7204; the fast suite's socket tests use
-48000-48600).
+link gates use distinct loopback ports (`arcade_link_launch` 7101 and
+7102, `package_arcade_smoke` the package's 7001-7004,
+`arcade_solo_race` 7201-7204, `arcade_discovery_link` 7301-7304,
+`arcade_solo_wake_link` 7401 and 7402; the fast suite's socket tests use
+48000-48629).
 Runs from the build tree still read the repository's `memcards\` and write
 the gitignored `Crash Team Racing.log` in the repository root (shared,
 diagnostic only, never read by a check). All live tests are Windows only
@@ -641,7 +650,18 @@ at 7202 and cab2 on 7203 pointing at 7204 (nothing listens on 7202 or
 with a 900-race-tick cap, which must end FINISHED and return to the LOBBY.
 Like `arcade_link_launch` it skips without a known build identity. It
 writes under `build-msvc-x86\arcade_solo_race\<config>`; the checker's
-own limit is 300 s and ctest's TIMEOUT 420 s.
+own limit is 300 s and ctest's TIMEOUT 420 s. The `arcade_solo_wake_link`
+test runs `tools/arcade-solo-wake-link-check.ps1`
+(docs/SOLO_CAB_MILESTONE.md risk 9): cab1 on port 7401 (peer 7402) starts
+alone with `--arcade-link-autopilot-solo-then-link` and races solo; the
+check starts cab2 on 7402 (peer 7401, `--arcade-link-autopilot-one-race`)
+once cab1's solo race tick 0 is on its stdout. cab1 must hear cab2 during
+the solo race ("peer heard RACING"), take LOBBY, link, and race one linked
+race with cab2 (the same agreed match, digests, drive end, and per-tick V4
+digests), both with a 1200-race-tick cap (the wake margin inside the solo
+race was 2.18x at 1200, 1.67x at 900). It skips without a known build
+identity too, writes under `build-msvc-x86\arcade_solo_wake_link\<config>`,
+and its checker's limit is 210 s, ctest's TIMEOUT 240 s.
 
 `ctr_native.exe` needs a connected desktop session with a display. Without
 one, platform init fails, the SDL error is logged, and the exe exits 1. SDL
