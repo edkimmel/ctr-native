@@ -1,5 +1,9 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeLink.h"
+#endif
+
 struct DrawLevelOvr1PFaceSelector
 {
 	u32 selector;
@@ -8070,6 +8074,9 @@ static void DrawLevelOvr1P_SetSplitGroundThresholdScratch(void)
 	DrawLevelOvr1P_RenderScratch()->textureLodDepthThreshold1 = 0x500;
 	DrawLevelOvr1P_RenderScratch()->topLevelNearDepthThreshold = 0x280;
 	DrawLevelOvr1P_RenderScratch()->recursiveNearDepthThreshold = 0x140;
+#if defined(CTR_NATIVE)
+	MainArcadeLink_ForceNearLevelDepths(DrawLevelOvr1P_RenderScratch());
+#endif
 }
 
 static int DrawLevelOvr1P_ProjectSplitGroundListALowGrid(struct LevVertex *vertices, const struct QuadBlock *block,

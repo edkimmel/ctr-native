@@ -472,6 +472,26 @@ int MainArcadeLink_ForceTopLod(void)
 	return MainArcadeLinkPolicy_ForceTopLod(NativeArcadeLinkHost_Mode());
 }
 
+int MainArcadeLink_LevelLodThreshold(int retailThreshold)
+{
+	return (int)MainArcadeLinkPolicy_LevelLodThreshold(NativeArcadeLinkHost_Mode(), (int32_t)retailThreshold);
+}
+
+void MainArcadeLink_ForceNearLevelDepths(struct MainRenderLevelGeometryScratch *scratch)
+{
+	if (scratch == NULL)
+	{
+		return;
+	}
+	scratch->textureLodDepthThreshold0 = MainArcadeLink_LevelLodThreshold(scratch->textureLodDepthThreshold0);
+	scratch->textureLodDepthThreshold1 = MainArcadeLink_LevelLodThreshold(scratch->textureLodDepthThreshold1);
+	scratch->topLevelNearDepthThreshold = MainArcadeLink_LevelLodThreshold(scratch->topLevelNearDepthThreshold);
+	/* recursiveNearDepthThreshold stays retail: forced too, every quad took
+	 * the full recursive subdivision, which filled 1 MiB of primMem on track
+	 * 16 and overran the native renderer's vertex buffer on track 4
+	 * (docs/SOLO_CAB_MILESTONE.md section 8.5). */
+}
+
 /*
  * The LINK primitive memory (docs/SOLO_CAB_MILESTONE.md section 8.5): one
  * host buffer per draw buffer, used instead of the retail MEMPACK block only

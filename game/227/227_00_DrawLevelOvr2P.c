@@ -1,6 +1,10 @@
 #include <common.h>
 #include "../RenderLevel/DrawLevelOvr_shared.h"
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeLink.h"
+#endif
+
 enum Ovr227DrawLevelConstants
 {
 	OVR227_PRIM_RESERVE_BIAS = 0xd00,
@@ -110,6 +114,9 @@ static void DrawLevelOvr2P_SeedSharedHelperThresholdScratch(void)
 	DrawLevelOvr1P_RenderScratch()->textureLodDepthThreshold1 = OVR227_TEXTURE_LOD_DEPTH_THRESHOLD1;
 	DrawLevelOvr1P_RenderScratch()->topLevelNearDepthThreshold = OVR227_TOP_LEVEL_NEAR_DEPTH_THRESHOLD;
 	DrawLevelOvr1P_RenderScratch()->recursiveNearDepthThreshold = OVR227_RECURSIVE_NEAR_DEPTH_THRESHOLD;
+#if defined(CTR_NATIVE)
+	MainArcadeLink_ForceNearLevelDepths(DrawLevelOvr1P_RenderScratch());
+#endif
 }
 
 static const struct DrawLevelOvr1PBucket *DrawLevelOvr2P_FindBucketByHandler(u32 handlerAddress)

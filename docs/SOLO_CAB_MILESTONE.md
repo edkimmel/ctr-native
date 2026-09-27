@@ -963,19 +963,30 @@ left unchanged outside LINK.
 | DecalMP impostor, 96x64 fit | RenderBucket_QueueExecute.c:1740; game/DecalMP.c | DecalMP entry memory, which the retail missile check reads (8.4) | Impostor off; entry writes kept |
 | Tire LOD, `idpp->lodIndex <= lodThreshold` (2 in 1P/2P, 0 in 3P/4P) | game/DrawTires.c:51, 585, 662, 1146 | Nothing (tire prims only) | Follows the top tier (tires on every drawn kart) |
 | `sdata->LOD[]` = {1,2,4,4,8,8,8,8} as `lodMask` | game/zGlobal_SDATA.c:246; MainFrame_RenderFrame.c:756-759; QueueExecute.c:2075 | Not a mesh LOD: instance flag bits 0-3 choose which instances exist per player count (a cull), and it gates the anim advance | Unchanged |
-| Level BSP near/far slot (1P `bspLodDistanceThreshold`, 2P 0x1540; none in 3P/4P) | game/RenderLevel/RenderLists.c:137, 242; MainFrame_RenderFrame.c:974, 990 | Subdivision tier of BSP leaves; the primMem budget is tuned to it | Unchanged |
-| Level texture and subdivision depths (`textureLodDepthThreshold0/1`, `topLevelNear`, `recursiveNear`) | MainFrame_RenderFrame.c:975-978, 991-994; game/227/227_00_DrawLevelOvr2P.c:8-11 and the 228/229 overlays | Same primMem budget | Unchanged |
+| Level BSP near/far slot (1P `bspLodDistanceThreshold`, 2P 0x1540; none in 3P/4P) | game/RenderLevel/RenderLists.c:141, 246-251; MainFrame_RenderFrame.c:974, 990 | Subdivision tier of BSP leaves; the primMem budget is tuned to it | Near slot for every leaf (`MainArcadeLink_LevelLodThreshold`, RenderLists.c:249) |
+| Level texture and top-level subdivision depths (`textureLodDepthThreshold0/1`, `topLevelNear`) | MainFrame_RenderFrame.c:975-977, 991-993; game/227/227_00_DrawLevelOvr2P.c:12-14; the 228/229 overlays through 226_00_DrawLevelOvr1P.c:8073-8079 | Same primMem budget | Nearest texture tier and top-level subdivision for every quad (`MainArcadeLink_ForceNearLevelDepths`: MainFrame_RenderFrame.c:999, 227_00_DrawLevelOvr2P.c:118, 226_00_DrawLevelOvr1P.c:8078) |
+| Level recursive subdivision depth (`recursiveNear`) | MainFrame_RenderFrame.c:978, 994; 227_00_DrawLevelOvr2P.c:15; 226_00_DrawLevelOvr1P.c:8076 | Same primMem budget; the native renderer vertex buffer | Unchanged (forced too, it overflowed 1 MiB and the renderer vertex buffer, 8.5) |
 | Per-player-count LEV file (`levelLOD`) | game/LOAD/LOAD_TenStages.c:190-199 | Geometry, collision, nav: simulation | Unchanged |
 | Driver model pack HI/MED/LOW | game/LOAD/LOAD_Assets.c:80-190 | Pack layout and memory; drivers' animation frame counts (headers[0], VehFrame.c:59) | Unchanged |
 | Quadblock collision LOD (`COLL_SEARCH_HIGH_LOD`) | game/COLL.c:1011, 2042 | Collision: simulation | Unchanged |
 | Exhaust particle set per player count | game/Vehicle/VehEmitter.c:156-171 | Particle spawn and RNG in the driver tick: simulation | Unchanged |
 
-The level geometry tiers are left alone. Instances are drawn before the
-level, and the per-level primMem budget (MainInit.c:85-159, allocated from
-MEMPACK) is sized for the retail tiers. Forcing every BSP leaf to the
-subdivided tier risks exhausting primMem, which would drop level geometry at
-the guard. Section 8.5 measures the top tier's cost and gives LINK larger
-primMem buffers without moving the MEMPACK layout.
+The level geometry tiers were first left alone: instances are drawn before
+the level, and the per-level primMem budget (MainInit.c:85-159, allocated
+from MEMPACK) is sized for the retail tiers, so forcing every BSP leaf to
+the subdivided tier would drop level geometry at the guard. Section 8.5
+measures the cost and gives LINK larger primMem buffers without moving the
+MEMPACK layout. With those buffers (now 1 MiB each), LINK also forces the
+level to its near tier (8.5, "Level near tier"): the pure
+`MainArcadeLinkPolicy_LevelLodThreshold` (LINK -> 0x40000000, which no
+projected distance or depth reaches; any other mode -> the retail
+threshold) replaces the BSP near/far slot distance and, through
+`MainArcadeLink_ForceNearLevelDepths` right after each retail seed, the two
+texture thresholds and `topLevelNear` in the render scratch. Every BSP leaf
+takes its near slot, and every quad its nearest texture tier and its
+top-level subdivision. `recursiveNear`, the deeper subdivision near the
+camera, stays retail. The thresholds live in the render scratch and gate
+only primitives, so nothing digested reads them (8.4).
 
 ### 8.4 Nothing digested changes
 
@@ -1227,7 +1238,8 @@ Overflow behaviour (retail code, unchanged):
   frame came near it. With the LINK buffers below the neighbours differ:
   past db[0]'s host buffer is db[1]'s host buffer, and past db[1]'s is
   arbitrary host .bss (not db[0]'s OT). The margin there is large (the
-  highest LINK peak is 52% of the buffer), so no slack is added. Also
+  highest LINK peak, with the level near tier, is 45% of the 1 MiB
+  buffer), so no slack is added. Also
   retail: while paused, `ElimBG` lowers `end` by 0xc800 without moving
   guardEnd (ElimBG.c:92-97).
 
@@ -1236,8 +1248,8 @@ retail MEMPACK allocations of the retail size (`MainDB_PrimMem`
 unchanged), so the MEMPACK layout and every simulation object after them
 are unchanged. Then, under `CTR_NATIVE`, `MainArcadeLink_GrowPrimMem`
 (game/MAIN/MainArcadeLink.c) points each draw buffer's start, cursor,
-end, guardEnd, and capacityBytes at a static 256 KiB host buffer
-(`MainArcadeLinkPolicy_PrimitiveBytes`: LINK -> 0x40000, never below the
+end, guardEnd, and capacityBytes at a static 1 MiB host buffer
+(`MainArcadeLinkPolicy_PrimitiveBytes`: LINK -> 0x100000, never below the
 retail size; any other mode keeps the retail size). The retail blocks stay
 reserved and unused. The per-frame GPU link ranges use start and
 capacityBytes (MainFrame.c:18), so they cover the new buffers. LINK only,
@@ -1253,10 +1265,40 @@ back from LINK to OFF mid-level (the defensive branch of
 level load while the hotkeys pass again. That corner is closed by the quick
 save and load themselves (platform/native_savestate.c): both refuse while
 any draw buffer's primMem start is not its allocationStart, a structural
-check that names neither the accessor nor the buffers. With the LINK
-buffers the highest measured peak is 136836 bytes, 52% of 262144.
+check that names neither the accessor nor the buffers. With the retail
+level tiers and the earlier 256 KiB buffers the highest measured peak was
+136836 bytes, 52% of 262144. The buffers grew to 1 MiB for the level near
+tier below (the owner allows 1 MiB or more on PC).
 tests/main_arcade_link_prim_mem_isolation_test.cmake pins the structure,
 and tests/main_arcade_link_policy_test.c the size rule.
+
+Level near tier (8.3). Peak primMem per frame, measured as above (2P,
+TWO_CAB roster proof, seed 0x5EED, dwell 0, 3600 race ticks, autopilot;
+temporary local edits: an env override making the three LINK accessors use
+LINK, the per-frame peak log before `RenderSubmit`, and a failure counter
+in the two `DrawLevelOvr1P_Has*PrimReserve` helpers), with the top
+instance tier and the 1 MiB LINK buffers (1048576 bytes). "Dropped" counts
+frames on which the level draw stopped at its primMem preflight.
+
+| Track | Retail level tier (8.5 table, LINK buffer) | BSP near slot + texture tiers | + top-level subdivision (shipped) | % of 1 MiB | Dropped |
+|---|---|---|---|---|---|
+| 4 Tiger Temple | 124304 | 134324 | 300952 | 28.7% | 0 |
+| 5 Papu's Pyramid | 123364 | 148188 | 321460 | 30.7% | 0 |
+| 11 N. Gin Labs | 117532 | 128308 | 273924 | 26.1% | 0 |
+| 16 Slide Coliseum | 122300 | 189188 | 471384 | 45.0% | 0 |
+
+- The shipped tier peaks at 45.0% (track 16), below the owner's 70-75%
+  ceiling, with no dropped frame and no renderer vertex-buffer warning on
+  any of the four tracks; all four proofs passed (3600/3600 ticks).
+- Forcing `recursiveNear` as well (every quad fully subdivided at every
+  distance) was measured and rejected: track 16 filled the buffer (peak
+  1042024 of 1048576) and dropped level geometry on 10 frames, and on
+  tracks 4 and 16 the native renderer hit `MAX_VERTEX_BUFFER_SIZE`
+  (platform/native_renderer.c:2638) and the process crashed. Tracks 5 and
+  11 peaked at 735372 and 776120 bytes (70% and 74%).
+- Only the 2P tracks were measured. 1P, 3P, and 4P LINK races take the
+  same tiers (the 1P render-frame seed and the 3P/4P split-ground seed) but
+  have no measurement yet.
 
 tests/main_arcade_link_top_lod_isolation_test.cmake pins the structure. It
 checks the two guarded call sites, the unchanged walk and its cull, the

@@ -10,6 +10,7 @@
 
 struct GameTracker;
 struct GamepadSystem;
+struct MainRenderLevelGeometryScratch;
 
 /*
  * Called once per frame from MainFrame_RenderFrame at the retail menu seam,
@@ -56,6 +57,28 @@ int MainArcadeLink_SkipBootIntro(void);
  * model header drawn) and DecalMP_01 (the multiplayer kart impostor).
  */
 int MainArcadeLink_ForceTopLod(void);
+
+/*
+ * The arcade-link level geometry tier (docs/SOLO_CAB_MILESTONE.md section
+ * 8.3): MainArcadeLinkPolicy_LevelLodThreshold on the host mode (LINK: a
+ * threshold no distance or depth reaches; any other mode: retailThreshold).
+ * Reads only. Called only from RenderLists_Walk1P2P (the BSP near/far slot
+ * distance, 1P and 2P) and from MainArcadeLink_ForceNearLevelDepths.
+ */
+int MainArcadeLink_LevelLodThreshold(int retailThreshold);
+
+/*
+ * Passes three level depth thresholds of *scratch (the render scratch the
+ * level draw reads: textureLodDepthThreshold0/1 and topLevelNear) through
+ * MainArcadeLink_LevelLodThreshold, so in LINK mode every quad takes its
+ * nearest texture tier and its top-level subdivision; any other mode leaves
+ * them retail. recursiveNear (the deeper subdivision near the camera) stays
+ * retail in every mode. Writes nothing else. Called right after each retail
+ * seed of those thresholds: the 1P branch of the render frame, the 2P
+ * overlay's shared-helper seed, and the 3P/4P split-ground seed. The 1P
+ * depthScale, BSP distance, and fade start are left retail.
+ */
+void MainArcadeLink_ForceNearLevelDepths(struct MainRenderLevelGeometryScratch *scratch);
 
 /*
  * The arcade-link primitive memory (docs/SOLO_CAB_MILESTONE.md section 8.5).

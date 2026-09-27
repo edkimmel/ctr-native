@@ -995,6 +995,9 @@ void RenderAllLevelGeometry(struct GameTracker *gGT, struct Level *level1, struc
 			scratch->fullDynamicFadeDepthStart = CTR_MipsAddLo(scratch->bspLodDistanceThreshold, MAIN_RENDER_LEVEL_GEOMETRY_FULL_DYNAMIC_FADE_OFFSET);
 		}
 
+#if defined(CTR_NATIVE)
+		MainArcadeLink_ForceNearLevelDepths(scratch);
+#endif
 		RenderLists_PreInit();
 		gGT->bspLeafsDrawn = 0;
 

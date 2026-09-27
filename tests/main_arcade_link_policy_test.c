@@ -941,6 +941,51 @@ static int TestPrimitiveBytes(void)
 	/* Pure: the same answer on every call. */
 	CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_LINK, 0x88u << 10) == linkBytes);
 	CHECK(MainArcadeLinkPolicy_PrimitiveBytes(MODE_OFF, 0x88u << 10) == (0x88u << 10));
+	/* The largest measured 2P peak with the near level tier (471384 bytes,
+	 * track 16, section 8.5) stays below 75% of the LINK size. */
+	CHECK((uint64_t)471384u * 4u <= (uint64_t)linkBytes * 3u);
+	return 0;
+}
+
+/* The LINK level geometry tier (docs/SOLO_CAB_MILESTONE.md section 8.3):
+ * LINK replaces every level draw threshold with the near constant; every
+ * other mode keeps the retail threshold exactly. */
+static int TestLevelLodThreshold(void)
+{
+	/* Retail thresholds: the 2P BSP slot distance and 227 depths, the 3P/4P
+	 * split-ground depths, 1P values from distanceToScreen 0x1c2, and edges. */
+	static const int32_t retailThresholds[] = {
+		0x1540, 0x1000, 0x800, 0x600, 0x300, 0x640, 0x500, 0x280, 0x140, 0x1c2 * 0x1a, 0x1c2 * 7, 0, 1, -1, 0x7FFFFFFF, INT32_MIN,
+	};
+	const int32_t nearThreshold = MAIN_ARCADE_LINK_POLICY_NEAR_LEVEL_THRESHOLD;
+	uint32_t mode;
+
+	/* Above every projected distance and depth (GTE depths are 16-bit),
+	 * and far enough below INT32_MAX that depth - threshold cannot wrap
+	 * positive for a small negative depth. */
+	CHECK(nearThreshold > 0xFFFF);
+	CHECK((int64_t)-0x10000 - (int64_t)nearThreshold > (int64_t)INT32_MIN);
+	for (size_t i = 0; i < sizeof(retailThresholds) / sizeof(retailThresholds[0]); i++)
+	{
+		const int32_t retail = retailThresholds[i];
+
+		CHECK(MainArcadeLinkPolicy_LevelLodThreshold(MODE_LINK, retail) == nearThreshold);
+		CHECK(MainArcadeLinkPolicy_LevelLodThreshold(MODE_OFF, retail) == retail);
+		CHECK(MainArcadeLinkPolicy_LevelLodThreshold(MODE_PREVIEW, retail) == retail);
+		CHECK(MainArcadeLinkPolicy_LevelLodThreshold(0xFFFFFFFFu, retail) == retail);
+		CHECK(MainArcadeLinkPolicy_LevelLodThreshold(0x80000001u, retail) == retail);
+		for (mode = 0u; mode < 64u; mode++)
+		{
+			const int32_t threshold = MainArcadeLinkPolicy_LevelLodThreshold(mode, retail);
+
+			CHECK(threshold == ((mode == MODE_LINK) ? nearThreshold : retail));
+			/* The same LINK-only gate as the top LOD tier and the primMem growth. */
+			CHECK((MainArcadeLinkPolicy_ForceTopLod(mode) == 1) == (mode == MODE_LINK));
+		}
+	}
+	/* Pure: the same answer on every call. */
+	CHECK(MainArcadeLinkPolicy_LevelLodThreshold(MODE_LINK, 0x1540) == nearThreshold);
+	CHECK(MainArcadeLinkPolicy_LevelLodThreshold(MODE_OFF, 0x1540) == 0x1540);
 	return 0;
 }
 
@@ -964,6 +1009,7 @@ int main(void)
 	if (TestSkipBootIntro() != 0) return 1;
 	if (TestForceTopLod() != 0) return 1;
 	if (TestPrimitiveBytes() != 0) return 1;
+	if (TestLevelLodThreshold() != 0) return 1;
 	printf("main_arcade_link_policy_test: ok\n");
 	return 0;
 }

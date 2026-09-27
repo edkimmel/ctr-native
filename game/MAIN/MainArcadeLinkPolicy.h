@@ -230,15 +230,33 @@ int MainArcadeLinkPolicy_ForceTopLod(uint32_t hostMode);
 /*
  * The arcade-link primitive memory (docs/SOLO_CAB_MILESTONE.md section 8.5):
  * the bytes of one draw buffer's primMem. In LINK mode, which draws the top
- * LOD tier, it is the larger of the retail per-level size and
- * MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES; OFF, PREVIEW, and any unknown
- * mode keep the retail size exactly. Never less than the retail size. The
- * constant is at least the largest retail size (the 2P table's 0xdc KiB) and
- * is also the size of the host buffers the thin accessor binds.
- * Presentation only.
+ * LOD tier and the near level geometry tier, it is the larger of the retail
+ * per-level size and MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES (1 MiB);
+ * OFF, PREVIEW, and any unknown mode keep the retail size exactly. Never less
+ * than the retail size. The constant is at least the largest retail size (the
+ * 2P table's 0xdc KiB) and is also the size of the host buffers the thin
+ * accessor binds. Presentation only.
  */
-#define MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES 0x40000u
+#define MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES 0x100000u
 
 uint32_t MainArcadeLinkPolicy_PrimitiveBytes(uint32_t hostMode, uint32_t retailBytes);
+
+/*
+ * The arcade-link level geometry tier (docs/SOLO_CAB_MILESTONE.md section
+ * 8.3): one level draw threshold, either the BSP near/far slot distance or a
+ * texture or subdivision depth threshold, each read by the retail level draw
+ * as "near when the distance or depth is below the threshold". In LINK mode
+ * it is MAIN_ARCADE_LINK_POLICY_NEAR_LEVEL_THRESHOLD, which no projected
+ * distance or depth reaches, so every BSP leaf takes its near slot and every
+ * quad its nearest texture tier and top-level subdivision (the hook applies
+ * it to those thresholds only; MainArcadeLink.h). OFF, PREVIEW, and any unknown mode
+ * keep retailThreshold exactly. The constant is far below INT32_MAX, so the
+ * retail subtract-and-test-sign compares cannot wrap for a small negative
+ * depth. Presentation only: the thresholds live in the render scratch and
+ * gate only primitives.
+ */
+#define MAIN_ARCADE_LINK_POLICY_NEAR_LEVEL_THRESHOLD 0x40000000
+
+int32_t MainArcadeLinkPolicy_LevelLodThreshold(uint32_t hostMode, int32_t retailThreshold);
 
 #endif

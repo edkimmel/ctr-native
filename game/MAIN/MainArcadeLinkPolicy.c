@@ -162,3 +162,9 @@ uint32_t MainArcadeLinkPolicy_PrimitiveBytes(uint32_t hostMode, uint32_t retailB
 	}
 	return retailBytes;
 }
+
+/* The level geometry tier: LINK takes the near tier everywhere. */
+int32_t MainArcadeLinkPolicy_LevelLodThreshold(uint32_t hostMode, int32_t retailThreshold)
+{
+	return (hostMode == MAIN_ARCADE_LINK_POLICY_MODE_LINK) ? MAIN_ARCADE_LINK_POLICY_NEAR_LEVEL_THRESHOLD : retailThreshold;
+}

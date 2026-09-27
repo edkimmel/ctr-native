@@ -176,7 +176,7 @@ set(main_path "main.c")
 # 1. The policy: LINK grows to the LINK size, never shrinks; every other mode
 #    keeps the retail size.
 ctr_read_source("${policy_header_path}" policy_header)
-ctr_require_literal("${policy_header_path}" "${policy_header}" "#define ${link_bytes} 0x40000u")
+ctr_require_literal("${policy_header_path}" "${policy_header}" "#define ${link_bytes} 0x100000u")
 ctr_require_literal("${policy_header_path}" "${policy_header}" "uint32_t ${policy_fn}(uint32_t hostMode, uint32_t retailBytes);")
 ctr_read_source("${policy_path}" policy_source)
 ctr_strip_comments("${policy_source}" policy_code)

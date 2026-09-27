@@ -1,5 +1,9 @@
 #include <common.h>
 
+#if defined(CTR_NATIVE)
+#include "MAIN/MainArcadeLink.h"
+#endif
+
 enum RenderListsSlot1P2P
 {
 	RENDER_LIST_SLOT_4X4 = 0,
@@ -241,6 +245,9 @@ static int RenderLists_Walk1P2P(struct BSP *bspRoot, const int *visLeafList, str
 	struct BSP *branch = bspRoot;
 	int lodDistanceThreshold = (numPlyr == 1) ? CTR_SCRATCHPAD_PTR(struct MainRenderLevelGeometryScratch, 0)->bspLodDistanceThreshold : 0x1540;
 	int count = 0;
+#if defined(CTR_NATIVE)
+	lodDistanceThreshold = MainArcadeLink_LevelLodThreshold(lodDistanceThreshold);
+#endif
 
 	if (bspRoot == 0 || pb == 0)
 	{
