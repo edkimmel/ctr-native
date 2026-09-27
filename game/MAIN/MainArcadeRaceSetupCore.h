@@ -138,7 +138,7 @@
  *   GAMEPAD.c:720, :763, :851, the frozen clock tick sound at
  *   MainFrame.c:232, the invincibility flicker on instFlags at
  *   231/RB_Player.c:247, the shield instance scale by timer % 6 at
- *   231/RB_MaskShieldCloud.c:363-371, the wobble rumble at
+ *   231/RB_MaskShieldCloud.c:370-378, the wobble rumble at
  *   VehEmitter.c:1770, the HUD beep at UI/UI_RaceHud.c:379, Display.c:135).
  *   Platform: not read. PIN 0.
  * - gGT->frameTimer_Confetti: +1 per emitted VBlank while not paused (the

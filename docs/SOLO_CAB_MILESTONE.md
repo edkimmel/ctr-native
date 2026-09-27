@@ -1033,6 +1033,33 @@ primMem buffers without moving the MEMPACK layout.
   the fix in both profiles (TWO_CAB autopilot and ONE_CAB), and the branch
   fired in those races for driverIDs 4, 5 and 7 (4 and 5 in TWO_CAB; 4, 5
   and 7 in ONE_CAB).
+- Shield crash-attack flash, fixed in 9fdda8aa3 + 3aaa2c184:
+  `RB_ShieldDark_ThTick_Grow` (game/231/RB_MaskShieldCloud.c:405-429)
+  wrote `fadeFromBlack_currentValue/desiredResult` and `fade_step` to
+  `pushBuffer[owner->driverID]` unbounded. In retail, driverID 4 would hit
+  DecalMP+0x12/0x14/0x16 (entry 0 `data2[6..11]`), 5 +0x122/0x124/0x126
+  (entry 0 `data3[0xE..0x13]`), 6 +0x232/0x234/0x236 (entry 1 +0x10A,
+  then the low and high halves of `ptrOT1`), and 7 +0x342/0x344/0x346
+  (entry 2 `data2[0xE6..0xEB]`) (layout in include/namespace_Main.h).
+  The native branch (`#ifdef CTR_NATIVE`) adds
+  `owner->driverID < RB_SHIELD_FLASH_CAMERA_COUNT` (4, static-asserted
+  against the array length). The `#else` branch keeps the retail line,
+  because game/231 is a retail match target. No bot can reach it:
+  `instBubbleHold` is set only at game/Vehicle/VehPickupItem.c:990. Bots
+  fire only IDs 2/3/4, never the shield (6)
+  (game/PickupBots.c:145/158/170/207), the boss path is boss-only (boss
+  driverID 1), and the roster proof fires only a clock
+  (MainArcadeRosterProof.c:923). `ShootOnCirclePress` runs only for the
+  PLAYER bucket (MainFrame.c:300-305, driverIDs 0..3). So the guard is
+  defensive, pinned by `rb_shield_crash_flash_isolation`. Audit (`grep -rn
+  "pushBuffer\[" game`): every other driverID-indexed access is either
+  guarded or unreachable for bots. RB_Burst.c:110 and
+  RB_GenericMine.c:183 check `ACTION_BOT`. The
+  RB_Crate/RB_Crystal/RB_CtrLetter/RB_Fruit/`RB_Pickup_SetCamera` callers
+  are DYNAMIC_PLAYER-only or return for bot weapon owners. The BOTS.c
+  plant camera and the VehPickupItem missile target were already guarded.
+  The only bot-reachable one left is the `VehPickState.c:313-321` reader
+  above.
 - Evidence (internal build, `--arcade-roster-proof`, seed 0x5EED, 3600 race
   ticks, a temporary env override of the accessor, not committed): TWO_CAB
   (2P, autopilot) retail against forced gave byte-identical reports, every
@@ -1237,7 +1264,9 @@ of 5761b6eec's code, 32 runs, 8 at a time, 684 s, about 170 s per run):
 "3600/3600" is the race ticks logged (every tick line present, report v12,
 `end ticks 3600`). Within 3600 race ticks only one autopilot human finished
 (Crash Cove, player 0 at race tick 3552) and no race reached END_OF_RACE, so
-this covers racing and the hazards, not the finish.
+this sweep covers racing and the hazards, not the finish. The finish is
+recorded at 6000 race ticks under "Race finish (6000 ticks)" below (END_OF_RACE
+on 9 of 16 tracks).
 
 The sweep (output under the ignored build tree):
 
@@ -1314,3 +1343,62 @@ stay a record: `-Pairs both` took 460 s, four full waves of 16 on this
 per-run slowdown of about 5 s would cross it; ONE_CAB same-seed identity
 stays gated on track 3 (`arcade_roster_determinism_one_cab`, F = G bytes).
 Gating it is `-Pairs both` with TIMEOUT at least 920.
+
+### Race finish (6000 ticks)
+
+Before this run, no gate reached a race finish except on track 3. At the
+two-cab tick cap (6000 race ticks, the script's `MaxTicks` and the game's
+option), every TWO_CAB run was paired with `-Pairs two-cab`. A pair
+reported as a==b with a given END_OF_RACE tick is the one-machine evidence
+that two cabinets fed the same inputs reach END_OF_RACE on the same race
+tick. Record run (Debug build of 37d54726f, 32 runs, 16 at a time: 522 s,
+250-256 s per run; every run PASS 6000/6000, 16 of 16 pairs
+byte-identical):
+
+```sh
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/arcade-roster-track-sweep.ps1 \
+    -Executable build-msvc-x86/Debug/ctr_native.exe \
+    -OutputDirectory C:/re-tools/ctr-native/build-msvc-x86/arcade_roster_track_finish_record/6000 \
+    -Profile two-cab -Pairs two-cab -Ticks 6000 -Parallel 16 -TimeoutSeconds 1200
+```
+
+| Track | Name | TWO_CAB a==b | END_OF_RACE | p0 finish | p1 finish | Classification |
+|---|---|---|---|---|---|---|
+| 3 | Crash Cove | a==b | 3705 | 3608 | 3705 | finished |
+| 6 | Roo's Tubes | a==b | 3645 | 3645 | 3611 | finished |
+| 4 | Tiger Temple | a==b | 4995 | 4981 | 4995 | finished |
+| 14 | Coco Park | a==b | 4021 | 3970 | 4021 | finished |
+| 9 | Mystery Caves | a==b | 5515 | 5515 | 5505 | finished |
+| 2 | Blizzard Bluff | a==b | 4202 | 4202 | 4197 | finished |
+| 8 | Sewer Speedway | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
+| 0 | Dingo Canyon | a==b | 4007 | 4007 | 3922 | finished |
+| 5 | Papu's Pyramid | a==b | 4795 | 4780 | 4795 | finished |
+| 1 | Dragon Mines | a==b | 4063 | 4060 | 4063 | finished |
+| 12 | Polar Pass | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
+| 10 | Cortex Castle | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
+| 15 | Tiny Arena | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
+| 7 | Hot Air Skyway | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
+| 11 | N. Gin Labs | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
+| 16 | Slide Coliseum | a==b | -1 | -1 | -1 | tick cap or autopilot pace |
+
+The ticks are race ticks from the stdout autopilot lines, the same in runs
+a and b (the sweep also requires equal summaries). -1 means never within
+6000 race ticks. Each race has 3 laps.
+
+Nine tracks (0, 1, 2, 3, 4, 5, 6, 9, 14) reach END_OF_RACE, and both runs
+of each pair reach it on the same race tick with byte-identical whole
+reports. On every one of them, END_OF_RACE is the later human's finish
+tick, and the two humans finish 3 to 97 race ticks apart. That makes 8
+tracks with a two-cabinet race finish, on top of track 3. The seven tracks
+that do not finish (7, 8, 10, 11, 12, 15, 16) show no game issue: PASS
+6000/6000, a==b, no FAIL, no crash, and no "player finished" line for
+either human, so neither is ahead of the other.
+
+The proof logs no lap or restart-point progress (stdout has only the
+finish lines and the summary, and the report holds digests), so this
+evidence cannot tell a stalled or looping autopilot apart from a race
+longer than the cap. On the other tracks, the autopilot's 3-lap races take
+3608 to 5515 race ticks, and the slowest (Mystery Caves) ends 485 ticks
+under the cap. So a longer track at the same pace plausibly runs past
+6000. Telling the two causes apart needs a higher cap or a progress log;
+nothing here is a game issue.
