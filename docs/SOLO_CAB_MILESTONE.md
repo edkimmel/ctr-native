@@ -1051,7 +1051,9 @@ the LINK buffers below, so it is the unclipped demand.
 | 15 Tiny Arena | 148480 | 108044 | 119076 | 80.2% | 29148 | 0 | 119076 |
 | 16 Slide Coliseum | 122880 | 100104 | 115528 | 94.0% | 7096 | 23 | 122300 |
 
-- The retail LOD never dropped; its highest peak is 84.5% (track 4).
+- The retail LOD never dropped; its highest peak is 85.9% of budget
+  (track 11, 107376 of 124928). Among the 120 KiB (122880) tracks the
+  highest is 84.5% (track 4).
 - With the top tier in the retail budget, five tracks passed 85% and four
   dropped level geometry (4, 5, 11, 16). Tracks 4 and 5 need more than
   their retail budget. No frame ended past guardEnd. Track 3 repeats the
@@ -1104,8 +1106,12 @@ Overflow behaviour (retail code, unchanged):
   db[1]'s is db[0]'s OT (MainInit_PrimMem, then MainInit_OTMem;
   LOAD/LOAD_TenStages.c:210-211). Those are render buffers, not simulation
   objects, but a clobbered OT link can derail the GPU walk. No measured
-  frame came near it. Also retail: while paused, `ElimBG` lowers `end` by
-  0xc800 without moving guardEnd (ElimBG.c:92-97).
+  frame came near it. With the LINK buffers below the neighbours differ:
+  past db[0]'s host buffer is db[1]'s host buffer, and past db[1]'s is
+  arbitrary host .bss (not db[0]'s OT). The margin there is large (the
+  highest LINK peak is 52% of the buffer), so no slack is added. Also
+  retail: while paused, `ElimBG` lowers `end` by 0xc800 without moving
+  guardEnd (ElimBG.c:92-97).
 
 LINK primMem (the fix for the drops). `MainInit_PrimMem` still makes both
 retail MEMPACK allocations of the retail size (`MainDB_PrimMem`
@@ -1123,11 +1129,14 @@ relocates primMem pointers only inside its address ranges
 (platform/native_checkpoint.c:665-676), so a host pointer would survive
 only an in-process restore. Arcade-link mode rejects replay record and
 playback (main.c) and refuses both quick-state hotkeys
-(platform/native_platform.c), so nothing captures one. One corner remains:
-if the host falls back from LINK to OFF mid-level (the defensive branch of
+(platform/native_platform.c), so nothing captures one. If the host falls
+back from LINK to OFF mid-level (the defensive branch of
 `NativeArcadeLinkHost_AbortToTitle`), the buffers stay bound until the next
-level load while quick states are allowed again. With the LINK buffers the
-highest measured peak is 136836 bytes, 52% of 262144.
+level load while the hotkeys pass again. That corner is closed by the quick
+save and load themselves (platform/native_savestate.c): both refuse while
+any draw buffer's primMem start is not its allocationStart, a structural
+check that names neither the accessor nor the buffers. With the LINK
+buffers the highest measured peak is 136836 bytes, 52% of 262144.
 tests/main_arcade_link_prim_mem_isolation_test.cmake pins the structure,
 and tests/main_arcade_link_policy_test.c the size rule.
 

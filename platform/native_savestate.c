@@ -90,8 +90,37 @@ internal s32 NativeSaveState_PreparePayload(void)
 	return 1;
 }
 
+/* Quick states are refused while either draw buffer's primMem start is not
+ * its own retail allocation: the arcade-link host buffers
+ * (docs/SOLO_CAB_MILESTONE.md section 8.5) stay bound until the next level
+ * load, even after the host mode falls back to OFF. A quick state holds
+ * sdata, including those primMem pointers (and the pause VRAM pointers into
+ * them), and relocation leaves a host pointer unmoved, so a later process
+ * would restore wild pointers. Refusing the load too keeps a restore from
+ * replacing bound buffers. */
+internal s32 NativeSaveState_HostDrawBuffersBound(void)
+{
+	const struct GameTracker *gGT = &sdata_static.gameTracker;
+
+	for (u32 i = 0; i < len(gGT->db); i++)
+	{
+		if (gGT->db[i].primMem.start != gGT->db[i].primMem.allocationStart)
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
 internal s32 NativeSaveState_SaveQuick(void)
 {
+	if (NativeSaveState_HostDrawBuffersBound())
+	{
+		Platform_Log("[CTR State] quick states are disabled while host draw buffers are bound\n");
+		return 0;
+	}
+
 	if (!NativeSaveState_PrepareDir())
 	{
 		Platform_Log("[CTR State] failed to create quick state directory: %s\n", NATIVE_SAVESTATE_DIR);
@@ -122,6 +151,12 @@ internal s32 NativeSaveState_SaveQuick(void)
 internal s32 NativeSaveState_LoadQuick(void)
 {
 	struct NativeCheckpointFileRecordInfo info;
+
+	if (NativeSaveState_HostDrawBuffersBound())
+	{
+		Platform_Log("[CTR State] quick states are disabled while host draw buffers are bound\n");
+		return 0;
+	}
 
 	if (!NativeSaveState_PreparePayload())
 	{

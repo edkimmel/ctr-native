@@ -892,13 +892,13 @@ static int TestPrimitiveBytes(void)
 	/* Every retail per-level primMem size MainInit_GetPrimMemSize
 	 * (game/MAIN/MainInit.c) can return: the distinct KiB values of the 1P,
 	 * 2P, and 4P tables (game/zGlobal_DATA.c primMem_SizePerLEV_*) and its
-	 * fixed sizes (menu, 3P/4P and 2P default, adventure arena, intro, 1P
-	 * default). */
+	 * fixed sizes (adventure garage, menu, 3P/4P and 2P default, adventure
+	 * arena, intro, 1P default). */
 	static const uint32_t retailBytes[] = {
 		0x5fu << 10, 0x67u << 10, 0x6eu << 10,
 		0xdcu << 10, 0x78u << 10, 0xa0u << 10, 0x88u << 10, 0xaau << 10, 0x7du << 10, 0x8au << 10, 0x7au << 10, 0x7eu << 10, 0x91u << 10,
 		0x96u << 10,
-		0x25800u, 0x1e000u, 0x1c000u, 0x17c00u,
+		0x1b800u, 0x25800u, 0x1e000u, 0x1c000u, 0x17c00u,
 	};
 	const uint32_t linkBytes = MAIN_ARCADE_LINK_POLICY_LINK_PRIMITIVE_BYTES;
 	uint32_t mode;

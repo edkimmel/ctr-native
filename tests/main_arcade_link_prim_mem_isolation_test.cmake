@@ -22,7 +22,11 @@
 #      lockstep, or topology-lease file names them;
 #   6. no checkpoint holds a host pointer: arcade-link mode rejects replay
 #      record and playback (main.c) and refuses both quick-state hotkeys
-#      (platform/native_platform.c), the only checkpoint captures.
+#      (platform/native_platform.c), the only checkpoint captures; and
+#      because the host buffers stay bound after a fallback to OFF until the
+#      next level load, the quick save and load themselves
+#      (platform/native_savestate.c) refuse first while any draw buffer's
+#      primMem start is not its allocationStart.
 
 set(repo "${CMAKE_CURRENT_LIST_DIR}/..")
 set(prefix "arcade link prim mem isolation")
@@ -309,5 +313,45 @@ ctr_require_order("${platform_path}" "${platform_code}"
     "case SDL_SCANCODE_F8:"
     "if (NativeArcadeLinkHost_Mode() != (uint32_t)NATIVE_ARCADE_LINK_HOST_MODE_OFF)"
     "NativeSaveState_RequestLoad();")
+
+# 6b. The host mode can fall back to OFF with the host buffers still bound
+#     (until the next MainInit_PrimMem), so the quick save and load refuse
+#     first, before any capture or restore, while any draw buffer's primMem
+#     start is not its retail allocationStart: a structural check that names
+#     neither the accessor nor the buffer.
+set(savestate_path "platform/native_savestate.c")
+set(bound_fn "NativeSaveState_HostDrawBuffersBound")
+set(bound_refusal "Platform_Log(\"[CTR State] quick states are disabled while host draw buffers are bound\\n\");")
+ctr_read_source("${savestate_path}" savestate_source)
+ctr_strip_comments("${savestate_source}" savestate_code)
+ctr_block_text("${savestate_path}" "${savestate_code}" "internal s32 ${bound_fn}(void)" bound_block)
+ctr_squash("${bound_block}" bound_squashed)
+if(NOT bound_squashed STREQUAL "{conststructGameTracker*gGT=&sdata_static.gameTracker;for(u32i=0;i<len(gGT->db);i++){if(gGT->db[i].primMem.start!=gGT->db[i].primMem.allocationStart){return1;}}return0;}")
+    message(FATAL_ERROR "${prefix}: ${bound_fn} must report any draw buffer whose primMem start is not its allocationStart (found '${bound_squashed}')")
+endif()
+foreach(pair "NativeSaveState_SaveQuick NativeSaveState_PrepareDir()" "NativeSaveState_LoadQuick NativeSaveState_PreparePayload()")
+    string(REPLACE " " ";" pair_items "${pair}")
+    list(GET pair_items 0 quick_fn)
+    list(GET pair_items 1 first_step)
+    ctr_block_text("${savestate_path}" "${savestate_code}" "internal s32 ${quick_fn}(void)" quick_block)
+    ctr_require_order("${savestate_path} (${quick_fn})" "${quick_block}"
+        "if (${bound_fn}())"
+        "${bound_refusal}"
+        "return 0;"
+        "${first_step}"
+        "NativeCheckpoint")
+    string(FIND "${quick_block}" "${bound_fn}()" bound_at)
+    string(SUBSTRING "${quick_block}" 0 ${bound_at} before_bound)
+    string(REGEX REPLACE "if[ \t]*\\($" "" before_bound "${before_bound}")
+    if(before_bound MATCHES "[A-Za-z_][A-Za-z0-9_]*[ \t]*\\(")
+        message(FATAL_ERROR "${prefix}: ${quick_fn} must call ${bound_fn} before any other call (found '${CMAKE_MATCH_0}')")
+    endif()
+endforeach()
+foreach(name IN ITEMS "${accessor}" "${policy_fn}" "${buffer}")
+    string(FIND "${savestate_code}" "${name}" name_at)
+    if(NOT name_at EQUAL -1)
+        message(FATAL_ERROR "${prefix}: ${savestate_path} must refuse structurally and not name ${name}")
+    endif()
+endforeach()
 
 message(STATUS "${prefix}: ok")

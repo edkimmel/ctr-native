@@ -68,7 +68,10 @@ int MainArcadeLink_ForceTopLod(void);
  * unchanged. Any other mode leaves both draw buffers retail. Re-run on every
  * level load. Presentation only: primMem holds GPU primitives, which nothing
  * digested reads. Arcade-link mode rejects replay record and playback and
- * disables quick states, so no saved state ever holds the host pointers.
+ * disables the quick-state hotkeys, and the quick save and load refuse
+ * whenever a draw buffer's start is not its retail MEMPACK block (so also
+ * after a fallback to OFF, until the next level load rebinds the retail
+ * buffers): no saved state holds the host pointers while they are bound.
  */
 void MainArcadeLink_GrowPrimMem(struct GameTracker *gGT);
 

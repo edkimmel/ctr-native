@@ -283,7 +283,8 @@
 // and the menu sounds of section 3.1): the pure layout builder, decision
 // policy, and menu sound decision, then the CTR_NATIVE-only drawer and hook,
 // which reads the 230 title state above.
-// MainFrame_RenderFrame.c calls it through MAIN/MainArcadeLink.h.
+// MainFrame_RenderFrame.c and MainInit.c call it through
+// MAIN/MainArcadeLink.h.
 #include "MAIN/MainArcadeLinkLayout.c"
 #include "MAIN/MainArcadeLinkPolicy.c"
 #include "MAIN/MainArcadeLinkSound.c"
