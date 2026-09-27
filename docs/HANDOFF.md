@@ -77,7 +77,8 @@ Integration order:
    (`docs/DISCOVERY_MILESTONE.md`; beacon, seat election, `seat = auto`).
    Three or four cabinets are a later extension: they need 3-4 human slots
    in the roster and match config (`NativeMatchConfigV1` has two human
-   roles; match select is already sized for 4).
+   roles; match select is already sized for 4). Open: physical acceptance
+   on the two cabinets (DISC-S6) and the fleet rollout (see Next work 2).
 9. Oxide Station in linked races: shelved by the owner. Known
    prerequisite: retail offers it in 1P only (SEL-3), so first confirm the
    disc has a multiplayer level pack for it.

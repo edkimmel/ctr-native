@@ -2330,7 +2330,11 @@ UpdateTireColorTimer:
 							// pushBuffer[driverID].pos/rot for every eaten bot, so bots with
 							// driverID 4..7 wrote past the array into the DecalMP entries
 							// that follow (in non-LINK 2P, bot 5 overwrote DecalMP[0]'s
-							// renderBucketOTRangeEnd). Render-only on the PS1 too; the
+							// renderBucketOTRangeEnd). Bot 4's writes landed on DecalMP[0]
+							// itself (struct DecalMPEntry, game/DecalMP.c): pos.x on its
+							// timer, pos.y on kartState (and a pad byte), pos.z on padding,
+							// rot.x on boolUpdatedThisFrame, and rot.y/rot.z on the low and
+							// high halves of its inst pointer. Render-only on the PS1 too; the
 							// camera writes are skipped for those bots. The GTE work above
 							// and every non-camera statement below still run for all bots.
 							if (botDriver->driverID < BOTS_PLANT_CAMERA_COUNT)

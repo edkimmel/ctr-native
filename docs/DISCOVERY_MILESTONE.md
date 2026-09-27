@@ -7,7 +7,8 @@ docs/HANDOFF.md first. A prospective plan with a slice list, in the pattern
 of docs/SOLO_CAB_MILESTONE.md, updated as slices land. Every citation was
 checked against the tree at bd9856001 and re-checked at 02386bc24.
 
-Status: plan only (DISC-S1). No code has landed.
+Status: done for two cabinets (DISC-S1 to DISC-S5 and DISC-19; section 6).
+Open: physical two-cabinet acceptance on the fleet (DISC-S6).
 
 ## 1. Why
 
@@ -29,7 +30,7 @@ only) and a new install must hand-edit. The goal is one config file for
 every cabinet with no network settings.
 
 Scope: two cabinets, zero-config. Three or four cabinets and humans are a
-later extension (stretch goal 8, docs/HANDOFF.md:76-84) that the design must
+later extension (docs/HANDOFF.md, Mission item 8) that the design must
 not block: `NativeMatchConfigV1` has two human roles, match select is sized
 for 4. The solo milestone left the seam: the solo offer depends only on the
 lobby status (SOLO-10, docs/SOLO_CAB_MILESTONE.md:292-296), and the lobby's

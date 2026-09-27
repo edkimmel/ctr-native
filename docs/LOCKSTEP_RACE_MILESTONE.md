@@ -6166,8 +6166,9 @@ docs/LOCKSTEP_MILESTONE.md's 60 Hz figures and its FRAME_UNAVAILABLE rule
     draw from the item RNG, MixRNG (game/Particle.c:76, :137, :217,
     :288), which the simulation also reads, so a per-cabinet viewport
     that draws different particles would desync the simulation, not
-    only the graphics. docs/HANDOFF.md stretch goal 13
-    (docs/HANDOFF.md:101-109) records this. A precondition of that later
+    only the graphics. docs/HANDOFF.md Mission item 13 (dropped by the
+    owner) is that view; this risk (18) records the particle MixRNG
+    precondition. A precondition of that later
     milestone is to split the particle draws onto a presentation-only
     RNG, with the lockstep digest proving the simulation still matches.
 19. The bot nav-index read and the lease rule (LR-17, ruled (a) by the

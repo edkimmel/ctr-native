@@ -1024,7 +1024,15 @@ primMem buffers without moving the MEMPACK layout.
   writes (game/BOTS.c:2324-2341) store `gGT->pushBuffer[driverID].pos`
   and `rot` for bots >= 4 into DecalMP entries; render-only, but in
   non-LINK 2P bot 5 clobbers entry 0's `pb.renderBucketOTRangeEnd`, a
-  latent render-only hazard (cannot happen in LINK).
+  latent render-only hazard (cannot happen in LINK). Fixed later in
+  c2a848531: the plant-eaten branch (game/BOTS.c:2303-2376) now makes the
+  camera writes only inside the guard
+  `driverID < BOTS_PLANT_CAMERA_COUNT` (game/BOTS.c:2340-2360), pinned by
+  the isolation test `bots_plant_camera_isolation`. On track 5 (Papu's
+  Pyramid) the roster proof reports were byte-identical before and after
+  the fix in both profiles (TWO_CAB autopilot and ONE_CAB), and the branch
+  fired in those races for driverIDs 4, 5 and 7 (4 and 5 in TWO_CAB; 4, 5
+  and 7 in ONE_CAB).
 - Evidence (internal build, `--arcade-roster-proof`, seed 0x5EED, 3600 race
   ticks, a temporary env override of the accessor, not committed): TWO_CAB
   (2P, autopilot) retail against forced gave byte-identical reports, every

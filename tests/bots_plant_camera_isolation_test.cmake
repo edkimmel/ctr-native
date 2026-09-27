@@ -40,17 +40,22 @@ string(SUBSTRING "${bots_source}" ${plant_at} -1 plant_tail)
 set(guard_text "if (botDriver->driverID < BOTS_PLANT_CAMERA_COUNT)")
 set(speed_text "botDriver->botData.aiPhysics.speedLinear = 0;")
 
+string(FIND "${plant_tail}" "SetRotMatrix(&plantInst->matrix);" setrot_at)
+string(FIND "${plant_tail}" "SetTransMatrix(&plantInst->matrix);" settrans_at)
 string(FIND "${plant_tail}" "RotTrans(&v, &v2, &l3);" rottrans_at)
 string(FIND "${plant_tail}" "${guard_text}" guard_at)
 string(FIND "${plant_tail}" "${speed_text}" speed_at)
 string(FIND "${plant_tail}" "botDriver->kartState = newKartState;" kart_at)
-if(rottrans_at EQUAL -1 OR guard_at EQUAL -1 OR speed_at EQUAL -1 OR kart_at EQUAL -1)
+if(setrot_at EQUAL -1 OR settrans_at EQUAL -1 OR rottrans_at EQUAL -1 OR guard_at EQUAL -1 OR speed_at EQUAL -1
+   OR kart_at EQUAL -1)
     message(FATAL_ERROR
-        "bots plant camera isolation: the plant branch must hold RotTrans, the '${guard_text}' guard, the speedLinear write, and the kartState write")
+        "bots plant camera isolation: the plant branch must hold SetRotMatrix, SetTransMatrix, RotTrans, the '${guard_text}' guard, the speedLinear write, and the kartState write")
 endif()
-if(NOT (rottrans_at LESS guard_at AND guard_at LESS speed_at AND speed_at LESS kart_at))
+# The GTE setup and RotTrans run for every bot: all three precede the guard.
+if(NOT (setrot_at LESS settrans_at AND settrans_at LESS rottrans_at AND rottrans_at LESS guard_at
+        AND guard_at LESS speed_at AND speed_at LESS kart_at))
     message(FATAL_ERROR
-        "bots plant camera isolation: expected order RotTrans, driverID guard, speedLinear, kartState in the plant branch")
+        "bots plant camera isolation: expected order SetRotMatrix, SetTransMatrix, RotTrans, driverID guard, speedLinear, kartState in the plant branch")
 endif()
 
 # The guard body opens right after the condition.
@@ -110,6 +115,9 @@ endif()
 
 # No other driverID-indexed pushBuffer access (code, not comments: a member
 # access such as botDriver->driverID) anywhere in BOTS.c.
+# Limit (same as veh_pickup_missile_target_bot_bounds_isolation_test.cmake):
+# this is a textual match, so an aliased index (e.g.
+# `int id = botDriver->driverID; ... pushBuffer[id]`) is not caught.
 string(REGEX MATCHALL "pushBuffer\\[[^]]*->driverID[^]]*\\]" all_accesses "${bots_source}")
 list(LENGTH all_accesses all_count)
 if(NOT all_count EQUAL guarded_count)
