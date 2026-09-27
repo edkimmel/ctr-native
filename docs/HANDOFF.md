@@ -73,48 +73,25 @@ Integration order:
    RESULTS (`docs/LOCKSTEP_RACE_MILESTONE.md` LR-12).
 6. CAB1 G29/kiosk gate.
 7. Two-cabinet fleet acceptance.
-8. Stretch goal: automatic LAN discovery for up to 4 cabinets (Mario Kart
-   Arcade GP DX style). Not started. The lobby's caller-supplied candidate
-   list (`docs/LOBBY_MILESTONE.md` section 2.4) is the seam it plugs into:
-   cabinets find each other on the subnet (a broadcast beacon is the
-   preferred design), and the handshake still validates build and content
-   identity. It needs a pairing rule (for example a configured cabinet group)
-   and 3-4 human slots in the roster and match config. The match-select
-   rules, message, and session are already sized for 4 humans, while
-   `NativeMatchConfigV1` has two human roles. It follows step 7.
-9. Stretch goal: Oxide Station in linked races. Not started. Retail
-   offers it in 1P only (SEL-3), so first confirm the disc has a
-   multiplayer level pack for it, or what 1P-only assumption blocks it.
-   Then add it to the match-select track list and the bot rules.
-10. Stretch goal: unlock everything in code and add Turbo Track. Not
-    started. Unlock state must come from the build, not the host-local
-    save, so both cabinets agree. It removes the SEL-3 reason for
-    excluding Turbo Track, and the unlocked characters and tracks must be
-    reflected in match select and the bot rules.
-11. Stretch goal: native 16:9 at 1080p. Not started. `main.c` has an
-    unwired `USE_16BY9` stub (1280x720 window only, no CMake option, no
-    game-side changes). The goal is a proper widescreen projection and
-    HUD/menu layout, including the arcade-link screens (512x216 layout
-    space). It must stay presentation-only: no effect on simulation,
-    replay, canonical state, or lockstep identity, with an isolation test
-    like the texture filter's.
-12. Stretch goal: G29 force feedback. Not started. Today retail pad
-    vibration (`Platform_InputPadVibrate`, `platform/native_input.c:1290`)
-    maps to `SDL_RumbleGamepad` only, and a G29 gets nothing ("direct G29
-    force feedback remains a separate M6 hardware gate"). The goal is
-    wheel effects (for example, collisions, terrain, and a steering
-    self-centering spring) through SDL haptics. It is host-local output,
-    kept out of simulation identity, and needs the CAB1 G29 hardware for
-    validation.
-13. Stretch goal: full-screen per-cabinet view. Not started. Linked races
-    ship with the retail 2P split screen on both cabinets (owner decision,
-    Task 8). The goal is for each cabinet to render only its own player,
-    full screen. The owner accepts graphics-only effects going out of sync
-    between cabinets. However, particles currently draw from the item RNG
-    (MixRNG), so a per-cabinet viewport would desync the simulation, not
-    just the graphics. That draw must first be split onto a
-    presentation-only RNG, and the lockstep digest must prove the
-    simulation still matches.
+8. Automatic LAN discovery: done for two cabinets
+   (`docs/DISCOVERY_MILESTONE.md`; beacon, seat election, `seat = auto`).
+   Three or four cabinets are a later extension: they need 3-4 human slots
+   in the roster and match config (`NativeMatchConfigV1` has two human
+   roles; match select is already sized for 4).
+9. Oxide Station in linked races: shelved by the owner. Known
+   prerequisite: retail offers it in 1P only (SEL-3), so first confirm the
+   disc has a multiplayer level pack for it.
+10. Unlock everything and Turbo Track: shelved by the owner. Known
+    prerequisite: unlock state must come from the build, not the
+    host-local save, so both cabinets agree.
+11. Native 16:9: dropped by the owner (the 4:3 image with black bars is
+    accepted).
+12. G29 force feedback: not prioritised. Pointer: wheel effects through
+    SDL haptics (today `Platform_InputPadVibrate` maps to
+    `SDL_RumbleGamepad` only), host-local and out of simulation identity;
+    validation needs the CAB1 G29.
+13. Full-screen per-cabinet view: dropped by the owner (linked races keep
+    the retail 2P split screen on both cabinets).
 
 ## Deterministic simulation
 
