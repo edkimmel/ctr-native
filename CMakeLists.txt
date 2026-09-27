@@ -2224,6 +2224,36 @@ if(BUILD_TESTING)
                 LABELS "live;live-roster")
         endforeach()
 
+        # The roster proof on every arcade track (docs/SOLO_CAB_MILESTONE.md
+        # section 9): tools/arcade-roster-track-sweep.ps1 runs one internal
+        # --arcade-roster-proof per (track, profile) on all 16 match-select
+        # tracks (--arcade-roster-proof-track), seed 0x5EED, dwell 0: TWO_CAB
+        # with --arcade-roster-proof-autopilot (the humans steer into the
+        # tracks' hazards) and ONE_CAB on the scripted pads, each to 1800 race
+        # ticks, past the latest known DRIVERS_FAILED ticks (TWO_CAB 946 on
+        # Polar Pass, ONE_CAB 1785 on Dingo Canyon; fixed by d9bb4e0bc and
+        # 5761b6eec).  Every report must be v12 PASS with its profile, ticks,
+        # track, and all its tick lines.  The 32 runs go 16 at a time under
+        # the proof's fixed VBlank pacing (each is independent of the others'
+        # timing); measured (Debug) about 114 s per run and 230 s for the test,
+        # so TIMEOUT 600 and 300 s per run leave over 2x margin.  Each
+        # run writes only under its own directory of this test's directory.
+        # tests/arcade_roster_track_sweep_plan_test.cmake pins the plan and
+        # these arguments.
+        add_test(NAME arcade_roster_track_sweep
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/arcade-roster-track-sweep.ps1"
+                -Executable "$<TARGET_FILE:ctr_native>"
+                -OutputDirectory "${CMAKE_BINARY_DIR}/arcade_roster_track_sweep/$<CONFIG>"
+                -Profile both
+                -Ticks 1800
+                -Parallel 16
+                -TimeoutSeconds 300)
+        set_tests_properties(arcade_roster_track_sweep PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 600
+            LABELS "live;live-roster")
+
         # The two-process live race gate (docs/RACE_LAUNCH_MILESTONE.md
         # RL-15, RL-S10; since LR-S13 part B the one-machine proof of
         # docs/LOCKSTEP_RACE_MILESTONE.md LR-16, LR-76): two internal
@@ -2347,6 +2377,14 @@ if(BUILD_TESTING)
             COMMAND "${CMAKE_COMMAND}"
                 -DREPO_DIR=${CMAKE_SOURCE_DIR}
                 -P "${CMAKE_SOURCE_DIR}/tests/arcade_roster_proof_groups_test.cmake")
+
+        # The track sweep's plan, without a game run: all 16 match-select
+        # tracks, the profile flags, and the arguments the live
+        # arcade_roster_track_sweep test registers.
+        add_test(NAME arcade_roster_track_sweep_plan
+            COMMAND "${CMAKE_COMMAND}"
+                -DREPO_DIR=${CMAKE_SOURCE_DIR}
+                -P "${CMAKE_SOURCE_DIR}/tests/arcade_roster_track_sweep_plan_test.cmake")
     endif()
 
     add_executable(native_canonical_world_mine_registry_v1_test tests/native_canonical_world_mine_registry_v1_test.c)

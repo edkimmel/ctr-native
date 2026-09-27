@@ -1117,7 +1117,7 @@ the LINK buffers below, so it is the unclipped demand.
   proof stops with DRIVERS_FAILED at race tick 377 and 946 (the drivers
   extraction), with the retail LOD too. For these two tracks a further
   temporary edit kept the race and the autopilot running without tick
-  lines.
+  lines. Since fixed (d9bb4e0bc, 5761b6eec): both tracks pass (section 9).
 
 Overflow behaviour (retail code, unchanged):
 
@@ -1188,3 +1188,63 @@ checks the two guarded call sites, the unchanged walk and its cull, the
 read-only top-tier pick, the retail animation frame count, the kept DecalMP
 entry writes, and that `maxDistanceLOD` has no writer but the cutscene
 opcode.
+
+## 9. Every arcade track: the V4 drivers extraction
+
+The roster proof failed DRIVERS_FAILED on Dingo Canyon (0; TWO_CAB autopilot
+race tick 377, ONE_CAB 1785) and Polar Pass (12; TWO_CAB 946). A human in a
+hazard's hit radius (armadillo, seal) is hit again while spinning: retail
+`DefaultSpin` skips the queued init when already `KS_SPINNING`
+(game/Vehicle/VehPickState.c:240-242), then clears `kartState` (:299), so a
+spin suffix (7..10) runs with kartState 0 and a live Spinning union. That is
+retail behaviour (game code unchanged); the V4 active-tag contract rejected
+it. d9bb4e0bc accepts it with tag SPIN; 5761b6eec makes one predicate
+(`IsSpinReHit`, platform/native_canonical_driver_behavior.c) drive both the
+allowed mask and the resolved tag, excluding the queued inits 6..8 (NONE).
+
+The sweep, one `--arcade-roster-proof` per (track, profile), all 16
+match-select tracks, seed 0x5EED, dwell 0, 3600 race ticks; TWO_CAB with
+`--arcade-roster-proof-autopilot`, ONE_CAB on the scripted pads (Debug build
+of 5761b6eec's code, 32 runs, 8 at a time, 684 s, about 170 s per run):
+
+| Track | Name | TWO_CAB (autopilot) | ONE_CAB |
+|---|---|---|---|
+| 3 | Crash Cove | PASS, 3600/3600 | PASS, 3600/3600 |
+| 6 | Roo's Tubes | PASS, 3600/3600 | PASS, 3600/3600 |
+| 4 | Tiger Temple | PASS, 3600/3600 | PASS, 3600/3600 |
+| 14 | Coco Park | PASS, 3600/3600 | PASS, 3600/3600 |
+| 9 | Mystery Caves | PASS, 3600/3600 | PASS, 3600/3600 |
+| 2 | Blizzard Bluff | PASS, 3600/3600 | PASS, 3600/3600 |
+| 8 | Sewer Speedway | PASS, 3600/3600 | PASS, 3600/3600 |
+| 0 | Dingo Canyon | PASS, 3600/3600 | PASS, 3600/3600 |
+| 5 | Papu's Pyramid | PASS, 3600/3600 | PASS, 3600/3600 |
+| 1 | Dragon Mines | PASS, 3600/3600 | PASS, 3600/3600 |
+| 12 | Polar Pass | PASS, 3600/3600 | PASS, 3600/3600 |
+| 10 | Cortex Castle | PASS, 3600/3600 | PASS, 3600/3600 |
+| 15 | Tiny Arena | PASS, 3600/3600 | PASS, 3600/3600 |
+| 7 | Hot Air Skyway | PASS, 3600/3600 | PASS, 3600/3600 |
+| 11 | N. Gin Labs | PASS, 3600/3600 | PASS, 3600/3600 |
+| 16 | Slide Coliseum | PASS, 3600/3600 | PASS, 3600/3600 |
+
+"3600/3600" is the race ticks logged (every tick line present, report v12,
+`end ticks 3600`). Within 3600 race ticks only one autopilot human finished
+(Crash Cove, player 0 at race tick 3552) and no race reached END_OF_RACE, so
+this covers racing and the hazards, not the finish.
+
+The sweep (output under the ignored build tree):
+
+```sh
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/arcade-roster-track-sweep.ps1 \
+    -Executable build-msvc-x86/Debug/ctr_native.exe \
+    -OutputDirectory C:/re-tools/ctr-native/build-msvc-x86/arcade_roster_track_sweep_record/3600 \
+    -Profile both -Ticks 3600 -Parallel 8 -TimeoutSeconds 900
+```
+
+The live ctest `arcade_roster_track_sweep` (labels `live;live-roster`,
+skips with 77) runs the same sweep at 1800 race ticks, past the latest known
+failures (946 TWO_CAB, 1785 ONE_CAB), both profiles, 16 at a time: 32 runs
+of about 114 s, 230 s for the test (TIMEOUT 600). The fast test
+`arcade_roster_track_sweep_plan` (tests/arcade_roster_track_sweep_plan_test.cmake)
+pins its plan through `-ListRuns`: the 16 tracks of `k_matchSelectTracks`,
+the flags per profile (the autopilot only on TWO_CAB), the arguments the
+live test registers, and the rejection of the non-table tracks 13 and 17.

@@ -560,16 +560,19 @@ Run from the repository root:
 ```sh
 cmake --preset windows-msvc-x86
 cmake --build build-msvc-x86 --config Debug
-# Inner loop, while iterating on a change: the fast suite (163 tests).
+# Inner loop, while iterating on a change: the fast suite (175 tests).
 ctest --test-dir build-msvc-x86 -C Debug -LE live -j 8 --output-on-failure
 # Task scope: also each live area the change reaches.
-# live-link runs two tests (arcade_link_launch about 242 s, arcade_solo_race
-# about 87 s); -j 2 runs them together (their ports are distinct).
-ctest --test-dir build-msvc-x86 -C Debug -L live-link -j 2 --output-on-failure
+# live-link runs three tests (arcade_link_launch about 242 s, arcade_solo_race
+# about 87 s, arcade_discovery_link); -j 3 runs them together (their ports
+# are distinct).
+ctest --test-dir build-msvc-x86 -C Debug -L live-link -j 3 --output-on-failure
+# live-roster runs three tests (the two arcade_roster_determinism groups,
+# about 273 s each, and arcade_roster_track_sweep, about 230 s).
 ctest --test-dir build-msvc-x86 -C Debug -L live-roster -j 8 --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-render --output-on-failure
 ctest --test-dir build-msvc-x86 -C Debug -L live-package --output-on-failure
-# Milestone gate, once before the work is done: the full suite (169 tests).
+# Milestone gate, once before the work is done: the full suite (183 tests).
 ctest --test-dir build-msvc-x86 -C Debug -j 8 --output-on-failure
 ```
 
@@ -583,19 +586,23 @@ tree sets the test labels per configuration, so without `-C` the label
 filters select nothing (`-L`) or everything (`-LE`). LF-to-CRLF warnings
 are benign.
 
-Six tests carry the ctest label `live` plus one area label:
+Eight tests carry the ctest label `live` plus one area label:
 `arcade_link_preview_render` (`live-render`, about 47 s measured with the
 17 previews before the solo ones),
 `arcade_roster_determinism_two_cab` and `arcade_roster_determinism_one_cab`
-(`live-roster`, about 273 s each), `arcade_link_launch` (`live-link`, about
-242 s), `arcade_solo_race` (`live-link`, about 87 s), and
+(`live-roster`, about 273 s each), `arcade_roster_track_sweep`
+(`live-roster`, about 230 s), `arcade_link_launch` (`live-link`, about
+242 s), `arcade_solo_race` (`live-link`, about 87 s),
+`arcade_discovery_link` (`live-link`), and
 `package_arcade_smoke` (`live-package`, about 242 s).
-`ctest -LE live` excludes all six; the default run includes them. They are
+`ctest -LE live` excludes all eight; the default run includes them. They are
 parallel-safe (no RUN_SERIAL or RESOURCE_LOCK). Measured in Debug: the fast
-suite (163 tests) takes 86 s serial and 36 s with `-j 8`, and the five live
-tests other than `arcade_solo_race` together with `-L live -j 8` take 273 s
-(`arcade_solo_race` is not in that measurement; the old serial full suite
-took about 605 s); `-j 16` gave the fast suite no gain over `-j 8`. Each
+suite (163 tests when measured) takes 86 s serial and 36 s with `-j 8`
+(175 tests: 31 s with `-j 8`), and the five live tests other than
+`arcade_solo_race` together with `-L live -j 8` take 273 s
+(`arcade_solo_race`, `arcade_discovery_link`, and
+`arcade_roster_track_sweep` are not in that measurement; the old serial
+full suite took about 605 s); `-j 16` gave the fast suite no gain over `-j 8`. Each
 live test writes only under its own directory of the build tree, and the
 three link gates use distinct loopback ports (`arcade_link_launch` 7101 and
 7102, `package_arcade_smoke` the package's 7001 and 7002,
@@ -620,7 +627,16 @@ together they run every check of the unsplit eleven-run proof (`-Group all`,
 still the script's default), each prints which checks it ran, and the fast
 test `arcade_roster_proof_groups` pins the split. They write under
 `build-msvc-x86\arcade_roster_proof\<group>\<config>`. The
-`arcade_link_launch` test runs `tools/arcade-link-launch-check.ps1`, the
+`arcade_roster_track_sweep` test runs `tools/arcade-roster-track-sweep.ps1`
+(docs/SOLO_CAB_MILESTONE.md section 9): one roster proof per arcade
+match-select track (all 16) and profile, TWO_CAB with the autopilot and
+ONE_CAB, 1800 race ticks each, 16 processes at a time (32 runs of about
+114 s); every report must be v12 PASS with all its tick lines. It writes
+under `build-msvc-x86\arcade_roster_track_sweep\<config>`, one directory
+per run, and the fast test `arcade_roster_track_sweep_plan` pins its plan
+(`-ListRuns`). Run the script by hand for other ticks, profiles, or tracks
+(`-Ticks`, `-Profile two-cab|one-cab|both`, `-Tracks 0,12`, `-Parallel`).
+The `arcade_link_launch` test runs `tools/arcade-link-launch-check.ps1`, the
 two-process three-race lockstep gate (`docs/RACE_LAUNCH_MILESTONE.md`
 RL-15, `docs/LOCKSTEP_RACE_MILESTONE.md` LR-16 and LR-76), on ports 7101
 and 7102 (`-Cab1Port`/`-Cab2Port`; the script's default is 7001 and 7002);
