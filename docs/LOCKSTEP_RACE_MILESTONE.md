@@ -2485,11 +2485,11 @@ LR-60 The internal race-tick-limit override (LR-S10 part 1, for LR-42).
   CTR_INTERNAL-region pins; native_arcade_link_autopilot_isolation 1b and
   2 (the option literals and the glue's one copy); and the unit test
   TestDriveRaceTickLimitDefault in native_arcade_link_host_unit. With no
-  setter call, a LINK race's drive runs with the default (stored 0, drive
-  18000, past race tick 5 with no end) on a first Configure, after a
-  replacing Configure over a session whose cap was lowered, and after a
-  Shutdown that follows a lowered cap. The gate's cross-check (the same
-  "race tick limit 6000" line on both stdouts, LR-67) is still what proves
+  setter call after Configure, a LINK race's drive runs with the default
+  (stored 0, drive 18000, past race tick 5 with no end) on a first Configure,
+  after a replacing Configure over a session whose cap was lowered, and
+  after a Shutdown that follows a lowered cap. The gate's cross-check (the
+  same "race tick limit 6000" line on both stdouts, LR-67) is still what proves
   that the gate's two internal cabinets agree.
 
 LR-61 The drive phase and its result (LR-S10 part 2). The launch core's
