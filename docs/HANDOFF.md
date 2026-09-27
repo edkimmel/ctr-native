@@ -864,7 +864,7 @@ Tasks 7 and 8 and v1 packaging are complete.
   clean tree (`docs/PACKAGING.md`, defaults PK-1..PK-10, and the Packaging
   section above). Its smoke test, `package_arcade_smoke`, races three times
   from the package folder, with no memcard save present.
-- The suite is 181 tests: the full run with `-j 8` takes about 280 s, and
+- The suite is 184 tests: the full run with `-j 8` takes about 520 s, and
   `-LE live -j 8` about 35 s. Live tests carry area labels (`live-link`,
   `live-roster`, `live-render`, `live-package`). Per-change checks use the
   fast suite plus the affected area; the full suite runs once per
@@ -939,14 +939,24 @@ open source.
      bot 5's value followed ASLR and could desync two cabinets. Bots with
      driverID >= 4 now reject every candidate, as PS1 does in practice.
      The crate weapon branch returns early for bot owners.
-   - OPEN, HIGH: on tracks 0 (Dingo Canyon) and 12 (Polar Pass), the
-     TWO_CAB roster proof stops with DRIVERS_FAILED ("the drivers
-     extraction failed") at race ticks 377 and 946, with retail LOD too.
-     A linked race uses the same V4 projection, so it would likely end
-     as RACE ERROR on those tracks. No gate covers tracks other than 3.
-   - Open, render-only: `BOTS.c:2324-2341` writes `pushBuffer[driverID]`
-     into DecalMP entries for bots 4 and above. Guard it with
-     `driverID < 4`.
+   - Fixed: the V4 drivers extractor rejected a legitimate retail
+     state, a human re-hit by a hazard while already spinning (kartState
+     0 with a live spin suffix; see `VehPickState.c:240-299`). This
+     failed tracks 0 and 12. The canonical rule now accepts it, with no
+     schema change. The live test `arcade_roster_track_sweep` covers
+     both profiles on all 16 tracks (1800 ticks). All 16 pass 3600 ticks
+     in both profiles (`docs/SOLO_CAB_MILESTONE.md` section 9).
+   - Fixed: the BOTS.c plant-eaten camera now writes `pushBuffer` only
+     for driverID < 4.
+   - Open:
+     - `RB_MaskShieldCloud.c:400-402` writes `pushBuffer[owner->driverID]`
+       without a bot check. This may be an out-of-bounds write for bots
+       4 and above; unverified.
+     - Byte-compared determinism is proven on track 3 only; the sweep
+       checks PASS per track.
+     - No gate reaches END_OF_RACE on tracks other than 3.
+     - `RB_Player.c:87` (battle only) can still leave a suffix that
+       extraction rejects.
 5. Shelved (owner): stretch goals 9 and 10 (Oxide Station, unlock
    everything and Turbo Track). Dropped (owner): 11 (16:9) and 13
    (per-cabinet full screen). Not prioritised: 12 (G29 force feedback).
