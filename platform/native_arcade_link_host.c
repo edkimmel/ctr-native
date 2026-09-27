@@ -859,10 +859,13 @@ static void NativeArcadeLinkHost_LogDiscoveryEvent(const struct NativeArcadeDisc
 		(seat[0] != '\0') ? " as " : "; not paired", seat);
 }
 
-/* The lan (DISC-19): one line whenever the interface inside the lan changes,
- * the first interface-list read included: none (nothing is sent, and the
- * next refresh retries; never a fallback to other interfaces), or the
- * interface's address. Nothing with explicit targets or without a lan. */
+/* The lan (DISC-19): one line whenever the lan state changes, the first
+ * interface-list read included. Without an interface on exactly the lan's
+ * subnet nothing is sent and the next refresh retries (never a fallback to
+ * other interfaces); the line says why: the interface list is unavailable,
+ * an interface is inside the lan on another prefix, or none is inside it.
+ * With one, the interface's address. Nothing with explicit targets or
+ * without a lan. */
 static void NativeArcadeLinkHost_LogDiscoveryLan(void)
 {
 	struct NativeArcadeDiscoveryServiceStatus status;
@@ -875,6 +878,18 @@ static void NativeArcadeLinkHost_LogDiscoveryLan(void)
 		return;
 	}
 	NativeArcadeLinkHost_FormatIpv4(status.lanNetwork, lan);
+	if (status.enumerationFailed != 0u)
+	{
+		Platform_Log("[CTR Native] arcade discovery: interface list unavailable; not beaconing, retrying\n");
+		return;
+	}
+	if ((interfaceIpv4 == 0u) && (status.lanMismatchIpv4 != 0u))
+	{
+		NativeArcadeLinkHost_FormatIpv4(status.lanMismatchIpv4, address);
+		Platform_Log("[CTR Native] arcade discovery: interface %s/%u is in lan %s/%u but its subnet differs; not beaconing, retrying\n", address,
+			(unsigned)status.lanMismatchPrefixLength, lan, (unsigned)status.lanPrefixLength);
+		return;
+	}
 	if (interfaceIpv4 == 0u)
 	{
 		Platform_Log("[CTR Native] arcade discovery: no network interface in lan %s/%u; not beaconing, retrying\n", lan,

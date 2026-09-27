@@ -86,53 +86,104 @@ static int TestBuildTargets(void)
 	return 0;
 }
 
+/* 1 when entry is all zero (no mismatched entry reported). */
+static int NoMismatch(const struct NativeNetInterface *entry)
+{
+	return (entry->ipv4 == 0) && (entry->prefixLength == 0) && (entry->up == 0) && (entry->loopback == 0) && (entry->reserved == 0);
+}
+
 /* The lan-pinned target (DISC-19): the lan's broadcast alone, only while a
- * usable entry is inside the lan; never a fallback to other targets. */
+ * usable entry is on exactly the lan's subnet (its address inside the lan
+ * and its prefix length the lan's); never a fallback to other targets. */
 static int TestBuildLanTargets(void)
 {
 	const uint32_t lan = UINT32_C(0xC0A80100); /* 192.168.1.0/24 */
 	uint32_t targets[NATIVE_NET_INTERFACES_MAX_TARGETS];
 	uint32_t address = 0xA5A5A5A5u;
+	struct NativeNetInterface mismatch;
 	struct NativeNetInterface list[8];
 
-	/* Argument handling: 0, targets untouched, the address cleared. */
+	/* Argument handling: 0, targets untouched, the address and the mismatch
+	 * cleared. */
 	memset(targets, 0xA5, sizeof(targets));
+	memset(&mismatch, 0xA5, sizeof(mismatch));
 	list[0] = Entry(UINT32_C(0xC0A8010B), 24u, 1u, 0u);
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, lan, 24u, NULL, 8u, &address) == 0);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, lan, 24u, NULL, 8u, &address, &mismatch) == 0);
 	CHECK(address == 0);
+	CHECK(NoMismatch(&mismatch));
 	address = 0xA5A5A5A5u;
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, lan, 24u, targets, 0, &address) == 0);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, lan, 24u, targets, 0, &address, &mismatch) == 0);
 	CHECK(address == 0);
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, lan, 24u, targets, 8u, NULL) == 0);
+	memset(&mismatch, 0xA5, sizeof(mismatch));
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, lan, 24u, targets, 8u, NULL, &mismatch) == 0);
+	CHECK(NoMismatch(&mismatch));
 	address = 0xA5A5A5A5u;
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, lan, 0u, targets, 8u, &address) == 0);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, lan, 0u, targets, 8u, &address, &mismatch) == 0);
 	CHECK(address == 0);
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, lan, 32u, targets, 8u, &address) == 0);
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, UINT32_C(0xC0A80105), 24u, targets, 8u, &address) == 0); /* host bits */
-	CHECK(NativeNetInterfaces_BuildLanTargets(NULL, 1u, lan, 24u, targets, 8u, &address) == 0);
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 0, lan, 24u, targets, 8u, &address) == 0);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, lan, 32u, targets, 8u, &address, &mismatch) == 0);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, UINT32_C(0xC0A80105), 24u, targets, 8u, &address, &mismatch) == 0); /* host bits */
+	CHECK(NativeNetInterfaces_BuildLanTargets(NULL, 1u, lan, 24u, targets, 8u, &address, &mismatch) == 0);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 0, lan, 24u, targets, 8u, &address, &mismatch) == 0);
 	CHECK(targets[0] == UINT32_C(0xA5A5A5A5));
+	CHECK(NoMismatch(&mismatch));
 
 	/* The fleet's two-NIC cabinet: the arcade switch 192.168.1.11/24 and
 	 * another network 10.0.0.5/8. Only 192.168.1.255, with the switch NIC
 	 * named; no 255.255.255.255 and no 10.255.255.255. */
 	list[0] = Entry(UINT32_C(0x0A000005), 8u, 1u, 0u);
 	list[1] = Entry(UINT32_C(0xC0A8010B), 24u, 1u, 0u);
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 2u, lan, 24u, targets, 8u, &address) == 1u);
+	memset(&mismatch, 0xA5, sizeof(mismatch));
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 2u, lan, 24u, targets, 8u, &address, &mismatch) == 1u);
 	CHECK(targets[0] == UINT32_C(0xC0A801FF));
 	CHECK(targets[1] == UINT32_C(0xA5A5A5A5));
 	CHECK(address == UINT32_C(0xC0A8010B));
-	/* A capacity of one is enough. */
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 2u, lan, 24u, targets, 1u, &address) == 1u);
-	/* The lan's broadcast, not the NIC's own: a NIC on a wider prefix inside
-	 * the lan still gives the lan's /24 broadcast. */
-	list[1] = Entry(UINT32_C(0xC0A8010C), 16u, 1u, 0u);
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 2u, lan, 24u, targets, 8u, &address) == 1u);
-	CHECK((targets[0] == UINT32_C(0xC0A801FF)) && (address == UINT32_C(0xC0A8010C)));
+	CHECK(NoMismatch(&mismatch));
+	/* A capacity of one is enough, and the mismatch may be NULL. */
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 2u, lan, 24u, targets, 1u, &address, NULL) == 1u);
+	CHECK(address == UINT32_C(0xC0A8010B));
 
-	/* No usable entry inside the lan: 0, nothing written, the address 0.
-	 * Loopback (flagged or 127/8), down, 0.0.0.0, and prefix 0 or 32 never
-	 * count, even when their address is inside the lan. */
+	/* The card's subnet must equal the lan. A card on a wider prefix whose
+	 * address is inside the lan (192.168.1.12/16 in 192.168.1.0/24: there
+	 * 192.168.1.255 is a unicast host, ARPed for) does not count: 0, nothing
+	 * written, the card reported as the mismatch. */
+	memset(targets, 0xA5, sizeof(targets));
+	list[1] = Entry(UINT32_C(0xC0A8010C), 16u, 1u, 0u);
+	address = 0xA5A5A5A5u;
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 2u, lan, 24u, targets, 8u, &address, &mismatch) == 0);
+	CHECK((address == 0) && (targets[0] == UINT32_C(0xA5A5A5A5)));
+	CHECK((mismatch.ipv4 == UINT32_C(0xC0A8010C)) && (mismatch.prefixLength == 16u) && (mismatch.up == 1u) && (mismatch.loopback == 0));
+	/* The same without a mismatch out-parameter: still 0. */
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 2u, lan, 24u, targets, 8u, &address, NULL) == 0);
+	CHECK((address == 0) && (targets[0] == UINT32_C(0xA5A5A5A5)));
+	/* A lan wider than the card (192.168.0.0/16 with 192.168.1.11/24: there
+	 * 192.168.255.255 is off-link and goes to the default gateway, possibly
+	 * through the other card): 0, the card reported. */
+	list[1] = Entry(UINT32_C(0xC0A8010B), 24u, 1u, 0u);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 2u, UINT32_C(0xC0A80000), 16u, targets, 8u, &address, &mismatch) == 0);
+	CHECK((address == 0) && (targets[0] == UINT32_C(0xA5A5A5A5)));
+	CHECK((mismatch.ipv4 == UINT32_C(0xC0A8010B)) && (mismatch.prefixLength == 24u));
+	/* The same card with the lan on its prefix (192.168.0.0/16 with
+	 * 192.168.1.11/16): the lan's broadcast, no mismatch. */
+	list[1] = Entry(UINT32_C(0xC0A8010B), 16u, 1u, 0u);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 2u, UINT32_C(0xC0A80000), 16u, targets, 8u, &address, &mismatch) == 1u);
+	CHECK((targets[0] == UINT32_C(0xC0A8FFFF)) && (address == UINT32_C(0xC0A8010B)));
+	CHECK(NoMismatch(&mismatch));
+	/* A mismatched card before an exact one: the exact one is used, and no
+	 * mismatch is reported. The first of two mismatched cards is the one
+	 * reported. */
+	list[0] = Entry(UINT32_C(0xC0A8010C), 16u, 1u, 0u);
+	list[1] = Entry(UINT32_C(0xC0A8010B), 24u, 1u, 0u);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 2u, lan, 24u, targets, 8u, &address, &mismatch) == 1u);
+	CHECK((targets[0] == UINT32_C(0xC0A801FF)) && (address == UINT32_C(0xC0A8010B)));
+	CHECK(NoMismatch(&mismatch));
+	list[1] = Entry(UINT32_C(0xC0A8010D), 23u, 1u, 0u);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 2u, lan, 24u, targets, 8u, &address, &mismatch) == 0);
+	CHECK((address == 0) && (mismatch.ipv4 == UINT32_C(0xC0A8010C)) && (mismatch.prefixLength == 16u));
+
+	/* No usable entry inside the lan: 0, nothing written, the address 0, no
+	 * mismatch. Loopback (flagged or 127/8), down, 0.0.0.0, and prefix 0 or
+	 * 32 never count, even when their address is inside the lan, and are
+	 * never reported as a mismatch. */
 	memset(targets, 0xA5, sizeof(targets));
 	list[0] = Entry(UINT32_C(0x0A000005), 8u, 1u, 0u);   /* another network */
 	list[1] = Entry(UINT32_C(0xC0A8010B), 24u, 0u, 0u);  /* in the lan, down */
@@ -143,25 +194,32 @@ static int TestBuildLanTargets(void)
 	list[6] = Entry(UINT32_C(0x7F000001), 8u, 1u, 0u);   /* 127/8, not flagged */
 	list[7] = Entry(0u, 24u, 1u, 0u);                    /* 0.0.0.0 */
 	address = 0xA5A5A5A5u;
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, COUNT(list), lan, 24u, targets, 8u, &address) == 0);
+	memset(&mismatch, 0xA5, sizeof(mismatch));
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, COUNT(list), lan, 24u, targets, 8u, &address, &mismatch) == 0);
 	CHECK(address == 0);
 	CHECK(targets[0] == UINT32_C(0xA5A5A5A5));
+	CHECK(NoMismatch(&mismatch));
 	/* A lan of 127.0.0.0/8 finds no NIC either: loopback never counts. */
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, COUNT(list), UINT32_C(0x7F000000), 8u, targets, 8u, &address) == 0);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, COUNT(list), UINT32_C(0x7F000000), 8u, targets, 8u, &address, &mismatch) == 0);
 	CHECK(targets[0] == UINT32_C(0xA5A5A5A5));
+	CHECK(NoMismatch(&mismatch));
 
-	/* The first usable entry inside the lan is the one named. */
+	/* The first usable entry on the lan's subnet is the one named. */
 	list[6] = Entry(UINT32_C(0xC0A80114), 24u, 1u, 0u); /* 192.168.1.20 */
 	list[7] = Entry(UINT32_C(0xC0A80115), 24u, 1u, 0u);
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, COUNT(list), lan, 24u, targets, 8u, &address) == 1u);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, COUNT(list), lan, 24u, targets, 8u, &address, &mismatch) == 1u);
 	CHECK((targets[0] == UINT32_C(0xC0A801FF)) && (address == UINT32_C(0xC0A80114)));
-	/* /30 and /8 lans. */
+	/* /30 and /8 lans, each with a card on its prefix. */
 	list[0] = Entry(UINT32_C(0xC0A80106), 30u, 1u, 0u);
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, UINT32_C(0xC0A80104), 30u, targets, 8u, &address) == 1u);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, UINT32_C(0xC0A80104), 30u, targets, 8u, &address, &mismatch) == 1u);
 	CHECK((targets[0] == UINT32_C(0xC0A80107)) && (address == UINT32_C(0xC0A80106)));
-	list[0] = Entry(UINT32_C(0x0A010203), 24u, 1u, 0u);
-	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, UINT32_C(0x0A000000), 8u, targets, 8u, &address) == 1u);
+	list[0] = Entry(UINT32_C(0x0A010203), 8u, 1u, 0u);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, UINT32_C(0x0A000000), 8u, targets, 8u, &address, &mismatch) == 1u);
 	CHECK((targets[0] == UINT32_C(0x0AFFFFFF)) && (address == UINT32_C(0x0A010203)));
+	/* A /24 card in a /8 lan does not count. */
+	list[0] = Entry(UINT32_C(0x0A010203), 24u, 1u, 0u);
+	CHECK(NativeNetInterfaces_BuildLanTargets(list, 1u, UINT32_C(0x0A000000), 8u, targets, 8u, &address, &mismatch) == 0);
+	CHECK((address == 0) && (mismatch.ipv4 == UINT32_C(0x0A010203)) && (mismatch.prefixLength == 24u));
 	return 0;
 }
 

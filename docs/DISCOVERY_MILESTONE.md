@@ -486,9 +486,19 @@ alternative.
       `group`, it needs `seat` (alone it is an incomplete link group).
     - Discovery mode with a lan: the only beacon target is the lan's
       directed broadcast (network | ~mask), and only while at least one
-      local interface (up, not loopback, as DISC-5 counts them) has an
-      IPv4 inside the lan (`NativeNetInterfaces_BuildLanTargets`). No
-      255.255.255.255 and no other interface's broadcast. Mechanism: the
+      local interface (up, not loopback, as DISC-5 counts them) is on
+      exactly the lan's subnet: its IPv4 inside the lan and its on-link
+      prefix length equal to the lan's
+      (`NativeNetInterfaces_BuildLanTargets`). The lan must equal the
+      arcade card's subnet, same network and same prefix. An interface
+      whose address is inside the lan but whose prefix differs does not
+      count: on a wider card subnet (192.168.1.12/16, lan 192.168.1.0/24)
+      the lan's broadcast 192.168.1.255 is a unicast host of the card's
+      subnet, which Windows ARPs for and never broadcasts; on a narrower
+      one (192.168.1.11/24, lan 192.168.0.0/16) 192.168.255.255 is
+      off-link and goes to the default gateway, possibly through the other
+      card, the very leak the lan prevents. No 255.255.255.255 and no
+      other interface's broadcast. Mechanism: the
       one directed broadcast leaves the INADDR_ANY socket through the
       interface with the on-link route for that subnet; the socket is
       never bound to an interface address. Two NICs on the same subnet
@@ -496,13 +506,25 @@ alternative.
     - The service drops a datagram whose source IPv4 is outside the lan
       before the core: no table entry, not a peer, counted in the status
       (`lanDropped`), never logged per datagram.
-    - No interface in the lan (or the enumeration fails): no target,
-      nothing sent, no beacon round counted; the host logs once on
-      entering that state, `[CTR Native] arcade discovery: no network
-      interface in lan 192.168.1.0/24; not beaconing, retrying`, and the
-      service retries at the normal interface refresh (300 ticks, still
-      held while a race runs, risk 10). When an interface appears (or
-      changes) one line names the lan and its address:
+    - No interface on the lan's subnet (or the enumeration fails): no
+      target, nothing sent, no beacon round counted; the host logs one
+      line on entering each such state, and the service retries at the
+      normal interface refresh (300 ticks, still held while a race runs,
+      risk 10). The line says why (`NativeArcadeLinkHost_LogDiscoveryLan`
+      reads the service status):
+      - the enumeration failed: `[CTR Native] arcade discovery: interface
+        list unavailable; not beaconing, retrying` (an intermittent
+        failure may alternate with another line, at most once per
+        refresh);
+      - an interface is inside the lan on another prefix (the first such
+        one, the status's `lanMismatchIpv4` and
+        `lanMismatchPrefixLength`): `[CTR Native] arcade discovery:
+        interface 192.168.1.12/16 is in lan 192.168.1.0/24 but its subnet
+        differs; not beaconing, retrying`;
+      - otherwise: `[CTR Native] arcade discovery: no network interface
+        in lan 192.168.1.0/24; not beaconing, retrying`.
+      When an interface on the lan's subnet appears (or changes) one line
+      names the lan and its address:
       `[CTR Native] arcade discovery: lan 192.168.1.0/24 on interface
       192.168.1.11; beaconing`. Never a fallback to all interfaces; this
       replaces DISC-15's 255.255.255.255-only fallback when a lan is set.
@@ -889,7 +911,7 @@ leave room.
   `LanBroadcast`; the interface list has the pure
   `NativeNetInterfaces_BuildLanTargets`; the service's Open takes the lan
   (prefix 0: none), drops sources outside it, beacons only to its
-  broadcast while an interface is in it, and reports each change of that
+  broadcast while an interface is on its subnet, and reports each change of that
   interface through `NativeArcadeDiscoveryService_TakeLanChange`, which
   the host logs (the two DISC-19 lines); the status gained the lan, the
   interface, and `lanDropped`, and a tick with no target counts no beacon
@@ -906,4 +928,13 @@ leave room.
   beacon round); isolation (the discovery rule 7 lan scan, the service's
   filter and no-fallback pins, the options, config, and host pins). The
   link needed no change: it already reads only its peer (DISC-19).
+  Review fix: an interface counts only on exactly the lan's subnet (same
+  prefix as well as same network); `BuildLanTargets` reports the first
+  interface inside the lan on another prefix, the status carries it
+  (`lanMismatchIpv4`, `lanMismatchPrefixLength`), `TakeLanChange` reports a
+  change of it or of a failed enumeration as well, and the host logs four
+  lan lines (the enumeration-failed and subnet-differs lines added). Tests:
+  the wider-card and wider-lan cases give no target and report the card,
+  an equal prefix gives the lan's broadcast; host isolation pins the line
+  order and nine `Platform_Log` names.
 - DISC-S6: not started.

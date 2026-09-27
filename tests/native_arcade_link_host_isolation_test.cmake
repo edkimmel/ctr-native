@@ -337,7 +337,7 @@ endif()
 #     A solo race turns the pacing on and off on the same RaceBegin and
 #     RaceEnd path as a linked race (pinned in 3g, SOLO-7). Since DISC-S4 it
 #     names it five times: the declaration, the solo notice, and three
-#     discovery calls (pinned in 3m); since DISC-19 seven, with the two lan
+#     discovery calls (pinned in 3m); since DISC-19 nine, with the four lan
 #     lines.
 foreach(literal IN ITEMS
         "int NativeArcadeLinkHost_RaceBegin(void);"
@@ -356,11 +356,11 @@ endif()
 # Since DISC-S4 (DISC-15, DISC-16) three more calls log discovery: the
 # socket opened or not (two calls, both in OpenDiscovery), and one line per
 # pairing event (one call, in LogDiscoveryEvent); rule 3m pins where. Since
-# DISC-19 two more: the lan interface lines (both in LogDiscoveryLan).
+# DISC-19 four more: the lan state lines (all in LogDiscoveryLan).
 string(REGEX MATCHALL "Platform_Log" platform_log_names "${source}")
 list(LENGTH platform_log_names platform_log_count)
-if(NOT platform_log_count EQUAL 7)
-    message(FATAL_ERROR "arcade link host isolation: ${host_source} must name Platform_Log exactly seven times, its declaration, the solo notice, and the five discovery calls (found ${platform_log_count})")
+if(NOT platform_log_count EQUAL 9)
+    message(FATAL_ERROR "arcade link host isolation: ${host_source} must name Platform_Log exactly nine times, its declaration, the solo notice, and the seven discovery calls (found ${platform_log_count})")
 endif()
 string(REGEX MATCH "(^|[\r\n])void Platform_Log\\(const char \\*fmt, \\.\\.\\.\\);[ \t]*[\r\n]" platform_log_declaration "${source}")
 if(platform_log_declaration STREQUAL "")
@@ -963,17 +963,21 @@ ctr_require_count("${host_source} (OpenDiscovery)" "${open_discovery_body}" "Pla
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_LogDiscoveryEvent(" log_event_body)
 ctr_require_count("${host_source} (LogDiscoveryEvent)" "${log_event_body}" "Platform_Log(" 1)
 # The lan (DISC-19): OpenDiscovery hands the options' lan (prefix 0 without
-# one) to the one Open; TickDiscovery logs a lan interface change after the
+# one) to the one Open; TickDiscovery logs a lan state change after the
 # events through LogDiscoveryLan, which holds the one TakeLanChange call and
-# the two lan log lines and names no socket or OS networking token (rule 2).
+# the four lan log lines and names no socket or OS networking token (rule 2).
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeDiscoveryService_TakeLanChange(" 1)
 ctr_require_count("${host_source}" "${source_flat}" "NativeArcadeLinkHost_LogDiscoveryLan(" 2)
 ctr_require_in("${host_source} (OpenDiscovery)" "${open_discovery_body}"
     "const uint8_t lanPrefixLength = (options->hasLan != 0u) ? options->lanPrefixLength : 0u;")
 ctr_body("${host_source}" "${source_code}" "static void NativeArcadeLinkHost_LogDiscoveryLan(" log_lan_body)
-ctr_require_count("${host_source} (LogDiscoveryLan)" "${log_lan_body}" "Platform_Log(" 2)
+ctr_require_count("${host_source} (LogDiscoveryLan)" "${log_lan_body}" "Platform_Log(" 4)
 ctr_require_in("${host_source} (LogDiscoveryLan)" "${log_lan_body}"
     "if (!NativeArcadeDiscoveryService_TakeLanChange(&g_discovery, &interfaceIpv4) || !NativeArcadeDiscoveryService_GetStatus(&g_discovery, &status)) { return; }")
+# A failed interface list has its own line, ahead of the mismatch and
+# no-interface lines, so it is never reported as a missing interface.
+ctr_require_in("${host_source} (LogDiscoveryLan)" "${log_lan_body}"
+    "if (status.enumerationFailed != 0u) { Platform_Log(\"[CTR Native] arcade discovery: interface list unavailable; not beaconing, retrying\\n\"); return; } if ((interfaceIpv4 == 0u) && (status.lanMismatchIpv4 != 0u)) {")
 string(FIND "${tick_body}" "if (g_mode != NATIVE_ARCADE_LINK_HOST_MODE_LINK) { return NATIVE_ARCADE_FLOW_ACTION_NONE; } NativeArcadeLinkHost_TickDiscovery();" tick_discovery_at)
 string(FIND "${tick_body}" "NativeArcadeNetplay_Tick(" tick_adapter_at)
 if(tick_discovery_at EQUAL -1 OR tick_adapter_at EQUAL -1 OR NOT tick_discovery_at LESS tick_adapter_at)

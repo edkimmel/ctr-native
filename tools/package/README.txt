@@ -57,11 +57,20 @@ their seats (the cabinet with the lower IP address is cabinet 1).
      255.255.255.255) through one card only, and without lan the search
      also goes onto the other network. With lan the cabinet searches only
      that subnet and hears only cabinets in it; a static peer must be in
-     it too. Both cabinets need the same value. If no card of the cabinet
-     is in the subnet, it logs
+     it too. Both cabinets need the same value, and it must equal the
+     arcade card's subnet exactly, the same network and the same prefix
+     (192.168.1.0/24 for a card 192.168.1.11 with mask 255.255.255.0;
+     check with ipconfig). If no card of the cabinet is on the subnet, it
+     logs
        [CTR Native] arcade discovery: no network interface in lan 192.168.1.0/24; not beaconing, retrying
      once, sends nothing, and looks again every 10 s; it never uses the
-     other card instead. When the card is back it logs
+     other card instead. A card whose address is in the lan but whose mask
+     differs does not count either; it logs, for example,
+       [CTR Native] arcade discovery: interface 192.168.1.12/16 is in lan 192.168.1.0/24 but its subnet differs; not beaconing, retrying
+     and waits the same way: fix the card's mask or the lan so they match.
+     If Windows does not return its card list it logs
+       [CTR Native] arcade discovery: interface list unavailable; not beaconing, retrying
+     and waits the same way. When the card is back it logs
        [CTR Native] arcade discovery: lan 192.168.1.0/24 on interface <its address>; beaconing
    - port = <port> sets this cabinet's link port (default 7001; never
      7000, the discovery port). Use the same port in the firewall rule.

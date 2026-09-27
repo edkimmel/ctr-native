@@ -103,14 +103,24 @@ group, or lan grammar of its own.
   a `peer` outside the `lan`, passes the file check and is refused here.
 - With a `lan`, in discovery mode, the cabinet beacons only to the lan's
   directed broadcast (192.168.1.0/24 gives 192.168.1.255), and only while
-  one of its network cards (up, not loopback) has an address inside the
-  lan; it never sends 255.255.255.255 or another card's broadcast, and it
-  drops every beacon from a source outside the lan. With no card in the lan
-  it sends nothing, logs `arcade discovery: no network interface in lan
-  <lan>; not beaconing, retrying` once, and looks again at every interface
-  refresh (every 10 s, held while a race runs); it never falls back to the
-  other cards. When a card appears it logs `arcade discovery: lan <lan> on
-  interface <address>; beaconing`. `main.c` prints `arcade link: lan <lan>`
+  one of its network cards (up, not loopback) is on exactly the lan's
+  subnet: the `lan` must equal the arcade card's subnet, the same network
+  and the same prefix (a card 192.168.1.11 with mask 255.255.255.0 is on
+  192.168.1.0/24). It never sends 255.255.255.255 or another card's
+  broadcast, and it drops every beacon from a source outside the lan.
+  Without a card on the lan's subnet it sends nothing, logs one line on
+  entering that state, and looks again at every interface refresh (every
+  10 s, held while a race runs); it never falls back to the other cards.
+  The line says why: `arcade discovery: interface <address>/<prefix> is in
+  lan <lan> but its subnet differs; not beaconing, retrying` for a card
+  whose address is inside the lan on another prefix (fix the `lan` or the
+  card's mask so they match; a lan broadcast on such a card would not
+  reach the switch or would leave through the gateway), `arcade discovery:
+  interface list unavailable; not beaconing, retrying` when Windows does
+  not return its card list, and otherwise `arcade discovery: no network
+  interface in lan <lan>; not beaconing, retrying`. When a card on the
+  lan's subnet appears it logs `arcade discovery: lan <lan> on interface
+  <address>; beaconing`. `main.c` prints `arcade link: lan <lan>`
   at startup, after the `arcade link: <seat> port <p>, <n> peers` line.
 - Without a `lan` nothing of the above changes.
 - A static cabinet and a discovery cabinet never link (the static one does
@@ -492,7 +502,7 @@ cabinets find each other on the local network and elect their seats.
 | `seat` | `auto`: elected; the lower IP address is cab1 | `cab1` or `cab2`: a fixed seat, the other cabinet takes the other one (never the same seat on both) |
 | `port` (this cabinet's link port) | none: 7001 | another port, never 7000 (change the firewall rule to match) |
 | `group` | none: `ctr-native` | a name, the same on both cabinets, to keep two installations on one LAN apart |
-| `lan` | none: every network | `lan = 192.168.1.0/24` (the arcade switch's subnet), the same on both cabinets: on a cabinet with two network cards, discovery then uses only that subnet (see below) |
+| `lan` | none: every network | `lan = 192.168.1.0/24` (exactly the arcade card's subnet, same network and prefix), the same on both cabinets: on a cabinet with two network cards, discovery then uses only that subnet (see below) |
 | `peer` | none: discovery | static mode on BOTH cabinets: `seat` `cab1`/`cab2`, `port`, `peer = <other cabinet IP>:<its port>`, no `group` |
 
 A static cabinet does not beacon, so a pair of one static and one discovery
@@ -505,11 +515,21 @@ search broadcast 255.255.255.255 through one card only, and without `lan`
 the cabinet's beacons also go onto the other network and beacons from it
 are heard. With `lan = 192.168.1.0/24` on both cabinets, discovery uses only
 that subnet (PK-5): beacons to 192.168.1.255 only, nothing heard from
-outside it, and a `peer` (static mode) must be inside it. If no card of the
-cabinet is in the subnet (the switch cable out, the card down), the cabinet
-sends nothing, logs `[CTR Native] arcade discovery: no network interface in
-lan 192.168.1.0/24; not beaconing, retrying` once, waits (solo is offered),
-and looks again every 10 s; it never falls back to the other card. When the
+outside it, and a `peer` (static mode) must be inside it. The `lan` must
+equal the arcade card's subnet exactly, the same network and the same
+prefix: `192.168.1.0/24` for a card 192.168.1.11 with mask 255.255.255.0
+(check with `ipconfig`). If no card of the cabinet is on the subnet (the
+switch cable out, the card down), the cabinet sends nothing, logs
+`[CTR Native] arcade discovery: no network interface in lan
+192.168.1.0/24; not beaconing, retrying` once, waits (solo is offered),
+and looks again every 10 s; it never falls back to the other card. A card
+whose address is in the lan but whose mask differs (192.168.1.12 with mask
+255.255.0.0) does not count either: the cabinet logs `[CTR Native] arcade
+discovery: interface 192.168.1.12/16 is in lan 192.168.1.0/24 but its
+subnet differs; not beaconing, retrying` once and waits the same way; fix
+the card's mask or the `lan` so they match. If Windows does not return its
+card list, it logs `[CTR Native] arcade discovery: interface list
+unavailable; not beaconing, retrying` and waits the same way. When the
 card is back it logs `[CTR Native] arcade discovery: lan 192.168.1.0/24 on
 interface <its address>; beaconing`. Two cards in the same subnet are still
 not supported (docs/DISCOVERY_MILESTONE.md risk 2). The fleet setup script

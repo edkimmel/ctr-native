@@ -61,16 +61,22 @@ uint32_t NativeNetInterfaces_BuildTargets(const struct NativeNetInterface *inter
  * (docs/DISCOVERY_MILESTONE.md DISC-19): the lan's directed broadcast
  * (lanNetwork | ~mask) alone, and only while an entry BuildTargets would use
  * (up, not loopback, not in 127.0.0.0/8, not 0.0.0.0, prefix length 1..31)
- * has its address inside the lan. Then targets[0] is that broadcast,
+ * is on exactly the lan's subnet: its address inside the lan and its prefix
+ * length equal to lanPrefixLength. Then targets[0] is that broadcast,
  * *interfaceIpv4 the first such address, and the result 1. Otherwise the
  * result is 0 and *interfaceIpv4 0: never 255.255.255.255 and never another
- * entry's broadcast (no fallback). Returns 0 (with *interfaceIpv4 0 when it
- * is not NULL, targets untouched) for a NULL targets or interfaceIpv4,
- * capacity 0, a lan prefix length outside 1..31, or a lanNetwork with host
- * bits set; the caller has already checked the lan's own rule.
+ * entry's broadcast (no fallback). A usable entry whose address is inside
+ * the lan but whose prefix length differs never counts (the lan's broadcast
+ * would be a unicast host of a wider subnet, or off-link for a narrower
+ * one); when the result is 0, the first such entry is copied to *mismatch,
+ * otherwise *mismatch is all zero. mismatch may be NULL. Returns 0 (with
+ * *interfaceIpv4 0 and *mismatch zero when they are not NULL, targets
+ * untouched) for a NULL targets or interfaceIpv4, capacity 0, a lan prefix
+ * length outside 1..31, or a lanNetwork with host bits set; the caller has
+ * already checked the lan's own rule.
  */
 uint32_t NativeNetInterfaces_BuildLanTargets(const struct NativeNetInterface *interfaces, uint32_t interfaceCount, uint32_t lanNetwork, uint8_t lanPrefixLength,
-                                             uint32_t *targets, uint32_t capacity, uint32_t *interfaceIpv4);
+                                             uint32_t *targets, uint32_t capacity, uint32_t *interfaceIpv4, struct NativeNetInterface *mismatch);
 
 /*
  * Reads the OS list of IPv4 unicast addresses into out[] (at most capacity

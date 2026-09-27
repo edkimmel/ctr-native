@@ -354,6 +354,7 @@ static int TestLanPairsOnLoopback(void)
 	CHECK(NativeArcadeDiscoveryService_GetStatus(&s_a, &status));
 	CHECK((status.open == 1) && (status.overridden == 1) && (status.targetCount == 1u) && (status.refreshCount == 0u));
 	CHECK((status.lanPrefixLength == 8u) && (status.lanNetwork == LAN_LOOPBACK) && (status.lanInterfaceIpv4 == 0u) && (status.lanDropped == 0u));
+	CHECK((status.lanMismatchIpv4 == 0u) && (status.lanMismatchPrefixLength == 0u));
 	/* Explicit targets: no list is read, so there is no lan interface to report. */
 	CHECK(!NativeArcadeDiscoveryService_TakeLanChange(&s_a, &interfaceIpv4));
 	CHECK(interfaceIpv4 == 0xA5A5A5A5u);
@@ -401,6 +402,8 @@ static int TestLanDropsOutsideSource(void)
 	}
 	CHECK((status.open == 1) && (status.overridden == 0) && (status.refreshCount == 1u) && (status.targetCount == 0u));
 	CHECK((status.lanPrefixLength == 24u) && (status.lanNetwork == LAN_ABSENT));
+	/* Nothing inside the lan at all, so no mismatched interface either. */
+	CHECK((status.enumerationFailed == 0) && (status.lanMismatchIpv4 == 0u) && (status.lanMismatchPrefixLength == 0u));
 	/* The first read is reported once: no interface inside the lan. */
 	CHECK(NativeArcadeDiscoveryService_TakeLanChange(&s_a, &interfaceIpv4));
 	CHECK(interfaceIpv4 == 0u);

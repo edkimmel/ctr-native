@@ -74,13 +74,19 @@ uint32_t NativeNetInterfaces_BuildTargets(const struct NativeNetInterface *inter
 }
 
 uint32_t NativeNetInterfaces_BuildLanTargets(const struct NativeNetInterface *interfaces, uint32_t interfaceCount, uint32_t lanNetwork, uint8_t lanPrefixLength,
-                                             uint32_t *targets, uint32_t capacity, uint32_t *interfaceIpv4)
+                                             uint32_t *targets, uint32_t capacity, uint32_t *interfaceIpv4, struct NativeNetInterface *mismatch)
 {
+	const struct NativeNetInterface none = {0};
+	const struct NativeNetInterface *firstMismatch = NULL;
 	uint32_t mask;
 
 	if (interfaceIpv4 != NULL)
 	{
 		*interfaceIpv4 = 0;
+	}
+	if (mismatch != NULL)
+	{
+		*mismatch = none;
 	}
 	if ((targets == NULL) || (interfaceIpv4 == NULL) || (capacity == 0) || (lanPrefixLength == 0) || (lanPrefixLength >= 32u))
 	{
@@ -95,12 +101,29 @@ uint32_t NativeNetInterfaces_BuildLanTargets(const struct NativeNetInterface *in
 	{
 		const struct NativeNetInterface *entry = &interfaces[i];
 
-		if (NativeNetInterfaces_Usable(entry) && ((entry->ipv4 & mask) == lanNetwork))
+		if (!NativeNetInterfaces_Usable(entry) || ((entry->ipv4 & mask) != lanNetwork))
 		{
-			targets[0] = lanNetwork | ~mask;
-			*interfaceIpv4 = entry->ipv4;
-			return 1;
+			continue;
 		}
+		/* The card's subnet must be the lan exactly. On a wider card subnet
+		 * the lan's broadcast is a unicast host of it (ARPed for, never
+		 * broadcast); on a narrower one it is off-link and goes to the
+		 * default gateway, possibly through another card. */
+		if (entry->prefixLength != lanPrefixLength)
+		{
+			if (firstMismatch == NULL)
+			{
+				firstMismatch = entry;
+			}
+			continue;
+		}
+		targets[0] = lanNetwork | ~mask;
+		*interfaceIpv4 = entry->ipv4;
+		return 1;
+	}
+	if ((firstMismatch != NULL) && (mismatch != NULL))
+	{
+		*mismatch = *firstMismatch;
 	}
 	return 0;
 }

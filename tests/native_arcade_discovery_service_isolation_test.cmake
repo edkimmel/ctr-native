@@ -132,8 +132,9 @@ ctr_require("${service_source}" "${source_flat}"
 ctr_require_order("${service_source}" "${source_flat}"
     "if (service->lanPrefixLength != 0) {"
     "count = NativeNetInterfaces_BuildLanTargets(interfaces, interfaceCount, service->lanNetwork, service->lanPrefixLength, addresses,"
+    "NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_TARGETS, &lanInterface, &mismatch);"
     "else { count = 0; service->enumerationFailed = 1; }"
-    "service->lanInterfaceIpv4 = lanInterface; }"
+    "service->lanInterfaceIpv4 = lanInterface; service->lanMismatchIpv4 = mismatch.ipv4; service->lanMismatchPrefixLength = mismatch.prefixLength; }"
     "else if (NativeNetInterfaces_List(")
 ctr_require("${service_source}" "${source_flat}"
     "if ((service->targetCount == 0) || !NativeArcadeDiscovery_BuildBeacon(&service->table, beacon)) { return; }")

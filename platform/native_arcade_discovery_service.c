@@ -16,9 +16,11 @@ static void NativeArcadeDiscoveryService_Clear(struct NativeArcadeDiscoveryServi
 
 /* The interface-list targets at the discovery port (DISC-5), or the limited
  * broadcast alone when the enumeration fails (DISC-15). With a lan
- * (DISC-19): the lan's directed broadcast alone while an interface is inside
- * the lan, else no target at all (a failed enumeration included); a change
- * of that interface is marked for TakeLanChange. */
+ * (DISC-19): the lan's directed broadcast alone while an interface is on
+ * exactly the lan's subnet, else no target at all (a failed enumeration or
+ * an interface in the lan on another prefix included); a change of that lan
+ * state (the interface, the first mismatched interface, a failed
+ * enumeration) is marked for TakeLanChange. */
 static void NativeArcadeDiscoveryService_RefreshTargets(struct NativeArcadeDiscoveryService *service)
 {
 	struct NativeNetInterface interfaces[NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_INTERFACES];
@@ -28,12 +30,14 @@ static void NativeArcadeDiscoveryService_RefreshTargets(struct NativeArcadeDisco
 
 	if (service->lanPrefixLength != 0)
 	{
+		const uint8_t wasFailed = service->enumerationFailed;
+		struct NativeNetInterface mismatch = {0};
 		uint32_t lanInterface = 0;
 
 		if (NativeNetInterfaces_List(&service->scratch, interfaces, NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_INTERFACES, &interfaceCount))
 		{
 			count = NativeNetInterfaces_BuildLanTargets(interfaces, interfaceCount, service->lanNetwork, service->lanPrefixLength, addresses,
-			                                            NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_TARGETS, &lanInterface);
+			                                            NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_TARGETS, &lanInterface, &mismatch);
 			service->enumerationFailed = 0;
 		}
 		else
@@ -41,11 +45,14 @@ static void NativeArcadeDiscoveryService_RefreshTargets(struct NativeArcadeDisco
 			count = 0;
 			service->enumerationFailed = 1;
 		}
-		if ((service->refreshCount == 0) || (lanInterface != service->lanInterfaceIpv4))
+		if ((service->refreshCount == 0) || (lanInterface != service->lanInterfaceIpv4) || (mismatch.ipv4 != service->lanMismatchIpv4) ||
+		    (mismatch.prefixLength != service->lanMismatchPrefixLength) || (service->enumerationFailed != wasFailed))
 		{
 			service->lanChanged = 1;
 		}
 		service->lanInterfaceIpv4 = lanInterface;
+		service->lanMismatchIpv4 = mismatch.ipv4;
+		service->lanMismatchPrefixLength = mismatch.prefixLength;
 	}
 	else if (NativeNetInterfaces_List(&service->scratch, interfaces, NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_INTERFACES, &interfaceCount))
 	{
@@ -270,6 +277,8 @@ int NativeArcadeDiscoveryService_GetStatus(const struct NativeArcadeDiscoverySer
 	out->lanNetwork = service->lanNetwork;
 	out->lanInterfaceIpv4 = service->lanInterfaceIpv4;
 	out->lanDropped = service->lanDropped;
+	out->lanMismatchPrefixLength = service->lanMismatchPrefixLength;
+	out->lanMismatchIpv4 = service->lanMismatchIpv4;
 	return 1;
 }
 

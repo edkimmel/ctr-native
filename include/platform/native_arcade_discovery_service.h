@@ -36,12 +36,15 @@
  *   outside the lan is dropped before it reaches the core (counted in the
  *   status, never logged per datagram), every override target must be
  *   inside the lan, and without overrides the only target is the lan's
- *   directed broadcast, and only while a local interface is inside the lan
- *   (NativeNetInterfaces_BuildLanTargets); with none, or while the
- *   enumeration fails, there is no target and no beacon goes out (never a
- *   fallback to 255.255.255.255 or another interface's broadcast), and the
- *   next refresh retries. TakeLanChange reports each change of that
- *   interface for the caller's log. The one broadcast leaves the
+ *   directed broadcast, and only while a local interface is on exactly the
+ *   lan's subnet, same network and same prefix length
+ *   (NativeNetInterfaces_BuildLanTargets); an interface whose address is
+ *   inside the lan but whose prefix length differs does not count (the
+ *   status names the first one). With none, or while the enumeration
+ *   fails, there is no target and no beacon goes out (never a fallback to
+ *   255.255.255.255 or another interface's broadcast), and the next
+ *   refresh retries. TakeLanChange reports each change of that lan state
+ *   for the caller's log. The one broadcast leaves the
  *   INADDR_ANY socket through the interface with the on-link route for the
  *   lan's subnet; the socket is never bound to an interface address.
  *   Without a lan every rule above is as before.
@@ -82,11 +85,13 @@ struct NativeArcadeDiscoveryService
 	uint32_t beaconCount;  /* beacon rounds since Open */
 	/* The lan (DISC-19); lanPrefixLength 0: none. */
 	uint8_t lanPrefixLength;
-	uint8_t lanChanged; /* lanInterfaceIpv4 changed since the last TakeLanChange */
-	uint16_t reserved3;
+	uint8_t lanChanged;              /* the lan state changed since the last TakeLanChange */
+	uint8_t lanMismatchPrefixLength; /* lanMismatchIpv4's prefix length, 0: none */
+	uint8_t reserved3;
 	uint32_t lanNetwork;
-	uint32_t lanInterfaceIpv4; /* the interface inside the lan at the latest read, 0: none */
+	uint32_t lanInterfaceIpv4; /* the interface on the lan's subnet at the latest read, 0: none */
 	uint32_t lanDropped;       /* datagrams dropped for a source outside the lan */
+	uint32_t lanMismatchIpv4;  /* with no lanInterfaceIpv4: the first interface inside the lan on another prefix, 0: none */
 	struct NativeUdpTransportAddress targets[NATIVE_ARCADE_DISCOVERY_SERVICE_MAX_TARGETS];
 	struct NativeUdpTransport transport;
 	struct NativeArcadeDiscoveryTable table;
@@ -110,10 +115,15 @@ struct NativeArcadeDiscoveryServiceStatus
 	uint32_t beaconCount;   /* beacon rounds since Open (sent or refused); a tick with no target sends none */
 	/* The lan (DISC-19); all zero without one. */
 	uint8_t lanPrefixLength;
-	uint8_t reserved3[3];
+	uint8_t lanMismatchPrefixLength; /* lanMismatchIpv4's prefix length, 0: none */
+	uint8_t reserved3[2];
 	uint32_t lanNetwork;
-	uint32_t lanInterfaceIpv4; /* 0: no interface inside the lan (always 0 with explicit targets) */
+	uint32_t lanInterfaceIpv4; /* 0: no interface on the lan's subnet (always 0 with explicit targets) */
 	uint32_t lanDropped;       /* datagrams dropped for a source outside the lan */
+	/* With lanInterfaceIpv4 0: the first usable interface whose address is
+	 * inside the lan but whose prefix length differs from the lan's (it does
+	 * not count, DISC-19), 0: none (always 0 while the enumeration fails). */
+	uint32_t lanMismatchIpv4;
 };
 
 /*
@@ -150,13 +160,16 @@ int NativeArcadeDiscoveryService_Pairing(const struct NativeArcadeDiscoveryServi
 int NativeArcadeDiscoveryService_TakeEvent(struct NativeArcadeDiscoveryService *service, struct NativeArcadeDiscoveryEvent *out);
 
 /*
- * The lan interface for the caller's log (DISC-19): returns 1 once for each
- * interface-list read that found a different interface inside the lan than
- * the read before it (the first read, at Open, always counts), and writes
- * that interface's IPv4, or 0 when none is inside the lan (nothing is then
- * sent). Returns 0 (*interfaceIpv4 untouched) when closed, without a lan,
- * with explicit targets (no list is read), with nothing new, or for NULL
- * arguments.
+ * The lan state for the caller's log (DISC-19): returns 1 once for each
+ * interface-list read whose lan state differs from the read before it (the
+ * first read, at Open, always counts). The state is the interface on the
+ * lan's subnet, the first mismatched interface and its prefix length (the
+ * status's lanMismatchIpv4 and lanMismatchPrefixLength), and whether the
+ * enumeration failed (the status's enumerationFailed). Writes the interface
+ * on the lan's subnet, or 0 when there is none (nothing is then sent; the
+ * status says why). Returns 0 (*interfaceIpv4 untouched) when closed,
+ * without a lan, with explicit targets (no list is read), with nothing new,
+ * or for NULL arguments.
  */
 int NativeArcadeDiscoveryService_TakeLanChange(struct NativeArcadeDiscoveryService *service, uint32_t *interfaceIpv4);
 
