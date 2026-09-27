@@ -2190,11 +2190,12 @@ if(BUILD_TESTING)
         # docs/LOCKSTEP_RACE_MILESTONE.md LR-S2 (a)): internal
         # --arcade-roster-proof runs of ctr_native, all of a group at once
         # under the proof's fixed VBlank pacing, compared tick by tick.  The
-        # eleven runs are split in two ctests (tools/arcade-roster-proof-check.ps1
+        # thirteen runs are split in two ctests (tools/arcade-roster-proof-check.ps1
         # -Group): _two_cab runs the two-cabinet profile (A-E: same seed twice,
         # same seed launched from inside the attract demo race, another seed,
         # same seed launched an odd number of ticks late) and A again with the
-        # stall hold (K), which must equal A; _one_cab runs the single-cabinet
+        # stall hold (K), which must equal A, and A twice with the forced clock
+        # (L, M, NULL-slot fix c6ed69c0b); _one_cab runs the single-cabinet
         # profile the same way (F-J) plus its own A, the base of the
         # cross-profile checks (F against A).  Together they run every check
         # of the unsplit proof (tests/arcade_roster_proof_groups_test.cmake).

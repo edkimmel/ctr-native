@@ -16,9 +16,10 @@ param(
     # [CmdletBinding()] script run with -File.
     [string]$AssetsFile,
 
-    # Race ticks each run (A-K) logs (--arcade-roster-proof-ticks), 1..3600.
-    # Run K holds at race tick 300, so it is skipped (with a note) when this
-    # is 300 or less; the other runs take any count.
+    # Race ticks each run (A-M) logs (--arcade-roster-proof-ticks), 1..3600.
+    # Run K holds at race tick 300 and L and M fire the clock after 600, so
+    # each is skipped (with a note) when this is not above its tick; the
+    # other runs take any count.
     [int]$Ticks = 900,
 
     # Seconds all the group's runs together may take (parallel), or each run
@@ -28,8 +29,8 @@ param(
     # Run the group's proofs one after another instead of all at once.
     [switch]$Sequential,
 
-    # Which runs to launch (see "Groups" below): all (A-K, the default),
-    # two-cab (A-E and K), or one-cab (F-J plus its own A, the base of the
+    # Which runs to launch (see "Groups" below): all (A-M, the default),
+    # two-cab (A-E, K, L, M), or one-cab (F-J plus its own A, the base of the
     # cross-profile checks).
     [ValidateSet('all', 'two-cab', 'one-cab')]
     [string]$Group = 'all',
@@ -41,9 +42,10 @@ param(
 
 # Live roster determinism check (docs/ROSTER_MILESTONE.md section 3.4, R-6,
 # R-6b, R-6c, R-6d, and OC-3; run K is docs/LOCKSTEP_RACE_MILESTONE.md LR-S2
-# (a)).  Runs eleven live roster proofs, five of the two-cabinet profile
-# (A-E), five of the single-cabinet profile (F-J), and A again with the stall
-# hold (K), and compares their reports:
+# (a)).  Runs thirteen live roster proofs, five of the two-cabinet profile
+# (A-E), five of the single-cabinet profile (F-J), A again with the stall
+# hold (K), and A twice with the forced clock (L, M; see below), and compares
+# their reports:
 #   A  two-cab, seed 0x5EED, dwell 0     (launches from the title)
 #   B  two-cab, seed 0x5EED, dwell 0     (A again: byte-identical report)
 #   C  two-cab, seed 0x5EED, dwell 5400  (launches from inside the attract
@@ -80,7 +82,7 @@ param(
 # reports must say "profile TWO_CAB"; F-J pass --arcade-roster-proof-profile
 # one-cab and must say "profile ONE_CAB".
 #
-# Tick counts.  Every run (A-K) logs -Ticks race ticks (900 in ctest), and
+# Tick counts.  Every run (A-M) logs -Ticks race ticks (900 in ctest), and
 # all its per-run expectations (tick lines, "end ticks N", the tick
 # comparisons) use that count.  The ONE_CAB cap (90 race ticks, which ended
 # before the green light) was lifted once game/UI/UI_Rank.c's uninitialized
@@ -102,6 +104,15 @@ param(
 # hook reads around the hold (C11 timespec_get); at least one host event pump in
 # every ended period; and every due banner presented.  Every other run's
 # hold line must be "hold none".
+#
+# Runs L and M (two-cab group only): A with --arcade-roster-proof-clock, so
+# after race tick 600 the first bot fires the clock with driver slots 6 and 7
+# empty (the NULL-slot fix of commit c6ed69c0b; without it the fire
+# access-violates).  They diverge from A after the fire by design and are
+# never compared with A-K: each must pass its own report checks (the race
+# reaches every tick) and log "forced clock fired at race tick 600 by bot
+# driver N, empty driver slots 2", and L and M must be byte-identical.  Both
+# are skipped (with a note) when -Ticks is 600 or less.
 #
 # Every report must be format v11 with result PASS, the profile line right
 # after the result line, the expected launch window, both counter lines, a
@@ -156,8 +167,8 @@ param(
 # fixed, the runs no longer depend on each other's timing and run in parallel
 # by default; -Sequential runs them one after another.
 #
-# Groups.  -Group all launches the eleven runs above and runs every check.
-# -Group two-cab launches A, B, C, D, E, and K; -Group one-cab launches F, G,
+# Groups.  -Group all launches the thirteen runs above and runs every check.
+# -Group two-cab launches A, B, C, D, E, K, L, and M; -Group one-cab launches F, G,
 # H, I, J, and its own A, the base of the cross-profile checks (F != A in the
 # config and race plan digests, F's input digests against A).  A check runs
 # in a group exactly when all its runs are in the group ($checkTable below);
@@ -189,6 +200,9 @@ $holdPattern = '^hold tick ([0-9]+) periods ([0-9]+) wall us ([0-9]+) independen
 # Run K's hold (NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK and _HOLD_PERIODS).
 $holdTick = 300
 $holdPeriods = 45
+# Runs L and M's forced clock (NATIVE_ARCADE_ROSTER_PROOF_CLOCK_TICK) and its log line.
+$clockTick = 600
+$clockPattern = "forced clock fired at race tick $clockTick by bot driver [0-9]+, empty driver slots [1-9]"
 # The slot roles of each profile, slots 0..7 (NativeMatchConfigV1_InitArcadeTwoCab
 # and _InitArcadeOneCab).
 $slotRoles = @{
@@ -197,8 +211,8 @@ $slotRoles = @{
 }
 # The runs of each group (see "Groups" above).
 $groupRuns = @{
-    'all' = @('A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K')
-    'two-cab' = @('A', 'B', 'C', 'D', 'E', 'K')
+    'all' = @('A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M')
+    'two-cab' = @('A', 'B', 'C', 'D', 'E', 'K', 'L', 'M')
     'one-cab' = @('A', 'F', 'G', 'H', 'I', 'J')
 }
 # Every check, with the runs it needs: a group runs the checks whose runs it
@@ -216,6 +230,9 @@ $checkTable = @(
     @{ Id = 'report I'; Needs = @('I') },
     @{ Id = 'report J'; Needs = @('J') },
     @{ Id = 'report K'; Needs = @('K') },
+    @{ Id = 'report L'; Needs = @('L') },
+    @{ Id = 'report M'; Needs = @('M') },
+    @{ Id = 'L = M bytes'; Needs = @('L', 'M') },
     @{ Id = 'A = B bytes'; Needs = @('A', 'B') },
     @{ Id = 'F = G bytes'; Needs = @('F', 'G') },
     @{ Id = 'C E offsets from A'; Needs = @('A', 'C', 'E') },
@@ -322,6 +339,9 @@ function Start-Run($Run) {
     }
     if ($Run.Hold) {
         $arguments += @('--arcade-roster-proof-hold')
+    }
+    if ($Run.Clock) {
+        $arguments += @('--arcade-roster-proof-clock')
     }
     $argumentLine = ($arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
     $process = Start-Process -FilePath $resolvedExecutable -ArgumentList $argumentLine `
@@ -663,6 +683,11 @@ try {
     if (($groupRunNames -contains 'K') -and (-not $runK)) {
         Write-Output "note: run K (the stall hold) skipped: -Ticks $Ticks is not above its hold tick $holdTick"
     }
+    # Runs L and M fire the clock after race tick $clockTick, likewise.
+    $runLM = ($groupRunNames -contains 'L') -and ($Ticks -gt $clockTick)
+    if (($groupRunNames -contains 'L') -and (-not $runLM)) {
+        Write-Output "note: runs L and M (the forced clock) skipped: -Ticks $Ticks is not above their clock tick $clockTick"
+    }
     $resolvedExecutable = (Resolve-Path -LiteralPath $Executable -ErrorAction Stop).Path
     $resolvedOutput = [System.IO.Path]::GetFullPath($OutputDirectory)
     [System.IO.Directory]::CreateDirectory($resolvedOutput) | Out-Null
@@ -670,7 +695,8 @@ try {
     # ProfileOption is the --arcade-roster-proof-profile value, or '' for the
     # default (two-cab); Profile is the report's expected profile line; Ticks
     # is the run's --arcade-roster-proof-ticks (-Ticks for every run); Hold
-    # adds --arcade-roster-proof-hold (run K only).
+    # adds --arcade-roster-proof-hold (run K only); Clock adds
+    # --arcade-roster-proof-clock (runs L and M only; absent is off).
     $specs = @(
         @{ Name = 'A'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $false },
         @{ Name = 'B'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $false },
@@ -682,10 +708,15 @@ try {
         @{ Name = 'H'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EEE'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $false },
         @{ Name = 'I'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 5400; Window = 'demo race'; Ticks = $Ticks; Hold = $false },
         @{ Name = 'J'; Profile = 'ONE_CAB'; ProfileOption = 'one-cab'; Seed = '0x5EED'; Dwell = 37; Window = 'title'; Ticks = $Ticks; Hold = $false },
-        @{ Name = 'K'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $true })
+        @{ Name = 'K'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $true },
+        @{ Name = 'L'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $false; Clock = $true },
+        @{ Name = 'M'; Profile = 'TWO_CAB'; ProfileOption = ''; Seed = '0x5EED'; Dwell = 0; Window = 'title'; Ticks = $Ticks; Hold = $false; Clock = $true })
     $specs = @($specs | Where-Object { $groupRunNames -contains $_.Name })
     if (-not $runK) {
         $specs = @($specs | Where-Object { $_.Name -ne 'K' })
+    }
+    if (-not $runLM) {
+        $specs = @($specs | Where-Object { ($_.Name -ne 'L') -and ($_.Name -ne 'M') })
     }
     # The checks this invocation runs: those whose runs it all launches.
     $plannedChecks = @(Get-GroupChecks @($specs | ForEach-Object { $_.Name }))
@@ -699,6 +730,7 @@ try {
             Window = $spec.Window
             Ticks = $spec.Ticks
             Hold = $spec.Hold
+            Clock = ($spec.Clock -eq $true)
             ReportPath = Join-Path $resolvedOutput "$($spec.Name).report.txt"
             StdoutPath = Join-Path $resolvedOutput "$($spec.Name).stdout.log"
             StderrPath = Join-Path $resolvedOutput "$($spec.Name).stderr.log"
@@ -719,8 +751,8 @@ try {
         $mode = 'sequential'
     }
     $groupText = @{
-        'all' = 'five two-cab (A-E), five one-cab (F-J), and A with the stall hold (K)'
-        'two-cab' = 'five two-cab (A-E) and A with the stall hold (K)'
+        'all' = 'five two-cab (A-E), five one-cab (F-J), A with the stall hold (K), and A with the forced clock twice (L, M)'
+        'two-cab' = 'five two-cab (A-E) and A with the stall hold (K) and with the forced clock twice (L, M)'
         'one-cab' = 'five one-cab (F-J) and the two-cab A, the base of the cross-profile checks'
     }
     $runKText = ''
@@ -779,6 +811,16 @@ try {
         if ($report.Header['launch window'] -ne $run.Window) {
             $failures += "report $($run.Name): launch window '$($report.Header['launch window'])', expected '$($run.Window)'"
         }
+        # L and M: the bot's clock fired at $clockTick with an empty driver slot.
+        if ($run.Clock) {
+            $clockLine = @((Get-RunLog $run) -split "`r?`n" | Where-Object { $_ -match $clockPattern })
+            if ($clockLine.Count -ne 1) {
+                $failures += "report $($run.Name): the log has $($clockLine.Count) lines matching '$clockPattern', expected 1"
+            }
+            else {
+                Write-Output "run $($run.Name) clock: $($clockLine[0].Trim())"
+            }
+        }
         $reports[$run.Name] = $report
     }
     if ($failures.Count -ne 0) {
@@ -806,8 +848,8 @@ try {
         $runByName[$run.Name] = $run
     }
 
-    # A and B, and F and G: byte-identical.
-    foreach ($pair in @(@('A', 'B'), @('F', 'G'))) {
+    # A and B, F and G, and L and M: byte-identical.
+    foreach ($pair in @(@('A', 'B'), @('F', 'G'), @('L', 'M'))) {
         if (-not (Use-Check "$($pair[0]) = $($pair[1]) bytes")) {
             continue
         }
@@ -1068,6 +1110,9 @@ try {
             $reason = 'in the other group'
             if (($check.Needs -contains 'K') -and ($groupRunNames -contains 'K') -and (-not $runK)) {
                 $reason = "run K skipped (-Ticks $Ticks)"
+            }
+            if ((($check.Needs -contains 'L') -or ($check.Needs -contains 'M')) -and ($groupRunNames -contains 'L') -and (-not $runLM)) {
+                $reason = "runs L and M skipped (-Ticks $Ticks)"
             }
             $notRun += "$($check.Id) ($reason)"
         }

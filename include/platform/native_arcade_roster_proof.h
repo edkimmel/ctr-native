@@ -44,6 +44,15 @@ struct NativeCanonicalStateV1;
  *                                           LR-S2 (b)); two-cab only; allows
  *                                           a tick count up to
  *                                           AUTOPILOT_MAX_TICKS (6000)
+ *   --arcade-roster-proof-clock             no value: after race tick
+ *                                           CLOCK_TICK the first bot fires
+ *                                           the clock with slots 6 and 7
+ *                                           empty (the c6ed69c0b NULL-slot
+ *                                           fix); two-cab only; needs a tick
+ *                                           count above CLOCK_TICK; the fire
+ *                                           is logged to the process log, and
+ *                                           the proof ends EVIDENCE_MISSING
+ *                                           when it could not fire
  *
  * The report path is opened as given when the report is written: a relative
  * path resolves against the base directory, because main.c changes into
@@ -51,13 +60,14 @@ struct NativeCanonicalStateV1;
  * working directory. Pass an absolute path to write elsewhere.
  *
  * Parsing is transactional: on any error the caller's options are left
- * untouched. Arguments that are not one of these seven options are ignored,
+ * untouched. Arguments that are not one of these eight options are ignored,
  * because other host parsers own them. An option whose value is missing (end
  * of argv, a NULL entry, or a next argument starting with '-'), repeated, or
  * malformed is an error, and so is a seed, dwell, tick count, profile, hold,
- * or autopilot without --arcade-roster-proof, a hold with a tick count of
- * HOLD_TICK or less, a tick count above MAX_TICKS without the autopilot, and
- * the autopilot with the one-cab profile. main.c rejects the proof together
+ * autopilot, or clock without --arcade-roster-proof, a hold with a tick count of
+ * HOLD_TICK or less, a tick count above MAX_TICKS without the autopilot, the
+ * autopilot with the one-cab profile, and the clock with the one-cab profile
+ * or a tick count of CLOCK_TICK or less. main.c rejects the proof together
  * with any arcade-link or replay option, and with --exit-after-frame (any
  * frame-capture exit option; NativeArcadeRosterProof_NamesExitOption), which
  * would end the run on a frame count instead of the proof result.
@@ -276,6 +286,9 @@ struct NativeCanonicalStateV1;
  * periods of wall time. */
 #define NATIVE_ARCADE_ROSTER_PROOF_HOLD_TICK 300u
 #define NATIVE_ARCADE_ROSTER_PROOF_HOLD_PERIODS 45u
+/* The forced clock (--arcade-roster-proof-clock): the race tick it fires
+ * after, well past the traffic lights. */
+#define NATIVE_ARCADE_ROSTER_PROOF_CLOCK_TICK 600u
 
 /* Watchdogs and the post-validation wait, in proof ticks (game frames). */
 #define NATIVE_ARCADE_ROSTER_PROOF_MENU_READY_TIMEOUT_TICKS 3000u
@@ -305,7 +318,7 @@ struct NativeArcadeRosterProofOptions
 	uint8_t enabled; /* --arcade-roster-proof given */
 	uint8_t hold;    /* --arcade-roster-proof-hold given */
 	uint8_t autopilot; /* --arcade-roster-proof-autopilot given */
-	uint8_t reserved[1];
+	uint8_t clock;     /* --arcade-roster-proof-clock given */
 	uint32_t dwellTicks;
 	uint64_t seed;
 	uint32_t tickCount; /* race ticks to log */
@@ -496,7 +509,7 @@ struct NativeArcadeRosterProofReport
 };
 
 /* NULL is a no-op. Otherwise: disabled, seed 1, dwell 0, 900 ticks, profile
- * TWO_CAB, no hold, no autopilot, empty path. */
+ * TWO_CAB, no hold, no autopilot, no clock, empty path. */
 void NativeArcadeRosterProofOptions_SetDefaults(struct NativeArcadeRosterProofOptions *options);
 
 /* Returns 1 and updates *options on success; 0 with *options untouched otherwise. */
@@ -615,14 +628,15 @@ int NativeArcadeRosterProof_FormatV4Digests(uint64_t combined, const uint64_t *d
 	size_t *length);
 
 /* The configured config, profile, dwell, tick count, hold (1 when
- * requested), autopilot (1 when requested), seed, and log path;
- * NULL/0/empty when inactive. */
+ * requested), autopilot (1 when requested), clock (1 when requested), seed,
+ * and log path; NULL/0/empty when inactive. */
 const struct NativeMatchConfigV1 *NativeArcadeRosterProof_Config(void);
 uint32_t NativeArcadeRosterProof_Profile(void);
 uint32_t NativeArcadeRosterProof_Dwell(void);
 uint32_t NativeArcadeRosterProof_Ticks(void);
 uint32_t NativeArcadeRosterProof_Hold(void);
 uint32_t NativeArcadeRosterProof_Autopilot(void);
+uint32_t NativeArcadeRosterProof_Clock(void);
 uint64_t NativeArcadeRosterProof_Seed(void);
 const char *NativeArcadeRosterProof_LogPath(void);
 

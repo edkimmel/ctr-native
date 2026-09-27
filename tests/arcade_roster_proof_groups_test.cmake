@@ -2,8 +2,8 @@
 # (tools/arcade-roster-proof-check.ps1 -Group and -ListChecks): the ctests
 # arcade_roster_determinism_two_cab and _one_cab run -Group two-cab and
 # -Group one-cab, and together they must run every check of -Group all.
-#   - -Group all launches A-K and runs every check;
-#   - -Group two-cab launches exactly A B C D E K, -Group one-cab exactly
+#   - -Group all launches A-M and runs every check;
+#   - -Group two-cab launches exactly A B C D E K L M, -Group one-cab exactly
 #     A F G H I J (A as the base of the cross-profile checks);
 #   - the checks two-cab and one-cab run together are exactly all's, and the
 #     cross-profile checks (F != A, F's input digests against A and H) run in
@@ -59,11 +59,11 @@ list_group(all)
 list_group(two-cab)
 list_group(one-cab)
 
-if(NOT all_runs STREQUAL "A B C D E F G H I J K")
-    message(FATAL_ERROR "roster proof groups: -Group all runs '${all_runs}', expected A-K")
+if(NOT all_runs STREQUAL "A B C D E F G H I J K L M")
+    message(FATAL_ERROR "roster proof groups: -Group all runs '${all_runs}', expected A-M")
 endif()
-if(NOT two-cab_runs STREQUAL "A B C D E K")
-    message(FATAL_ERROR "roster proof groups: -Group two-cab runs '${two-cab_runs}', expected 'A B C D E K'")
+if(NOT two-cab_runs STREQUAL "A B C D E K L M")
+    message(FATAL_ERROR "roster proof groups: -Group two-cab runs '${two-cab_runs}', expected 'A B C D E K L M'")
 endif()
 if(NOT one-cab_runs STREQUAL "A F G H I J")
     message(FATAL_ERROR "roster proof groups: -Group one-cab runs '${one-cab_runs}', expected 'A F G H I J'")
@@ -102,7 +102,7 @@ foreach(check IN ITEMS "F != A" "F input vs A and H" "report A")
         message(FATAL_ERROR "roster proof groups: -Group one-cab does not run '${check}'")
     endif()
 endforeach()
-foreach(check IN ITEMS "K = A and hold" "A = B bytes" "C E = A")
+foreach(check IN ITEMS "K = A and hold" "A = B bytes" "C E = A" "L = M bytes")
     if(NOT check IN_LIST two-cab_ran)
         message(FATAL_ERROR "roster proof groups: -Group two-cab does not run '${check}'")
     endif()

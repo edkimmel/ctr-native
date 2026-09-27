@@ -75,7 +75,7 @@ static int TestDefaults(void)
 	CHECK(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_TWO_CAB);
 	CHECK(NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB == NATIVE_MATCH_CONFIG_V1_PROFILE_ARCADE_ONE_CAB);
 	CHECK(IsAllByte(options.logPath, sizeof(options.logPath), 0u));
-	CHECK(IsAllByte(options.reserved, sizeof(options.reserved), 0u));
+	CHECK(options.clock == 0u);
 	NativeArcadeRosterProofOptions_SetDefaults(NULL);
 
 	/* Unrelated arguments leave the defaults. */
@@ -313,7 +313,7 @@ static int TestHoldOption(void)
 	NativeArcadeRosterProofOptions_SetDefaults(&options);
 	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(hold), hold, &options) == 1);
 	CHECK(options.enabled == 1u && options.hold == 1u && options.tickCount == 900u);
-	CHECK(IsAllByte(options.reserved, sizeof(options.reserved), 0u));
+	CHECK(options.clock == 0u);
 	NativeArcadeRosterProofOptions_SetDefaults(&options);
 	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(holdFirst), holdFirst, &options) == 1);
 	CHECK(options.hold == 1u && options.seed == UINT64_C(0x5EED));
@@ -390,7 +390,7 @@ static int TestAutopilotOption(void)
 	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(autopilot), autopilot, &options) == 1);
 	CHECK(options.enabled == 1u && options.autopilot == 1u && options.hold == 0u && options.tickCount == 900u);
 	CHECK(options.profile == NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB);
-	CHECK(IsAllByte(options.reserved, sizeof(options.reserved), 0u));
+	CHECK(options.clock == 0u);
 	NativeArcadeRosterProofOptions_SetDefaults(&options);
 	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(autopilotRace), autopilotRace, &options) == 1);
 	CHECK(options.autopilot == 1u && options.tickCount == 6000u && options.seed == UINT64_C(0x5EED));
@@ -454,6 +454,52 @@ static int TestAutopilotOption(void)
 		CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 0);
 		NativeArcadeRosterProof_Shutdown();
 	}
+	return 0;
+}
+
+/* --arcade-roster-proof-clock: a flag, off by default, only with the proof,
+ * once, two-cab only, and only with a tick count above CLOCK_TICK. */
+static int TestClockOption(void)
+{
+	struct NativeArcadeRosterProofOptions options;
+	struct NativeIdentityV1 identity;
+	char *clock[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-clock"};
+	char *clockAlone[] = {"ctr_native", "--arcade-roster-proof-clock"};
+	char *clockRepeated[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-clock", "--arcade-roster-proof-clock"};
+	char *clockOneCab[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-clock", "--arcade-roster-proof-profile",
+		"one-cab"};
+	char *clockFewTicks[] = {"ctr_native", "--arcade-roster-proof", "r.txt", "--arcade-roster-proof-clock", "--arcade-roster-proof-ticks",
+		"600"};
+
+	CHECK(NATIVE_ARCADE_ROSTER_PROOF_CLOCK_TICK == 600u);
+	NativeArcadeRosterProofOptions_SetDefaults(&options);
+	CHECK(NativeArcadeRosterProofOptions_ApplyArgs(ARGC(clock), clock, &options) == 1);
+	CHECK(options.clock == 1u && options.hold == 0u && options.autopilot == 0u && options.tickCount == 900u);
+	CHECK(ExpectReject(ARGC(clockAlone), clockAlone) == 0);
+	CHECK(ExpectReject(ARGC(clockRepeated), clockRepeated) == 0);
+	CHECK(ExpectReject(ARGC(clockOneCab), clockOneCab) == 0);
+	CHECK(ExpectReject(ARGC(clockFewTicks), clockFewTicks) == 0);
+
+	/* Configure: the same rules; the accessor reports the option. */
+	TestIdentity(&identity);
+	CHECK(NativeArcadeRosterProof_Clock() == 0u);
+	CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeRosterProof_Clock() == 1u);
+	NativeArcadeRosterProof_Shutdown();
+	CHECK(NativeArcadeRosterProof_Clock() == 0u);
+	options.clock = 0u;
+	CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 1);
+	CHECK(NativeArcadeRosterProof_Clock() == 0u);
+	options.clock = 1u;
+	options.tickCount = NATIVE_ARCADE_ROSTER_PROOF_CLOCK_TICK;
+	CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 0);
+	options.tickCount = 900u;
+	options.profile = NATIVE_ARCADE_ROSTER_PROOF_PROFILE_ONE_CAB;
+	CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 0);
+	options.profile = NATIVE_ARCADE_ROSTER_PROOF_PROFILE_TWO_CAB;
+	options.clock = 2u;
+	CHECK(NativeArcadeRosterProof_Configure(&options, &identity) == 0);
+	CHECK(NativeArcadeRosterProof_Active() == 0 && NativeArcadeRosterProof_Clock() == 0u);
 	return 0;
 }
 
@@ -1735,6 +1781,7 @@ int main(void)
 	CHECK(TestProfileOption() == 0);
 	CHECK(TestHoldOption() == 0);
 	CHECK(TestAutopilotOption() == 0);
+	CHECK(TestClockOption() == 0);
 	CHECK(TestConfigBuilder() == 0);
 	CHECK(TestOneCabConfigBuilder() == 0);
 	CHECK(TestSeedsAndFinalResult() == 0);

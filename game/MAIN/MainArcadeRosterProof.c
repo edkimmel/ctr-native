@@ -885,6 +885,50 @@ static void MainArcadeRosterProof_AutopilotStep(const struct GameTracker *gGT, u
 	}
 }
 
+/*
+ * --arcade-roster-proof-clock: after race tick raceTick was simulated, the
+ * first bot fires the clock as a held clock fires (VehPickupItem_ShootNow,
+ * no flags), with at least one empty driver slot, so the clock case's
+ * NULL-slot skip (c6ed69c0b) is exercised. 1 when it fired after the
+ * traffic lights, logged; 0 otherwise.
+ */
+static int MainArcadeRosterProof_ClockStep(struct GameTracker *gGT, uint32_t raceTick)
+{
+	struct Driver *bot = NULL;
+	uint32_t emptySlots = 0u;
+	uint32_t used;
+
+	for (uint32_t slot = 0; slot < NATIVE_ARCADE_ROSTER_PROOF_SLOT_COUNT; slot++)
+	{
+		struct Driver *driver = gGT->drivers[slot];
+
+		if (driver == NULL)
+		{
+			emptySlots++;
+		}
+		else if ((bot == NULL) && ((driver->actionsFlagSet & ACTION_BOT) != 0))
+		{
+			bot = driver;
+		}
+	}
+	if ((bot == NULL) || (emptySlots == 0u) || (gGT->trafficLightsTimer > 0))
+	{
+		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "forced clock not fired at race tick %u (bot %s, empty driver slots %u, traffic lights %ld)\n",
+			(unsigned)raceTick, (bot != NULL) ? "found" : "none", (unsigned)emptySlots, (long)gGT->trafficLightsTimer);
+		return 0;
+	}
+	used = bot->numTimesClockWeaponUsed;
+	VehPickupItem_ShootNow(bot, HELD_ITEM_CLOCK, 0);
+	if (bot->numTimesClockWeaponUsed != (u8)(used + 1u))
+	{
+		Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "forced clock did not fire at race tick %u\n", (unsigned)raceTick);
+		return 0;
+	}
+	Platform_Log(MAIN_ARCADE_ROSTER_PROOF_LOG "forced clock fired at race tick %u by bot driver %u, empty driver slots %u\n",
+		(unsigned)raceTick, (unsigned)bot->driverID, (unsigned)emptySlots);
+	return 1;
+}
+
 void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct NativeCanonicalStateV1 *frameState)
 {
 	struct MainArcadeRosterProofState *state = &s_mainArcadeRosterProof;
@@ -1013,6 +1057,14 @@ void MainArcadeRosterProof_EndFrame(struct GameTracker *gGT, const struct Native
 	if (NativeArcadeRosterProof_Autopilot() != 0u)
 	{
 		MainArcadeRosterProof_AutopilotStep(gGT, state->raceTick);
+	}
+	/* The forced clock, also after the tick line: it changes the race from
+	 * the next tick on. */
+	if ((NativeArcadeRosterProof_Clock() != 0u) && (state->raceTick == NATIVE_ARCADE_ROSTER_PROOF_CLOCK_TICK) &&
+	    !MainArcadeRosterProof_ClockStep(gGT, state->raceTick))
+	{
+		MainArcadeRosterProof_Finish((uint32_t)NATIVE_ARCADE_ROSTER_PROOF_EVIDENCE_MISSING);
+		return;
 	}
 	state->raceTick++;
 	if (state->raceTick >= NativeArcadeRosterProof_Ticks())
